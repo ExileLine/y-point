@@ -37,7 +37,7 @@ def _log_startup_info() -> None:
 
 
 async def _init_db() -> None:
-    logger.info(">>> Mysql连接池初始化")
+    logger.info(">>> 数据库连接池初始化")
     await init_db()
 
 
@@ -90,7 +90,8 @@ async def startup_event(app: FastAPI) -> None:
     try:
         app.state.project_config = project_config.model_dump()
         await _init_db()
-        await _init_redis()
+        if project_config.REDIS_ENABLED:
+            await _init_redis()
         # await _init_scheduler()
     except Exception:
         logger.exception("应用启动失败，开始回收资源")

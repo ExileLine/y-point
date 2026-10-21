@@ -98,7 +98,7 @@ class BaseConfig(BaseSettings):
 
     APP_NAME: str = "yangyuexiong"
     ENV: str = "development"
-    DB_BACKEND: str = "mysql"
+    DB_BACKEND: str = "sqlite"
     SECRET_KEY: str = "change-me"
     DEBUG: bool = True
     RUN_HOST: str = "0.0.0.0"
@@ -125,6 +125,7 @@ class BaseConfig(BaseSettings):
     SQLITE_DATABASE: str = "y_point.db"
 
     REDIS_HOST: str = "127.0.0.1"
+    REDIS_ENABLED: bool = False
     REDIS_PORT: int = 6379
     REDIS_PWD: str = ""
     REDIS_DB: int = 0

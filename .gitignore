@@ -227,7 +227,8 @@ __marimo__/
 .vscode
 .idea
 .DS_Store
-/migrations
 /logs/*.log
 /y-point-dev.txt
 /y-point-dev-todo.md
+/y-point-server-todo.md
+/y-point-web-todo.md

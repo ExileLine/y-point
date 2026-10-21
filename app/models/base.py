@@ -45,7 +45,7 @@ def shanghai_datetime(value: Optional[datetime], *, naive: bool = False) -> Opti
         return localized_value.replace(tzinfo=None)
     return localized_value
 
-TABLE_PREFIX = ""  # 表名称前缀
+TABLE_PREFIX = "yp_"  # 表名称前缀
 
 class CustomBaseModel(Base):
     __abstract__ = True
