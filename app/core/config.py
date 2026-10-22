@@ -106,6 +106,7 @@ class BaseConfig(BaseSettings):
     ENV: str = "development"
     DB_BACKEND: str = "sqlite"
     SECRET_KEY: str = "change-me"
+    CREDENTIAL_ENCRYPTION_KEY: str = ""
     DEBUG: bool = True
     RUN_HOST: str = "0.0.0.0"
     RUN_PORT: int = 8000

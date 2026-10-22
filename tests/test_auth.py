@@ -7,15 +7,30 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import jwt
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_config
 from app.core.password import hash_password
+from app.core.security import ACCESS_TOKEN_SECONDS
 from app.db.session import get_db_session
 from app.main import app
 from app.models import Admin
 from app.models.base import Base
+from app.schemas.auth import (
+    AuditOut,
+    LoginIn,
+    PasswordChangeIn,
+    PasswordResetIn,
+    ProfileUpdateIn,
+    RefreshIn,
+    TokenOut,
+    UserCreateIn,
+    UserOut,
+    UserPage,
+    UserUpdateIn,
+)
 
 
 PASSWORD = "StrongPassword123"
@@ -51,6 +66,9 @@ async def exercise_auth(database: Path) -> None:
             assert login.status_code == 200, login.text
             assert login.json()["message"] == "操作成功"
             root_tokens = response_data(login)
+            assert root_tokens["expires_in"] == ACCESS_TOKEN_SECONDS == 604800
+            root_payload = jwt.decode(root_tokens["access_token"], get_config().SECRET_KEY, algorithms=["HS256"])
+            assert root_payload["exp"] - root_payload["iat"] == ACCESS_TOKEN_SECONDS
             root_headers = {"Authorization": f"Bearer {root_tokens['access_token']}"}
             assert response_data(await client.get("/api/v1/auth/me", headers=root_headers))["role"] == "admin"
 
@@ -79,7 +97,11 @@ async def exercise_auth(database: Path) -> None:
 
             rotated = await client.post("/api/v1/auth/refresh", json={"refresh_token": alice_tokens["refresh_token"]})
             assert rotated.status_code == 200, rotated.text
-            assert response_data(rotated)["refresh_token"] != alice_tokens["refresh_token"]
+            rotated_data = response_data(rotated)
+            assert rotated_data["refresh_token"] != alice_tokens["refresh_token"]
+            assert rotated_data["expires_in"] == ACCESS_TOKEN_SECONDS
+            rotated_payload = jwt.decode(rotated_data["access_token"], get_config().SECRET_KEY, algorithms=["HS256"])
+            assert rotated_payload["exp"] - rotated_payload["iat"] == ACCESS_TOKEN_SECONDS
             assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": alice_tokens["refresh_token"]})).status_code == 401
 
             assert (await client.post(
@@ -183,3 +205,24 @@ def test_docs_expose_bearer_authorization() -> None:
     operation = schema["paths"]["/api/v1/auth/me"]["get"]
     assert operation["security"]
     assert all(parameter.get("name", "").lower() != "authorization" for parameter in operation.get("parameters", []))
+
+
+def test_auth_schema_documentation() -> None:
+    """确认认证字段的中文说明和示例出现在模型及接口文档中。"""
+    models = (
+        LoginIn, RefreshIn, PasswordChangeIn, PasswordResetIn, TokenOut, UserCreateIn,
+        UserUpdateIn, ProfileUpdateIn, UserOut, UserPage, AuditOut,
+    )
+    for model in models:
+        properties = model.model_json_schema()["properties"]
+        for name, field in model.model_fields.items():
+            assert any("\u4e00" <= char <= "\u9fff" for char in properties[name]["description"])
+            assert properties[name]["examples"] == field.examples
+            assert field.examples
+
+    schemas = app.openapi()["components"]["schemas"]
+    for model in (LoginIn, RefreshIn, PasswordChangeIn, PasswordResetIn, UserCreateIn, UserUpdateIn, ProfileUpdateIn):
+        for name, field in model.model_fields.items():
+            documented = schemas[model.__name__]["properties"][name]
+            assert documented["description"] == field.description
+            assert documented["examples"] == field.examples

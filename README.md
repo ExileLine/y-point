@@ -24,7 +24,7 @@ uv run pytest -q
 uv run python -m app.cli.create_admin admin --mail admin@example.com
 ```
 
-认证接口：`POST /api/v1/auth/login`（`identifier` 可为用户名或邮箱）、`POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout`、`GET/PUT /api/v1/auth/me`、`POST /api/v1/auth/password`。登录返回有效期 15 分钟的 Bearer JWT 和有效期 30 天的刷新令牌；刷新令牌每次使用后轮换，服务端只保存其 SHA-256 摘要。访问令牌每次请求都会核对数据库中的用户状态、令牌版本和会话，登出、改密、重置密码、停用或变更角色可立即撤销旧令牌。
+认证接口：`POST /api/v1/auth/login`（`identifier` 可为用户名或邮箱）、`POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout`、`GET/PUT /api/v1/auth/me`、`POST /api/v1/auth/password`。登录返回有效期 7 天的 Bearer JWT 和有效期 30 天的刷新令牌；刷新令牌每次使用后轮换，服务端只保存其 SHA-256 摘要。访问令牌每次请求都会核对数据库中的用户状态、令牌版本和会话，登出、改密、重置密码、停用或变更角色可立即撤销旧令牌。
 
 M1 路由的成功结果使用 `api_response` 返回 `code`、`message` 和可选的 `data`；业务错误使用 `CustomException`，保留对应 HTTP 状态和业务码。退出、改密及重置密码成功时返回 HTTP 200 与成功消息。路由的 OpenAPI `summary` 使用中文。
 
@@ -33,6 +33,29 @@ M1 路由的成功结果使用 `api_response` 返回 `code`、`message` 和可�
 管理员接口：`POST/GET /api/v1/users`、`GET/PUT /api/v1/users/{user_id}`、`POST /api/v1/users/{user_id}/reset-password` 和 `GET /api/v1/users/audit/events`。普通用户只能读取或修改自己的资料；管理员可创建、查看、启停用户及调整角色。用户创建和密码重置由管理员设置初始密码，邮件邀请流程尚未实现。连续 5 次登录失败会在 15 分钟内限制该账号和来源 IP。审计记录包含操作、操作者、目标用户和时间，不保存密码或明文令牌。
 
 `SECRET_KEY` 用于签署 JWT，本地配置也应替换为至少 32 字节的随机值；生产和预发布环境的短密钥会阻止服务启动。不要在前端存储或记录明文刷新令牌。当前登录限流以数据库为准，跨数据库高并发领取及 PostgreSQL/MySQL 迁移尚未验证。
+
+## M2 供应商连接与模型目录
+
+运行 `uv run alembic upgrade head` 升级到 `003`。管理员可管理 `/api/v1/providers` 供应商连接和 `/api/v1/models` 可选模型，普通用户不能访问这些配置。供应商类型支持 `openai_compatible`、`openai`、`anthropic`；模型保存外部 ID、显示名、能力标签、上下文窗口及每百万 Token 的输入/输出价格，价格币种默认为 `USD`。未填写的能力保存为空列表，人工填写或导入的能力不会自动标为已验证。
+
+使用 API 密钥或自定义请求头前，在私有环境配置中设置独立的 `CREDENTIAL_ENCRYPTION_KEY`。它必须是 Fernet 密钥，可用 `uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` 生成。开发环境的 `.env.development.local` 已设置本机密钥且被 Git 忽略。请保留并备份该密钥：更换或丢失后，已保存的供应商凭据无法解密。API 只返回 `has_api_key` 和 `has_custom_headers`；`PUT` 中省略凭据字段会保留原值，明确传入 `null` 会清除对应凭据。
+
+### 模型录入流程
+
+1. `POST /api/v1/providers` 创建连接。供应商地址支持 HTTP 和 HTTPS；HTTP 会明文传输 API 密钥和自定义请求头，仅适合可信网络。
+2. `POST /api/v1/providers/{provider_id}/test` 检查上游 `/models`，返回 `available`、`latency_ms`、`model_count`、模型 ID 列表 `models`、可选名称映射 `model_names` 和失败类别。`GET /api/v1/providers/{provider_id}/available-models` 返回可供选择的 `external_id`、建议 `display_name` 和 `already_added`；上游未提供名称时以 ID 作为建议名称。
+3. 选择模型后调用 `POST /api/v1/models/import`，一次最多提交 100 个模型。请求体示例：
+
+   ```json
+   {"provider_id": 1, "models": [{"external_id": "gpt-4o-mini", "capabilities": ["text"]}]}
+   ```
+
+   `display_name` 省略时使用模型 ID；能力、上下文和价格可留空。响应的 `created` 包含新增或恢复的模型，`skipped_existing` 列出已录入的模型 ID；重复提交不会重复建模。手动录入列表外模型仍可使用 `POST /api/v1/models`。
+4. 按需调用 `POST /api/v1/models/{model_id}/test` 实测该模型的最小文本生成请求，再通过 `POST /api/v1/models/{model_id}/default` 指定默认模型。模型测试只在管理员主动请求时运行，可能产生少量费用。
+
+上游调用失败时，连接测试与发现接口返回故障类别和空列表，不写入模型，也不回传上游原始错误或凭据。模型测试通过 OpenAI/兼容接口的 `/chat/completions` 或 Anthropic 的 `/messages` 请求，返回 `available`、`latency_ms`、`upstream_status_code` 和脱敏的 `failure`，不返回生成内容。它目前只验证文本聊天调用，不自动验证视觉、工具或流式输出；非文本模型可能返回 `invalid_request`。供应商下仍有有效模型时不能删除连接，停用连接会清除其模型的默认标记。
+
+M2 目前已通过模拟上游的权限、成功与失败场景测试；真实供应商凭据下的推理、无模型列表接口的适配、非文本模型测试、生产网络边界、PostgreSQL/MySQL 迁移及并发默认模型选择仍待验证。
 
 ## 数据库迁移
 

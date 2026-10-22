@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 SENSITIVE_FIELDS = {
     "password", "passwd", "pwd", "secret", "secretkey", "clientsecret",
     "token", "accesstoken", "refreshtoken", "apikey", "authorization",
-    "cookie", "sessionid", "credential",
+    "cookie", "sessionid", "credential", "customheaders",
     "currentpassword", "newpassword", "oldpassword", "passwordconfirmation",
 }
 

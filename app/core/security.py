@@ -20,7 +20,7 @@ from app.models.admin import Admin
 from app.models.auth_session import AuthSession
 
 
-ACCESS_MINUTES = 15
+ACCESS_TOKEN_SECONDS = 7 * 24 * 60 * 60
 REFRESH_DAYS = 30
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
@@ -49,7 +49,7 @@ def new_refresh_token() -> tuple[str, str]:
 
 
 def make_access_token(admin: Admin, session_id: str) -> str:
-    """为指定用户和会话签发短期访问令牌。"""
+    """为指定用户和会话签发访问令牌。"""
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
@@ -58,7 +58,7 @@ def make_access_token(admin: Admin, session_id: str) -> str:
             "ver": admin.token_version,
             "type": "access",
             "iat": now,
-            "exp": now + timedelta(minutes=ACCESS_MINUTES),
+            "exp": now + timedelta(seconds=ACCESS_TOKEN_SECONDS),
             "jti": str(uuid4()),
         },
         get_config().SECRET_KEY,

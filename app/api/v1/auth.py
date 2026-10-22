@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
-from app.core.security import get_current_admin, make_access_token, new_refresh_token, unauthorized, utc_now
+from app.core.security import ACCESS_TOKEN_SECONDS, get_current_admin, make_access_token, new_refresh_token, unauthorized, utc_now
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.auth_session import AuthSession
@@ -49,7 +49,7 @@ async def login(body: LoginIn, request: Request, db: AsyncSession = Depends(get_
     session, refresh_token = await create_session(db, admin)
     audit(db, "auth.login", actor_id=admin.id, target_id=admin.id)
     await db.commit()
-    data = TokenOut(access_token=make_access_token(admin, session.id), refresh_token=refresh_token)
+    data = TokenOut(access_token=make_access_token(admin, session.id), refresh_token=refresh_token, expires_in=ACCESS_TOKEN_SECONDS)
     return api_response(data=data.model_dump())
 
 
@@ -82,7 +82,11 @@ async def refresh(body: RefreshIn, db: AsyncSession = Depends(get_db_session)):
         raise unauthorized()
     audit(db, "auth.refresh", actor_id=admin.id, target_id=admin.id)
     await db.commit()
-    data = TokenOut(access_token=make_access_token(admin, session_id), refresh_token=f"{session_id}.{new_secret}")
+    data = TokenOut(
+        access_token=make_access_token(admin, session_id),
+        refresh_token=f"{session_id}.{new_secret}",
+        expires_in=ACCESS_TOKEN_SECONDS,
+    )
     return api_response(data=data.model_dump())
 
 

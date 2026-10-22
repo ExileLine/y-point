@@ -24,6 +24,7 @@ dependencies = [
   "email-validator>=2.3.0",
   "deepagents==0.7.29",
   "pyjwt>=2.10,<3",
+  "cryptography>=50.0.2",
 ]
 
 [dependency-groups]

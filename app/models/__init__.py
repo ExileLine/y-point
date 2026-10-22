@@ -9,6 +9,8 @@ from app.models.aps_task import ApsTask
 from app.models.auth_session import AuthSession
 from app.models.auth_attempt import AuthAttempt
 from app.models.audit_event import AuditEvent
+from app.models.provider_connection import ProviderConnection
+from app.models.model_catalog import ModelCatalog
 
 __all__ = [
     "Admin",
@@ -16,4 +18,6 @@ __all__ = [
     "AuthSession",
     "AuthAttempt",
     "AuditEvent",
+    "ProviderConnection",
+    "ModelCatalog",
 ]
