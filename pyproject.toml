@@ -23,6 +23,7 @@ dependencies = [
   "uvicorn[standard]>=0.30.6",
   "email-validator>=2.3.0",
   "deepagents==0.7.29",
+  "pyjwt>=2.10,<3",
 ]
 
 [dependency-groups]

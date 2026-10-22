@@ -48,6 +48,7 @@ def normalize_env(env: Optional[str]) -> str:
 
 
 def resolve_env_files(env_name: str) -> List[Path]:
+    """按优先级装载环境配置，开发者本地配置最后覆盖。"""
     if env_name not in ENV_FILE_MAP:
         raise ValueError(f"Unsupported ENV: {env_name}")
 
@@ -70,6 +71,11 @@ def resolve_env_files(env_name: str) -> List[Path]:
     env_specific = BASE_DIR / ENV_FILE_MAP[env_name]
     if env_specific.exists():
         paths.append(env_specific)
+
+    if env_name == Environment.DEVELOPMENT.value:
+        local_env = BASE_DIR / ".env.development.local"
+        if local_env.exists():
+            paths.append(local_env)
 
     if paths:
         return paths

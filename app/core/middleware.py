@@ -17,6 +17,7 @@ SENSITIVE_FIELDS = {
     "password", "passwd", "pwd", "secret", "secretkey", "clientsecret",
     "token", "accesstoken", "refreshtoken", "apikey", "authorization",
     "cookie", "sessionid", "credential",
+    "currentpassword", "newpassword", "oldpassword", "passwordconfirmation",
 }
 
 

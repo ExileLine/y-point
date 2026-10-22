@@ -232,3 +232,4 @@ __marimo__/
 /y-point-dev-todo.md
 /y-point-server-todo.md
 /y-point-web-todo.md
+/.env.development.local

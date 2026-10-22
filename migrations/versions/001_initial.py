@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    """创建用户表和定时任务表。"""
     op.create_table(
         "yp_admin",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
@@ -41,6 +42,7 @@ def upgrade() -> None:
         sa.Column("update_timestamp", sa.BigInteger(), nullable=False, comment="更新时间戳"),
         sa.Column("is_deleted", sa.BigInteger(), comment="逻辑删除标识"),
         sa.Column("status", sa.BigInteger(), comment="状态(通用字段)"),
+        comment="用户表",
     )
     op.create_table(
         "yp_aps_tasks",
@@ -57,9 +59,11 @@ def upgrade() -> None:
         sa.Column("update_timestamp", sa.BigInteger(), nullable=False, comment="更新时间戳"),
         sa.Column("is_deleted", sa.BigInteger(), comment="逻辑删除标识"),
         sa.Column("status", sa.BigInteger(), comment="状态(通用字段)"),
+        comment="定时任务表",
     )
 
 
 def downgrade() -> None:
+    """删除首个迁移创建的业务表。"""
     op.drop_table("yp_aps_tasks")
     op.drop_table("yp_admin")

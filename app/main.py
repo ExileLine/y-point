@@ -20,6 +20,7 @@ project_config = get_config()
 
 
 def create_app():
+    """创建 FastAPI 应用并注册中间件、路由及静态资源。"""
     debug = project_config.DEBUG
     kw = {
         "debug": debug
@@ -51,7 +52,7 @@ def create_app():
         log_body=debug,
         exclude_paths=["/docs", "/openapi.json", "/redoc", "/static*"],
         sensitive_headers=project_config.SENSITIVE_HEADERS,
-        mask_sensitive_headers=project_config.MASK_SENSITIVE_HEADERS,
+        mask_sensitive_headers=True,
     )
 
     # 异常处理器注册

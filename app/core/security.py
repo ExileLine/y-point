@@ -1,80 +1,128 @@
 # -*- coding: utf-8 -*-
-# @Time    : 2026-10-20 14:55:26
+# @Time    : 2026-10-21 16:46:46
 # @Author  : yangyuexiong
 # @File    : security.py
 
-import json
+import hashlib
 import secrets
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
-from fastapi import Depends, Header
-from loguru import logger
-from sqlalchemy import select
+import jwt
+from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.db.redis_client as rp
+from app.core.config import get_config
 from app.core.custom_exception import CustomException
-from app.db.redis_client import get_value, set_key_value
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.auth_session import AuthSession
 
 
-class Token:
-    def __init__(self):
-        self.token = None
-        self.timeout = 3600 * 24 * 30
-
-    async def gen_token(self):
-        token = secrets.token_urlsafe(32)
-        self.token = token
-        return token
-
-    @staticmethod
-    async def get_user_info(token: str):
-        query_user_info = await get_value(token)
-        if not query_user_info:
-            return False
-        user_info = json.loads(query_user_info)
-        return user_info
-
-    async def single_login(self, key: str, user_info_json_str: str):
-        old_key_list = await rp.redis_pool.keys(pattern=f"{key}*")
-        old_token_list = [await get_value(old_key) for old_key in old_key_list]
-        if old_key_list or old_token_list:
-            logger.debug(f"single_login revoke tokens: keys={len(old_key_list)} tokens={len(old_token_list)}")
-        if old_key_list:
-            await rp.redis_pool.delete(*old_key_list)
-        valid_old_tokens = [token for token in old_token_list if token]
-        if valid_old_tokens:
-            await rp.redis_pool.delete(*valid_old_tokens)
-
-        await self.gen_token()
-        await set_key_value(f"{key}{self.token}", self.token, self.timeout)
-        await set_key_value(self.token, user_info_json_str, self.timeout)
-
-    async def many_login(self, key: str, user_info_json_str: str):
-        await self.gen_token()
-        await set_key_value(f"{key}{self.token}", self.token, self.timeout)
-        await set_key_value(self.token, user_info_json_str, self.timeout)
+ACCESS_MINUTES = 15
+REFRESH_DAYS = 30
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
 
-async def get_token_header(token: str = Header()):
-    query_user_info = await get_value(token)
-    if not query_user_info:
-        raise CustomException(detail="未授权", custom_code=401)
-    user_info = json.loads(query_user_info)
-    return user_info
+def utc_now() -> datetime:
+    """返回用于令牌和会话有效期比较的 UTC 时间。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def check_admin_existence(
-    user_info: dict = Depends(get_token_header),
+def validate_password(password: str) -> None:
+    """校验新密码的长度和字符组成。"""
+    if (
+        len(password) < 12
+        or len(password.encode()) > 72
+        or not any(c.isupper() for c in password)
+        or not any(c.islower() for c in password)
+        or not any(c.isdigit() for c in password)
+    ):
+        raise CustomException(status_code=400, custom_code=10005, detail="密码需为 12-72 位，且包含大小写字母和数字")
+
+
+def new_refresh_token() -> tuple[str, str]:
+    """生成刷新令牌原文及供数据库保存的摘要。"""
+    token = secrets.token_urlsafe(48)
+    return token, hashlib.sha256(token.encode()).hexdigest()
+
+
+def make_access_token(admin: Admin, session_id: str) -> str:
+    """为指定用户和会话签发短期访问令牌。"""
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(admin.id),
+            "sid": session_id,
+            "ver": admin.token_version,
+            "type": "access",
+            "iat": now,
+            "exp": now + timedelta(minutes=ACCESS_MINUTES),
+            "jti": str(uuid4()),
+        },
+        get_config().SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
+def unauthorized() -> CustomException:
+    """构造统一格式的未授权业务异常。"""
+    return CustomException(status_code=401, custom_code=401, detail="未授权或令牌已失效")
+
+
+async def get_current_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
-):
+) -> Admin:
+    """校验 Bearer 令牌、用户状态及数据库会话，并返回当前用户。"""
+    if credentials is None:
+        raise unauthorized()
     try:
-        admin_id = int(user_info.get("id"))
-    except (TypeError, ValueError):
-        raise CustomException(detail="无效的用户身份", custom_code=401)
-    stmt = select(Admin).where(Admin.id == admin_id)
-    admin = (await db.execute(stmt)).scalars().first()
-    if not admin:
-        raise CustomException(detail=f"后台用户 {admin_id} 不存在", custom_code=10002)
+        payload = jwt.decode(
+            credentials.credentials,
+            get_config().SECRET_KEY,
+            algorithms=["HS256"],
+            options={"require": ["sub", "sid", "ver", "type", "iat", "exp"]},
+        )
+        if payload["type"] != "access" or not isinstance(payload["ver"], int):
+            raise unauthorized()
+        admin_id = int(payload["sub"])
+        session_id = payload["sid"]
+        if not isinstance(session_id, str) or not session_id:
+            raise unauthorized()
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
+        raise unauthorized() from None
+
+    admin = await db.get(Admin, admin_id)
+    auth_session = await db.get(AuthSession, session_id)
+    if (
+        admin is None
+        or admin.status != 1
+        or admin.is_deleted != 0
+        or admin.token_version != payload["ver"]
+        or auth_session is None
+        or auth_session.admin_id != admin_id
+        or auth_session.revoked_at is not None
+        or auth_session.expires_at <= utc_now()
+    ):
+        raise unauthorized()
+    request.state.auth_session_id = session_id
     return admin
+
+
+async def require_admin(admin: Admin = Depends(get_current_admin)) -> Admin:
+    """检查当前用户是否具有管理员角色。"""
+    if admin.role != "admin":
+        raise CustomException(status_code=403, custom_code=403, detail="需要管理员权限")
+    return admin
+
+
+def authorize_owner(admin: Admin, owner_id: int) -> None:
+    """仅允许资源所有者或管理员访问指定资源。"""
+    if admin.role != "admin" and admin.id != owner_id:
+        raise CustomException(status_code=404, custom_code=10002, detail="资源不存在")
+
+
+check_admin_existence = get_current_admin

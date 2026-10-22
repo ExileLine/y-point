@@ -87,6 +87,11 @@ async def startup_event(app: FastAPI) -> None:
     _log_startup_info()
     logger.info(f">>> Config初始化: {project_config.ENV}")
 
+    if project_config.ENV_NAME in {"production", "staging"} and (
+        len(project_config.SECRET_KEY) < 32 or project_config.SECRET_KEY in {"change-me", "your-secret-key"}
+    ):
+        raise RuntimeError("生产和预发布环境必须配置至少 32 字符的 SECRET_KEY")
+
     try:
         app.state.project_config = project_config.model_dump()
         await _init_db()

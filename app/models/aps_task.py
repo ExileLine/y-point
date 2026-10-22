@@ -11,6 +11,7 @@ from app.models.base import CustomBaseModel
 
 class ApsTask(CustomBaseModel):
     __table_name__ = "aps_tasks"
+    __table_args__ = {"comment": "定时任务表"}
 
     task_id: Mapped[str] = mapped_column(String(64), nullable=False, comment="任务id")
     trigger_type: Mapped[str] = mapped_column(String(16), nullable=False, comment="触发器类型:date;interval;cron")
