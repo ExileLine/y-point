@@ -5,12 +5,17 @@
 
 import asyncio
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.api.v1.providers as providers_api
@@ -20,12 +25,16 @@ from app.core.custom_exception import CustomException
 from app.core.password import hash_password
 from app.db.session import get_db_session
 from app.main import app
-from app.models import Admin, ModelCatalog, ProviderConnection
+from app.models import Admin, ModelCallRecord, ModelCatalog, ProviderConnection
 from app.models.base import Base
 from app.schemas.provider import (
     ConnectionTestOut,
+    CapabilityTestIn,
+    CapabilityTestOut,
     DiscoveredModelOut,
     ModelCreateIn,
+    ModelCallOut,
+    ModelCallPageOut,
     ModelDiscoveryOut,
     ModelImportIn,
     ModelImportItem,
@@ -34,10 +43,12 @@ from app.schemas.provider import (
     ModelTestOut,
     ModelUpdateIn,
     ProviderCreateIn,
+    ProviderKindOut,
     ProviderOut,
     ProviderUpdateIn,
 )
 from app.services.provider_credentials import decrypt_credentials, encrypt_credentials
+from app.services.model_adapter import build_chat_model
 from app.services.model_probe import probe_model
 from app.services.provider_probe import normalize_base_url, probe_provider
 
@@ -45,9 +56,10 @@ from app.services.provider_probe import normalize_base_url, probe_provider
 PASSWORD = "StrongPassword123"
 
 
-async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def exercise_catalog(database: Path | str, monkeypatch: pytest.MonkeyPatch) -> None:
     """验证供应商和模型的管理员权限、密文存储及关联规则。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    database_url = database if isinstance(database, str) else f"sqlite+aiosqlite:///{database}"
+    engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -71,8 +83,21 @@ async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> N
             root_headers = {"Authorization": f"Bearer {root_login.json()['data']['access_token']}"}
             user_headers = {"Authorization": f"Bearer {user_login.json()['data']['access_token']}"}
             assert (await client.get("/api/v1/providers", headers=user_headers)).status_code == 403
+            assert (await client.get("/api/v1/providers/kinds", headers=user_headers)).status_code == 403
             assert (await client.get("/api/v1/models", headers=user_headers)).status_code == 403
             assert (await client.post("/api/v1/providers", headers=user_headers, json={})).status_code == 403
+            kinds = await client.get("/api/v1/providers/kinds", headers=root_headers)
+            assert kinds.status_code == 200
+            kind_data = {item["kind"]: item for item in kinds.json()["data"]}
+            assert set(kind_data) == {"openai_compatible", "openai", "anthropic", "ollama", "azure_openai", "gemini", "bedrock"}
+            assert "api_key" in kind_data["anthropic"]["required_fields"]
+            assert "api_version" in kind_data["anthropic"]["optional_fields"]
+            assert "api_version" not in kind_data["ollama"]["optional_fields"]
+            assert kind_data["ollama"]["suggested_base_url"] == "http://127.0.0.1:11434/v1"
+            assert "api_version" in kind_data["azure_openai"]["required_fields"]
+            assert "api_key" in kind_data["gemini"]["required_fields"]
+            assert "region" in kind_data["bedrock"]["required_fields"]
+            assert "api_key" not in kind_data["bedrock"]["optional_fields"]
 
             captured_logs: list[str] = []
 
@@ -96,6 +121,40 @@ async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> N
             assert created.json()["data"]["has_custom_headers"] is True
             assert created.json()["data"]["base_url"] == "http://models.example/v1"
             assert (await client.get(f"/api/v1/providers/{provider_id}", headers=user_headers)).status_code == 403
+            ollama = await client.post("/api/v1/providers", headers=root_headers, json={
+                "name": "Local Ollama", "kind": "ollama", "base_url": "http://127.0.0.1:11434/v1",
+            })
+            assert ollama.status_code == 201 and ollama.json()["data"]["has_api_key"] is False
+            assert (await client.delete(f"/api/v1/providers/{ollama.json()['data']['id']}", headers=root_headers)).status_code == 200
+
+            azure_body = {
+                "name": "Azure Test", "kind": "azure_openai", "base_url": "https://example.openai.azure.com",
+                "api_version": "2024-10-21", "api_key": "azure-secret",
+            }
+            assert (await client.post("/api/v1/providers", headers=root_headers, json={**azure_body, "api_key": None})).status_code == 400
+            azure = await client.post("/api/v1/providers", headers=root_headers, json=azure_body)
+            assert azure.status_code == 201 and azure.json()["data"]["has_api_key"] is True
+            assert "azure-secret" not in azure.text
+            assert (await client.delete(f"/api/v1/providers/{azure.json()['data']['id']}", headers=root_headers)).status_code == 200
+
+            gemini_body = {"name": "Gemini Test", "kind": "gemini", "api_key": "gemini-secret"}
+            gemini = await client.post("/api/v1/providers", headers=root_headers, json=gemini_body)
+            assert gemini.status_code == 201
+            assert gemini.json()["data"]["base_url"] == "https://generativelanguage.googleapis.com"
+            assert "gemini-secret" not in gemini.text
+            assert (await client.delete(f"/api/v1/providers/{gemini.json()['data']['id']}", headers=root_headers)).status_code == 200
+
+            bedrock_body = {"name": "Bedrock Test", "kind": "bedrock", "region": "us-east-1"}
+            bedrock = await client.post("/api/v1/providers", headers=root_headers, json=bedrock_body)
+            assert bedrock.status_code == 201
+            assert bedrock.json()["data"]["base_url"] == "https://bedrock-runtime.us-east-1.amazonaws.com"
+            assert bedrock.json()["data"]["has_api_key"] is False
+            assert (await client.delete(f"/api/v1/providers/{bedrock.json()['data']['id']}", headers=root_headers)).status_code == 200
+            invalid_bedrock = await client.post(
+                "/api/v1/providers", headers=root_headers,
+                json={**bedrock_body, "name": "Invalid Bedrock", "api_key": "not-used"},
+            )
+            assert invalid_bedrock.status_code == 400
 
             async def fake_probe(provider: ProviderConnection) -> ConnectionTestOut:
                 """模拟上游限流，验证管理接口保留诊断结果格式。"""
@@ -111,6 +170,19 @@ async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> N
             assert failed_discovery.status_code == 200
             assert failed_discovery.json()["data"]["failure"] == "rate_limit"
             assert failed_discovery.json()["data"]["models"] == []
+
+            async def fake_unavailable_list(provider: ProviderConnection) -> ConnectionTestOut:
+                """模拟供应商未提供模型列表接口。"""
+                return ConnectionTestOut(available=False, latency_ms=6, upstream_status_code=404, failure="model_list_unavailable")
+
+            monkeypatch.setattr(providers_api, "probe_provider", fake_unavailable_list)
+            unavailable_test = await client.post(f"/api/v1/providers/{provider_id}/test", headers=root_headers)
+            unavailable_models = await client.get(f"/api/v1/providers/{provider_id}/available-models", headers=root_headers)
+            assert unavailable_test.json()["data"]["failure"] == "model_list_unavailable"
+            assert unavailable_test.json()["data"]["upstream_status_code"] == 404
+            assert unavailable_models.json()["data"]["failure"] == "model_list_unavailable"
+            assert unavailable_models.json()["data"]["upstream_status_code"] == 404
+            assert unavailable_models.json()["data"]["models"] == []
 
             async def fake_success_probe(provider: ProviderConnection) -> ConnectionTestOut:
                 """模拟上游成功响应，验证接口返回模型 ID 列表。"""
@@ -211,7 +283,8 @@ async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> N
                 """模拟模型调用成功，验证测试接口的权限和返回结构。"""
                 assert model.id == model_id and provider.id == provider_id
                 return ModelTestOut(
-                    model_id=model.id, external_id=model.external_id, available=True, latency_ms=5, upstream_status_code=200
+                    model_id=model.id, external_id=model.external_id, available=True, latency_ms=5, upstream_status_code=200,
+                    input_tokens=10, output_tokens=5, estimated_cost=Decimal("0.000040"), price_currency="USD",
                 )
 
             monkeypatch.setattr(models_api, "probe_model", fake_model_probe)
@@ -219,17 +292,122 @@ async def exercise_catalog(database: Path, monkeypatch: pytest.MonkeyPatch) -> N
             assert model_test.status_code == 200
             assert model_test.json()["data"]["available"] is True
             assert model_test.json()["data"]["upstream_status_code"] == 200
+            assert model_test.json()["data"]["input_tokens"] == 10
+            assert model_test.json()["data"]["estimated_cost"] == "0.000040"
+            record_id = model_test.json()["data"]["record_id"]
+            async with sessions() as db:
+                record = await db.get(ModelCallRecord, record_id)
+                assert record.actor_id == 1 and record.model_id == model_id
+                assert record.estimated_cost == Decimal("0.000040000000")
+                assert record.failure is None
             assert "top-secret-credential" not in model_test.text
             assert (await client.get(f"/api/v1/models/{model_id}", headers=root_headers)).json()["data"]["capabilities_verified"] is False
 
+            async def fake_failed_model_probe(model: ModelCatalog, provider: ProviderConnection) -> ModelTestOut:
+                """模拟上游限流以验证失败调用同样持久化。"""
+                return ModelTestOut(
+                    model_id=model.id, external_id=model.external_id, available=False, latency_ms=7,
+                    upstream_status_code=429, failure="rate_limit",
+                )
+
+            monkeypatch.setattr(models_api, "probe_model", fake_failed_model_probe)
+            failed_test = await client.post(f"/api/v1/models/{model_id}/test", headers=root_headers)
+            assert failed_test.status_code == 200 and failed_test.json()["data"]["failure"] == "rate_limit"
+            calls_path = f"/api/v1/models/{model_id}/calls"
+            assert (await client.get(calls_path, headers=user_headers)).status_code == 403
+            calls = await client.get(calls_path, headers=root_headers, params={"page": 1, "size": 1})
+            assert calls.status_code == 200 and calls.json()["data"]["total"] == 2
+            assert len(calls.json()["data"]["records"]) == 1
+            assert calls.json()["data"]["records"][0]["failure"] == "rate_limit"
+            assert calls.json()["data"]["records"][0]["estimated_cost"] is None
+            assert "top-secret-credential" not in calls.text
+            older_calls = await client.get(calls_path, headers=root_headers, params={"page": 2, "size": 1})
+            assert older_calls.json()["data"]["records"][0]["estimated_cost"] == "0.000040000000"
+
+            failing_capabilities = {"tools"}
+
+            async def fake_capability_probe(model: ModelCatalog, provider: ProviderConnection, capability: str) -> ModelTestOut:
+                """模拟逐项能力探测，检查通过和失败时的状态变化。"""
+                unsupported = capability == "reasoning_summary" and provider.kind != "openai"
+                return ModelTestOut(
+                    model_id=model.id, external_id=model.external_id,
+                    available=capability not in failing_capabilities and not unsupported,
+                    latency_ms=9, input_tokens=12, output_tokens=4,
+                    failure="unsupported_capability" if unsupported else "invalid_response" if capability in failing_capabilities else None,
+                )
+
+            monkeypatch.setattr(models_api, "probe_capability", fake_capability_probe)
+            capability_path = f"/api/v1/models/{model_id}/capabilities/test"
+            assert (await client.post(capability_path, headers=user_headers, json={"capability": "text"})).status_code == 403
+            unsupported_summary = await client.post(capability_path, headers=root_headers, json={"capability": "reasoning_summary"})
+            assert unsupported_summary.status_code == 200
+            assert unsupported_summary.json()["data"]["result"]["failure"] == "unsupported_capability"
+            assert unsupported_summary.json()["data"]["verified_capabilities"] == []
+            text_probe = await client.post(capability_path, headers=root_headers, json={"capability": "text"})
+            assert text_probe.status_code == 200 and text_probe.json()["data"]["verified_capabilities"] == ["text"]
+            stream_probe = await client.post(capability_path, headers=root_headers, json={"capability": "streaming"})
+            assert stream_probe.status_code == 200
+            assert stream_probe.json()["data"]["verified_capabilities"] == ["streaming", "text"]
+            verified_model = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
+            assert verified_model.json()["data"]["capabilities_verified"] is True
+            tool_probe = await client.post(capability_path, headers=root_headers, json={"capability": "tools"})
+            assert tool_probe.json()["data"]["result"]["failure"] == "invalid_response"
+            assert tool_probe.json()["data"]["verified_capabilities"] == ["streaming", "text"]
+            failing_capabilities.add("text")
+            failed_retest = await client.post(capability_path, headers=root_headers, json={"capability": "text"})
+            assert failed_retest.json()["data"]["verified_capabilities"] == ["streaming"]
+            assert (await client.get(f"/api/v1/models/{model_id}", headers=root_headers)).json()["data"]["capabilities_verified"] is False
+            failing_capabilities.remove("text")
+            assert (await client.post(capability_path, headers=root_headers, json={"capability": "text"})).json()["data"][
+                "verified_capabilities"
+            ] == ["streaming", "text"]
+            structured_probe = await client.post(capability_path, headers=root_headers, json={"capability": "structured_output"})
+            assert structured_probe.status_code == 200
+            assert structured_probe.json()["data"]["verified_capabilities"] == ["streaming", "structured_output", "text"]
+            assert (await client.get(calls_path, headers=root_headers)).json()["data"]["total"] == 9
+            latest_call = await client.get(calls_path, headers=root_headers, params={"size": 1})
+            assert latest_call.json()["data"]["records"][0]["call_type"] == "structured_output_probe"
+            vision_probe = await client.post(capability_path, headers=root_headers, json={"capability": "vision"})
+            assert vision_probe.status_code == 200
+            assert vision_probe.json()["data"]["verified_capabilities"] == ["streaming", "structured_output", "text", "vision"]
+            assert (await client.get(calls_path, headers=root_headers, params={"size": 1})).json()["data"]["records"][0][
+                "call_type"
+            ] == "vision_probe"
+            assert (await client.get(calls_path, headers=root_headers)).json()["data"]["total"] == 10
+            changed_provider = await client.put(
+                f"/api/v1/providers/{provider_id}", headers=root_headers, json={"base_url": "https://new-models.example/v1"}
+            )
+            assert changed_provider.status_code == 200
+            invalidated = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
+            assert invalidated.json()["data"]["verified_capabilities"] == []
+            assert invalidated.json()["data"]["capabilities_verified"] is False
+
             default = await client.post(f"/api/v1/models/{model_id}/default", headers=root_headers)
             assert default.status_code == 200 and default.json()["data"]["is_default"] is True
+            async with sessions() as db:
+                other_model = await db.get(ModelCatalog, imported_ids[0])
+                other_model.default_slot = "global"
+                with pytest.raises(IntegrityError):
+                    await db.commit()
+                await db.rollback()
+            switched = await asyncio.gather(
+                client.post(f"/api/v1/models/{model_id}/default", headers=root_headers),
+                client.post(f"/api/v1/models/{imported_ids[0]}/default", headers=root_headers),
+            )
+            assert all(response.status_code in {200, 409} for response in switched)
+            async with sessions() as db:
+                defaults = (await db.scalars(select(ModelCatalog).where(ModelCatalog.is_default.is_(True)))).all()
+                assert len(defaults) == 1 and defaults[0].default_slot == "global"
             disabled = await client.put(f"/api/v1/providers/{provider_id}", headers=root_headers, json={"status": 0})
             assert disabled.status_code == 200
             model = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
             assert model.json()["data"]["is_default"] is False
+            async with sessions() as db:
+                assert (await db.scalars(select(ModelCatalog).where(ModelCatalog.default_slot == "global"))).all() == []
+            assert (await client.post(f"/api/v1/models/{model_id}/test", headers=root_headers)).status_code == 409
             assert (await client.post(f"/api/v1/models/{model_id}/default", headers=root_headers)).status_code == 409
             assert (await client.delete(f"/api/v1/models/{model_id}", headers=root_headers)).status_code == 200
+            assert (await client.get(calls_path, headers=root_headers)).json()["data"]["total"] == 10
             for imported_id in imported_ids:
                 assert (await client.delete(f"/api/v1/models/{imported_id}", headers=root_headers)).status_code == 200
             assert (await client.delete(f"/api/v1/providers/{provider_id}", headers=root_headers)).status_code == 200
@@ -256,9 +434,57 @@ async def exercise_probe() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(success)) as client:
         result = await probe_provider(provider, client)
         assert result.available is True and result.model_count == 2
+        assert result.upstream_status_code == 200
         assert result.models == ["model-1", "model-2"]
         assert result.model_names == {"model-2": "Second Model"}
         assert result.latency_ms >= 0
+
+    provider.kind = "ollama"
+    provider.encrypted_credentials = encrypt_credentials(None, {})
+
+    def ollama_models(request: httpx.Request) -> httpx.Response:
+        """按 Ollama 的 OpenAI 兼容模型列表格式验证无密钥发现。"""
+        assert str(request.url) == "https://models.example/v1/models"
+        assert request.headers.get("authorization") is None
+        return httpx.Response(200, json={
+            "object": "list", "data": [
+                {"id": "qwen3.8:latest", "object": "model", "created": 1788138025, "owned_by": "library"},
+                {"id": "deepseek-r1:1.5b", "object": "model", "created": 1779964005, "owned_by": "library"},
+            ],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(ollama_models)) as client:
+        result = await probe_provider(provider, client)
+        assert result.available is True and result.model_count == 2
+        assert result.models == ["qwen3.8:latest", "deepseek-r1:1.5b"]
+        assert result.model_names == {}
+
+    provider.kind = "openai"
+    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
+
+    provider_attempts = 0
+
+    def retry_provider(request: httpx.Request) -> httpx.Response:
+        """模拟模型列表接口首次网关故障、再次请求成功。"""
+        nonlocal provider_attempts
+        provider_attempts += 1
+        return httpx.Response(502) if provider_attempts == 1 else success(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(retry_provider)) as client:
+        assert (await probe_provider(provider, client)).available is True
+    assert provider_attempts == 2
+
+    auth_attempts = 0
+
+    def reject_provider(request: httpx.Request) -> httpx.Response:
+        """确认认证失败不会触发重试。"""
+        nonlocal auth_attempts
+        auth_attempts += 1
+        return httpx.Response(401)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reject_provider)) as client:
+        assert (await probe_provider(provider, client)).failure == "authentication"
+    assert auth_attempts == 1
 
     def invalid_models(request: httpx.Request) -> httpx.Response:
         """返回缺少有效模型 ID 的上游列表。"""
@@ -269,7 +495,11 @@ async def exercise_probe() -> None:
         assert result.available is False and result.failure == "invalid_response"
         assert result.models == []
 
-    for status, expected in [(401, "authentication"), (429, "rate_limit"), (503, "upstream"), (302, "invalid_response")]:
+    for status, expected in [
+        (401, "authentication"), (429, "rate_limit"), (404, "model_list_unavailable"),
+        (405, "model_list_unavailable"), (501, "model_list_unavailable"),
+        (503, "upstream"), (302, "invalid_response"),
+    ]:
         def failure(request: httpx.Request, status_code: int = status) -> httpx.Response:
             """返回指定上游状态供故障分类断言。"""
             return httpx.Response(status_code, text="probe-secret must stay private")
@@ -277,6 +507,7 @@ async def exercise_probe() -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(failure)) as client:
             result = await probe_provider(provider, client)
             assert result.available is False and result.failure == expected
+            assert result.upstream_status_code == status
             assert result.models == []
             assert "probe-secret" not in result.model_dump_json()
 
@@ -286,12 +517,24 @@ async def exercise_probe() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(timeout)) as client:
         result = await probe_provider(provider, client)
-        assert result.failure == "timeout"
+        assert result.failure == "timeout" and result.upstream_status_code is None
+
+    def network_error(request: httpx.Request) -> httpx.Response:
+        """模拟无法连接到供应商并检查敏感错误不会返回。"""
+        raise httpx.ConnectError("probe-secret must stay private", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(network_error)) as client:
+        result = await probe_provider(provider, client)
+        assert result.failure == "network" and result.models == [] and result.upstream_status_code is None
+        assert "probe-secret" not in result.model_dump_json()
 
 
 async def exercise_model_probe() -> None:
     """验证模型测试的供应商请求格式、故障分类与凭据脱敏。"""
-    model = ModelCatalog(id=7, provider_id=1, external_id="chat-1", display_name="Chat 1")
+    model = ModelCatalog(
+        id=7, provider_id=1, external_id="chat-1", display_name="Chat 1",
+        input_price=Decimal("2.000000"), output_price=Decimal("4.000000"), price_currency="USD",
+    )
     provider = ProviderConnection(
         id=1, name="mock", name_key="mock", kind="openai_compatible", base_url="https://models.example/v1",
         timeout_seconds=5, encrypted_credentials=encrypt_credentials("probe-secret", {"X-Tenant": "private-value"}),
@@ -304,13 +547,30 @@ async def exercise_model_probe() -> None:
         assert request.headers["x-tenant"] == "private-value"
         assert json.loads(request.content)["model"] == "chat-1"
         assert json.loads(request.content)["max_tokens"] == 1
-        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "pong"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(compatible_success)) as client:
         result = await probe_model(model, provider, client)
         assert result.available is True and result.failure is None
         assert result.upstream_status_code == 200 and result.latency_ms >= 0
+        assert result.input_tokens == 10 and result.output_tokens == 5
+        assert result.estimated_cost == Decimal("0.000040") and result.price_currency == "USD"
+        assert result.model_dump(mode="json")["estimated_cost"] == "0.000040"
         assert "pong" not in result.model_dump_json()
+
+    model_attempts = 0
+
+    def retry_model(request: httpx.Request) -> httpx.Response:
+        """模拟聊天接口首次网关故障、再次请求成功。"""
+        nonlocal model_attempts
+        model_attempts += 1
+        return httpx.Response(502) if model_attempts == 1 else compatible_success(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(retry_model)) as client:
+        assert (await probe_model(model, provider, client)).available is True
+    assert model_attempts == 2
 
     provider.kind = "openai"
 
@@ -320,9 +580,33 @@ async def exercise_model_probe() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(openai_success)) as client:
+        result = await probe_model(model, provider, client)
+        assert result.available is True
+        assert result.input_tokens is None and result.output_tokens is None
+        assert result.estimated_cost is None and result.price_currency is None
+
+    provider.kind = "openai_compatible"
+    model.output_price = None
+    async with httpx.AsyncClient(transport=httpx.MockTransport(compatible_success)) as client:
+        result = await probe_model(model, provider, client)
+        assert result.input_tokens == 10 and result.output_tokens == 5
+        assert result.estimated_cost is None and result.price_currency is None
+    model.output_price = Decimal("4.000000")
+
+    provider.kind = "ollama"
+    provider.encrypted_credentials = encrypt_credentials(None, {})
+
+    def ollama_success(request: httpx.Request) -> httpx.Response:
+        """检查 Ollama 的 OpenAI 兼容请求无需 API 密钥。"""
+        assert request.headers.get("authorization") is None
+        assert str(request.url) == "https://models.example/v1/chat/completions"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(ollama_success)) as client:
         assert (await probe_model(model, provider, client)).available is True
 
     provider.kind = "anthropic"
+    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
 
     def anthropic_success(request: httpx.Request) -> httpx.Response:
         """检查 Anthropic Messages 请求的路径和认证头。"""
@@ -330,10 +614,13 @@ async def exercise_model_probe() -> None:
         assert request.headers["x-api-key"] == "probe-secret"
         assert request.headers["anthropic-version"] == "2023-06-01"
         assert json.loads(request.content)["max_tokens"] == 1
-        return httpx.Response(200, json={"content": [{"type": "text", "text": "pong"}]})
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "pong"}], "usage": {"input_tokens": 10, "output_tokens": 5},
+        })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(anthropic_success)) as client:
-        assert (await probe_model(model, provider, client)).available is True
+        result = await probe_model(model, provider, client)
+        assert result.available is True and result.estimated_cost == Decimal("0.000040")
 
     provider.kind = "openai_compatible"
     for status, expected in [
@@ -393,6 +680,50 @@ def test_model_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     asyncio.run(exercise_model_probe())
 
 
+def test_model_adapter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """检查运行时模型适配的凭据、地址及停用校验。"""
+    monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    provider = ProviderConnection(
+        id=1, name="mock", name_key="mock", kind="openai_compatible", base_url="https://models.example/v1",
+        timeout_seconds=8, status=1, is_deleted=0,
+        encrypted_credentials=encrypt_credentials("probe-secret", {"X-Tenant": "private-value"}),
+    )
+    model = ModelCatalog(id=2, provider_id=1, external_id="chat-1", display_name="Chat 1", status=1, is_deleted=0)
+    adapted = build_chat_model(model, provider)
+    assert isinstance(adapted, ChatOpenAI)
+    assert adapted.model_name == "chat-1" and str(adapted.openai_api_base).rstrip("/") == "https://models.example/v1"
+    assert adapted.stream_usage is True and adapted.max_retries == 0
+    assert adapted.default_headers["X-Tenant"] == "private-value"
+
+    provider.kind = "ollama"
+    provider.base_url = "http://127.0.0.1:11434/v1"
+    provider.encrypted_credentials = encrypt_credentials(None, {})
+    adapted = build_chat_model(model, provider)
+    assert isinstance(adapted, ChatOpenAI)
+    assert str(adapted.openai_api_base).rstrip("/") == "http://127.0.0.1:11434/v1"
+    assert adapted.max_retries == 0
+
+    provider.kind = "anthropic"
+    provider.base_url = "https://models.example/v1"
+    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
+    provider.api_version = "2024-01-01"
+    adapted = build_chat_model(model, provider)
+    assert isinstance(adapted, ChatAnthropic)
+    assert adapted.anthropic_api_url.rstrip("/") == "https://models.example"
+    assert adapted.model == "chat-1" and adapted.max_retries == 0
+    assert adapted.default_headers["anthropic-version"] == "2024-01-01"
+
+    provider.status = 0
+    with pytest.raises(CustomException) as disabled:
+        build_chat_model(model, provider)
+    assert disabled.value.status_code == 409
+
+    provider.status = 1
+    model.provider_id = 3
+    with pytest.raises(CustomException):
+        build_chat_model(model, provider)
+
+
 def test_provider_url_validation() -> None:
     """接受 HTTP 与 HTTPS，并拒绝其他协议及携带凭据的地址。"""
     assert normalize_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
@@ -429,8 +760,9 @@ def test_m2_route_contract() -> None:
 def test_catalog_schema_documentation() -> None:
     """确认目录字段的中文说明和示例出现在模型及接口文档中。"""
     models = (
-        ProviderCreateIn, ProviderUpdateIn, ProviderOut, ModelCreateIn, ModelUpdateIn, ModelOut,
-        ModelImportItem, ModelImportIn, ModelImportOut, DiscoveredModelOut, ModelDiscoveryOut, ConnectionTestOut, ModelTestOut,
+        ProviderCreateIn, ProviderUpdateIn, ProviderOut, ProviderKindOut, ModelCreateIn, ModelUpdateIn, ModelOut,
+        ModelImportItem, ModelImportIn, ModelImportOut, DiscoveredModelOut, ModelDiscoveryOut,
+        ConnectionTestOut, ModelTestOut, ModelCallOut, ModelCallPageOut, CapabilityTestIn, CapabilityTestOut,
     )
     for model in models:
         properties = model.model_json_schema()["properties"]

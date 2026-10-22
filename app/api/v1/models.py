@@ -4,7 +4,7 @@
 # @File    : models.py
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
@@ -13,8 +13,13 @@ from app.core.security import require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.model_catalog import ModelCatalog
-from app.schemas.provider import ModelCreateIn, ModelImportIn, ModelImportOut, ModelOut, ModelUpdateIn
+from app.models.model_call_record import ModelCallRecord
+from app.schemas.provider import (
+    CapabilityTestIn, CapabilityTestOut, ModelCallOut, ModelCallPageOut, ModelCreateIn,
+    ModelImportIn, ModelImportOut, ModelOut, ModelUpdateIn,
+)
 from app.services.catalog import commit_catalog, flush_catalog, get_model_or_404, get_provider_or_404
+from app.services.capability_probe import probe_capability
 from app.services.identity import audit
 from app.services.model_probe import probe_model
 
@@ -64,6 +69,7 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
             db.add(model)
         model.display_name = item.display_name or item.external_id[:128]
         model.capabilities = list(dict.fromkeys(item.capabilities))
+        model.verified_capabilities = []
         model.capabilities_verified = False
         model.context_window = item.context_window
         model.input_price = item.input_price
@@ -71,6 +77,7 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
         model.price_currency = item.price_currency
         model.status = item.status
         model.is_default = False
+        model.default_slot = None
         model.is_deleted = 0
         created.append(model)
     if created:
@@ -109,10 +116,84 @@ async def test_model(model_id: int, actor: Admin = Depends(require_admin), db: A
     """发送一次最小文本生成请求并返回不含上游响应正文的诊断结果。"""
     model = await get_model_or_404(db, model_id)
     provider = await get_provider_or_404(db, model.provider_id)
+    if model.status != 1 or provider.status != 1:
+        raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能测试")
     result = await probe_model(model, provider)
+    record = ModelCallRecord(
+        actor_id=actor.id, provider_id=provider.id, model_id=model.id, external_id=model.external_id,
+        call_type="text_probe", available=result.available, latency_ms=result.latency_ms,
+        upstream_status_code=result.upstream_status_code, failure=result.failure,
+        input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost, price_currency=result.price_currency,
+    )
+    db.add(record)
+    await db.flush()
+    result.record_id = record.id
     audit(db, "model.tested", actor_id=actor.id, target_id=model.id)
     await db.commit()
-    return api_response(data=result.model_dump())
+    return api_response(data=result.model_dump(mode="json"))
+
+
+@router.post("/{model_id}/capabilities/test", summary="验证模型的指定能力")
+async def test_model_capability(
+    model_id: int, body: CapabilityTestIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session),
+):
+    """执行一次指定能力的实际调用，记录安全结果并维护逐项验证状态。"""
+    model = await get_model_or_404(db, model_id)
+    provider = await get_provider_or_404(db, model.provider_id)
+    if model.status != 1 or provider.status != 1:
+        raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能测试")
+    external_id = model.external_id
+    provider_config = (provider.base_url, provider.encrypted_credentials, provider.api_version)
+    result = await probe_capability(model, provider, body.capability)
+    record = ModelCallRecord(
+        actor_id=actor.id, provider_id=provider.id, model_id=model.id, external_id=external_id,
+        call_type=f"{body.capability}_probe", available=result.available, latency_ms=result.latency_ms,
+        upstream_status_code=result.upstream_status_code, failure=result.failure,
+        input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost, price_currency=result.price_currency,
+    )
+    db.add(record)
+    await db.flush()
+    result.record_id = record.id
+    await db.refresh(model)
+    await db.refresh(provider)
+    if (
+        model.status == 1 and provider.status == 1 and model.is_deleted == 0 and provider.is_deleted == 0
+        and model.external_id == external_id
+        and (provider.base_url, provider.encrypted_credentials, provider.api_version) == provider_config
+    ):
+        verified = set(model.verified_capabilities or [])
+        if result.available:
+            verified.add(body.capability)
+            model.capabilities = list(dict.fromkeys([*(model.capabilities or []), body.capability]))
+        else:
+            verified.discard(body.capability)
+        model.verified_capabilities = sorted(verified)
+        model.capabilities_verified = bool(model.capabilities) and set(model.capabilities).issubset(verified)
+    audit(db, "model.capability_tested", actor_id=actor.id, target_id=model.id)
+    await db.commit()
+    response = CapabilityTestOut(capability=body.capability, result=result, verified_capabilities=model.verified_capabilities or [])
+    return api_response(data=response.model_dump(mode="json"))
+
+
+@router.get("/{model_id}/calls", summary="查询模型调用记录")
+async def list_model_calls(
+    model_id: int, page: int = Query(default=1, ge=1, description="页码"),
+    size: int = Query(default=20, ge=1, le=200, description="每页数量"),
+    actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session),
+):
+    """按时间倒序查询指定模型的脱敏调用记录，保留已删除模型的历史。"""
+    model = await db.get(ModelCatalog, model_id)
+    if model is None:
+        raise CustomException(status_code=404, custom_code=10002, detail="模型不存在")
+    condition = ModelCallRecord.model_id == model_id
+    total = await db.scalar(select(func.count()).select_from(ModelCallRecord).where(condition))
+    records = (await db.scalars(
+        select(ModelCallRecord).where(condition).order_by(ModelCallRecord.id.desc()).offset((page - 1) * size).limit(size)
+    )).all()
+    result = ModelCallPageOut(records=[ModelCallOut.model_validate(record) for record in records], page=page, size=size, total=total or 0)
+    return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
 
 @router.put("/{model_id}", summary="修改可选模型")
@@ -132,9 +213,14 @@ async def update_model(
         if body.capabilities is None:
             raise CustomException(status_code=400, custom_code=10005, detail="模型能力不能为空")
         model.capabilities = list(dict.fromkeys(body.capabilities))
+        model.verified_capabilities = []
+        model.capabilities_verified = False
+    if "external_id" in fields:
+        model.verified_capabilities = []
         model.capabilities_verified = False
     if model.status == 0:
         model.is_default = False
+        model.default_slot = None
     audit(db, "model.updated", actor_id=actor.id, target_id=model.id)
     await commit_catalog(db)
     await db.refresh(model)
@@ -148,6 +234,7 @@ async def delete_model(model_id: int, actor: Admin = Depends(require_admin), db:
     model.is_deleted = 1
     model.status = 0
     model.is_default = False
+    model.default_slot = None
     audit(db, "model.deleted", actor_id=actor.id, target_id=model.id)
     await db.commit()
     return api_response(message="删除成功")
@@ -160,9 +247,10 @@ async def set_default_model(model_id: int, actor: Admin = Depends(require_admin)
     provider = await get_provider_or_404(db, model.provider_id)
     if model.status != 1 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能设为默认")
-    await db.execute(update(ModelCatalog).where(ModelCatalog.is_default.is_(True)).values(is_default=False))
+    await db.execute(update(ModelCatalog).where(ModelCatalog.is_default.is_(True)).values(is_default=False, default_slot=None))
     model.is_default = True
+    model.default_slot = "global"
     audit(db, "model.default_changed", actor_id=actor.id, target_id=model.id)
-    await db.commit()
+    await commit_catalog(db)
     await db.refresh(model)
     return api_response(data=ModelOut.model_validate(model).model_dump(mode="json"), datetime_format=False)

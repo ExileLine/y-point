@@ -11,6 +11,7 @@ from app.models.auth_attempt import AuthAttempt
 from app.models.audit_event import AuditEvent
 from app.models.provider_connection import ProviderConnection
 from app.models.model_catalog import ModelCatalog
+from app.models.model_call_record import ModelCallRecord
 
 __all__ = [
     "Admin",
@@ -20,4 +21,5 @@ __all__ = [
     "AuditEvent",
     "ProviderConnection",
     "ModelCatalog",
+    "ModelCallRecord",
 ]
