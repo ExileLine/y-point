@@ -96,6 +96,12 @@ def echo_approved(text: str) -> str:
     return text
 
 
+@tool
+def failing_tool(secret: str) -> str:
+    """模拟包含私有参数和异常内容的工具失败。"""
+    raise RuntimeError("private-tool-error")
+
+
 async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> None:
     """验证用户输入、检查点与最终回答形成可读取的持久化结果。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -138,6 +144,348 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
         await engine.dispose()
 
 
+async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path) -> None:
+    """验证工具循环中的第二次模型调用被预算阻止且次数持久化。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def resolve_tools(db, run):
+        """为测试运行提供无需审批的受控工具。"""
+        return [echo_approved], {}
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            db.add(Admin(id=1, username="budget-user", password="not-used", role="user", status=1, is_deleted=0))
+            limited = await create_run(db, 1, input_text="调用工具后总结", max_model_calls=1)
+        model = ScriptedModel(responses=[
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "budget-call"}]),
+            AIMessage(content="should not be returned"),
+        ])
+        result = await execute_text_run(
+            sessions, limited.id, model, checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert result.state == "failed" and result.failure_code == "model_call_budget_exceeded"
+        assert result.model_call_count == 1 and result.max_model_calls == 1
+        async with sessions() as db:
+            messages = await get_owned_messages(db, limited.id, 1)
+            assert [message.role for message in messages] == ["user"]
+            events = await replay_events(db, limited.id, 1)
+            assert events[-1].failure_code == "model_call_budget_exceeded"
+
+        async with sessions.begin() as db:
+            allowed = await create_run(db, 1, input_text="调用工具后总结", max_model_calls=2)
+        completed = await execute_text_run(
+            sessions, allowed.id, ScriptedModel(responses=[
+                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "allowed-call"}]),
+                AIMessage(content="done"),
+            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert completed.state == "completed" and completed.model_call_count == 2
+    finally:
+        await engine.dispose()
+
+
+async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> None:
+    """验证上游用量累计、超限、缺失用量和工具循环停止规则。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+    async def resolve_tools(db, run):
+        """向预算测试运行提供受授权工具。"""
+        return [echo_approved], {}
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            db.add(Admin(id=1, username="token-user", password="not-used", role="user", status=1, is_deleted=0))
+            allowed = await create_run(db, 1, input_text="预算内回答", max_total_tokens=15)
+        completed = await execute_text_run(
+            sessions, allowed.id, ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert completed.state == "completed" and completed.reported_total_tokens == 15
+        assert completed.max_total_tokens == 15 and completed.model_call_count == 1
+        async with sessions() as db:
+            assert "".join(
+                event.content for event in await replay_events(db, allowed.id, 1) if event.event_type == "text_delta"
+            ) == "done"
+
+        async with sessions.begin() as db:
+            exceeded = await create_run(db, 1, input_text="超过预算", max_total_tokens=14)
+        rejected = await execute_text_run(
+            sessions, exceeded.id, ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert rejected.state == "failed" and rejected.failure_code == "token_budget_exceeded"
+        assert rejected.reported_total_tokens == 15 and rejected.model_call_count == 1
+        async with sessions() as db:
+            assert [message.role for message in await get_owned_messages(db, exceeded.id, 1)] == ["user"]
+            events = await replay_events(db, exceeded.id, 1)
+            assert events[-1].failure_code == "token_budget_exceeded"
+            assert not any(event.event_type == "text_delta" for event in events)
+
+        async with sessions.begin() as db:
+            unknown = await create_run(db, 1, input_text="缺少用量", max_total_tokens=100)
+        unavailable = await execute_text_run(
+            sessions, unknown.id, ScriptedModel(responses=[AIMessage(content="answer without usage")]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert unavailable.state == "failed" and unavailable.failure_code == "token_usage_unavailable"
+        assert unavailable.reported_total_tokens == 0 and unavailable.model_call_count == 1
+        async with sessions() as db:
+            assert not any(event.event_type == "text_delta" for event in await replay_events(db, unknown.id, 1))
+
+        async with sessions.begin() as db:
+            looping = await create_run(db, 1, input_text="工具后继续", max_total_tokens=15)
+        stopped = await execute_text_run(
+            sessions, looping.id, ScriptedModel(responses=[
+                AIMessage(
+                    content="", usage_metadata=usage,
+                    tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "token-tool"}],
+                ),
+                AIMessage(content="must not be returned", usage_metadata=usage),
+            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert stopped.state == "failed" and stopped.failure_code == "token_budget_exceeded"
+        assert stopped.reported_total_tokens == 15 and stopped.model_call_count == 1
+        assert stopped.tool_call_count == 1
+    finally:
+        await engine.dispose()
+
+
+async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> None:
+    """验证价格快照、超限、用量缺失与达到成本上限后的停止规则。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    pricing = (Decimal("2"), Decimal("4"), "USD")
+    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+    async def resolve_tools(db, run):
+        """提供无需审批的受控工具，验证后续模型调用被拦截。"""
+        return [echo_approved], {}
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            db.add(Admin(id=1, username="cost-user", password="not-used", role="user", status=1, is_deleted=0))
+            db.add(ProviderConnection(
+                id=7, name="cost-provider", name_key="cost-provider", kind="ollama",
+                base_url="http://127.0.0.1:11434/v1", creator_id=1, timeout_seconds=30, status=1, is_deleted=0,
+            ))
+            db.add(ModelCatalog(
+                id=7, provider_id=7, external_id="cost-model", display_name="Cost Model", creator_id=1,
+                capabilities=["text"], verified_capabilities=[], input_price=pricing[0], output_price=pricing[1],
+                price_currency="USD", status=1, is_deleted=0,
+            ))
+            allowed = await create_run(
+                db, 1, model_id=7, input_text="预算内回答", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing,
+            )
+        async with sessions.begin() as db:
+            model = await db.get(ModelCatalog, 7)
+            model.input_price = Decimal("20")
+            model.output_price = Decimal("40")
+        completed = await execute_text_run(
+            sessions, allowed.id, ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert completed.state == "completed" and completed.estimated_cost == Decimal("0.000040000000")
+        assert completed.cost_input_price == pricing[0] and completed.cost_output_price == pricing[1]
+        assert completed.cost_currency == "USD"
+        async with sessions() as db:
+            events = await replay_events(db, allowed.id, 1)
+            assert "".join(event.content for event in events if event.event_type == "text_delta") == "done"
+            record = await db.scalar(select(ModelCallRecord).where(ModelCallRecord.run_id == allowed.id))
+            assert record.estimated_cost == Decimal("0.000040000000")
+
+        async with sessions.begin() as db:
+            exceeded = await create_run(
+                db, 1, model_id=7, input_text="超过预算", max_estimated_cost=Decimal("0.000039"), cost_pricing=pricing,
+            )
+        rejected = await execute_text_run(
+            sessions, exceeded.id, ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert rejected.state == "failed" and rejected.failure_code == "cost_budget_exceeded"
+        assert rejected.estimated_cost == Decimal("0.000040000000") and rejected.model_call_count == 1
+        async with sessions() as db:
+            assert [message.role for message in await get_owned_messages(db, exceeded.id, 1)] == ["user"]
+            assert not any(event.event_type == "text_delta" for event in await replay_events(db, exceeded.id, 1))
+
+        async with sessions.begin() as db:
+            unknown = await create_run(
+                db, 1, model_id=7, input_text="缺少用量", max_estimated_cost=Decimal("0.000100"), cost_pricing=pricing,
+            )
+        unavailable = await execute_text_run(
+            sessions, unknown.id, ScriptedModel(responses=[AIMessage(content="answer without usage")]),
+            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert unavailable.state == "failed" and unavailable.failure_code == "cost_usage_unavailable"
+        assert unavailable.estimated_cost == 0 and unavailable.model_call_count == 1
+        async with sessions() as db:
+            assert not any(event.event_type == "text_delta" for event in await replay_events(db, unknown.id, 1))
+
+        async with sessions.begin() as db:
+            looping = await create_run(
+                db, 1, model_id=7, input_text="工具后继续", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing,
+            )
+        stopped = await execute_text_run(
+            sessions, looping.id, ScriptedModel(responses=[
+                AIMessage(
+                    content="", usage_metadata=usage,
+                    tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "cost-tool"}],
+                ),
+                AIMessage(content="must not be returned", usage_metadata=usage),
+            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert stopped.state == "failed" and stopped.failure_code == "cost_budget_exceeded"
+        assert stopped.estimated_cost == Decimal("0.000040000000")
+        assert stopped.model_call_count == 1 and stopped.tool_call_count == 1
+    finally:
+        await engine.dispose()
+
+
+async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) -> None:
+    """验证超出工具次数预算的调用不执行，并保留已开始次数。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def resolve_tools(db, run):
+        """提供受授权的无审批测试工具。"""
+        return [echo_approved], {}
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            db.add(Admin(id=1, username="tool-budget-user", password="not-used", role="user", status=1, is_deleted=0))
+            limited = await create_run(db, 1, input_text="调用两次工具", max_tool_calls=1)
+        responses = [
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "first"}, "id": "tool-first"}]),
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "second"}, "id": "tool-second"}]),
+            AIMessage(content="should not be returned"),
+        ]
+        rejected = await execute_text_run(
+            sessions, limited.id, ScriptedModel(responses=responses), checkpoint_path,
+            resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert rejected.state == "failed" and rejected.failure_code == "tool_call_budget_exceeded"
+        assert rejected.tool_call_count == 1 and rejected.max_tool_calls == 1
+        async with sessions() as db:
+            assert [message.role for message in await get_owned_messages(db, limited.id, 1)] == ["user"]
+            events = await replay_events(db, limited.id, 1)
+            assert events[-1].failure_code == "tool_call_budget_exceeded"
+            tool_events = [event for event in events if event.tool_call_id]
+            assert [event.event_type for event in tool_events] == ["tool_started", "tool_completed"]
+            assert tool_events[0].tool_call_id == tool_events[1].tool_call_id
+            assert tool_events[0].tool_call_id != "tool-first"
+            assert all(event.tool_name == "echo_approved" and event.content is None for event in tool_events)
+            assert "first" not in str([event.to_dict() for event in tool_events])
+            assert "second" not in str([event.to_dict() for event in tool_events])
+
+        async with sessions.begin() as db:
+            allowed = await create_run(db, 1, input_text="调用两次工具", max_tool_calls=2)
+        completed = await execute_text_run(
+            sessions, allowed.id, ScriptedModel(responses=[*responses[:2], AIMessage(content="done")]), checkpoint_path,
+            resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert completed.state == "completed" and completed.tool_call_count == 2
+        async with sessions() as db:
+            events = await replay_events(db, allowed.id, 1)
+            tool_events = [event for event in events if event.tool_call_id]
+            assert [event.event_type for event in tool_events] == [
+                "tool_started", "tool_completed", "tool_started", "tool_completed",
+            ]
+            assert tool_events[0].tool_call_id == tool_events[1].tool_call_id
+            assert tool_events[2].tool_call_id == tool_events[3].tool_call_id
+            assert tool_events[0].tool_call_id != tool_events[2].tool_call_id
+
+        async with sessions.begin() as db:
+            broken = await create_run(db, 1, input_text="调用失败工具")
+
+        async def resolve_failing_tool(db, run):
+            """仅为失败事件测试注册受控工具。"""
+            return [failing_tool], {}
+
+        await execute_text_run(
+            sessions, broken.id, ScriptedModel(responses=[
+                AIMessage(content="", tool_calls=[{"name": "failing_tool", "args": {"secret": "private-input"}, "id": "failure"}]),
+                AIMessage(content="done"),
+            ]), checkpoint_path, resolve_tools=resolve_failing_tool, lease_seconds=2, poll_seconds=0.1,
+        )
+        async with sessions() as db:
+            events = await replay_events(db, broken.id, 1)
+            assert [event.event_type for event in events if event.tool_call_id] == ["tool_started", "tool_failed"]
+            assert "private-input" not in str([event.to_dict() for event in events])
+            assert "private-tool-error" not in str([event.to_dict() for event in events])
+    finally:
+        await engine.dispose()
+
+
+async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> None:
+    """验证单次工具超时取消执行，并留下脱敏失败事件与明确终态。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    cancelled = asyncio.Event()
+
+    @tool
+    async def slow_tool(secret: str) -> str:
+        """等待超时取消，不向事件公开私有参数。"""
+        try:
+            await asyncio.sleep(5)
+        finally:
+            cancelled.set()
+        return secret
+
+    async def resolve_slow_tool(db, run):
+        """向测试运行提供受授权的慢工具。"""
+        return [slow_tool], {}
+
+    async def resolve_quick_tool(db, run):
+        """向测试运行提供可在时限内完成的工具。"""
+        return [echo_approved], {}
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            db.add(Admin(id=1, username="tool-timeout-user", password="not-used", role="user", status=1, is_deleted=0))
+            limited = await create_run(db, 1, input_text="调用慢工具", tool_timeout_seconds=1)
+        timed_out = await execute_text_run(
+            sessions, limited.id, ScriptedModel(responses=[
+                AIMessage(content="", tool_calls=[{"name": "slow_tool", "args": {"secret": "private-input"}, "id": "slow-call"}]),
+                AIMessage(content="should not be returned"),
+            ]), checkpoint_path, resolve_tools=resolve_slow_tool, timeout_seconds=10, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert timed_out.state == "timed_out" and timed_out.failure_code == "tool_execution_timeout"
+        assert timed_out.tool_timeout_seconds == 1 and timed_out.tool_call_count == 1
+        assert cancelled.is_set()
+        async with sessions() as db:
+            assert [message.role for message in await get_owned_messages(db, limited.id, 1)] == ["user"]
+            events = await replay_events(db, limited.id, 1)
+            tool_events = [event for event in events if event.tool_call_id]
+            assert [event.event_type for event in tool_events] == ["tool_started", "tool_failed"]
+            assert tool_events[0].tool_call_id == tool_events[1].tool_call_id
+            assert events[-1].state == "timed_out" and events[-1].failure_code == "tool_execution_timeout"
+            assert "private-input" not in str([event.to_dict() for event in events])
+
+        async with sessions.begin() as db:
+            quick = await create_run(db, 1, input_text="调用快工具", tool_timeout_seconds=1)
+        completed = await execute_text_run(
+            sessions, quick.id, ScriptedModel(responses=[
+                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "quick-call"}]),
+                AIMessage(content="done"),
+            ]), checkpoint_path, resolve_tools=resolve_quick_tool, timeout_seconds=10, lease_seconds=2, poll_seconds=0.1,
+        )
+        assert completed.state == "completed" and completed.tool_call_count == 1
+    finally:
+        await engine.dispose()
+
+
 async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -> None:
     """验证审批后重新解析工具并从持久化检查点完成同一个 Run。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -165,13 +513,16 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="approval-user", password="not-used", role="user", status=1, is_deleted=0))
-            run = await create_run(db, 1, input_text="请先调用工具")
+            run = await create_run(db, 1, input_text="请先调用工具", max_model_calls=2, max_tool_calls=1)
         paused = await dispatch_next_run(
             sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
             lease_seconds=2, poll_seconds=0.1,
         )
         assert paused.id == run.id and paused.state == "waiting_for_approval" and paused.checkpoint_id
+        assert paused.model_call_count == 1
+        assert paused.tool_call_count == 0
         async with sessions.begin() as db:
+            assert all(event.tool_call_id is None for event in await replay_events(db, run.id, 1))
             approval = await get_owned_approval(db, run.id, 1)
             assert approval.state == "pending" and approval.actions[0]["name"] == "echo_approved"
             assert "approved result" not in str(approval.actions)
@@ -182,12 +533,15 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             lease_seconds=2, poll_seconds=0.1,
         )
         assert completed.id == run.id and completed.state == "completed"
+        assert completed.model_call_count == 2
+        assert completed.tool_call_count == 1
         async with sessions() as db:
             messages = await get_owned_messages(db, run.id, 1)
             assert [(message.role, message.content) for message in messages] == [
                 ("user", "请先调用工具"), ("assistant", "tool completed"),
             ]
             events = await replay_events(db, run.id, 1)
+            assert [event.event_type for event in events if event.tool_call_id] == ["tool_started", "tool_completed"]
             assert [event.state for event in events if event.event_type == "state"] == [
                 "queued", "running", "waiting_for_approval", "running", "completed",
             ]
@@ -693,6 +1047,31 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
 def test_completed_run(tmp_path: Path) -> None:
     """运行持久化执行和多轮线程测试。"""
     asyncio.run(exercise_completed_run(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
+
+
+def test_model_call_budget(tmp_path: Path) -> None:
+    """运行模型调用次数上限的完整执行测试。"""
+    asyncio.run(exercise_model_call_budget(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
+
+
+def test_token_budget(tmp_path: Path) -> None:
+    """运行上游报告 Token 预算的完整执行测试。"""
+    asyncio.run(exercise_token_budget(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
+
+
+def test_cost_budget(tmp_path: Path) -> None:
+    """运行估算成本预算的完整执行测试。"""
+    asyncio.run(exercise_cost_budget(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
+
+
+def test_tool_call_budget(tmp_path: Path) -> None:
+    """运行工具调用次数上限的完整执行测试。"""
+    asyncio.run(exercise_tool_call_budget(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
+
+
+def test_tool_timeout(tmp_path: Path) -> None:
+    """运行单次工具执行时限及超时终态测试。"""
+    asyncio.run(exercise_tool_timeout(tmp_path / "runs.db", tmp_path / "checkpoints.db"))
 
 
 def test_approved_resume(tmp_path: Path) -> None:

@@ -14,10 +14,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 from deepagents import create_deep_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolCallRequest
+from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import BaseTool
@@ -33,8 +34,9 @@ from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
 from app.services.run_manager import (
-    RunConflictError,
+    CostBudgetExceeded, ModelCallBudgetExceeded, RunConflictError, TokenBudgetExceeded, ToolCallBudgetExceeded,
     acknowledge_cancel,
+    append_tool_event,
     append_text_delta,
     claim_run,
     complete_run,
@@ -42,6 +44,10 @@ from app.services.run_manager import (
     fail_run,
     heartbeat_run,
     request_cancel,
+    reserve_model_call,
+    record_model_tokens,
+    record_model_cost,
+    reserve_tool_call,
     resume_approved_run,
     timeout_run,
 )
@@ -52,25 +58,131 @@ ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool]
 DEEPAGENTS_BUILTIN_TOOLS = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos"})
 
 
-class AuthorizedToolsMiddleware(AgentMiddleware):
-    """只向模型展示本次运行获授权的工具，并在执行前再次拒绝越权调用。"""
+class ToolExecutionTimeoutError(Exception):
+    """表示已授权工具超过本次运行允许的单次执行时限。"""
 
-    def __init__(self, allowed_names: set[str]) -> None:
-        """固定当前运行允许的工具名集合。"""
+
+class TokenUsageUnavailableError(Exception):
+    """表示开启 Token 预算后上游模型未报告完整用量。"""
+
+
+class CostUsageUnavailableError(Exception):
+    """表示开启成本预算后上游模型未报告完整输入和输出用量。"""
+
+
+def _reported_model_usage(response: ModelResponse | ExtendedModelResponse | AIMessage) -> tuple[int | None, int | None, int | None]:
+    """分别汇总本次响应的总量和可计价的输入、输出 Token。"""
+    messages = [response] if isinstance(response, AIMessage) else (
+        response.model_response.result if isinstance(response, ExtendedModelResponse) else response.result
+    )
+    total = input_total = output_total = 0
+    found = False
+    complete_total = complete_cost = True
+    for message in messages:
+        if not isinstance(message, AIMessage):
+            continue
+        found = True
+        usage = message.usage_metadata
+        if not isinstance(usage, dict):
+            complete_total = complete_cost = False
+            continue
+        reported = usage.get("total_tokens")
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        combined = (
+            input_tokens + output_tokens if type(input_tokens) is int and input_tokens >= 0
+            and type(output_tokens) is int and output_tokens >= 0 else None
+        )
+        if combined is not None:
+            input_total += input_tokens
+            output_total += output_tokens
+        else:
+            complete_cost = False
+        if type(reported) is int and reported >= 0:
+            total += max(reported, combined) if combined is not None and combined >= 0 else reported
+            if combined is not None and reported > combined:
+                complete_cost = False
+        elif combined is not None and combined >= 0:
+            total += combined
+        else:
+            complete_total = False
+    return (
+        total if found and complete_total else None,
+        input_total if found and complete_cost else None,
+        output_total if found and complete_cost else None,
+    )
+
+
+class AuthorizedToolsMiddleware(AgentMiddleware):
+    """计数模型调用，只展示获授权的工具并在执行前再次校验。"""
+
+    def __init__(
+        self, allowed_names: set[str], sessions: async_sessionmaker[AsyncSession], run_id: str, lease_token: str,
+        tool_timeout_seconds: int, max_total_tokens: int | None, max_estimated_cost: Decimal | None,
+        cost_input_price: Decimal | None, cost_output_price: Decimal | None,
+    ) -> None:
+        """固定当前运行的工具授权、计数与单次执行时限。"""
         self.allowed_names = frozenset(allowed_names)
+        self.sessions = sessions
+        self.run_id = run_id
+        self.lease_token = lease_token
+        self.tool_timeout_seconds = tool_timeout_seconds
+        self.max_total_tokens = max_total_tokens
+        self.max_estimated_cost = max_estimated_cost
+        self.cost_input_price = cost_input_price
+        self.cost_output_price = cost_output_price
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
-        """从模型请求中移除 DeepAgents 自动注入但未授权的内置工具。"""
+        """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
+        async with self.sessions.begin() as db:
+            await reserve_model_call(db, self.run_id, self.lease_token)
         visible_tools = [tool for tool in request.tools if getattr(tool, "name", None) in self.allowed_names]
-        return await handler(request.override(tools=visible_tools))
+        response = await handler(request.override(tools=visible_tools))
+        tokens, input_tokens, output_tokens = _reported_model_usage(response)
+        cost = None
+        if self.max_estimated_cost is not None and input_tokens is not None and output_tokens is not None:
+            assert self.cost_input_price is not None and self.cost_output_price is not None
+            cost = (Decimal(input_tokens) * self.cost_input_price + Decimal(output_tokens) * self.cost_output_price) / 1_000_000
+        token_exceeded = cost_exceeded = False
+        if tokens is not None or cost is not None:
+            async with self.sessions.begin() as db:
+                if tokens is not None:
+                    token_exceeded = await record_model_tokens(db, self.run_id, self.lease_token, tokens)
+                if cost is not None:
+                    cost_exceeded = await record_model_cost(db, self.run_id, self.lease_token, cost)
+        if tokens is None and self.max_total_tokens is not None:
+            raise TokenUsageUnavailableError("上游未报告完整 Token 用量")
+        if cost is None and self.max_estimated_cost is not None:
+            raise CostUsageUnavailableError("上游未报告完整可计价用量")
+        if token_exceeded:
+            raise TokenBudgetExceeded("总 Token 用量已超过上限")
+        if cost_exceeded:
+            raise CostBudgetExceeded("估算成本已超过上限")
+        return response
 
     async def awrap_tool_call(
         self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """即使模型生成未展示的工具名，也禁止执行。"""
-        if request.tool_call["name"] not in self.allowed_names:
+        """授权后记录工具开始和结束事件，不公开工具参数或结果。"""
+        tool_name = request.tool_call["name"]
+        if tool_name not in self.allowed_names:
             raise PermissionError("运行未授权该工具")
-        return await handler(request)
+        tool_call_id = str(uuid4())
+        async with self.sessions.begin() as db:
+            await reserve_tool_call(db, self.run_id, self.lease_token)
+            await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, tool_name)
+        try:
+            result = await asyncio.wait_for(handler(request), timeout=self.tool_timeout_seconds)
+        except Exception as exc:
+            async with self.sessions.begin() as db:
+                await append_tool_event(db, self.run_id, self.lease_token, "tool_failed", tool_call_id, tool_name)
+            if isinstance(exc, TimeoutError):
+                raise ToolExecutionTimeoutError("单次工具执行超时") from None
+            raise
+        event_type = "tool_failed" if isinstance(result, ToolMessage) and result.status == "error" else "tool_completed"
+        async with self.sessions.begin() as db:
+            await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, tool_name)
+        return result
 
 
 def _record_runtime_call(
@@ -92,17 +204,19 @@ def _record_runtime_call(
         if type(reported_output) is int and reported_output >= 0:
             output_tokens = (output_tokens or 0) + reported_output
     estimated_cost = None
-    if (input_tokens is not None and output_tokens is not None
-            and catalog_model.input_price is not None and catalog_model.output_price is not None):
+    input_price = run.cost_input_price if run.max_estimated_cost is not None else catalog_model.input_price
+    output_price = run.cost_output_price if run.max_estimated_cost is not None else catalog_model.output_price
+    currency = run.cost_currency if run.max_estimated_cost is not None else catalog_model.price_currency
+    if input_tokens is not None and output_tokens is not None and input_price is not None and output_price is not None:
         estimated_cost = (
-            Decimal(input_tokens) * catalog_model.input_price + Decimal(output_tokens) * catalog_model.output_price
+            Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price
         ) / 1_000_000
     db.add(ModelCallRecord(
         actor_id=run.owner_id, provider_id=catalog_model.provider_id, model_id=catalog_model.id,
         run_id=run.id, external_id=catalog_model.external_id, call_type="runtime_run",
         available=failure is None, latency_ms=round((time.perf_counter() - started) * 1000),
         upstream_status_code=None, failure=failure, input_tokens=input_tokens, output_tokens=output_tokens,
-        estimated_cost=estimated_cost, price_currency=catalog_model.price_currency if estimated_cost is not None else None,
+        estimated_cost=estimated_cost, price_currency=currency if estimated_cost is not None else None,
     ))
 
 
@@ -127,10 +241,11 @@ def _approval_actions(snapshot) -> list[dict]:
 
 async def _stream_model_text(
     agent, config: dict, invocation: dict | Command, sessions: async_sessionmaker[AsyncSession], run_id: str, lease_token: str,
+    *, publish_text: bool = True,
 ) -> None:
-    """从模型节点提取可见文本，逐片提交后才允许客户端读取事件。"""
+    """从模型节点提取可见文本；预算运行在用量核实后统一发布。"""
     async for mode, payload in agent.astream(invocation, config, stream_mode=["messages", "updates"]):
-        if mode != "messages":
+        if mode != "messages" or not publish_text:
             continue
         message, metadata = payload
         if metadata.get("langgraph_node") != "model" or not isinstance(message, (AIMessage, AIMessageChunk)):
@@ -189,8 +304,8 @@ async def _finish_interrupted(
                 return run
         if run.state == "running" and run.lease_token == lease_token:
             try:
-                if failure_code == "execution_timeout":
-                    result = await timeout_run(db, run_id, lease_token)
+                if failure_code in {"execution_timeout", "tool_execution_timeout"}:
+                    result = await timeout_run(db, run_id, lease_token, failure_code)
                 else:
                     result = await fail_run(db, run_id, lease_token, failure_code)
                 _record_runtime_call(db, run, catalog_model, started, failure=failure_code)
@@ -258,7 +373,11 @@ async def execute_text_run(
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
                 model=model, tools=tools, interrupt_on=interrupt_on, checkpointer=checkpointer,
-                middleware=[AuthorizedToolsMiddleware({tool.name for tool in tools})],
+                middleware=[AuthorizedToolsMiddleware(
+                    {tool.name for tool in tools}, sessions, run_id, lease_token,
+                    run.tool_timeout_seconds, run.max_total_tokens, run.max_estimated_cost,
+                    run.cost_input_price, run.cost_output_price,
+                )],
             )
             config = {
                 "configurable": {"thread_id": thread_id},
@@ -293,7 +412,10 @@ async def execute_text_run(
                 else {"messages": [{"role": "user", "content": input_text}]}
             )
             started = time.perf_counter()
-            task = asyncio.create_task(_stream_model_text(agent, config, invocation, sessions, run_id, lease_token))
+            task = asyncio.create_task(_stream_model_text(
+                agent, config, invocation, sessions, run_id, lease_token,
+                publish_text=run.max_total_tokens is None and run.max_estimated_cost is None,
+            ))
             watcher = asyncio.create_task(_watch_run(
                 sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds,
             ))
@@ -329,9 +451,40 @@ async def execute_text_run(
                     result = await acknowledge_cancel(db, run_id, lease_token)
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled", messages=new_messages)
                     return result
+                if run.max_total_tokens is not None or run.max_estimated_cost is not None:
+                    for offset in range(0, len(final_text), 2048):
+                        await append_text_delta(db, run_id, lease_token, final_text[offset:offset + 2048])
                 result = await complete_run(db, run_id, lease_token, checkpoint_id=checkpoint_id, final_text=final_text)
                 _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
                 return result
+    except ModelCallBudgetExceeded:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "model_call_budget_exceeded", catalog_model=catalog_model, started=started,
+        )
+    except TokenBudgetExceeded:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "token_budget_exceeded", catalog_model=catalog_model, started=started,
+        )
+    except TokenUsageUnavailableError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "token_usage_unavailable", catalog_model=catalog_model, started=started,
+        )
+    except CostBudgetExceeded:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "cost_budget_exceeded", catalog_model=catalog_model, started=started,
+        )
+    except CostUsageUnavailableError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "cost_usage_unavailable", catalog_model=catalog_model, started=started,
+        )
+    except ToolCallBudgetExceeded:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "tool_call_budget_exceeded", catalog_model=catalog_model, started=started,
+        )
+    except ToolExecutionTimeoutError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "tool_execution_timeout", catalog_model=catalog_model, started=started,
+        )
     except TimeoutError:
         return await _finish_interrupted(
             sessions, run_id, lease_token, "execution_timeout", catalog_model=catalog_model, started=started,

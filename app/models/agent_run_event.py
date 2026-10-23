@@ -25,3 +25,5 @@ class AgentRunEvent(CustomBaseModel):
     state: Mapped[str] = mapped_column(String(32), nullable=False, comment="事件发生后的运行状态")
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="脱敏运行故障类别")
     content: Mapped[str | None] = mapped_column(Text, nullable=True, comment="可公开的模型文本增量")
+    tool_call_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="服务端生成的工具调用关联 ID")
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="已授权工具名称")

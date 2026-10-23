@@ -6,8 +6,9 @@
 """持久化运行任务及其调度状态。"""
 
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel
@@ -27,6 +28,32 @@ class AgentRun(CustomBaseModel):
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
     model_timeout_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=120, server_default="120", comment="模型生成超时秒数",
+    )
+    tool_timeout_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数",
+    )
+    max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的模型调用次数上限")
+    model_call_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", comment="已开始的模型调用次数",
+    )
+    max_total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的上游总 Token 上限")
+    reported_total_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", comment="本次运行上游已报告的总 Token 数",
+    )
+    max_estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="本次运行估算成本上限")
+    estimated_cost: Mapped[Decimal] = mapped_column(
+        Numeric(24, 12), nullable=False, default=Decimal("0"), server_default="0", comment="启用预算时的累计估算成本",
+    )
+    cost_input_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格",
+    )
+    cost_output_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格",
+    )
+    cost_currency: Mapped[str | None] = mapped_column(String(3), nullable=True, comment="创建运行时价格币种")
+    max_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的工具调用次数上限")
+    tool_call_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", comment="已开始的工具调用次数",
     )
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="检查点线程 ID")
     request_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="用户提交幂等键")

@@ -8,6 +8,7 @@
 import asyncio
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
@@ -23,6 +24,7 @@ from app.services.run_manager import (
     RunNotFoundError,
     acknowledge_cancel,
     append_text_delta,
+    append_tool_event,
     claim_run,
     complete_run,
     create_approval_request,
@@ -168,6 +170,36 @@ async def exercise_atomic_submit_and_claim(database_path: Path) -> None:
         await engine.dispose()
 
 
+async def exercise_concurrent_tool_events(database_path: Path) -> None:
+    """验证并发工具事件共享运行内连续游标且受租约约束。"""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}", connect_args={"timeout": 10})
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with sessions.begin() as db:
+            run = await create_run(db, 1)
+            token = (await claim_run(db, run.id)).lease_token
+
+        async def publish() -> None:
+            """使用独立事务追加一个脱敏工具开始事件。"""
+            async with sessions.begin() as db:
+                await append_tool_event(db, run.id, token, "tool_started", str(uuid4()), "echo_approved")
+
+        await asyncio.gather(*(publish() for _ in range(5)))
+        async with sessions.begin() as db:
+            with pytest.raises(RunConflictError):
+                await append_tool_event(db, run.id, "wrong-token", "tool_completed", str(uuid4()), "echo_approved")
+            await complete_run(db, run.id, token)
+        async with sessions() as db:
+            events = await replay_events(db, run.id, 1)
+            assert [event.sequence for event in events] == list(range(1, 9))
+            assert [event.event_type for event in events[2:7]] == ["tool_started"] * 5
+            assert len({event.tool_call_id for event in events[2:7]}) == 5
+    finally:
+        await engine.dispose()
+
+
 def test_run_lifecycle_and_replay(tmp_path: Path) -> None:
     """验证运行生命周期与断线游标回放。"""
     asyncio.run(exercise_run_manager(tmp_path / "lifecycle.db"))
@@ -220,6 +252,11 @@ def test_cancel_retries_heartbeat_version(tmp_path: Path, monkeypatch: pytest.Mo
 def test_run_atomic_submit_and_claim(tmp_path: Path) -> None:
     """验证提交回滚和并发领取不会产生重复执行意图。"""
     asyncio.run(exercise_atomic_submit_and_claim(tmp_path / "atomic.db"))
+
+
+def test_concurrent_tool_events(tmp_path: Path) -> None:
+    """验证并发工具事件不会丢失或复用运行内序号。"""
+    asyncio.run(exercise_concurrent_tool_events(tmp_path / "tool-events.db"))
 
 
 async def exercise_approval_expiry(database_path: Path) -> None:

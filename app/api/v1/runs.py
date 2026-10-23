@@ -62,6 +62,11 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
         run = await create_run(
             db, actor.id, model_id=body.model_id, input_text=body.input_text,
             request_key=body.request_key, thread_id=body.thread_id, model_timeout_seconds=body.model_timeout_seconds,
+            tool_timeout_seconds=body.tool_timeout_seconds, max_model_calls=body.max_model_calls,
+            max_total_tokens=body.max_total_tokens, max_tool_calls=body.max_tool_calls,
+            max_estimated_cost=body.max_estimated_cost,
+            cost_pricing=(model.input_price, model.output_price, model.price_currency)
+            if body.max_estimated_cost is not None and model.input_price is not None and model.output_price is not None else None,
         )
         await db.commit()
     except (RunConflictError, ValueError) as exc:
