@@ -29,6 +29,8 @@ dependencies = [
   "langchain-anthropic>=1.7.6",
   "langchain-google-genai>=2.1",
   "langchain-aws>=1.0",
+  "langgraph-checkpoint-sqlite>=3.0.0,<4",
+  "python-multipart>=0.0.20,<1",
 ]
 
 [dependency-groups]

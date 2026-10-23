@@ -130,6 +130,8 @@ class BaseConfig(BaseSettings):
     POSTGRESQL_DATABASE: str = "y_point"
 
     SQLITE_DATABASE: str = "y_point.db"
+    ARTIFACT_STORAGE_DIR: str = ".run-private/artifacts"
+    ARTIFACT_RETENTION_DAYS: int = 30
 
     REDIS_HOST: str = "127.0.0.1"
     REDIS_ENABLED: bool = False

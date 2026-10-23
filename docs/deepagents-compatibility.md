@@ -11,6 +11,7 @@ Python 3.12；依赖以 `uv.lock` 为准。本轮实测：
 | langchain-core | 1.6.12 |
 | langgraph | 1.2.16 |
 | langgraph-checkpoint | 4.3.0 |
+| langgraph-checkpoint-sqlite | 3.1.2 |
 | langchain-openai | 1.7.2 |
 | langchain-anthropic | 1.7.6 |
 
@@ -24,7 +25,7 @@ Python 3.12；依赖以 `uv.lock` 为准。本轮实测：
 | 工具调用 | `tools=[echo]` 注册工具；模型产生 `tool_calls` 后，状态中保存 `ToolMessage`。 |
 | 流式事件 | `stream_mode=["updates", "messages"]` 返回 `(mode, payload)`；观察到 `model`、`tools` 节点更新及 AI/工具消息。 |
 | Skill 装载 | `skills=["/skills/"]` 配合 `StateBackend` 的 `files` 输入读取 `SKILL.md`；`skills_metadata` 可从检查点状态读取，不在 `invoke()` 的对外返回值中。 |
-| 检查点 | `InMemorySaver` 按 `configurable.thread_id` 保存消息和 `checkpoint_id`。 |
+| 检查点 | `InMemorySaver` 按 `configurable.thread_id` 保存消息和 `checkpoint_id`；M3 另用 SQLite Checkpointer 验证独立进程重启后可恢复同一线程。 |
 | 审批与恢复 | `interrupt_on={"echo": True}` 在工具执行前中断；用 `Command(resume={"decisions": [{"type": "approve"}]})` 恢复后才执行工具。 |
 | 取消 | 取消消费 `astream()` 的 asyncio 任务会把取消传入正在等待的异步工具；工具的清理块得到执行。 |
 
@@ -60,10 +61,22 @@ Python 3.12；依赖以 `uv.lock` 为准。本轮实测：
 
 PostgreSQL 的 M2 迁移与关键流程按本轮约定延期，当前数据库验收仅覆盖 SQLite 和独立 MySQL 测试库。
 
+## M3 运行时验证
+
+`open_sqlite_checkpointer()` 和 `open_async_sqlite_checkpointer()` 接受独立的 SQLite 文件路径，并管理 LangGraph Checkpointer 的连接生命周期。假模型在一个进程中产生待审批工具调用，第二个进程批准并继续执行，第三个进程追加流式对话，第四个进程重新读取同一线程；检查点 ID 随运行推进，工具结果和最终消息均可恢复。异步 Checkpointer 另验证关闭并重开连接后的审批恢复。内存数据库被拒绝，因为它不能提供重启恢复。
+
+本机 Ollama `gemma4:31b-cloud` 通过 `build_chat_model()` 进入 `create_deep_agent()`，真实验证工具调用、`messages`/`updates` 流式事件和模型 Token 用量。该测试用内存检查点，需显式设置 `YPOINT_TEST_OLLAMA_M3=1`，不创建业务库记录。SQLite 检查点测试用假模型，因此目前未验证真实模型与持久化检查点组合运行。
+
+SQLite Checkpointer 保存完整图状态，可能包含消息与工具结果；测试使用临时文件。生产环境的数据库适配、访问控制、加密、保留清理、崩溃恢复、并发和取消仍待设计及验证。
+
+M3 已增加独立的 Run/Event 业务表：Run 的 `thread_id` 可供同一用户后续运行复用，最近 `checkpoint_id` 可指向 LangGraph 检查点；状态存储和游标回放已验证。检查点失败补偿、内容事件和 SSE 仍待验证。
+
+后续 M3 增量已把 Run、可见消息和 SQLite Checkpointer 接入内部文本执行器：用户输入随排队运行提交，执行器领取后解析仍启用的用户/模型/供应商配置，调用 DeepAgents，并在完成事务中保存最终回答与检查点 ID。取消请求、用户停用和超时会中断模型任务；模型原始异常不会写入 Run Event。本机 Ollama `gemma4:31b-cloud` 的数据库队列扫描到最终回答入库已通过显式真实测试。检查点和业务表仍是两个独立存储，无法原子提交；若检查点已写入而业务事务失败，当前策略依赖租约过期后标记失败，不自动重复执行外部副作用。该链路尚未提供对外 API 或生产级恢复保证。
+
 ## 接入限制
 
 - `FakeMessagesListChatModel.bind_tools()` 在验证程序中只返回自身；该程序验证编排流程。真实兼容模型的工具协议、流式输出和 Token 用量已单独验证，但未覆盖完整 Agent 编排与故障场景。
-- `InMemorySaver` 只验证当前进程中的检查点和审批恢复。进程重启恢复、持久化映射及崩溃处理属于 M3，不能从本轮结果推断已支持。
+- SQLite Checkpointer 已验证独立进程重启后继续审批与对话；生产存储映射及执行器崩溃处理仍属于 M3，不能从本地测试推断已支持。
 - 默认 Agent 包含文件工具、`execute` 和子 Agent 工具；本轮默认 `StateBackend` 不提供可执行沙箱。正式接入前必须由平台限制工具发现、资源访问和执行权限。
 - 取消测试仅证明 asyncio 取消传递。持久化 Run 状态、跨进程取消、超时竞态及副作用幂等仍属于 M3。
 - Skill 测试只验证说明文件被加载；导入校验、版本固定和用户授权属于 M5。

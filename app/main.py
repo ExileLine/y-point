@@ -12,7 +12,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 
 from app.core.config import get_config
 from app.core.lifespan import lifespan
-from app.core.middleware import MyMiddleware
+from app.core.middleware import ArtifactUploadLimitMiddleware, MyMiddleware
 from app.core.exception_handlers import register_exception_handlers
 from app.api import api
 
@@ -54,6 +54,8 @@ def create_app():
         sensitive_headers=project_config.SENSITIVE_HEADERS,
         mask_sensitive_headers=True,
     )
+
+    app.add_middleware(ArtifactUploadLimitMiddleware)
 
     # 异常处理器注册
     register_exception_handlers(app, debug)

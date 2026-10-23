@@ -86,7 +86,7 @@ async def get_current_admin(
             algorithms=["HS256"],
             options={"require": ["sub", "sid", "ver", "type", "iat", "exp"]},
         )
-        if payload["type"] != "access" or not isinstance(payload["ver"], int):
+        if payload["type"] != "access" or type(payload["ver"]) is not int or type(payload["exp"]) is not int:
             raise unauthorized()
         admin_id = int(payload["sub"])
         session_id = payload["sid"]
@@ -109,6 +109,8 @@ async def get_current_admin(
     ):
         raise unauthorized()
     request.state.auth_session_id = session_id
+    request.state.auth_token_version = payload["ver"]
+    request.state.auth_token_expires_at = payload["exp"]
     return admin
 
 

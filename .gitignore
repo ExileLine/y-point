@@ -65,6 +65,7 @@ db.sqlite3-journal
 /y_point.db-journal
 /y_point.db-wal
 /y_point.db-shm
+/.run-private/
 
 # Flask stuff:
 instance/

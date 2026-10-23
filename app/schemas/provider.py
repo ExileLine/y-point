@@ -214,6 +214,7 @@ class ModelCallOut(BaseModel):
     actor_id: int = Field(description="发起调用的用户 ID", examples=[1])
     provider_id: int = Field(description="调用时的供应商连接 ID", examples=[1])
     model_id: int = Field(description="调用时的模型 ID", examples=[1])
+    run_id: str | None = Field(description="关联运行 ID；管理员探测时为空", examples=["550e8400-e29b-41d4-a716-446655440000"])
     external_id: str = Field(description="调用时的供应商模型 ID", examples=["gpt-4o-mini"])
     call_type: str = Field(description="调用类型", examples=["text_probe"])
     available: bool = Field(description="调用是否成功", examples=[True])

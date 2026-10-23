@@ -18,6 +18,7 @@ class ModelCallRecord(CustomBaseModel):
     actor_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="发起调用的用户 ID")
     provider_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="调用时的供应商连接 ID")
     model_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="调用时的模型 ID")
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, comment="关联运行 ID")
     external_id: Mapped[str] = mapped_column(String(255), nullable=False, comment="调用时的供应商模型 ID")
     call_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="调用类型")
     available: Mapped[bool] = mapped_column(Boolean, nullable=False, comment="调用是否成功")

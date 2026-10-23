@@ -12,6 +12,8 @@ import shortuuid
 from loguru import logger
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.core.response import api_response
+
 
 SENSITIVE_FIELDS = {
     "password", "passwd", "pwd", "secret", "secretkey", "clientsecret",
@@ -19,6 +21,46 @@ SENSITIVE_FIELDS = {
     "cookie", "sessionid", "credential", "customheaders",
     "currentpassword", "newpassword", "oldpassword", "passwordconfirmation",
 }
+
+
+class UploadTooLargeError(Exception):
+    """上传请求在接收过程中超过总字节上限。"""
+
+
+class ArtifactUploadLimitMiddleware:
+    """在 multipart 解析前限制文件上传请求的实际接收字节数。"""
+
+    def __init__(self, app: ASGIApp, max_bytes: int = 51 * 1024 * 1024):
+        """保存下游应用和上传请求总上限。"""
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """拒绝超限请求，包括未声明 Content-Length 的流式上传。"""
+        if scope["type"] != "http" or scope.get("path") != "/api/v1/artifacts/uploads" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        headers = _decode_headers(scope.get("headers", []))
+        content_length = headers.get("content-length")
+        if content_length and content_length.isdecimal() and int(content_length) > self.max_bytes:
+            await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
+            return
+        received = 0
+
+        async def limited_receive() -> dict:
+            """逐块累计实际请求字节数。"""
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise UploadTooLargeError()
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except UploadTooLargeError:
+            await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
 
 
 def _is_sensitive_field(key: str, sensitive_headers: set) -> bool:
