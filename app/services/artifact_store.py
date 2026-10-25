@@ -356,6 +356,25 @@ async def publish_pending_answers(
     return published
 
 
+async def _remove_unreferenced_local_files(
+    sessions: async_sessionmaker[AsyncSession], paths: list[Path], *, limit: int,
+) -> int:
+    """按文件存储键批量核对引用，最多删除本批中的 limit 个孤儿。"""
+    keys = [path.name for path in paths if not path.name.endswith(".tmp")]
+    async with sessions() as db:
+        referenced = set((await db.scalars(select(Artifact.storage_key).where(
+            Artifact.storage_key.in_(keys), Artifact.state == "ready",
+        ))).all()) if keys else set()
+    removed = 0
+    for path in paths:
+        if path.name not in referenced:
+            path.unlink(missing_ok=True)
+            removed += 1
+            if removed >= limit:
+                break
+    return removed
+
+
 async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path, *, limit: int = 1000) -> tuple[int, int]:
     """撤销过期文件并清理宽限期外、未被业务库引用的孤儿文件。"""
     if not 1 <= limit <= 1000:
@@ -373,23 +392,28 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
 
     cutoff = time.time() - ORPHAN_GRACE_SECONDS
     candidates = []
+    orphaned = 0
     for path in root.iterdir():
-        if len(candidates) >= limit:
-            break
         if path.is_symlink() or not path.is_file() or path.stat().st_mtime > cutoff:
             continue
-        if path.name.endswith(".tmp") or len(path.name) == 32 and all(char in "0123456789abcdef" for char in path.name):
-            candidates.append(path)
-    keys = [path.name for path in candidates if not path.name.endswith(".tmp")]
-    async with sessions() as db:
-        referenced = set((await db.scalars(select(Artifact.storage_key).where(
-            Artifact.storage_key.in_(keys), Artifact.state == "ready",
-        ))).all()) if keys else set()
-    orphaned = 0
-    for path in candidates:
-        if path.name not in referenced:
-            path.unlink(missing_ok=True)
-            orphaned += 1
+        name = path.name
+        is_key = len(name) == 32 and all(char in "0123456789abcdef" for char in name)
+        is_temporary = (
+            len(name) == 37 and name.startswith(".") and name.endswith(".tmp")
+            and all(char in "0123456789abcdef" for char in name[1:-4])
+        )
+        if not (is_key or is_temporary):
+            continue
+        candidates.append(path)
+        if len(candidates) >= limit:
+            orphaned += await _remove_unreferenced_local_files(sessions, candidates, limit=limit - orphaned)
+            candidates.clear()
+            if orphaned >= limit:
+                return len(expired), orphaned
+    if candidates:
+        orphaned += await _remove_unreferenced_local_files(sessions, candidates, limit=limit - orphaned)
+        if orphaned >= limit:
+            return len(expired), orphaned
     if using_s3():
         async for old_keys in old_blob_batches(
             before=shanghai_now() - timedelta(seconds=ORPHAN_GRACE_SECONDS), batch_size=limit,

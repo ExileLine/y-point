@@ -7,10 +7,10 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class RunApproval(CustomBaseModel):
@@ -29,6 +29,6 @@ class RunApproval(CustomBaseModel):
     state: Mapped[str] = mapped_column(
         String(16), nullable=False, comment="审批状态：pending、approved、rejected、expired 或 cancelled"
     )
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, comment="审批到期时间")
+    expires_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="审批到期时间")
     decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="作出审批决定的用户 ID")
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="审批决定时间")
+    decided_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="审批决定时间")

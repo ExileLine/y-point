@@ -967,6 +967,83 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
         await engine.dispose()
 
 
+@pytest.mark.parametrize("failure", [RuntimeError, RunConflictError])
+def test_heartbeat_failure_stops_running_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception],
+) -> None:
+    """续租失败时立即中止模型任务，不能让它脱离租约继续执行。"""
+
+    async def failed_heartbeat(*args, **kwargs) -> None:
+        raise failure("private-database-error")
+
+    original_watch = run_executor_module._watch_run
+
+    async def watch_after_model_starts(*args, **kwargs) -> None:
+        await SlowModel.started.wait()
+        await original_watch(*args, **kwargs)
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'heartbeat-failure.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        SlowModel.started = asyncio.Event()
+        SlowModel.stopped = asyncio.Event()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="heartbeat-failure", password="not-used", role="user"))
+                run = await create_run(db, 1, input_text="wait")
+            monkeypatch.setattr(run_executor_module, "heartbeat_run", failed_heartbeat)
+            monkeypatch.setattr(run_executor_module, "_watch_run", watch_after_model_starts)
+            result = await asyncio.wait_for(execute_text_run(
+                sessions, run.id, SlowModel(responses=[AIMessage(content="unreachable")]),
+                tmp_path / "heartbeat-failure-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+            ), timeout=4)
+            assert SlowModel.started.is_set() and SlowModel.stopped.is_set()
+            assert result.state == "failed" and result.failure_code == "lease_monitor_error"
+            async with sessions() as db:
+                assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+                events = await replay_events(db, run.id, 1)
+                assert events[-1].failure_code == "lease_monitor_error"
+                assert "private-database-error" not in str(events[-1].to_dict())
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_lease_transfer_stops_previous_model(tmp_path: Path) -> None:
+    """租约变化后旧执行器停止模型，不用旧租约覆盖新的运行状态。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'lease-transfer.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        SlowModel.started = asyncio.Event()
+        SlowModel.stopped = asyncio.Event()
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="lease-transfer", password="not-used", role="user"))
+                run = await create_run(db, 1, input_text="wait")
+            task = asyncio.create_task(execute_text_run(
+                sessions, run.id, SlowModel(responses=[AIMessage(content="unreachable")]),
+                tmp_path / "lease-transfer-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+            ))
+            await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
+            async with sessions.begin() as db:
+                await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(lease_token="new-owner"))
+            result = await asyncio.wait_for(task, timeout=4)
+            assert SlowModel.stopped.is_set()
+            assert result.state == "running" and result.lease_token == "new-owner"
+            async with sessions() as db:
+                assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 def test_cancel_during_tool_execution(tmp_path: Path) -> None:
     """取消请求中断工具协程，执行器确认后保留可追溯的开始事件。"""
 

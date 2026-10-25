@@ -62,6 +62,10 @@ class ToolExecutionTimeoutError(Exception):
     """表示已授权工具超过本次运行允许的单次执行时限。"""
 
 
+class LeaseMonitorError(Exception):
+    """表示执行器无法确认运行租约仍有效。"""
+
+
 class TokenUsageUnavailableError(Exception):
     """表示开启 Token 预算后上游模型未报告完整用量。"""
 
@@ -300,9 +304,12 @@ async def _watch_run(
             if should_cancel:
                 task.cancel()
                 return
-        except RunConflictError:
+        except RunConflictError as exc:
             task.cancel()
-            return
+            raise LeaseMonitorError("运行租约状态已变化") from exc
+        except Exception as exc:
+            task.cancel()
+            raise LeaseMonitorError("运行租约监视失败") from exc
 
 
 async def _finish_interrupted(
@@ -504,6 +511,10 @@ async def execute_text_run(
         return await _finish_interrupted(
             sessions, run_id, lease_token, "tool_execution_timeout", catalog_model=catalog_model, started=started,
         )
+    except LeaseMonitorError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "lease_monitor_error", catalog_model=catalog_model, started=started,
+        )
     except TimeoutError:
         return await _finish_interrupted(
             sessions, run_id, lease_token, "execution_timeout", catalog_model=catalog_model, started=started,
@@ -516,6 +527,8 @@ async def execute_text_run(
             return await _finish_interrupted(
                 sessions, run_id, lease_token, "runtime_error", catalog_model=catalog_model, started=started,
             )
+        if run is not None and (run.state != "running" or run.lease_token != lease_token):
+            return run
         raise
     except RunConflictError:
         async with sessions.begin() as db:

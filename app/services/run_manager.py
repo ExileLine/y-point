@@ -443,6 +443,7 @@ async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code
     """由持有租约的执行器记录分类故障，不保存原始异常信息。"""
     if failure_code not in {
         "model_error", "empty_response", "checkpoint_error", "checkpoint_mismatch", "runtime_error",
+        "lease_monitor_error",
         "model_call_budget_exceeded", "tool_call_budget_exceeded", "token_budget_exceeded", "token_usage_unavailable",
         "cost_budget_exceeded", "cost_usage_unavailable",
     }:

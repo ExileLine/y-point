@@ -8,10 +8,10 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class AgentRun(CustomBaseModel):
@@ -34,7 +34,7 @@ class AgentRun(CustomBaseModel):
     )
     max_queue_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="排队等待最长秒数")
     queue_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True, comment="排队等待截止时间",
+        ShanghaiDateTime(), nullable=True, index=True, comment="排队等待截止时间",
     )
     enable_text_artifact_tool: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0", comment="是否启用需审批的文本文件读取工具",
@@ -43,7 +43,7 @@ class AgentRun(CustomBaseModel):
         Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物",
     )
     answer_artifact_retry_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, comment="回答产物下次补发时间",
+        ShanghaiDateTime(), nullable=True, comment="回答产物下次补发时间",
     )
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的模型调用次数上限")
     model_call_count: Mapped[int] = mapped_column(
@@ -74,7 +74,7 @@ class AgentRun(CustomBaseModel):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="并发更新版本号")
     event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="最新事件序号")
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="执行器租约令牌")
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="执行器租约到期时间")
-    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="执行器最近心跳时间")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="执行器租约到期时间")
+    heartbeat_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="执行器最近心跳时间")
     checkpoint_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="最近持久化检查点 ID")
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="脱敏运行故障类别")

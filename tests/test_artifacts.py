@@ -5,24 +5,28 @@
 
 """验证私有文件上传、校验、隔离与授权下载。"""
 
+import asyncio
 from io import BytesIO
 import os
 import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 from zipfile import ZipFile
 
 import httpx
 import pytest
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import artifacts as artifact_api
 from app.services import artifact_store
 from app.core.password import hash_password
+from app.core.config import get_config
 from app.core.middleware import ArtifactUploadLimitMiddleware
 from app.db.session import get_db_session
 from app.main import app
@@ -230,6 +234,124 @@ def test_artifact_upload_and_download(tmp_path: Path, monkeypatch: pytest.Monkey
     import asyncio
 
     asyncio.run(exercise_artifacts(tmp_path / "artifacts.db", tmp_path / "private", monkeypatch))
+
+
+def test_local_orphan_scan_passes_referenced_batches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """前几个旧文件仍被引用时，有限删除批量也能找到后面的孤儿。"""
+    import asyncio
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'orphans.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private"
+        root.mkdir(mode=0o700)
+        keys = [str(index) * 32 for index in range(1, 4)]
+        referenced = [root / key for key in keys[:2]]
+        orphan = root / keys[2]
+        unrelated = root / "notes.tmp"
+        temporary = root / ("." + "4" * 32 + ".tmp")
+        paths = [referenced[0], unrelated, referenced[1], orphan, temporary]
+        for path in paths:
+            path.write_bytes(b"old")
+            os.utime(path, (time.time() - 7200, time.time() - 7200))
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                for index, key in enumerate(keys[:2], start=1):
+                    db.add(Artifact(
+                        id=f"00000000-0000-4000-8000-{index:012d}", owner_id=1, filename=f"{index}.txt",
+                        media_type="text/plain", byte_size=3, sha256="0" * 64, storage_key=key,
+                        source="upload", state="ready", status=1, is_deleted=0,
+                    ))
+
+            original_iterdir = Path.iterdir
+
+            def ordered_iterdir(path: Path):
+                return iter(paths) if path == root else original_iterdir(path)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(Path, "iterdir", ordered_iterdir)
+                assert await prune_artifacts(sessions, root, limit=1) == (0, 1)
+                assert not orphan.exists() and all(path.exists() for path in referenced)
+                assert unrelated.exists() and temporary.exists()
+                assert await prune_artifacts(sessions, root, limit=1) == (0, 1)
+                assert not temporary.exists() and unrelated.exists()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_MYSQL_M3") != "1", reason="需显式启用隔离 MySQL 配额验收")
+@pytest.mark.parametrize("max_files,max_bytes", [(1, 1024), (10, 3)])
+def test_mysql_concurrent_artifact_quota(
+    monkeypatch: pytest.MonkeyPatch, max_files: int, max_bytes: int,
+) -> None:
+    """两个事务争抢最后一个文件或字节名额时，只允许一个提交。"""
+
+    async def exercise() -> None:
+        name = f"yp_m3_quota_{uuid4().hex[:12]}"
+        base_url = make_url(get_config().mysql_async_url)
+        admin_engine = create_async_engine(base_url.set(database=None), isolation_level="AUTOCOMMIT")
+        engine = None
+        created = False
+        try:
+            async with admin_engine.connect() as db:
+                await db.execute(text(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4"))
+            created = True
+            engine = create_async_engine(base_url.set(database=name))
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            async with engine.begin() as db:
+                await db.run_sync(lambda connection: Base.metadata.create_all(
+                    connection, tables=[Admin.__table__, Artifact.__table__],
+                ))
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="quota-owner", password="not-used", role="user", status=1, is_deleted=0))
+            monkeypatch.setattr(artifact_store, "get_config", lambda: SimpleNamespace(
+                ARTIFACT_OWNER_MAX_FILES=max_files, ARTIFACT_OWNER_MAX_BYTES=max_bytes,
+            ))
+            first_ready = asyncio.Event()
+            second_ready = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def upload(index: int) -> None:
+                async with sessions.begin() as db:
+                    if index == 2:
+                        second_ready.set()
+                    await artifact_store.enforce_owner_quota(db, 1, add_count=1, add_bytes=3)
+                    if index == 1:
+                        first_ready.set()
+                        await release_first.wait()
+                    db.add(Artifact(
+                        id=str(uuid4()), owner_id=1, filename=f"{index}.txt", media_type="text/plain",
+                        byte_size=3, sha256="0" * 64, storage_key=uuid4().hex,
+                        source="upload", state="ready", status=1, is_deleted=0,
+                    ))
+
+            first = asyncio.create_task(upload(1))
+            await asyncio.wait_for(first_ready.wait(), timeout=5)
+            second = asyncio.create_task(upload(2))
+            await asyncio.wait_for(second_ready.wait(), timeout=5)
+            try:
+                await asyncio.sleep(0.1)
+                assert not second.done()
+            finally:
+                release_first.set()
+            await asyncio.wait_for(first, timeout=5)
+            with pytest.raises(ArtifactValidationError, match="配额"):
+                await asyncio.wait_for(second, timeout=5)
+            async with sessions() as db:
+                assert len((await db.scalars(select(Artifact))).all()) == 1
+        finally:
+            if engine is not None:
+                await engine.dispose()
+            if created:
+                async with admin_engine.connect() as db:
+                    await db.execute(text(f"DROP DATABASE `{name}`"))
+            await admin_engine.dispose()
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize(

@@ -7,10 +7,10 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class RunWorkerHeartbeat(CustomBaseModel):
@@ -22,6 +22,6 @@ class RunWorkerHeartbeat(CustomBaseModel):
     __table_args__ = {"comment": "运行执行器心跳表"}
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="执行器启动实例 ID")
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, comment="执行器启动时间")
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True, comment="最近心跳时间")
-    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="正常退出时间")
+    started_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="执行器启动时间")
+    last_seen_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, index=True, comment="最近心跳时间")
+    stopped_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="正常退出时间")

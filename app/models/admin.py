@@ -5,11 +5,11 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String
+from sqlalchemy import BigInteger, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.password import hash_password, verify_password
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class Admin(CustomBaseModel):
@@ -39,7 +39,7 @@ class Admin(CustomBaseModel):
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="备注")
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False, comment="用户角色：admin 管理员，user 普通用户")
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="令牌版本")
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="最近登录时间")
+    last_login_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="最近登录时间")
 
     async def set_password(self, raw_password: str):
         """设置当前用户的密码哈希。"""

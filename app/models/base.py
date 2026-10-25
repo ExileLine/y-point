@@ -13,6 +13,7 @@ from typing import Any, Optional
 import pytz
 from sqlalchemy import BigInteger, DateTime, Integer, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 
 class Base(DeclarativeBase):
@@ -45,6 +46,19 @@ def shanghai_datetime(value: Optional[datetime], *, naive: bool = False) -> Opti
         return localized_value.replace(tzinfo=None)
     return localized_value
 
+
+class ShanghaiDateTime(TypeDecorator[datetime]):
+    """将应用中的上海本地时间与各数据库的时间列相互转换。"""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        return shanghai_datetime(value, naive=dialect.name != "postgresql")
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        return shanghai_datetime(value, naive=True)
+
 TABLE_PREFIX = "yp_"  # 表名称前缀
 
 class CustomBaseModel(Base):
@@ -74,7 +88,7 @@ class CustomBaseModel(Base):
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
-            DateTime(timezone=True),
+            ShanghaiDateTime(),
             nullable=False,
             default=lambda: shanghai_now(naive=True),
             comment="创建时间",
@@ -86,7 +100,7 @@ class CustomBaseModel(Base):
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
-            DateTime(timezone=True),
+            ShanghaiDateTime(),
             nullable=False,
             default=lambda: shanghai_now(naive=True),
             onupdate=lambda: shanghai_now(naive=True),

@@ -14,7 +14,7 @@ uv run uvicorn app.main:app --reload
 uv run pytest -q
 ```
 
-健康检查接口为 `/api/v1/health`，接口文档为 `/docs`。启动时会检查数据库连接；Redis 是否初始化由 `REDIS_ENABLED` 控制。M2 已在独立 MySQL 测试库验证迁移与供应商/模型 HTTP 流程；PostgreSQL 及其他模块的跨数据库兼容性仍需验证。
+健康检查接口为 `/api/v1/health`，接口文档为 `/docs`。启动时会检查数据库连接；Redis 是否初始化由 `REDIS_ENABLED` 控制。M2 已在独立 MySQL 测试库验证迁移与供应商/模型 HTTP 流程；M3 的 MySQL、PostgreSQL 隔离库迁移与文件元数据 ORM 读写也已通过。其他模块的跨数据库兼容性仍需验证。
 
 ## M1 认证与用户管理
 
@@ -71,7 +71,7 @@ Azure OpenAI 连接填写资源根地址（如 `https://example.openai.azure.com
 
 本机 `gemma4:31b-cloud` 又完成模型发现、最小文本、文本、流式、工具、固定结构化输出和四色视觉探测，五项能力均返回 Token 用量；错误模型 ID 被归类为 `model_not_found`，公开摘要按 Ollama 类型返回 `unsupported_capability`。此验证不写入业务数据库，可用 `YPOINT_TEST_OLLAMA_GEMMA4=1 uv run pytest -q tests/test_capability_probe.py::test_live_ollama_gemma4` 重复执行。
 
-M2 数据库验证范围：SQLite 开发库已升级到 `006`；独立 SQLite 库完成 `005 → 006 → 005 → 006` 和迁移差异检查。MySQL 先前已在独立临时库验证 `001 → 005`、`005 → 003 → 005`、ORM 读写和 HTTP 流程；本轮另在独立临时库完成 `001 → 006 → 005 → 006` 与两次迁移差异检查，测试库均已删除。PostgreSQL 当前无可用本地服务，按本轮约定延期验证，不能据此声明 PostgreSQL 兼容。MySQL 的负载与生产部署仍需单独验收。
+M2 数据库验证范围：SQLite 开发库已升级到 `006`；独立 SQLite 库完成 `005 → 006 → 005 → 006` 和迁移差异检查。MySQL 先前已在独立临时库验证 `001 → 005`、`005 → 003 → 005`、ORM 读写和 HTTP 流程；M2 当时另在独立临时库完成 `001 → 006 → 005 → 006` 与两次迁移差异检查，测试库均已删除。M2 的 PostgreSQL HTTP 流程按当时约定延期验证；后续 M3 已在临时 PostgreSQL 容器验证当前完整迁移和文件元数据 ORM 读写，不能据此声明 M2 HTTP 流程兼容。MySQL 的负载与生产部署仍需单独验收。
 
 ## M3 运行时开发进度
 
@@ -124,7 +124,9 @@ YPOINT_TEST_OLLAMA_M3=1 uv run pytest -q tests/test_runtime_checkpoint.py::test_
 
 `026` 迁移增加 `publish_answer_artifact`，默认为 `false`。创建文本 Run 时可显式设为 `true`，worker 在回答完成后以固定发布键创建 `answer.txt`。worker 重启会扫描已完成但尚未发布的 Run 并补发，重复扫描不会重复产生文件或事件。`027` 迁移为缺少最终消息或产物校验失败的 Run 记录下一次补发时间，退避一小时，避免这些 Run 长期占满有限批量；磁盘或对象存储故障仍由 worker 下一轮重试。产物引用可从 `/api/v1/artifacts?run_id=`、`/events` 或 SSE 查询；启用导出的 Run 在产物发布前会保持 SSE 订阅，最多受原有空闲窗口限制。断线后仍可从游标补取。本机开发库已升级至 `027`；其他环境部署前需分别执行 `uv run alembic upgrade head`。应用启动时会检查业务模型需要的表和列，缺失时提示迁移，不会等到上传请求写入才报数据库错误。
 
-文件上传和生成产物共用 `ARTIFACT_OWNER_MAX_BYTES`（默认 1 GiB）及 `ARTIFACT_OWNER_MAX_FILES`（默认 1000）配额。`ARTIFACT_REQUIRE_MALWARE_SCAN=true` 时必须安装 `clamscan`，扫描器缺失、超时或扫描失败会拒绝文件；默认关闭适合本地开发，上线前应开启并验证扫描器。TXT 拒绝 NUL 字节，PDF 检查头部与结束标记，Office 检查全包、重复路径、加密条目、宏和解压体积。跨进程生产配额并发精度及真实扫描性能需在目标数据库和部署环境验收。Runtime 状态、事件和检查点的写入与补偿规则见 `docs/m3-runtime-contract.md`。
+文件上传和生成产物共用 `ARTIFACT_OWNER_MAX_BYTES`（默认 1 GiB）及 `ARTIFACT_OWNER_MAX_FILES`（默认 1000）配额。`ARTIFACT_REQUIRE_MALWARE_SCAN=true` 时必须安装 `clamscan`，扫描器缺失、超时或扫描失败会拒绝文件；默认关闭适合本地开发，上线前应开启并验证扫描器。TXT 拒绝 NUL 字节，PDF 检查头部与结束标记，Office 检查全包、重复路径、加密条目、宏和解压体积。隔离 MySQL 库已验证两个事务争抢文件数或字节数配额；跨进程生产配额及真实扫描性能仍需目标环境验收。Runtime 状态、事件和检查点的写入与补偿规则见 `docs/m3-runtime-contract.md`。
+
+M3 业务库兼容性验收：默认 SQLite 测试从空库迁移到当前 `head` 并运行 `alembic check`；显式设置 `YPOINT_TEST_MYSQL_M3=1` 或 `YPOINT_TEST_POSTGRES_M3=1` 可运行 `tests/test_db_schema.py` 中对应的隔离库测试。两种服务端数据库均已通过空库升级、最后一版回退与重升、迁移差异检查、映射表与字段检查、用户及文件元数据 ORM 写入/读取，以及 Run 的双事务竞争领取、完成、消息和事件检查。隔离 HTTP/worker 验收覆盖 Bearer 登录、文件上传/跨用户隔离/下载/删除、Run 创建与幂等复用、假模型执行、回答和事件游标。模型层将 PostgreSQL 的带时区时间列与 SQLite/MySQL 的时间列统一为应用使用的上海本地时间；隔离库验证读回的 30 秒租约没有时区偏移。测试使用随机命名库并在结束后删除；已有 PostgreSQL 业务数据若由旧版代码写入，部署前应核对时间列的实际时区偏移。审批恢复、取消竞态、真实模型、生产权限与负载仍待目标环境验收。
 
 文件正文默认保存在 `ARTIFACT_STORAGE_DIR` 指向的私有本地目录。设置 `ARTIFACT_STORAGE_BACKEND=s3`、`ARTIFACT_S3_BUCKET` 及可选的 endpoint、region 和成对访问密钥后，Artifact Service 使用 boto3 将随机键对象写入私有桶并请求 AES256 服务端加密；不配置访问密钥时使用部署环境的 AWS 凭据链。对象限定在 `ARTIFACT_S3_PREFIX` 下，默认 `y-point/artifacts/`，前缀必须是非根路径且以 `/` 结尾。`ARTIFACT_STORAGE_DIR` 在 S3 模式仍用于临时校验文件，须是仅服务进程可访问的目录。下载仍经 Bearer 授权 API，后台按页清理此前缀下未被业务库引用的随机键；上传后续失败会尝试立即删除远端对象，删除失败的对象由宽限期后的孤儿扫描补偿。模拟 S3 测试覆盖上传、下载、生成、删除、故障清理及多页孤儿扫描；真实桶的 ACL、加密、网络故障与恢复必须在目标环境验收。切换后端不会迁移已有正文，部署切换前需另行迁移对象并验证 SHA-256。
 

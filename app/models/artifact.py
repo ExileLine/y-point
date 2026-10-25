@@ -7,10 +7,10 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class Artifact(CustomBaseModel):
@@ -35,4 +35,4 @@ class Artifact(CustomBaseModel):
     storage_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, comment="随机私有存储键")
     source: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件来源：upload 或 generated")
     state: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件状态：ready 或 deleted")
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, comment="文件到期时间")
+    expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="文件到期时间")
