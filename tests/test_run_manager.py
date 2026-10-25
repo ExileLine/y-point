@@ -33,6 +33,7 @@ from app.services.run_manager import (
     get_owned_run,
     heartbeat_run,
     expire_approvals,
+    expire_queued_runs,
     recover_expired_runs,
     replay_events,
     request_cancel,
@@ -292,3 +293,51 @@ async def exercise_approval_expiry(database_path: Path) -> None:
 def test_approval_expiry(tmp_path: Path) -> None:
     """运行审批到期与运行终态一致性测试。"""
     asyncio.run(exercise_approval_expiry(tmp_path / "approval-expiry.db"))
+
+
+def test_queue_wait_timeout(tmp_path: Path) -> None:
+    """排队期限只约束尚未领取的运行，并生成可回放的单一终态。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue-timeout.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                due = await create_run(db, 1, request_key="due", max_queue_wait_seconds=30)
+                active = await create_run(db, 1, max_queue_wait_seconds=30)
+                cancelled = await create_run(db, 1, max_queue_wait_seconds=30)
+                unlimited = await create_run(db, 1)
+                assert due.queue_expires_at == due.create_time + timedelta(seconds=30)
+                assert (await create_run(db, 1, request_key="due", max_queue_wait_seconds=30)).id == due.id
+                with pytest.raises(RunConflictError):
+                    await create_run(db, 1, request_key="due", max_queue_wait_seconds=60)
+                for invalid in (0, 86401):
+                    with pytest.raises(ValueError):
+                        await create_run(db, 1, max_queue_wait_seconds=invalid)
+                await claim_run(db, active.id)
+                await request_cancel(db, cancelled.id, 1)
+                ids = (due.id, active.id, cancelled.id)
+            async with sessions.begin() as db:
+                await db.execute(update(AgentRun).where(AgentRun.id.in_(ids)).values(
+                    queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
+                ))
+            async with sessions.begin() as db:
+                with pytest.raises(RunConflictError):
+                    await claim_run(db, due.id)
+                assert await expire_queued_runs(db) == 1
+                assert await expire_queued_runs(db) == 0
+            async with sessions.begin() as db:
+                expired = await get_owned_run(db, due.id, 1)
+                assert expired.state == "timed_out" and expired.failure_code == "queue_timeout"
+                assert [(event.state, event.failure_code) for event in await replay_events(db, due.id, 1)] == [
+                    ("queued", None), ("timed_out", "queue_timeout"),
+                ]
+                assert (await get_owned_run(db, active.id, 1)).state == "running"
+                assert (await get_owned_run(db, cancelled.id, 1)).state == "cancelled"
+                assert (await get_owned_run(db, unlimited.id, 1)).state == "queued"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())

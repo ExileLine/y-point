@@ -3,7 +3,7 @@
 # @Author  : yangyuexiong
 # @File    : runtime_checkpoint.py
 
-"""本地运行时的持久化检查点入口。"""
+"""运行时的持久化检查点入口。"""
 
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -11,6 +11,9 @@ from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+from app.core.config import get_config
 
 
 @contextmanager
@@ -31,3 +34,20 @@ async def open_async_sqlite_checkpointer(database_path: Path) -> AsyncIterator[A
     database_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     async with AsyncSqliteSaver.from_conn_string(str(database_path)) as checkpointer:
         yield checkpointer
+
+
+@asynccontextmanager
+async def open_async_checkpointer(database_path: Path) -> AsyncIterator[AsyncSqliteSaver | AsyncPostgresSaver]:
+    """按部署配置打开检查点；业务库后端与检查点后端相互独立。"""
+    config = get_config()
+    backend = config.CHECKPOINT_BACKEND.lower()
+    if backend == "sqlite":
+        async with open_async_sqlite_checkpointer(database_path) as checkpointer:
+            yield checkpointer
+    elif backend == "postgres":
+        if not config.CHECKPOINT_POSTGRES_DSN:
+            raise ValueError("PostgreSQL 检查点必须配置独立连接地址")
+        async with AsyncPostgresSaver.from_conn_string(config.CHECKPOINT_POSTGRES_DSN) as checkpointer:
+            yield checkpointer
+    else:
+        raise ValueError("不支持的检查点存储后端")

@@ -18,6 +18,13 @@ class RunCreateIn(BaseModel):
     model_id: int = Field(gt=0, description="本次运行使用的可选模型 ID", examples=[1])
     model_timeout_seconds: int = Field(default=120, ge=1, le=120, description="本轮模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(default=120, ge=1, le=120, description="单次工具执行最长秒数", examples=[30])
+    max_queue_wait_seconds: int | None = Field(
+        default=None, ge=1, le=86400, description="排队等待最长秒数；为空时不限制", examples=[300],
+    )
+    enable_text_artifact_tool: bool = Field(
+        default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False],
+    )
+    publish_answer_artifact: bool = Field(default=False, description="是否将最终回答另存为 TXT 产物", examples=[False])
     max_model_calls: int | None = Field(
         default=None, ge=1, le=100, description="本次运行最多可开始的模型调用次数", examples=[3],
     )
@@ -48,6 +55,10 @@ class RunOut(BaseModel):
     model_id: int | None = Field(description="使用的模型 ID", examples=[1])
     model_timeout_seconds: int = Field(description="本轮模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行最长秒数", examples=[30])
+    max_queue_wait_seconds: int | None = Field(description="排队等待最长秒数", examples=[300])
+    queue_expires_at: datetime | None = Field(description="排队等待截止时间", examples=["2026-10-22T22:05:00"])
+    enable_text_artifact_tool: bool = Field(description="是否启用需审批的文本文件读取工具", examples=[False])
+    publish_answer_artifact: bool = Field(description="是否将最终回答发布为 TXT 产物", examples=[False])
     max_model_calls: int | None = Field(description="本次运行的模型调用次数上限", examples=[3])
     model_call_count: int = Field(description="本次运行已开始的模型调用次数", examples=[1])
     max_total_tokens: int | None = Field(description="本次运行上游报告的总 Token 上限", examples=[10000])
@@ -78,6 +89,9 @@ class RunEventOut(BaseModel):
         description="服务端生成的工具调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
     )
     tool_name: str | None = Field(description="已授权工具名称，不含参数和结果", examples=["web_search"])
+    artifact_id: str | None = Field(
+        description="已发布生成产物的授权引用 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
     create_time: datetime = Field(description="事件创建时间", examples=["2026-10-22T22:00:00"])
 
 
@@ -98,6 +112,10 @@ class ApprovalDecisionIn(BaseModel):
 class ApprovalActionOut(BaseModel):
     name: str = Field(description="待审批工具名称", examples=["web_search"])
     arguments_hash: str = Field(description="工具参数的服务端 HMAC-SHA256 摘要", examples=["a" * 64])
+    resource_id: str | None = Field(
+        default=None, description="可安全展示的目标文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
+    resource_name: str | None = Field(default=None, description="当前仍归属审批人的目标文件名", examples=["notes.txt"])
 
 
 class ApprovalOut(BaseModel):

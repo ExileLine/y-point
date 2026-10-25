@@ -46,7 +46,7 @@ class ToolCallBudgetExceeded(Exception):
 
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled", "timed_out"})
 ALLOWED_TRANSITIONS = {
-    "queued": frozenset({"running", "cancelled"}),
+    "queued": frozenset({"running", "cancelled", "timed_out"}),
     "running": frozenset({"waiting_for_approval", "completed", "failed", "cancel_requested", "timed_out"}),
     "waiting_for_approval": frozenset({"running", "cancelled", "timed_out"}),
     "cancel_requested": frozenset({"cancelled", "failed", "timed_out"}),
@@ -56,7 +56,9 @@ ALLOWED_TRANSITIONS = {
 async def create_run(
     db: AsyncSession, owner_id: int, *, agent_id: int | None = None, model_id: int | None = None,
     thread_id: str | None = None, request_key: str | None = None, input_text: str | None = None,
-    model_timeout_seconds: int = 120, tool_timeout_seconds: int = 120,
+    model_timeout_seconds: int = 120, tool_timeout_seconds: int = 120, max_queue_wait_seconds: int | None = None,
+    enable_text_artifact_tool: bool = False,
+    publish_answer_artifact: bool = False,
     max_model_calls: int | None = None, max_total_tokens: int | None = None, max_tool_calls: int | None = None,
     max_estimated_cost: Decimal | None = None, cost_pricing: tuple[Decimal, Decimal, str] | None = None,
 ) -> AgentRun:
@@ -71,6 +73,12 @@ async def create_run(
         raise ValueError("模型生成超时秒数必须在 1 到 120 之间")
     if not 1 <= tool_timeout_seconds <= 120:
         raise ValueError("单次工具执行超时秒数必须在 1 到 120 之间")
+    if max_queue_wait_seconds is not None and not 1 <= max_queue_wait_seconds <= 86400:
+        raise ValueError("排队等待秒数必须在 1 到 86400 之间")
+    if type(enable_text_artifact_tool) is not bool:
+        raise ValueError("文本文件工具开关必须是布尔值")
+    if type(publish_answer_artifact) is not bool:
+        raise ValueError("回答产物开关必须是布尔值")
     if max_model_calls is not None and not 1 <= max_model_calls <= 100:
         raise ValueError("模型调用次数上限必须在 1 到 100 之间")
     if max_total_tokens is not None and not 1 <= max_total_tokens <= 10_000_000:
@@ -90,6 +98,9 @@ async def create_run(
                 existing.agent_id != agent_id or existing.model_id != model_id
                 or existing.model_timeout_seconds != model_timeout_seconds
                 or existing.tool_timeout_seconds != tool_timeout_seconds
+                or existing.max_queue_wait_seconds != max_queue_wait_seconds
+                or existing.enable_text_artifact_tool != enable_text_artifact_tool
+                or existing.publish_answer_artifact != publish_answer_artifact
                 or existing.max_model_calls != max_model_calls
                 or existing.max_total_tokens != max_total_tokens
                 or existing.max_estimated_cost != max_estimated_cost
@@ -119,9 +130,15 @@ async def create_run(
         ).limit(1))
         if active_run is not None:
             raise RunConflictError("同一检查点线程已有未结束的运行")
+    now = shanghai_now(naive=True)
     run = AgentRun(
         id=str(uuid4()), owner_id=owner_id, agent_id=agent_id, model_id=model_id, thread_id=thread_id or str(uuid4()),
         request_key=request_key, model_timeout_seconds=model_timeout_seconds, tool_timeout_seconds=tool_timeout_seconds,
+        max_queue_wait_seconds=max_queue_wait_seconds,
+        queue_expires_at=now + timedelta(seconds=max_queue_wait_seconds) if max_queue_wait_seconds is not None else None,
+        enable_text_artifact_tool=enable_text_artifact_tool,
+        publish_answer_artifact=publish_answer_artifact,
+        create_time=now,
         state="queued", version=0, event_seq=1,
         max_model_calls=max_model_calls, model_call_count=0,
         max_total_tokens=max_total_tokens, reported_total_tokens=0,
@@ -283,6 +300,10 @@ async def _change_state(
         statement = statement.where(AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
     if require_expired_lease:
         statement = statement.where(AgentRun.lease_expires_at <= now)
+    if run.state == "queued" and state == "running":
+        statement = statement.where(or_(AgentRun.queue_expires_at.is_(None), AgentRun.queue_expires_at > now))
+    if run.state == "queued" and state == "timed_out":
+        statement = statement.where(AgentRun.queue_expires_at <= now)
     result = await db.execute(statement.values(**values).execution_options(synchronize_session=False))
     if result.rowcount != 1:
         raise RunConflictError("运行状态已被其他执行器更新")
@@ -301,6 +322,24 @@ async def claim_run(db: AsyncSession, run_id: str, *, lease_seconds: int = 30) -
     if run is None:
         raise RunNotFoundError("运行不存在")
     return await _change_state(db, run, "running", now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
+
+
+async def expire_queued_runs(db: AsyncSession, *, limit: int = 100) -> int:
+    """批量结束已超过排队期限的运行；领取与到期由状态条件互斥。"""
+    if not 1 <= limit <= 1000:
+        raise ValueError("无效的排队回收数量")
+    now = shanghai_now(naive=True)
+    statement = select(AgentRun).where(
+        AgentRun.state == "queued", AgentRun.queue_expires_at <= now,
+    ).order_by(AgentRun.queue_expires_at, AgentRun.id).limit(limit)
+    count = 0
+    for run in (await db.scalars(statement)).all():
+        try:
+            await _change_state(db, run, "timed_out", now=now, failure_code="queue_timeout")
+        except RunConflictError:
+            continue
+        count += 1
+    return count
 
 
 async def heartbeat_run(db: AsyncSession, run_id: str, lease_token: str, *, lease_seconds: int = 30) -> AgentRun:
@@ -452,7 +491,11 @@ async def create_approval_request(
     if not actions or len(actions) > 20 or ttl_seconds <= 0:
         raise ValueError("无效的审批动作或到期时长")
     if any(
-        set(action) != {"name", "arguments_hash"} or not isinstance(action["name"], str)
+        set(action) not in ({"name", "arguments_hash"}, {"name", "arguments_hash", "resource_id"})
+        or "resource_id" in action and (
+            action["name"] != "read_text_artifact" or not isinstance(action["resource_id"], str)
+            or re.fullmatch(r"[0-9a-f-]{36}", action["resource_id"]) is None
+        ) or not isinstance(action["name"], str)
         or not 1 <= len(action["name"]) <= 128 or not isinstance(action["arguments_hash"], str)
         or re.fullmatch(r"[0-9a-f]{64}", action["arguments_hash"]) is None
         for action in actions

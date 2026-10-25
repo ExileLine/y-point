@@ -6,6 +6,8 @@
 """验证公开文本运行接口的授权、状态和事件游标。"""
 
 import asyncio
+import json
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,19 +18,107 @@ import httpx
 import jwt
 import pytest
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.v1 import runs as runs_api
 from app.api.v1.runs import stream_events
+from app.core.custom_exception import CustomException
 from app.core.password import hash_password
 from app.db.session import get_db_session
 from app.main import app
 from app.models.admin import Admin
+from app.models.artifact import Artifact
 from app.models.base import Base
+from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.schemas.run import RunCreateIn
+from app.services.artifact_store import publish_generated_artifact
 from app.services.run_manager import (
-    RunConflictError, append_text_delta, append_tool_event, claim_run, complete_run, create_approval_request, resume_approved_run,
+    RunConflictError, append_text_delta, append_tool_event, claim_run, complete_run, create_approval_request, create_run,
+    resume_approved_run,
 )
+
+
+def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """并发提交键冲突后重新核对原请求，而不是把唯一约束错误暴露为 500。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'request-race.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="race-owner", password="not-used", role="user", status=1, is_deleted=0))
+                db.add(ProviderConnection(
+                    id=1, name="race-provider", name_key="race-provider", kind="ollama",
+                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
+                ))
+                db.add(ModelCatalog(
+                    id=1, provider_id=1, external_id="race-model", display_name="race-model",
+                    creator_id=1, status=1, is_deleted=0,
+                ))
+                existing = await create_run(db, 1, model_id=1, input_text="same", request_key="race")
+
+            original = runs_api.create_run
+            attempts = 0
+
+            async def collided(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise IntegrityError("INSERT INTO yp_agent_run", {}, Exception("unique conflict"))
+                return await original(*args, **kwargs)
+
+            monkeypatch.setattr(runs_api, "create_run", collided)
+            async with sessions() as db:
+                response = await runs_api.submit_run(
+                    RunCreateIn(model_id=1, input_text="same", request_key="race"),
+                    actor=SimpleNamespace(id=1), db=db,
+                )
+                assert response.status_code == 201
+                assert json.loads(response.body)["data"]["id"] == existing.id
+            assert attempts == 2
+
+            attempts = 0
+            async with sessions() as db:
+                with pytest.raises(CustomException) as error:
+                    await runs_api.submit_run(
+                        RunCreateIn(model_id=1, input_text="different", request_key="race"),
+                        actor=SimpleNamespace(id=1), db=db,
+                    )
+                assert error.value.status_code == 409
+
+            attempts = 0
+            async with sessions() as db:
+                with pytest.raises(CustomException) as error:
+                    await runs_api.submit_run(
+                        RunCreateIn(model_id=1, input_text="new", request_key="unrelated"),
+                        actor=SimpleNamespace(id=1), db=db,
+                    )
+                assert error.value.status_code == 409
+            assert attempts == 1
+
+            attempts = 0
+
+            async def always_collides(*args, **kwargs):
+                raise IntegrityError("INSERT INTO secret_table", {"secret": "private"}, Exception("unique conflict"))
+
+            monkeypatch.setattr(runs_api, "create_run", always_collides)
+            async with sessions() as db:
+                with pytest.raises(CustomException) as error:
+                    await runs_api.submit_run(
+                        RunCreateIn(model_id=1, input_text="same", request_key="race"),
+                        actor=SimpleNamespace(id=1), db=db,
+                    )
+                assert error.value.status_code == 409
+                assert "secret_table" not in str(error.value) and "private" not in str(error.value)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
 
 
 async def exercise_run_api(database: Path) -> None:
@@ -83,6 +173,9 @@ async def exercise_run_api(database: Path) -> None:
             assert run["state"] == "queued" and run["event_seq"] == 1
             assert run["model_timeout_seconds"] == 120
             assert run["tool_timeout_seconds"] == 120
+            assert run["max_queue_wait_seconds"] is None and run["queue_expires_at"] is None
+            assert run["enable_text_artifact_tool"] is False
+            assert run["publish_answer_artifact"] is False
             assert run["max_model_calls"] is None and run["model_call_count"] == 0
             assert run["max_total_tokens"] is None and run["reported_total_tokens"] == 0
             assert run["max_estimated_cost"] is None and run["estimated_cost"] == "0"
@@ -103,6 +196,16 @@ async def exercise_run_api(database: Path) -> None:
                 json={"model_id": 1, "input_text": "hi", "request_key": "once", "tool_timeout_seconds": 30},
             )
             assert tool_timeout_conflict.status_code == 409
+            queue_timeout_conflict = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_queue_wait_seconds": 30},
+            )
+            assert queue_timeout_conflict.status_code == 409
+            tool_config_conflict = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "hi", "request_key": "once", "enable_text_artifact_tool": True},
+            )
+            assert tool_config_conflict.status_code == 409
             budget_conflict = await client.post(
                 "/api/v1/runs", headers=alice,
                 json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_model_calls": 2},
@@ -158,12 +261,67 @@ async def exercise_run_api(database: Path) -> None:
                         json={"model_id": 1, "input_text": "hi", field: invalid_timeout},
                     )
                     assert invalid.status_code == 400
+            for invalid_wait in (0, 86401):
+                invalid = await client.post(
+                    "/api/v1/runs", headers=alice,
+                    json={"model_id": 1, "input_text": "hi", "max_queue_wait_seconds": invalid_wait},
+                )
+                assert invalid.status_code == 400
             bounded = await client.post(
                 "/api/v1/runs", headers=alice,
-                json={"model_id": 1, "input_text": "bounded", "model_timeout_seconds": 60, "tool_timeout_seconds": 30},
+                json={
+                    "model_id": 1, "input_text": "bounded", "model_timeout_seconds": 60,
+                    "tool_timeout_seconds": 30, "max_queue_wait_seconds": 300,
+                },
             )
             assert bounded.status_code == 201 and bounded.json()["data"]["model_timeout_seconds"] == 60
             assert bounded.json()["data"]["tool_timeout_seconds"] == 30
+            assert bounded.json()["data"]["max_queue_wait_seconds"] == 300
+            assert bounded.json()["data"]["queue_expires_at"] is not None
+            enabled_tool = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "读取我的文本文件", "enable_text_artifact_tool": True},
+            )
+            assert enabled_tool.status_code == 409
+            async with sessions.begin() as db:
+                model = await db.get(ModelCatalog, 1)
+                model.verified_capabilities = ["tools"]
+            enabled_tool = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "读取我的文本文件", "enable_text_artifact_tool": True,
+                      "request_key": "artifact-enabled"},
+            )
+            assert enabled_tool.status_code == 201
+            assert enabled_tool.json()["data"]["enable_text_artifact_tool"] is True
+            disabled_duplicate = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "读取我的文本文件", "request_key": "artifact-enabled"},
+            )
+            assert disabled_duplicate.status_code == 409
+            answer_export = await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "导出回答", "publish_answer_artifact": True,
+                      "request_key": "answer-export"},
+            )
+            assert answer_export.status_code == 201
+            assert answer_export.json()["data"]["publish_answer_artifact"] is True
+            assert (await client.post(
+                "/api/v1/runs", headers=alice,
+                json={"model_id": 1, "input_text": "导出回答", "request_key": "answer-export"},
+            )).status_code == 409
+            answer_id = answer_export.json()["data"]["id"]
+            async with sessions.begin() as db:
+                claimed = await claim_run(db, answer_id)
+                await complete_run(db, answer_id, claimed.lease_token, final_text="导出的正文")
+            artifact_root = database.parent / "answer-output"
+            artifact_root.mkdir(mode=0o700)
+            answer_artifact = await publish_generated_artifact(
+                sessions, answer_id, "final-answer-v1", "answer.txt", "导出的正文".encode(), artifact_root,
+            )
+            answer_events = await client.get(f"/api/v1/runs/{answer_id}/stream", headers=alice)
+            assert answer_events.status_code == 200
+            assert "event: artifact_published" in answer_events.text
+            assert answer_artifact.id in answer_events.text
             bounded_id = bounded.json()["data"]["id"]
             assert (await client.get(f"/api/v1/runs/{bounded_id}", headers=alice)).json()["data"]["model_timeout_seconds"] == 60
             assert (await client.get(f"/api/v1/runs/{bounded_id}", headers=alice)).json()["data"]["tool_timeout_seconds"] == 30
@@ -252,7 +410,9 @@ async def exercise_run_api(database: Path) -> None:
                 f"/api/v1/runs/{pending_id}/approval/decision", headers=bob, json={"decision": "approve"},
             )).status_code == 404
             approval = (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=alice)).json()["data"]
-            assert approval["state"] == "pending" and approval["actions"] == [{"name": "search", "arguments_hash": "a" * 64}]
+            assert approval["state"] == "pending" and approval["actions"] == [
+                {"name": "search", "arguments_hash": "a" * 64, "resource_id": None, "resource_name": None},
+            ]
             assert "checkpoint_id" not in approval and "owner_id" not in approval
             async with sessions.begin() as db:
                 with pytest.raises(RunConflictError):
@@ -273,6 +433,26 @@ async def exercise_run_api(database: Path) -> None:
                 f"/api/v1/runs/{pending_id}/approval/decision", headers=alice, json={"decision": "approve"},
             )
             assert repeated.status_code == 409
+
+            resource_id = str(uuid4())
+            async with sessions.begin() as db:
+                db.add(Artifact(
+                    id=resource_id, owner_id=1, filename="approved.txt", media_type="text/plain", byte_size=4,
+                    sha256="a" * 64, storage_key=uuid4().hex, source="upload", state="ready",
+                    expires_at=shanghai_now(naive=True) + timedelta(days=1), status=1, is_deleted=0,
+                ))
+                enabled_id = enabled_tool.json()["data"]["id"]
+                claimed = await claim_run(db, enabled_id)
+                await create_approval_request(
+                    db, enabled_id, claimed.lease_token, "checkpoint-file",
+                    [{"name": "read_text_artifact", "arguments_hash": "b" * 64, "resource_id": resource_id}],
+                )
+            preview = (await client.get(f"/api/v1/runs/{enabled_id}/approval", headers=alice)).json()["data"]
+            assert preview["actions"][0] == {
+                "name": "read_text_artifact", "arguments_hash": "b" * 64,
+                "resource_id": resource_id, "resource_name": "approved.txt",
+            }
+            assert (await client.get(f"/api/v1/runs/{enabled_id}/approval", headers=bob)).status_code == 404
 
             claims = jwt.decode(alice["Authorization"].split()[1], options={"verify_signature": False})
             async with sessions() as stream_db:

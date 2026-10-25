@@ -8,10 +8,12 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from botocore.exceptions import BotoCoreError, ClientError
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from urllib.parse import quote
 
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
@@ -22,7 +24,10 @@ from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
 from app.schemas.artifact import ArtifactOut
-from app.services.artifact_store import MAX_FILES, MAX_FILE_BYTES, ArtifactValidationError, artifact_root, save_upload, storage_path
+from app.services.artifact_store import (
+    MAX_FILES, MAX_FILE_BYTES, ArtifactValidationError, artifact_root, enforce_owner_quota, save_upload, storage_path,
+)
+from app.services.private_blob_store import delete_blob, read_blob, using_s3
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -36,6 +41,19 @@ async def _owned_artifact(db: AsyncSession, artifact_id: str, owner_id: int) -> 
     ):
         raise CustomException(status_code=404, custom_code=10002, detail="文件不存在")
     return artifact
+
+
+async def _cleanup_failed_uploads(saved: list[tuple[Artifact, Path]], root: Path) -> None:
+    """逐项尝试清理整批文件，保留上传或提交时的原始错误。"""
+    for item, path in saved:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("上传回滚后的本地清理失败：{}", type(exc).__name__)
+        try:
+            await delete_blob(root, item.storage_key)
+        except Exception as exc:
+            logger.warning("上传回滚后的对象清理失败：{}", type(exc).__name__)
 
 
 @router.post("/uploads", summary="上传多个私有文件")
@@ -54,17 +72,18 @@ async def upload_artifacts(
     try:
         for file in files:
             saved.append(await save_upload(file, actor.id, root))
+        await enforce_owner_quota(
+            db, actor.id, add_count=len(saved), add_bytes=sum(item.byte_size for item, _ in saved),
+        )
         db.add_all([item for item, _ in saved])
         await db.commit()
     except ArtifactValidationError as exc:
         await db.rollback()
-        for _, path in saved:
-            path.unlink(missing_ok=True)
+        await _cleanup_failed_uploads(saved, root)
         raise CustomException(status_code=400, custom_code=10006, detail=str(exc)) from None
     except BaseException:
         await db.rollback()
-        for _, path in saved:
-            path.unlink(missing_ok=True)
+        await _cleanup_failed_uploads(saved, root)
         raise
     return api_response(
         http_code=201, code=201,
@@ -104,6 +123,18 @@ async def download_artifact(
 ):
     """逐次校验所有权后返回文件字节流。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
+    if using_s3():
+        try:
+            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
+        except (OSError, ValueError, BotoCoreError, ClientError):
+            raise CustomException(status_code=404, custom_code=10002, detail="文件不存在") from None
+        return Response(
+            content, media_type=item.media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename*=utf-8''{quote(item.filename)}",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
     path = storage_path(artifact_root(), item.storage_key)
     if not path.is_file() or path.is_symlink():
         raise CustomException(status_code=404, custom_code=10002, detail="文件不存在")
@@ -120,7 +151,7 @@ async def delete_artifact(
     item.is_deleted = 1
     await db.commit()
     try:
-        storage_path(artifact_root(), item.storage_key).unlink(missing_ok=True)
-    except OSError as exc:
+        await delete_blob(artifact_root(), item.storage_key)
+    except (OSError, BotoCoreError, ClientError) as exc:
         logger.warning("已撤销文件 {} 的访问，但文件清理失败：{}", artifact_id, type(exc).__name__)
     return api_response(data={"id": artifact_id})

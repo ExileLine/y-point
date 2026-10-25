@@ -6,6 +6,7 @@
 """验证 Run、消息与 DeepAgents 检查点的内部执行链路。"""
 
 import asyncio
+import io
 import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -17,6 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from deepagents import create_deep_agent
+from fastapi import UploadFile
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import tool
@@ -25,12 +27,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
+from app.models.artifact import Artifact
 from app.models.base import Base, shanghai_now
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.cli import run_worker as run_worker_module
 from app.services import run_executor as run_executor_module
+from app.services import worker_tools as worker_tools_module
+from app.services.artifact_store import save_upload
 from app.services.run_dispatcher import dispatch_next_run
 from app.services.run_executor import _approval_actions, execute_text_run
 from app.services.run_manager import (
@@ -46,9 +51,11 @@ from app.services.run_manager import (
     replay_events,
     recover_expired_runs,
     request_cancel,
+    timeout_run,
 )
 from app.services.run_reconciler import reconcile_expired_runs
-from app.services.runtime_checkpoint import open_async_sqlite_checkpointer
+from app.services.runtime_checkpoint import open_async_checkpointer, open_async_sqlite_checkpointer
+from app.services import runtime_checkpoint
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -142,6 +149,25 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
         assert next_result.state == "completed" and next_result.checkpoint_id != completed.checkpoint_id
     finally:
         await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库",
+)
+def test_completed_run_with_postgres_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """业务 Run 在不同检查点连接上完成并继续同一线程。"""
+    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
+        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"],
+    ))
+
+    async def exercise() -> None:
+        checkpoint_path = tmp_path / "unused.sqlite"
+        async with open_async_checkpointer(checkpoint_path) as checkpointer:
+            await checkpointer.setup()
+        await exercise_completed_run(tmp_path / "runs.db", checkpoint_path)
+        assert not checkpoint_path.exists()
+
+    asyncio.run(exercise())
 
 
 async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path) -> None:
@@ -490,9 +516,12 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
     """验证审批后重新解析工具并从持久化检查点完成同一个 Run。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
+    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
     responses = iter([
-        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "approved result"}, "id": "call-1"}]),
-        AIMessage(content="tool completed"),
+        AIMessage(content="", usage_metadata=usage, tool_calls=[
+            {"name": "echo_approved", "args": {"text": "approved result"}, "id": "call-1"},
+        ]),
+        AIMessage(content="tool completed", usage_metadata=usage),
         AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "must not run"}, "id": "call-2"}]),
         AIMessage(content="must not appear"),
     ])
@@ -513,7 +542,11 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="approval-user", password="not-used", role="user", status=1, is_deleted=0))
-            run = await create_run(db, 1, input_text="请先调用工具", max_model_calls=2, max_tool_calls=1)
+            run = await create_run(
+                db, 1, input_text="请先调用工具", max_model_calls=2, max_tool_calls=1,
+                max_total_tokens=30, max_estimated_cost=Decimal("0.000080"),
+                cost_pricing=(Decimal("2"), Decimal("4"), "USD"),
+            )
         paused = await dispatch_next_run(
             sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
             lease_seconds=2, poll_seconds=0.1,
@@ -521,6 +554,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
         assert paused.id == run.id and paused.state == "waiting_for_approval" and paused.checkpoint_id
         assert paused.model_call_count == 1
         assert paused.tool_call_count == 0
+        assert paused.reported_total_tokens == 15 and paused.estimated_cost == Decimal("0.000040000000")
         async with sessions.begin() as db:
             assert all(event.tool_call_id is None for event in await replay_events(db, run.id, 1))
             approval = await get_owned_approval(db, run.id, 1)
@@ -535,6 +569,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
         assert completed.id == run.id and completed.state == "completed"
         assert completed.model_call_count == 2
         assert completed.tool_call_count == 1
+        assert completed.reported_total_tokens == 30 and completed.estimated_cost == Decimal("0.000080000000")
         async with sessions() as db:
             messages = await get_owned_messages(db, run.id, 1)
             assert [(message.role, message.content) for message in messages] == [
@@ -932,6 +967,109 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
         await engine.dispose()
 
 
+def test_cancel_during_tool_execution(tmp_path: Path) -> None:
+    """取消请求中断工具协程，执行器确认后保留可追溯的开始事件。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-tool.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        @tool
+        async def slow_read() -> str:
+            """模拟等待中的无副作用业务读取。"""
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            finally:
+                stopped.set()
+            return "unreachable"
+
+        async def resolve_tool(db, run):
+            return [slow_read], {}
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="cancel-tool", password="not-used", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="取消读取")
+            task = asyncio.create_task(execute_text_run(
+                sessions, run.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{"name": "slow_read", "args": {}, "id": "slow-read-call"}]),
+                    AIMessage(content="unreachable"),
+                ]), tmp_path / "cancel-tool-checkpoint.db", resolve_tools=resolve_tool,
+                lease_seconds=2, poll_seconds=0.05,
+            ))
+            await asyncio.wait_for(started.wait(), timeout=3)
+            async with sessions.begin() as db:
+                assert (await request_cancel(db, run.id, 1)).state == "cancel_requested"
+            result = await asyncio.wait_for(task, timeout=4)
+            assert result.state == "cancelled" and stopped.is_set()
+            async with sessions() as db:
+                assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == [
+                    "tool_started",
+                ]
+                assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_cancel_arriving_during_timeout_finalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """超时终态写入前出现取消请求时，执行器须确认取消并保持事件连续。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-timeout.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="cancel-timeout", password="not-used", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="long task")
+                claimed = await claim_run(db, run.id)
+
+            calls = 0
+
+            async def raced_timeout(db, run_id, lease_token, failure_code):
+                nonlocal calls
+                calls += 1
+                await request_cancel(db, run_id, 1)
+                raise RunConflictError("取消请求赢得版本竞争")
+
+            monkeypatch.setattr(run_executor_module, "timeout_run", raced_timeout)
+            result = await run_executor_module._finish_interrupted(
+                sessions, run.id, claimed.lease_token, "execution_timeout",
+            )
+            assert calls == 1
+            assert result.state == "cancelled" and result.failure_code is None
+            async with sessions() as db:
+                stored = await db.get(AgentRun, run.id)
+                assert stored.state == "cancelled" and stored.lease_token is None
+                events = await replay_events(db, run.id, 1)
+                assert [event.sequence for event in events] == [1, 2, 3, 4]
+                assert [event.state for event in events] == [
+                    "queued", "running", "cancel_requested", "cancelled",
+                ]
+
+            async with sessions.begin() as db:
+                later_cancel = await create_run(db, 1, input_text="timeout first")
+                leased = await claim_run(db, later_cancel.id)
+                timed_out = await timeout_run(db, later_cancel.id, leased.lease_token)
+                assert timed_out.state == "timed_out"
+                assert (await request_cancel(db, later_cancel.id, 1)).state == "timed_out"
+            async with sessions() as db:
+                events = await replay_events(db, later_cancel.id, 1)
+                assert [event.state for event in events] == ["queued", "running", "timed_out"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 async def exercise_failed_model(database_path: Path, checkpoint_path: Path) -> None:
     """验证模型失败只留下分类，不将上游异常存入业务表。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
@@ -1166,6 +1304,180 @@ def test_dispatcher_rejects_missing_user(tmp_path: Path) -> None:
             failed = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", lease_seconds=2, poll_seconds=0.1)
             assert failed.id == run.id and failed.state == "failed" and failed.failure_code == "runtime_error"
             assert await dispatch_next_run(sessions, tmp_path / "checkpoints.db", lease_seconds=2, poll_seconds=0.1) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_worker_expires_queued_run_before_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """独立 worker 启动后先关闭过期队列任务，不触发模型调用。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue-worker.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                run = await create_run(db, 1, input_text="已过期", max_queue_wait_seconds=1)
+            async with sessions.begin() as db:
+                await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
+                    queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
+                ))
+            monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
+            await run_worker_module.run_worker(tmp_path / "queue-checkpoint.db", once=True)
+            async with sessions() as db:
+                expired = await db.get(AgentRun, run.id)
+                assert expired.state == "timed_out" and expired.failure_code == "queue_timeout"
+                assert expired.model_call_count == 0
+                assert [event.state for event in await replay_events(db, run.id, 1)] == ["queued", "timed_out"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """正式 worker 按运行开关注册文件工具，并在审批恢复后执行。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'artifact-worker.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        storage = tmp_path / "private-artifacts"
+        storage.mkdir(mode=0o700)
+        checkpoint_path = tmp_path / "artifact-checkpoint.db"
+        responses = None
+
+        async def resolve_model(db, run):
+            """两个 worker 进程轮次各使用一段模型响应。"""
+            assert responses is not None
+            return ScriptedModel(responses=[next(responses)])
+
+        async def dispatch(sessions_arg, checkpoint_arg, **kwargs):
+            """保留正式 worker 的工具解析器，仅替换上游模型。"""
+            return await dispatch_next_run(sessions_arg, checkpoint_arg, resolve_model=resolve_model, **kwargs)
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="artifact-worker", password="not-used", role="user", status=1, is_deleted=0))
+                artifact, _ = await save_upload(
+                    UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, storage,
+                )
+                db.add(artifact)
+                run = await create_run(db, 1, input_text="读取我的文件", enable_text_artifact_tool=True)
+                artifact_id = artifact.id
+            responses = iter([
+                AIMessage(content="", tool_calls=[{
+                    "name": "read_text_artifact", "args": {"artifact_id": artifact_id}, "id": "read-call",
+                }]),
+                AIMessage(content="文件已读取"),
+            ])
+            monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
+            monkeypatch.setattr(run_worker_module, "dispatch_next_run", dispatch)
+            monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: storage)
+            await run_worker_module.run_worker(checkpoint_path, once=True)
+            async with sessions.begin() as db:
+                paused = await db.get(AgentRun, run.id)
+                assert paused.state == "waiting_for_approval" and paused.tool_call_count == 0
+                approval = await get_owned_approval(db, run.id, 1)
+                assert approval.actions[0]["name"] == "read_text_artifact"
+                assert approval.actions[0]["resource_id"] == artifact_id
+                assert "private note" not in str(approval.actions)
+                await decide_approval(db, run.id, 1, "approve")
+            await run_worker_module.run_worker(checkpoint_path, once=True)
+            async with sessions() as db:
+                completed = await db.get(AgentRun, run.id)
+                assert completed.state == "completed" and completed.tool_call_count == 1
+                assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == [
+                    "tool_started", "tool_completed",
+                ]
+                assert [message.content for message in await get_owned_messages(db, run.id, 1)] == [
+                    "读取我的文件", "文件已读取",
+                ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_worker_lists_owned_text_artifacts_without_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """文件列表只提供元数据，仍计入工具预算并记录脱敏事件。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'artifact-list.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private-artifacts"
+        root.mkdir(mode=0o700)
+        monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: root)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="artifact-list", password="not-used", role="user", status=1, is_deleted=0))
+                artifact, _ = await save_upload(
+                    UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, root,
+                )
+                db.add(artifact)
+                run = await create_run(
+                    db, 1, input_text="列出我的文本文件", enable_text_artifact_tool=True, max_tool_calls=1,
+                )
+            result = await execute_text_run(
+                sessions, run.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": "list_text_artifacts", "args": {}, "id": "list-call",
+                    }]),
+                    AIMessage(content="已找到文件"),
+                ]), tmp_path / "artifact-list-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert result.state == "completed" and result.tool_call_count == 1
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert [(event.event_type, event.tool_name) for event in events if event.tool_call_id] == [
+                    ("tool_started", "list_text_artifacts"), ("tool_completed", "list_text_artifacts"),
+                ]
+                assert all("private note" not in str(event.content) for event in events)
+                assert (await db.get(AgentRun, run.id)).state == "completed"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """worker 补发已完成回答的 TXT 产物，重复扫描只产生一个引用事件。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'answer-worker.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "answer-artifacts"
+        root.mkdir(mode=0o700)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="answer-owner", password="not-used", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="生成回答文件", publish_answer_artifact=True)
+            completed = await execute_text_run(
+                sessions, run.id, ScriptedModel(responses=[AIMessage(content="最终回答")]),
+                tmp_path / "answer-checkpoint.db", lease_seconds=2, poll_seconds=0.1,
+            )
+            assert completed.state == "completed"
+            monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
+            await run_worker_module.run_worker(tmp_path / "answer-checkpoint.db", once=True, artifact_path=root)
+            await run_worker_module.run_worker(tmp_path / "answer-checkpoint.db", once=True, artifact_path=root)
+            async with sessions() as db:
+                artifacts = (await db.scalars(select(Artifact).where(Artifact.run_id == run.id))).all()
+                assert len(artifacts) == 1 and artifacts[0].filename == "answer.txt"
+                assert (root / artifacts[0].storage_key).read_text() == "最终回答"
+                events = await replay_events(db, run.id, 1)
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
+                    ("artifact_published", artifacts[0].id),
+                ]
         finally:
             await engine.dispose()
 

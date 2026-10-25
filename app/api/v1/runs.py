@@ -11,6 +11,8 @@ import time
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
@@ -18,7 +20,10 @@ from app.core.response import api_response
 from app.core.security import get_current_admin, require_admin, utc_now
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.agent_run import AgentRun
 from app.models.auth_session import AuthSession
+from app.models.artifact import Artifact
+from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.run import ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, WorkerStatusOut
@@ -34,6 +39,23 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 def _run_data(run) -> dict:
     """将运行转换为不含租约和内部检查点的公开结构。"""
     return RunOut.model_validate(run).model_dump(mode="json")
+
+
+async def _approval_data(db: AsyncSession, approval: object, owner_id: int) -> dict:
+    """仅为当前所有者补充仍可访问的审批目标文件名。"""
+    data = ApprovalOut.model_validate(approval).model_dump(mode="json")
+    for action in data["actions"]:
+        resource_id = action.get("resource_id")
+        if resource_id is None:
+            continue
+        artifact = await db.get(Artifact, resource_id)
+        if (
+            artifact is not None and artifact.owner_id == owner_id and artifact.state == "ready"
+            and artifact.status == 1 and artifact.is_deleted == 0
+            and (artifact.expires_at is None or artifact.expires_at > shanghai_now(naive=True))
+        ):
+            action["resource_name"] = artifact.filename
+    return data
 
 
 @router.get("/workers/status", summary="查询运行执行器状态")
@@ -58,17 +80,41 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.status != 1 or model.is_deleted != 0 or provider is None or provider.status != 1 or provider.is_deleted != 0:
         raise CustomException(status_code=404, custom_code=10002, detail="模型不可用")
+    if body.enable_text_artifact_tool and "tools" not in (model.verified_capabilities or []):
+        raise CustomException(status_code=409, custom_code=10005, detail="模型尚未通过工具调用能力验证")
+    options = dict(
+        model_id=body.model_id, input_text=body.input_text,
+        request_key=body.request_key, thread_id=body.thread_id, model_timeout_seconds=body.model_timeout_seconds,
+        tool_timeout_seconds=body.tool_timeout_seconds, max_queue_wait_seconds=body.max_queue_wait_seconds,
+        enable_text_artifact_tool=body.enable_text_artifact_tool, max_model_calls=body.max_model_calls,
+        publish_answer_artifact=body.publish_answer_artifact,
+        max_total_tokens=body.max_total_tokens, max_tool_calls=body.max_tool_calls,
+        max_estimated_cost=body.max_estimated_cost,
+        cost_pricing=(model.input_price, model.output_price, model.price_currency)
+        if body.max_estimated_cost is not None and model.input_price is not None and model.output_price is not None else None,
+    )
     try:
-        run = await create_run(
-            db, actor.id, model_id=body.model_id, input_text=body.input_text,
-            request_key=body.request_key, thread_id=body.thread_id, model_timeout_seconds=body.model_timeout_seconds,
-            tool_timeout_seconds=body.tool_timeout_seconds, max_model_calls=body.max_model_calls,
-            max_total_tokens=body.max_total_tokens, max_tool_calls=body.max_tool_calls,
-            max_estimated_cost=body.max_estimated_cost,
-            cost_pricing=(model.input_price, model.output_price, model.price_currency)
-            if body.max_estimated_cost is not None and model.input_price is not None and model.output_price is not None else None,
-        )
+        run = await create_run(db, actor.id, **options)
         await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        if body.request_key is None:
+            raise CustomException(status_code=409, custom_code=10005, detail="运行创建冲突") from None
+        existing = await db.scalar(select(AgentRun.id).where(
+            AgentRun.owner_id == actor.id, AgentRun.request_key == body.request_key,
+        ))
+        if existing is None:
+            await db.rollback()
+            raise CustomException(status_code=409, custom_code=10005, detail="运行创建冲突") from None
+        try:
+            run = await create_run(db, actor.id, **options)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise CustomException(status_code=409, custom_code=10005, detail="运行创建冲突") from None
+        except (RunConflictError, ValueError) as exc:
+            await db.rollback()
+            raise CustomException(status_code=409, custom_code=10005, detail=str(exc)) from None
     except (RunConflictError, ValueError) as exc:
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail=str(exc)) from None
@@ -110,7 +156,7 @@ async def read_approval(run_id: str, actor: Admin = Depends(get_current_admin), 
         approval = await get_owned_approval(db, run_id, actor.id)
     except RunNotFoundError:
         raise CustomException(status_code=404, custom_code=10002, detail="审批请求不存在") from None
-    return api_response(data=ApprovalOut.model_validate(approval).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=await _approval_data(db, approval, actor.id), datetime_format=False)
 
 
 @router.post("/{run_id}/approval/decision", summary="决定运行审批请求")
@@ -127,7 +173,7 @@ async def submit_approval_decision(
     except RunConflictError as exc:
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail=str(exc)) from None
-    return api_response(data=ApprovalOut.model_validate(approval).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=await _approval_data(db, approval, actor.id), datetime_format=False)
 
 
 @router.get("/{run_id}/events", summary="回放文本运行事件")
@@ -181,7 +227,13 @@ async def stream_events(
                 payload = RunEventOut.model_validate(event).model_dump(mode="json")
                 yield f"id: {run_id}:{cursor}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             if run.state in TERMINAL_STATES and cursor >= run.event_seq:
-                break
+                if run.state != "completed" or not run.publish_answer_artifact:
+                    break
+                published = await db.scalar(select(Artifact.id).where(
+                    Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1",
+                ).limit(1))
+                if published is not None:
+                    break
             if events:
                 idle = 0
             else:

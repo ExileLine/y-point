@@ -130,8 +130,20 @@ class BaseConfig(BaseSettings):
     POSTGRESQL_DATABASE: str = "y_point"
 
     SQLITE_DATABASE: str = "y_point.db"
+    CHECKPOINT_BACKEND: str = "sqlite"
+    CHECKPOINT_POSTGRES_DSN: str = ""
     ARTIFACT_STORAGE_DIR: str = ".run-private/artifacts"
     ARTIFACT_RETENTION_DAYS: int = 30
+    ARTIFACT_OWNER_MAX_BYTES: int = 1024 * 1024 * 1024
+    ARTIFACT_OWNER_MAX_FILES: int = 1000
+    ARTIFACT_REQUIRE_MALWARE_SCAN: bool = False
+    ARTIFACT_STORAGE_BACKEND: str = "local"
+    ARTIFACT_S3_BUCKET: str = ""
+    ARTIFACT_S3_PREFIX: str = "y-point/artifacts/"
+    ARTIFACT_S3_ENDPOINT_URL: str = ""
+    ARTIFACT_S3_REGION: str = ""
+    ARTIFACT_S3_ACCESS_KEY_ID: str = ""
+    ARTIFACT_S3_SECRET_ACCESS_KEY: str = ""
 
     REDIS_HOST: str = "127.0.0.1"
     REDIS_ENABLED: bool = False

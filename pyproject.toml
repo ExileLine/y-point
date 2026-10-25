@@ -31,6 +31,9 @@ dependencies = [
   "langchain-aws>=1.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4",
   "python-multipart>=0.0.20,<1",
+  "boto3>=1.40,<2",
+  "langgraph-checkpoint-postgres>=3.2,<4",
+  "psycopg[binary]>=3.2,<4",
 ]
 
 [dependency-groups]

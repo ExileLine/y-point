@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from deepagents import create_deep_agent
@@ -24,9 +26,11 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.model_adapter import build_chat_model
 from app.services.runtime_checkpoint import (
+    open_async_checkpointer,
     open_async_sqlite_checkpointer,
     open_sqlite_checkpointer,
 )
+from app.services import runtime_checkpoint
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -131,6 +135,53 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
             resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
             assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
             assert resumed["messages"][-1].content == "finished"
+
+    asyncio.run(exercise())
+
+
+def test_postgres_checkpoint_requires_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """配置错误必须在 worker 领取运行前暴露。"""
+    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
+        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN="",
+    ))
+
+    async def exercise() -> None:
+        with pytest.raises(ValueError, match="独立连接地址"):
+            async with open_async_checkpointer(tmp_path / "unused.sqlite"):
+                pass
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.skipif(
+    not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库",
+)
+def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 PostgreSQL 检查点在断开连接后恢复同一审批和工具结果。"""
+    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
+        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"],
+    ))
+
+    async def exercise() -> None:
+        config = {"configurable": {"thread_id": f"checkpoint-{uuid4()}"}}
+        tool_call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-postgres"}])
+        async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
+            await checkpointer.setup()
+            agent = create_deep_agent(
+                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer,
+            )
+            paused = await agent.ainvoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
+            assert paused["__interrupt__"]
+            paused_id = (await agent.aget_state(config)).config["configurable"]["checkpoint_id"]
+        async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
+            agent = create_deep_agent(
+                model=ScriptedModel(responses=[AIMessage(content="finished")]), tools=[echo],
+                interrupt_on={"echo": True}, checkpointer=checkpointer,
+            )
+            resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+            assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
+            assert resumed["messages"][-1].content == "finished"
+            assert (await agent.aget_state(config)).config["configurable"]["checkpoint_id"] != paused_id
 
     asyncio.run(exercise())
 

@@ -14,9 +14,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from deepagents import create_deep_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -51,11 +50,12 @@ from app.services.run_manager import (
     resume_approved_run,
     timeout_run,
 )
-from app.services.runtime_checkpoint import open_async_sqlite_checkpointer
+from app.services.runtime_checkpoint import open_async_checkpointer
+from app.services.runtime_adapter import DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
+from app.services.tool_registry import RESERVED_TOOL_NAMES
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
-DEEPAGENTS_BUILTIN_TOOLS = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos"})
 
 
 class ToolExecutionTimeoutError(Exception):
@@ -233,18 +233,37 @@ def _approval_actions(snapshot) -> list[dict]:
                     raise ValueError("不支持的审批动作格式")
                 arguments = json.dumps(action["args"], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
                 digest = hmac.new(get_config().SECRET_KEY.encode(), arguments.encode(), hashlib.sha256).hexdigest()
-                actions.append({"name": action["name"], "arguments_hash": digest})
+                approved_action = {"name": action["name"], "arguments_hash": digest}
+                if action["name"] == "read_text_artifact":
+                    resource_id = action["args"].get("artifact_id")
+                    try:
+                        if not isinstance(resource_id, str) or str(UUID(resource_id)) != resource_id:
+                            raise ValueError("无效的文件资源 ID")
+                    except (ValueError, AttributeError):
+                        raise ValueError("无效的文件资源 ID") from None
+                    approved_action["resource_id"] = resource_id
+                actions.append(approved_action)
     if not actions:
         raise ValueError("审批中断没有待审核动作")
     return actions
 
 
+def _approval_matches(actual: list[dict], approved: list[dict]) -> bool:
+    """兼容旧版仅保存摘要的审批，同时核对新版资源 ID。"""
+    return len(actual) == len(approved) and all(
+        item.get("name") == saved.get("name") and item.get("arguments_hash") == saved.get("arguments_hash")
+        and ("resource_id" not in saved or item.get("resource_id") == saved["resource_id"])
+        for item, saved in zip(actual, approved, strict=True)
+    )
+
+
 async def _stream_model_text(
-    agent, config: dict, invocation: dict | Command, sessions: async_sessionmaker[AsyncSession], run_id: str, lease_token: str,
+    runtime: RuntimeAdapter, invocation: dict | Command, sessions: async_sessionmaker[AsyncSession], run_id: str,
+    lease_token: str,
     *, publish_text: bool = True,
 ) -> None:
     """从模型节点提取可见文本；预算运行在用量核实后统一发布。"""
-    async for mode, payload in agent.astream(invocation, config, stream_mode=["messages", "updates"]):
+    async for mode, payload in runtime.events(invocation):
         if mode != "messages" or not publish_text:
             continue
         message, metadata = payload
@@ -291,28 +310,31 @@ async def _finish_interrupted(
     *, catalog_model: ModelCatalog | None = None, started: float | None = None,
 ) -> AgentRun:
     """优先确认已请求的取消，否则将当前执行失败分类入库。"""
-    async with sessions.begin() as db:
-        run = await db.get(AgentRun, run_id)
-        if run is None:
+    for _ in range(3):
+        async with sessions.begin() as db:
+            run = await db.get(AgentRun, run_id)
+            if run is None:
+                raise RunConflictError("运行已不存在")
+            try:
+                if run.state == "cancel_requested" and run.lease_token == lease_token:
+                    result = await acknowledge_cancel(db, run_id, lease_token)
+                    _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
+                    return result
+                if run.state == "running" and run.lease_token == lease_token:
+                    if failure_code in {"execution_timeout", "tool_execution_timeout"}:
+                        result = await timeout_run(db, run_id, lease_token, failure_code)
+                    else:
+                        result = await fail_run(db, run_id, lease_token, failure_code)
+                    _record_runtime_call(db, run, catalog_model, started, failure=failure_code)
+                    return result
+                return run
+            except RunConflictError:
+                continue
+    async with sessions() as db:
+        latest = await db.get(AgentRun, run_id)
+        if latest is None:
             raise RunConflictError("运行已不存在")
-        if run.state == "cancel_requested" and run.lease_token == lease_token:
-            try:
-                result = await acknowledge_cancel(db, run_id, lease_token)
-                _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
-                return result
-            except RunConflictError:
-                return run
-        if run.state == "running" and run.lease_token == lease_token:
-            try:
-                if failure_code in {"execution_timeout", "tool_execution_timeout"}:
-                    result = await timeout_run(db, run_id, lease_token, failure_code)
-                else:
-                    result = await fail_run(db, run_id, lease_token, failure_code)
-                _record_runtime_call(db, run, catalog_model, started, failure=failure_code)
-                return result
-            except RunConflictError:
-                return run
-        return run
+        return latest
 
 
 async def execute_text_run(
@@ -356,7 +378,7 @@ async def execute_text_run(
             except Exception:  # noqa: BLE001 - 工具授权或配置异常不包含在公开结果中。
                 return await fail_run(db, run_id, lease_token, "runtime_error")
             tool_names = [tool.name for tool in tools]
-            if len(tool_names) != len(set(tool_names)) or set(tool_names) & DEEPAGENTS_BUILTIN_TOOLS:
+            if len(tool_names) != len(set(tool_names)) or set(tool_names) & RESERVED_TOOL_NAMES:
                 return await fail_run(db, run_id, lease_token, "runtime_error")
             if not set(interrupt_on) <= set(tool_names):
                 return await fail_run(db, run_id, lease_token, "runtime_error")
@@ -370,8 +392,9 @@ async def execute_text_run(
     assert model is not None
     started = None
     try:
-        async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
-            agent = create_deep_agent(
+        async with open_async_checkpointer(checkpoint_path) as checkpointer:
+            runtime = DeepAgentsRuntimeAdapter(
+                RuntimeRunConfig.from_run(run, tools),
                 model=model, tools=tools, interrupt_on=interrupt_on, checkpointer=checkpointer,
                 middleware=[AuthorizedToolsMiddleware(
                     {tool.name for tool in tools}, sessions, run_id, lease_token,
@@ -379,11 +402,7 @@ async def execute_text_run(
                     run.cost_input_price, run.cost_output_price,
                 )],
             )
-            config = {
-                "configurable": {"thread_id": thread_id},
-                "metadata": {"run_id": run_id, "tool_count": len(tools)},
-            }
-            snapshot = await agent.aget_state(config)
+            snapshot = await runtime.state()
             actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
             async with sessions() as db:
                 statement = select(AgentRun.checkpoint_id).where(
@@ -399,7 +418,7 @@ async def execute_text_run(
                 allowed_names = {tool.name for tool in tools if interrupt_on.get(tool.name)}
                 checkpoint_valid = (
                     actual_checkpoint_id == run.checkpoint_id and approval is not None
-                    and approval.state == "approved" and actions == approval.actions
+                    and approval.state == "approved" and _approval_matches(actions, approval.actions)
                     and all(action["name"] in allowed_names for action in actions)
                 )
             else:
@@ -413,7 +432,7 @@ async def execute_text_run(
             )
             started = time.perf_counter()
             task = asyncio.create_task(_stream_model_text(
-                agent, config, invocation, sessions, run_id, lease_token,
+                runtime, invocation, sessions, run_id, lease_token,
                 publish_text=run.max_total_tokens is None and run.max_estimated_cost is None,
             ))
             watcher = asyncio.create_task(_watch_run(
@@ -425,7 +444,7 @@ async def execute_text_run(
                 watcher.cancel()
                 with suppress(asyncio.CancelledError):
                     await watcher
-            snapshot = await agent.aget_state(config)
+            snapshot = await runtime.state()
             checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
             if not checkpoint_id:
                 return await _finish_interrupted(

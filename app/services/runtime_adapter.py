@@ -1,0 +1,66 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-25 13:30:00
+# @Author  : yangyuexiong
+# @File    : runtime_adapter.py
+
+"""将平台 Run 配置映射到 DeepAgents 的文本运行接口。"""
+
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from deepagents import create_deep_agent
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.tools import BaseTool
+from langgraph.types import Command
+
+from app.models.agent_run import AgentRun
+
+
+@dataclass(frozen=True)
+class RuntimeRunConfig:
+    """运行领取后固定的编排配置；权限仍在工具调用时重新检查。"""
+
+    run_id: str
+    owner_id: int
+    thread_id: str
+    model_id: int | None
+    tool_names: tuple[str, ...]
+
+    @classmethod
+    def from_run(cls, run: AgentRun, tools: Sequence[BaseTool]) -> "RuntimeRunConfig":
+        return cls(run.id, run.owner_id, run.thread_id, run.model_id, tuple(tool.name for tool in tools))
+
+    def graph_config(self) -> dict:
+        return {
+            "configurable": {"thread_id": self.thread_id},
+            "metadata": {"run_id": self.run_id, "tool_count": len(self.tool_names)},
+        }
+
+
+class RuntimeAdapter(Protocol):
+    async def state(self) -> Any: ...
+
+    def events(self, invocation: dict | Command) -> AsyncIterator[tuple[str, Any]]: ...
+
+
+class DeepAgentsRuntimeAdapter:
+    """只负责图的创建、状态读取及流消费；事务和授权由平台执行器负责。"""
+
+    def __init__(
+        self, config: RuntimeRunConfig, *, model: BaseChatModel, tools: list[BaseTool],
+        interrupt_on: dict[str, bool], checkpointer: Any, middleware: list[AgentMiddleware],
+    ) -> None:
+        self.config = config.graph_config()
+        self.agent = create_deep_agent(
+            model=model, tools=tools, interrupt_on=interrupt_on,
+            checkpointer=checkpointer, middleware=middleware,
+        )
+
+    async def state(self) -> Any:
+        return await self.agent.aget_state(self.config)
+
+    async def events(self, invocation: dict | Command) -> AsyncIterator[tuple[str, Any]]:
+        async for event in self.agent.astream(invocation, self.config, stream_mode=["messages", "updates"]):
+            yield event

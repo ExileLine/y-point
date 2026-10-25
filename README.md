@@ -94,6 +94,8 @@ YPOINT_TEST_OLLAMA_M3=1 uv run pytest -q tests/test_runtime_checkpoint.py::test_
 
 `009` 迁移新增 `yp_agent_run_message`，将用户输入与排队任务、最终可见回答与完成状态分别在同一业务事务写入。`run_dispatcher` 从数据库扫描排队 Run，并在领取时校验用户、模型与供应商；`run_executor` 使用 DeepAgents 和独立 SQLite 检查点执行文本任务，续租时响应取消或用户停用。独立开发 worker 在项目目录运行 `uv run python -m app.cli.run_worker` 即可启动，默认检查点文件为 `.run-private/checkpoints.sqlite`，该目录受 Git 忽略且新建时权限为 700；使用 `--once` 只处理一轮。自定义 `--checkpoint-db` 时必须传入真实可写路径，worker 会在领取任务前检查文件可用性。运行前先执行 `uv run alembic upgrade head`；检查点文件包含消息和工具状态，应放在仅执行器可访问的位置。可运行 `uv run pytest -q tests/test_run_executor.py`，或显式设置 `YPOINT_TEST_OLLAMA_M3_RUN=1` 运行其中的本机 Ollama 真实链路测试。
 
+检查点存储由 `CHECKPOINT_BACKEND` 独立选择，默认 `sqlite`，与 `DB_BACKEND` 无须相同。需要共享 PostgreSQL 检查点时，设置 `CHECKPOINT_BACKEND=postgres` 和 `CHECKPOINT_POSTGRES_DSN=postgresql://<user>:<password>@<host>:5432/<checkpoint_db>`；使用仅 worker 可访问的独立库和账户，并按部署网络要求启用 TLS。worker 启动时调用 LangGraph 的 `setup()` 建表，数据库不可连接或缺少 DSN 时会在领取 Run 前失败。PostgreSQL 模式不使用 `--checkpoint-db` 文件。现有 SQLite 检查点不会自动迁移；已有线程仍依赖原检查点，切换前应停止新提交、处理未完成 Run，并制定旧线程迁移或重建方案。隔离 PostgreSQL 测试可设置 `YPOINT_TEST_POSTGRES_CHECKPOINT_DSN` 后运行 `tests/test_runtime_checkpoint.py` 和 `tests/test_run_executor.py::test_completed_run_with_postgres_checkpoint`。MySQL 业务库可配合独立 PostgreSQL 检查点使用；MySQL 原生 Checkpointer、目标数据库下的完整 worker 崩溃恢复、权限和保留清理尚待验收。
+
 `012` 迁移新增 `yp_run_worker_heartbeat`，用于监测独立 worker 进程。常驻 worker 启动后登记实例 ID，空闲和执行模型时均默认每 5 秒更新心跳，正常退出时标记停止；`--once` 不登记常驻心跳。`GET /api/v1/health/worker` 无需令牌，有未停止且 20 秒内更新的实例时返回 HTTP 200，否则返回 HTTP 503。管理员使用 `GET /api/v1/runs/workers/status` 可查看有效 worker 数、最近心跳、排队 Run 数、最老排队时长及租约过期但尚未回收的 Run 数。`GET /api/v1/health` 只反映 API 存活，不能代表 worker 可用。worker 全部停止时，排队 Run 不会自动执行；重启后才会回收过期租约并继续扫描队列。
 
 心跳只能发现执行器不可用，不能自行重启已经退出的进程。部署时应由 `launchd`、`systemd`、Docker 或 Kubernetes 的进程管理机制负责自动拉起 worker，并监控 `/api/v1/health/worker` 的 HTTP 状态及管理员接口中的排队时长。worker 进程仍有新鲜心跳但队列持续积压时，也应检查模型阻塞、执行容量和数据库故障。业务 Run 的租约心跳与进程心跳分开记录；新 worker 启动后会回收旧执行器遗留的过期 Run。若最新检查点不能证明当前 Run 已完成，则标为 `failed/lease_expired`，不会自动重做可能已发生副作用的调用。worker 启动时及其后每小时会分批清理最后心跳早于 30 天前的进程记录，每批最多 1000 行，失联且未正常退出的实例也会清理；业务 Run、事件与检查点不受影响。真实子进程测试已覆盖模型请求发出后强制终止 worker、租约到期后由新 worker 回收，以及不自动重复上游请求；测试在临时库中加速租约到期。可运行 `uv run pytest -q tests/test_worker_monitor.py` 验证空闲/繁忙心跳、失联判断、进程崩溃回收、历史清理和接口权限。
@@ -104,9 +106,9 @@ YPOINT_TEST_OLLAMA_M3=1 uv run pytest -q tests/test_runtime_checkpoint.py::test_
 
 `017` 迁移为 Run 增加可选 `max_model_calls` 和 `model_call_count`。创建时可传 `{"model_id":1,"input_text":"你好","max_model_calls":3}`，允许 1 至 100；不传则不限制。创建和查询响应会返回上限及已开始次数；同一 `request_key` 复用时必须保持上限一致。执行器在每次模型调用前按有效租约原子计数，超过上限时不再发起下一次调用，Run 进入 `failed`，故障码为 `model_call_budget_exceeded`。同一 Run 审批恢复后继续累计；升级前已有 Run 的历史调用次数无法回填，从升级后开始计数。该次数表示平台开始的模型调用，不等于供应商内部 HTTP 重试或计费用量。Token 与成本预算分别见下文 `021`、`022`；并行子 Agent 预算尚未实现。
 
-`018` 迁移增加可选 `max_tool_calls` 和 `tool_call_count`。创建 Run 时可传 `{"model_id":1,"input_text":"你好","max_tool_calls":5}`，允许 1 至 100；不传则不限制。同一 `request_key` 必须保持上限一致。执行器只对已授权、即将执行的工具按有效租约原子计数；达到上限时拒绝下一次调用，并将 Run 标为 `failed/tool_call_budget_exceeded`。等待审批的请求不计数，批准后实际执行时计数；工具执行失败也占用一次已开始的调用。升级前已有 Run 的历史工具调用次数无法回填。正式 worker 尚未注册业务工具，因此该预算目前由内部工具执行和审批恢复测试验证。
+`018` 迁移增加可选 `max_tool_calls` 和 `tool_call_count`。创建 Run 时可传 `{"model_id":1,"input_text":"你好","max_tool_calls":5}`，允许 1 至 100；不传则不限制。同一 `request_key` 必须保持上限一致。执行器只对已授权、即将执行的工具按有效租约原子计数；达到上限时拒绝下一次调用，并将 Run 标为 `failed/tool_call_budget_exceeded`。等待审批的请求不计数，批准后实际执行时计数；工具执行失败也占用一次已开始的调用。升级前已有 Run 的历史工具调用次数无法回填。正式 worker 的文本文件列表与审批读取工具均受此预算约束。
 
-`019` 迁移为运行事件增加可空的 `tool_call_id` 和 `tool_name`。已授权工具开始执行前，工具调用计数与 `tool_started` 事件在同一业务事务提交；正常返回写入 `tool_completed`，工具返回错误或抛出异常时写入 `tool_failed`。三类事件使用服务端生成的同一调用 ID，只公开工具名，不保存参数、结果或异常正文。它们与状态、文本事件共用 Run 内单调序号，可从 `/events?after=` 或 SSE 按原游标续传。取消、进程崩溃或租约失效可能只留下开始事件，不能仅凭缺少结束事件判断工具未产生副作用。正式 worker 尚未注册业务工具，当前由内部工具执行和审批恢复测试验证。
+`019` 迁移为运行事件增加可空的 `tool_call_id` 和 `tool_name`。已授权工具开始执行前，工具调用计数与 `tool_started` 事件在同一业务事务提交；正常返回写入 `tool_completed`，工具返回错误或抛出异常时写入 `tool_failed`。三类事件使用服务端生成的同一调用 ID，只公开工具名，不保存参数、结果或异常正文。它们与状态、文本事件共用 Run 内单调序号，可从 `/events?after=` 或 SSE 按原游标续传。取消、进程崩溃或租约失效可能只留下开始事件，不能仅凭缺少结束事件判断工具未产生副作用。正式 worker 的文本文件工具已接入，测试覆盖列表调用及工具执行中取消。
 
 `020` 迁移增加 `tool_timeout_seconds`，已有 Run 默认 120 秒。创建 Run 时可传 `{"model_id":1,"input_text":"你好","tool_timeout_seconds":30}`，允许 1 至 120 秒；创建和查询响应会返回保存值，同一 `request_key` 改变时限会报配置冲突。已授权工具开始执行后单独计时，超时会取消工具调用、写入脱敏的 `tool_failed` 事件，并把 Run 标为 `timed_out/tool_execution_timeout`；不包含等待审批和排队时间。整轮执行仍受 `model_timeout_seconds` 与 worker 更短配置的上限约束，先达到整轮上限时记录 `execution_timeout`。此取消依赖工具协作响应异步取消，不能保证已经发生的外部副作用被撤销；正式业务工具接入前仍需制定隔离与幂等策略。
 
@@ -114,9 +116,23 @@ YPOINT_TEST_OLLAMA_M3=1 uv run pytest -q tests/test_runtime_checkpoint.py::test_
 
 `022` 迁移增加可选 `max_estimated_cost`、累计 `estimated_cost` 和创建 Run 时的模型价格快照。请求示例为 `{"model_id":1,"input_text":"你好","max_estimated_cost":"0.010000"}`；上限须大于零、最多六位小数，使用模型配置的 `price_currency`。模型必须同时配置每百万输入和输出 Token 单价，否则创建请求返回 409。每次模型响应后，用上游报告的输入/输出 Token 和固定单价计算成本；超过上限时 Run 进入 `failed/cost_budget_exceeded`，缺少完整可计价用量时进入 `failed/cost_usage_unavailable`，达到上限后不再发起下一次模型调用。查询响应返回上限、累计估算成本和币种；未启用预算的 Run 仍可在管理员模型调用记录中查看已报告的用量与估算成本。设限 Run 只在成功完成后发布文本事件。这里的金额是按配置价格计算的估算值，不代表供应商最终账单；单次调用可能在返回用量前超出上限，旧 Run 的历史成本无法回填。
 
+`023` 迁移增加可选 `max_queue_wait_seconds` 和固定的 `queue_expires_at`。创建 Run 时可传 `{"model_id":1,"input_text":"你好","max_queue_wait_seconds":300}`，允许 1 至 86400 秒；不传则不限排队时间，同一 `request_key` 必须保持配置一致。worker 每轮扫描并把已到期、仍处于 `queued` 的运行置为 `timed_out/queue_timeout`，状态事件可通过事件查询与 SSE 回放。领取事务也核对截止时间，避免到期任务在回收扫描之前被执行。任务已领取、取消或等待审批后不再受排队期限约束；worker 停止期间到期任务会保持排队状态，重启扫描后转为超时。运行前需将业务库升级至 `023`。
+
+`024` 迁移增加 `enable_text_artifact_tool`，默认为 `false`。只有模型的 `tools` 能力已实际验证时，创建 Run 才能显式设为 `true`；该配置参与 `request_key` 幂等校验。正式 worker 为此类 Run 注册 `list_text_artifacts()` 与 `read_text_artifact(artifact_id)`：列表最多返回最近 50 个本人可读 TXT 的 ID、文件名和大小，不返回正文；读取调用前生成审批请求，所有者同意后由 worker 恢复。同意只授权当前待执行动作；工具执行时仍检查当前租约、用户、模型能力、文件所有权、状态与期限，并核对私有 TXT 文件的哈希，单次最多向模型返回 64 KiB UTF-8 文本。审批响应向所有者展示目标文件 ID 和当前有效文件名；持久化动作同时保留工具名与参数摘要，不保存文件正文。未开启该功能的文本 Run 不注册业务工具，沿用原有无工具检查点补偿。`tool_registry.py` 统一声明工具启用条件、审批、读写属性与恢复策略；Skill、MCP 和插件工具的实际接入仍待各自里程碑。
+
+`025` 迁移为生成产物增加可选来源文件 ID，并为 Run Event 增加 `artifact_id`。生成文件经 Artifact Service 校验后，在同一业务事务登记元数据和 `artifact_published` 引用事件；重复发布键与相同内容返回原产物，冲突内容拒绝。来源文件必须仍属于 Run 所有者且有效。事件不含文件正文；授权下载仍逐次检查所有权和期限。
+
+`026` 迁移增加 `publish_answer_artifact`，默认为 `false`。创建文本 Run 时可显式设为 `true`，worker 在回答完成后以固定发布键创建 `answer.txt`。worker 重启会扫描已完成但尚未发布的 Run 并补发，重复扫描不会重复产生文件或事件。`027` 迁移为缺少最终消息或产物校验失败的 Run 记录下一次补发时间，退避一小时，避免这些 Run 长期占满有限批量；磁盘或对象存储故障仍由 worker 下一轮重试。产物引用可从 `/api/v1/artifacts?run_id=`、`/events` 或 SSE 查询；启用导出的 Run 在产物发布前会保持 SSE 订阅，最多受原有空闲窗口限制。断线后仍可从游标补取。本机开发库已升级至 `027`；其他环境部署前需分别执行 `uv run alembic upgrade head`。应用启动时会检查业务模型需要的表和列，缺失时提示迁移，不会等到上传请求写入才报数据库错误。
+
+文件上传和生成产物共用 `ARTIFACT_OWNER_MAX_BYTES`（默认 1 GiB）及 `ARTIFACT_OWNER_MAX_FILES`（默认 1000）配额。`ARTIFACT_REQUIRE_MALWARE_SCAN=true` 时必须安装 `clamscan`，扫描器缺失、超时或扫描失败会拒绝文件；默认关闭适合本地开发，上线前应开启并验证扫描器。TXT 拒绝 NUL 字节，PDF 检查头部与结束标记，Office 检查全包、重复路径、加密条目、宏和解压体积。跨进程生产配额并发精度及真实扫描性能需在目标数据库和部署环境验收。Runtime 状态、事件和检查点的写入与补偿规则见 `docs/m3-runtime-contract.md`。
+
+文件正文默认保存在 `ARTIFACT_STORAGE_DIR` 指向的私有本地目录。设置 `ARTIFACT_STORAGE_BACKEND=s3`、`ARTIFACT_S3_BUCKET` 及可选的 endpoint、region 和成对访问密钥后，Artifact Service 使用 boto3 将随机键对象写入私有桶并请求 AES256 服务端加密；不配置访问密钥时使用部署环境的 AWS 凭据链。对象限定在 `ARTIFACT_S3_PREFIX` 下，默认 `y-point/artifacts/`，前缀必须是非根路径且以 `/` 结尾。`ARTIFACT_STORAGE_DIR` 在 S3 模式仍用于临时校验文件，须是仅服务进程可访问的目录。下载仍经 Bearer 授权 API，后台按页清理此前缀下未被业务库引用的随机键；上传后续失败会尝试立即删除远端对象，删除失败的对象由宽限期后的孤儿扫描补偿。模拟 S3 测试覆盖上传、下载、生成、删除、故障清理及多页孤儿扫描；真实桶的 ACL、加密、网络故障与恢复必须在目标环境验收。切换后端不会迁移已有正文，部署切换前需另行迁移对象并验证 SHA-256。
+
+已有本地文件可在停用 API 与 worker 写入、备份业务库和本地目录后，用同一业务库及私有目录配置执行 `ARTIFACT_STORAGE_BACKEND=s3 uv run python -m app.cli.migrate_artifacts_to_s3`。命令只复制当前有效文件，逐个核对数据库 SHA-256、字节数和远端读回结果；重跑会验证已有远端对象，本地正文不会删除。遇到本地缺失或远端摘要冲突会停止，须先核对并修复，再重跑。确认目标桶权限、加密、下载、清理和文件总数后，才能让 API 与 worker 同时切换到 S3 配置；运行中的写入不能与迁移并行。
+
 普通用户使用 Bearer 令牌调用 `POST /api/v1/runs`，请求示例为 `{"model_id":1,"input_text":"你好","request_key":"chat-001"}`。可调用 `GET /api/v1/runs/{run_id}` 查看状态、`GET /api/v1/runs/{run_id}/messages` 获取输入和最终回答、`POST /api/v1/runs/{run_id}/cancel` 请求取消。`GET /api/v1/runs/{run_id}/events?after=0` 按序号补发事件，`GET /api/v1/runs/{run_id}/stream` 使用 Bearer 请求头订阅 SSE；断线重连传 `Last-Event-ID: <run_id>:<sequence>`。SSE 推送已持久化的状态、`text_delta` 模型文本及脱敏工具过程事件，空闲时有心跳，终态发送完毕后关闭；最终回答仍以消息接口中的完整正文为准。长连接每轮读取前会复核用户、令牌版本、access token 有效期和数据库会话；授权失效时流会关闭，客户端重新认证后可用原事件游标续接。浏览器原生 `EventSource` 无法自定义 Bearer 请求头，当前应使用支持请求头的流式客户端；浏览器原生接入需在 M4 确定认证方式。启动独立 worker 后，新建运行才会进入执行。可运行 `uv run pytest -q tests/test_run_api.py` 验证公开接口及授权边界。
 
-`010` 迁移为运行事件增加可公开的文本片段列。`011` 迁移增加审批请求表：运行时中断若包含待审核工具，系统只保存工具名和由服务端密钥计算的 HMAC-SHA256 参数摘要，不保存原始参数或中断描述。所有者可用 `GET /api/v1/runs/{run_id}/approval` 查询，再向 `POST /api/v1/runs/{run_id}/approval/decision` 发送 `{"decision":"approve"}` 或 `{"decision":"reject"}`；重复、过期和跨用户决定会被拒绝。拒绝会在同一业务事务中将 Run 标为 `cancelled` 并追加 `approval_rejected` 终态事件；同意只保存决定，不在 HTTP 请求中执行工具。独立 worker 会关闭到期的待处理审批并将等待中的运行标为超时。内部调度器在提供工具解析器时可以恢复已批准的 Run；正式 worker 还未配置工具解析器，因此公开文本运行不会触发工具审批。
+`010` 迁移为运行事件增加可公开的文本片段列。`011` 迁移增加审批请求表：运行时中断只保存工具名和由服务端密钥计算的 HMAC-SHA256 参数摘要，不保存原始参数或中断描述；文件读取动作可附加目标文件 ID，所有者查询时展示当前有效文件名。所有者可用 `GET /api/v1/runs/{run_id}/approval` 查询，再向 `POST /api/v1/runs/{run_id}/approval/decision` 发送 `{"decision":"approve"}` 或 `{"decision":"reject"}`；重复、过期和跨用户决定会被拒绝。拒绝会在同一业务事务中将 Run 标为 `cancelled` 并追加 `approval_rejected` 终态事件；同意只保存决定，不在 HTTP 请求中执行工具。独立 worker 会关闭到期审批并恢复已批准的文本文件读取工具。
 
 ### 工具审批接口与前后端交互
 
@@ -164,7 +180,7 @@ flowchart TD
 | `app.cli.run_worker.run_worker` | 初始化检查点文件，先尝试补偿可证明已完成的过期 Run，再回收其他过期租约与审批，调用调度器扫描排队任务；无任务时按间隔等待。 |
 | `app.services.run_dispatcher` | 选择最早的 `queued` Run，重新校验用户、模型及供应商，并通过 `model_adapter` 构造聊天模型。 |
 | `app.services.run_executor` | `execute_text_run` 领取 Run、读取本轮输入并构造 DeepAgents；`_stream_model_text` 保存模型增量文本，`_watch_run` 续租并监测取消；结束时读取检查点快照并处理结果。 |
-| `app.services.runtime_checkpoint` | 打开并关闭独立的 LangGraph SQLite Checkpointer；默认文件路径由 `run_worker` 指定为 `.run-private/checkpoints.sqlite`。 |
+| `app.services.runtime_checkpoint` | 按配置打开并关闭独立的 LangGraph SQLite 或 PostgreSQL Checkpointer；SQLite 默认文件为 `.run-private/checkpoints.sqlite`。 |
 | `app.api.v1.runs.stream_events` | 从已提交的运行事件读取数据，按游标补发 `state` / `text_delta` 并推送 SSE；它不直接读取模型流。 |
 
 `yp_agent_run` 保存任务身份、所属用户、`model_id`、`thread_id`、状态、租约、事件序号及最近的 `checkpoint_id`。`yp_agent_run_message` 保存每轮用户输入和完成后的最终可见回答，供业务查询；`yp_agent_run_event` 保存状态变化和生成期间的 `text_delta`，供 SSE 与断线续传。`checkpoints.sqlite` 保存 LangGraph 按 `thread_id` 管理的 Agent 状态，可能包含历史消息、工具结果及待执行步骤。它与消息表不是内容完全相同的两份副本；worker 只从消息表读取**本轮输入**，历史上下文由 DeepAgents 从检查点恢复。实际送给模型的上下文以 Agent 当前状态为准，不能假定每次都原样发送全部历史记录。

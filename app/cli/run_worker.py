@@ -15,12 +15,13 @@ from uuid import uuid4
 from loguru import logger
 
 from app.db.session import AsyncSessionLocal, close_db
-from app.services.artifact_store import artifact_root, prune_artifacts
+from app.services.artifact_store import artifact_root, prune_artifacts, publish_pending_answers
 from app.services.run_dispatcher import dispatch_next_run
-from app.services.run_manager import expire_approvals, recover_expired_runs
+from app.services.run_manager import expire_approvals, expire_queued_runs, recover_expired_runs
 from app.services.run_reconciler import reconcile_expired_runs
-from app.services.runtime_checkpoint import open_async_sqlite_checkpointer
+from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.worker_monitor import WORKER_STALE_SECONDS, prune_worker_heartbeats, register_worker, stop_worker, touch_worker
+from app.services.worker_tools import make_worker_tool_resolver
 
 DEFAULT_CHECKPOINT_PATH = Path(__file__).resolve().parents[2] / ".run-private" / "checkpoints.sqlite"
 HEARTBEAT_PRUNE_INTERVAL_SECONDS = 3600
@@ -44,7 +45,7 @@ async def run_worker(
     """循环回收遗留租约并执行最早的排队任务。"""
     if idle_seconds <= 0 or not 0 < heartbeat_seconds < WORKER_STALE_SECONDS / 2:
         raise ValueError("空闲轮询间隔或执行器心跳间隔无效")
-    async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
+    async with open_async_checkpointer(checkpoint_path) as checkpointer:
         await checkpointer.setup()
     worker_id = str(uuid4()) if not once else None
     heartbeat_task = None
@@ -56,15 +57,12 @@ async def run_worker(
         last_prune_at = None
         while True:
             try:
-                try:
-                    reconciled = await reconcile_expired_runs(AsyncSessionLocal, checkpoint_path)
-                except Exception as exc:  # noqa: BLE001 - 补偿读取失败后仍需回收过期租约。
-                    logger.error("检查点补偿失败：{}", type(exc).__name__)
-                    reconciled = 0
+                reconciled = await reconcile_expired_runs(AsyncSessionLocal, checkpoint_path)
                 prune_due = last_prune_at is None or time.monotonic() - last_prune_at >= HEARTBEAT_PRUNE_INTERVAL_SECONDS
                 async with AsyncSessionLocal.begin() as db:
                     recovered = await recover_expired_runs(db)
                     expired = await expire_approvals(db)
+                    queue_expired = await expire_queued_runs(db)
                     pruned = await prune_worker_heartbeats(db) if prune_due else 0
                 if prune_due:
                     last_prune_at = time.monotonic()
@@ -74,6 +72,8 @@ async def run_worker(
                     logger.info("已从检查点补偿 {} 个已完成运行", reconciled)
                 if expired:
                     logger.info("已关闭 {} 个到期审批", expired)
+                if queue_expired:
+                    logger.info("已关闭 {} 个排队超时运行", queue_expired)
                 if pruned:
                     logger.info("已清理 {} 条过期执行器心跳", pruned)
                 if prune_due and not once:
@@ -85,9 +85,15 @@ async def run_worker(
                             logger.info("已清理 {} 个到期文件及 {} 个孤儿文件", expired_files, orphan_files)
                     except Exception as exc:
                         logger.error("文件清理失败：{}", type(exc).__name__)
-                run = await dispatch_next_run(AsyncSessionLocal, checkpoint_path)
+                run = await dispatch_next_run(
+                    AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal),
+                )
                 if run is not None:
                     logger.info("运行 {} 结束，状态 {}", run.id, run.state)
+                root = artifact_path or artifact_root()
+                published = await publish_pending_answers(AsyncSessionLocal, root)
+                if published:
+                    logger.info("已发布 {} 个最终回答产物", published)
             except Exception as exc:
                 # 独立执行器只记录异常类别，避免将凭据或消息正文写入日志。
                 logger.error("运行调度失败：{}", type(exc).__name__)
@@ -125,7 +131,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="运行 M3 持久化文本任务执行器")
     parser.add_argument(
         "--checkpoint-db", type=Path, default=DEFAULT_CHECKPOINT_PATH,
-        help=f"仅执行器可读写的 SQLite 检查点文件（默认：{DEFAULT_CHECKPOINT_PATH}）",
+        help=f"SQLite 后端使用的私有检查点文件（默认：{DEFAULT_CHECKPOINT_PATH}）",
     )
     parser.add_argument("--once", action="store_true", help="只扫描并处理一轮")
     parser.add_argument("--idle-seconds", type=float, default=2, help="无任务时的轮询间隔秒数")

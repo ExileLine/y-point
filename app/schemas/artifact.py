@@ -23,4 +23,5 @@ class ArtifactOut(BaseModel):
     source: str = Field(description="文件来源", examples=["upload"])
     state: str = Field(description="文件状态", examples=["ready"])
     run_id: str | None = Field(description="关联的运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    source_artifact_id: str | None = Field(description="生成产物的来源文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])

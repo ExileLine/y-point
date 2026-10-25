@@ -10,23 +10,30 @@ import os
 import time
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import httpx
 import pytest
-from sqlalchemy import select
+from boto3.exceptions import S3UploadFailedError
+from botocore.exceptions import ClientError
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import artifacts as artifact_api
+from app.services import artifact_store
 from app.core.password import hash_password
 from app.core.middleware import ArtifactUploadLimitMiddleware
 from app.db.session import get_db_session
 from app.main import app
 from app.models.admin import Admin
 from app.models.artifact import Artifact
+from app.models.agent_run import AgentRun
 from app.models.base import Base, shanghai_now
-from app.services.artifact_store import ArtifactValidationError, prune_artifacts, publish_generated_artifact
-from app.services.run_manager import claim_run, complete_run, create_run
+from app.services.artifact_store import (
+    ArtifactValidationError, prune_artifacts, publish_generated_artifact, publish_pending_answers,
+)
+from app.services.run_manager import claim_run, complete_run, create_run, replay_events
 
 
 def office_bytes(kind: str) -> bytes:
@@ -78,6 +85,18 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             assert created.status_code == 201, created.text
             artifacts = created.json()["data"]
             assert len(artifacts) == 3 and all("storage_key" not in item and "owner_id" not in item for item in artifacts)
+            with monkeypatch.context() as patcher:
+                patcher.setattr(artifact_store, "get_config", lambda: SimpleNamespace(
+                    ARTIFACT_RETENTION_DAYS=30, ARTIFACT_REQUIRE_MALWARE_SCAN=False,
+                    ARTIFACT_OWNER_MAX_FILES=3, ARTIFACT_OWNER_MAX_BYTES=1024 * 1024,
+                ))
+                quota_rejected = await client.post("/api/v1/artifacts/uploads", headers=alice, files={
+                    "files": ("over-quota.txt", b"new file", "text/plain"),
+                })
+                assert quota_rejected.status_code == 400
+                async with sessions() as db:
+                    stored = (await db.scalars(select(Artifact))).all()
+                    assert {path.name for path in root.iterdir()} == {item.storage_key for item in stored}
             for item, (_, (_, content, _)) in zip(artifacts, payload, strict=True):
                 artifact_id = item["id"]
                 assert (await client.get(f"/api/v1/artifacts/{artifact_id}", headers=bob)).status_code == 404
@@ -91,10 +110,48 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 ("files", ("fake.pdf", b"not a pdf", "application/pdf")),
             ])
             assert invalid.status_code == 400
+            with monkeypatch.context() as patcher:
+                attempted = []
+                original_delete = artifact_api.delete_blob
+
+                async def flaky_delete(storage_root: Path, key: str) -> None:
+                    attempted.append(key)
+                    if len(attempted) == 1:
+                        raise OSError("object store unavailable")
+                    await original_delete(storage_root, key)
+
+                patcher.setattr(artifact_api, "delete_blob", flaky_delete)
+                rolled_back = await client.post("/api/v1/artifacts/uploads", headers=alice, files=[
+                    ("files", ("first.txt", b"first", "text/plain")),
+                    ("files", ("second.txt", b"second", "text/plain")),
+                    ("files", ("fake.pdf", b"not a pdf", "application/pdf")),
+                ])
+                assert rolled_back.status_code == 400
+                assert len(attempted) == 2
+                async with sessions() as db:
+                    stored = (await db.scalars(select(Artifact))).all()
+                    assert {path.name for path in root.iterdir()} == {item.storage_key for item in stored}
             disguised = await client.post("/api/v1/artifacts/uploads", headers=alice, files={
                 "files": ("fake.docx", office_bytes("xlsx"), "application/octet-stream"),
             })
             assert disguised.status_code == 400
+            binary_text = await client.post("/api/v1/artifacts/uploads", headers=alice, files={
+                "files": ("binary.txt", b"text\x00binary", "text/plain"),
+            })
+            assert binary_text.status_code == 400
+            truncated_pdf = await client.post("/api/v1/artifacts/uploads", headers=alice, files={
+                "files": ("truncated.pdf", b"%PDF-1.7\nmissing trailer", "application/pdf"),
+            })
+            assert truncated_pdf.status_code == 400
+            duplicate_office = BytesIO()
+            with ZipFile(duplicate_office, "w") as archive:
+                archive.writestr("[Content_Types].xml", "<Types/>")
+                archive.writestr("word/document.xml", "<root/>")
+                archive.writestr("word/document.xml", "<root/>")
+            duplicated = await client.post("/api/v1/artifacts/uploads", headers=alice, files={
+                "files": ("duplicate.docx", duplicate_office.getvalue(), "application/octet-stream"),
+            })
+            assert duplicated.status_code == 400
             too_many = await client.post("/api/v1/artifacts/uploads", headers=alice, files=[
                 ("files", (f"{index}.txt", b"ok", "text/plain")) for index in range(6)
             ])
@@ -121,11 +178,31 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 run = await create_run(db, 1, input_text="制作汇总")
                 claimed = await claim_run(db, run.id)
                 await complete_run(db, run.id, claimed.lease_token, checkpoint_id="complete", final_text="汇总完成")
-            generated = await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"summary", root)
-            repeated = await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"summary", root)
+            generated = await publish_generated_artifact(
+                sessions, run.id, "summary-v1", "summary.txt", b"summary", root,
+                source_artifact_id=artifacts[1]["id"],
+            )
+            repeated = await publish_generated_artifact(
+                sessions, run.id, "summary-v1", "summary.txt", b"summary", root,
+                source_artifact_id=artifacts[1]["id"],
+            )
             assert repeated.id == generated.id and generated.source == "generated"
+            assert generated.source_artifact_id == artifacts[1]["id"]
             with pytest.raises(ArtifactValidationError):
-                await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"changed", root)
+                await publish_generated_artifact(
+                    sessions, run.id, "summary-v1", "summary.txt", b"changed", root,
+                    source_artifact_id=artifacts[1]["id"],
+                )
+            with pytest.raises(ArtifactValidationError):
+                await publish_generated_artifact(
+                    sessions, run.id, "other", "other.txt", b"content", root,
+                    source_artifact_id="00000000-0000-4000-8000-000000000000",
+                )
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
+                    ("artifact_published", generated.id),
+                ]
             listed = await client.get("/api/v1/artifacts", headers=alice, params={"run_id": run.id})
             assert listed.status_code == 200 and [item["id"] for item in listed.json()["data"]] == [generated.id]
             assert (await client.get("/api/v1/artifacts", headers=bob, params={"run_id": run.id})).status_code == 404
@@ -153,6 +230,118 @@ def test_artifact_upload_and_download(tmp_path: Path, monkeypatch: pytest.Monkey
     import asyncio
 
     asyncio.run(exercise_artifacts(tmp_path / "artifacts.db", tmp_path / "private", monkeypatch))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ArtifactValidationError("temporary quota failure"),
+        OSError("temporary disk failure"),
+        S3UploadFailedError("temporary transfer failure"),
+        ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "unavailable"}}, "PutObject"),
+    ],
+    ids=["validation", "local-storage", "s3-transfer", "s3-service"],
+)
+def test_answer_publication_failure_does_not_starve_later_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception,
+) -> None:
+    """失败 Run 退避后，下一轮有限批量仍能处理后续 Run。"""
+    import asyncio
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'answers.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private"
+        root.mkdir(mode=0o700)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="answers-owner", password="not-used", role="user", status=1, is_deleted=0))
+                first = await create_run(db, 1, input_text="first", publish_answer_artifact=True)
+                claimed = await claim_run(db, first.id)
+                await complete_run(db, first.id, claimed.lease_token, final_text="first answer")
+                second = await create_run(db, 1, input_text="second", publish_answer_artifact=True)
+                claimed = await claim_run(db, second.id)
+                await complete_run(db, second.id, claimed.lease_token, final_text="second answer")
+                await db.execute(update(AgentRun).where(AgentRun.id == first.id).values(
+                    update_time=shanghai_now(naive=True) - timedelta(days=1),
+                ))
+            attempts = []
+            unavailable = True
+
+            async def publish(_sessions, run_id, *_args, **_kwargs):
+                attempts.append(run_id)
+                if unavailable and run_id == first.id:
+                    raise failure
+
+            monkeypatch.setattr(artifact_store, "publish_generated_artifact", publish)
+            assert await publish_pending_answers(sessions, root, limit=1) == 0
+            async with sessions() as db:
+                failed = await db.get(AgentRun, first.id)
+                assert failed.answer_artifact_retry_at > shanghai_now(naive=True)
+            assert await publish_pending_answers(sessions, root, limit=1) == 1
+            assert attempts == [first.id, second.id]
+            unavailable = False
+            async with sessions.begin() as db:
+                await db.execute(update(AgentRun).where(AgentRun.id == first.id).values(
+                    answer_artifact_retry_at=shanghai_now(naive=True) - timedelta(seconds=1),
+                    update_time=shanghai_now(naive=True) - timedelta(days=1),
+                ))
+            assert await publish_pending_answers(sessions, root, limit=1) == 1
+            assert attempts == [first.id, second.id, first.id]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_publication_cleanup_failure_preserves_validation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """远端清理失败不能覆盖产物发布失败，且临时文件仍需清除。"""
+    import asyncio
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'publication.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private"
+        root.mkdir(mode=0o700)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="publication-owner", password="not-used", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="publish")
+                claimed = await claim_run(db, run.id)
+                await complete_run(db, run.id, claimed.lease_token, final_text="answer")
+
+            attempts = []
+
+            async def fake_store(_root: Path, key: str, _path: Path) -> None:
+                attempts.append(("store", key))
+
+            async def failed_delete(_root: Path, key: str) -> None:
+                attempts.append(("delete", key))
+                raise OSError("object store unavailable")
+
+            monkeypatch.setattr(artifact_store, "using_s3", lambda: True)
+            monkeypatch.setattr(artifact_store, "store_blob", fake_store)
+            monkeypatch.setattr(artifact_store, "delete_blob", failed_delete)
+            monkeypatch.setattr(artifact_store, "get_config", lambda: SimpleNamespace(
+                ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0,
+            ))
+            with pytest.raises(ArtifactValidationError, match="保留天数"):
+                await publish_generated_artifact(sessions, run.id, "answer", "answer.txt", b"answer", root)
+            assert [kind for kind, _ in attempts] == ["store", "delete"]
+            assert attempts[0][1] == attempts[1][1]
+            assert not list(root.iterdir())
+            async with sessions() as db:
+                assert (await db.scalars(select(Artifact))).all() == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
 
 
 async def exercise_stream_limit() -> None:
@@ -187,3 +376,30 @@ def test_chunked_upload_limit() -> None:
     import asyncio
 
     asyncio.run(exercise_stream_limit())
+
+
+def test_malware_scan_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """启用扫描后，扫描器不可用或报告感染都不能接受文件。"""
+    import asyncio
+
+    async def exercise() -> None:
+        path = tmp_path / "scan.txt"
+        path.write_bytes(b"safe")
+        monkeypatch.setattr(artifact_store, "get_config", lambda: SimpleNamespace(ARTIFACT_REQUIRE_MALWARE_SCAN=True))
+        monkeypatch.setattr(artifact_store.shutil, "which", lambda name: None)
+        with pytest.raises(ArtifactValidationError, match="扫描器不可用"):
+            await artifact_store.scan_file(path)
+
+        class FakeProcess:
+            async def wait(self) -> int:
+                return 1
+
+        async def fake_scan(*args, **kwargs):
+            return FakeProcess()
+
+        monkeypatch.setattr(artifact_store.shutil, "which", lambda name: "/usr/bin/clamscan")
+        monkeypatch.setattr(artifact_store.asyncio, "create_subprocess_exec", fake_scan)
+        with pytest.raises(ArtifactValidationError, match="恶意内容"):
+            await artifact_store.scan_file(path)
+
+    asyncio.run(exercise())

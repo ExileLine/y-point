@@ -20,7 +20,7 @@ from app.models.agent_run import AgentRun
 from app.models.agent_run_message import AgentRunMessage
 from app.models.base import shanghai_now
 from app.services.run_manager import RunConflictError, complete_expired_run
-from app.services.runtime_checkpoint import open_async_sqlite_checkpointer
+from app.services.runtime_checkpoint import open_async_checkpointer
 
 
 class CheckpointReadModel(BaseChatModel):
@@ -55,7 +55,7 @@ async def reconcile_expired_runs(
         return 0
 
     completed = 0
-    async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
+    async with open_async_checkpointer(checkpoint_path) as checkpointer:
         agent = create_deep_agent(model=CheckpointReadModel(), tools=[], checkpointer=checkpointer)
         for run_id, owner_id, thread_id in candidates:
             try:

@@ -26,6 +26,7 @@ class Artifact(CustomBaseModel):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="文件 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="文件所属用户 ID")
     run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, comment="关联运行 ID")
+    source_artifact_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="生成产物的来源文件 ID")
     publication_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="同一运行内的产物发布幂等键")
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="展示用原始文件名")
     media_type: Mapped[str] = mapped_column(String(128), nullable=False, comment="校验后的文件类型")

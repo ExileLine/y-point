@@ -9,9 +9,11 @@ import asyncio
 import os
 import sys
 import threading
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -31,6 +33,28 @@ from app.models.provider_connection import ProviderConnection
 from app.models.run_worker_heartbeat import RunWorkerHeartbeat
 from app.services.run_manager import claim_run, create_run, replay_events
 from app.services.worker_monitor import inspect_worker_status, prune_worker_heartbeats, register_worker, stop_worker, touch_worker
+
+
+def test_worker_does_not_recover_leases_when_checkpoint_store_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """检查点全局故障时，过期 Run 等恢复读取成功后再判定终态。"""
+
+    class Checkpointer:
+        async def setup(self) -> None:
+            pass
+
+    @asynccontextmanager
+    async def open_checkpointer(_path: Path):
+        yield Checkpointer()
+
+    recover = AsyncMock()
+    monkeypatch.setattr(run_worker_module, "open_async_checkpointer", open_checkpointer)
+    monkeypatch.setattr(run_worker_module, "reconcile_expired_runs", AsyncMock(side_effect=OSError("unavailable")))
+    monkeypatch.setattr(run_worker_module, "recover_expired_runs", recover)
+    with pytest.raises(OSError, match="unavailable"):
+        asyncio.run(run_worker_module.run_worker(tmp_path / "unused.sqlite", once=True))
+    recover.assert_not_awaited()
 
 
 async def exercise_worker_status(database_path: Path) -> None:
@@ -81,7 +105,7 @@ async def exercise_busy_worker_heartbeat(database_path: Path, checkpoint_path: P
     entered = asyncio.Event()
     hold = asyncio.Event()
 
-    async def blocked_dispatch(*_args):
+    async def blocked_dispatch(*_args, **_kwargs):
         """模拟长时间运行中的调度任务。"""
         entered.set()
         await hold.wait()

@@ -8,7 +8,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel
@@ -31,6 +31,19 @@ class AgentRun(CustomBaseModel):
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数",
+    )
+    max_queue_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="排队等待最长秒数")
+    queue_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True, comment="排队等待截止时间",
+    )
+    enable_text_artifact_tool: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", comment="是否启用需审批的文本文件读取工具",
+    )
+    publish_answer_artifact: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物",
+    )
+    answer_artifact_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="回答产物下次补发时间",
     )
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的模型调用次数上限")
     model_call_count: Mapped[int] = mapped_column(
