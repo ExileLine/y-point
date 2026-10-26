@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.agent_run import AgentRun
@@ -90,6 +91,7 @@ async def exercise_run_manager(database_path: Path) -> None:
             assert resumed.thread_id == first.thread_id and resumed.lease_token != token
             completed = await complete_run(db, run_id, resumed.lease_token, checkpoint_id="checkpoint-2")
             assert completed.state == "completed" and completed.checkpoint_id == "checkpoint-2"
+            assert completed.active_thread_id is None
         async with sessions.begin() as db:
             events = await replay_events(db, run_id, 1, after=2, limit=20)
             assert [event.state for event in events] == ["waiting_for_approval", "running", "completed"]
@@ -99,6 +101,7 @@ async def exercise_run_manager(database_path: Path) -> None:
             assert len((await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()) == 5
             next_run = await create_run(db, 1, thread_id=first.thread_id, model_id=7)
             assert next_run.id != first.id and next_run.thread_id == first.thread_id
+            assert next_run.active_thread_id == first.thread_id
             with pytest.raises(RunConflictError):
                 await create_run(db, 2, thread_id=first.thread_id)
     finally:
@@ -204,6 +207,38 @@ async def exercise_concurrent_tool_events(database_path: Path) -> None:
 def test_run_lifecycle_and_replay(tmp_path: Path) -> None:
     """验证运行生命周期与断线游标回放。"""
     asyncio.run(exercise_run_manager(tmp_path / "lifecycle.db"))
+
+
+def test_active_thread_unique_constraint(tmp_path: Path) -> None:
+    """并发请求越过预检查后，数据库仍只允许一个活动运行占用线程。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'active-thread.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                first = await create_run(db, 1)
+                thread_id = first.thread_id
+                first_id = first.id
+            async with sessions() as db:
+                db.add(AgentRun(
+                    id=str(uuid4()), owner_id=1, thread_id=thread_id,
+                    active_thread_id=thread_id, state="queued", version=0, event_seq=1,
+                ))
+                with pytest.raises(IntegrityError):
+                    await db.commit()
+                await db.rollback()
+            async with sessions.begin() as db:
+                assert (await get_owned_run(db, first_id, 1)).active_thread_id == thread_id
+                assert (await request_cancel(db, first_id, 1)).active_thread_id is None
+                second = await create_run(db, 1, thread_id=thread_id)
+                assert second.active_thread_id == thread_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_run_cancel_and_expired_lease(tmp_path: Path) -> None:

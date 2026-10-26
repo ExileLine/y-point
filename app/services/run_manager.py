@@ -148,6 +148,7 @@ async def create_run(
         cost_currency=cost_pricing[2] if max_estimated_cost is not None else None,
         max_tool_calls=max_tool_calls, tool_call_count=0,
     )
+    run.active_thread_id = run.thread_id
     db.add(run)
     db.add(AgentRunEvent(run_id=run.id, sequence=1, protocol_version=1, event_type="state", state="queued"))
     if input_text is not None:
@@ -294,6 +295,7 @@ async def _change_state(
         "heartbeat_at": now if state == "running" else run.heartbeat_at,
         "checkpoint_id": checkpoint_id if checkpoint_id is not None else run.checkpoint_id,
         "failure_code": failure_code,
+        "active_thread_id": None if state in TERMINAL_STATES else run.active_thread_id,
     }
     statement = update(AgentRun).where(AgentRun.id == run.id, AgentRun.version == run.version, AgentRun.state == run.state)
     if require_lease:

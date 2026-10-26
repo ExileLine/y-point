@@ -49,6 +49,57 @@ def test_startup_rejects_missing_artifact_column(tmp_path) -> None:
     asyncio.run(exercise())
 
 
+def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) -> None:
+    """旧数据升级后只占用未终态线程，降级重升也保留这一规则。"""
+    database = tmp_path / "active-thread-migration.db"
+    env = os.environ.copy()
+    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(*args: str) -> None:
+        subprocess.run(
+            [sys.executable, "-m", "alembic", *args], cwd=root, env=env,
+            check=True, capture_output=True, text=True,
+        )
+
+    async def inspect_rows() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+        try:
+            async with engine.connect() as connection:
+                rows = (await connection.execute(text(
+                    "SELECT state, active_thread_id FROM yp_agent_run ORDER BY id"
+                ))).all()
+                assert rows == [("queued", "shared-thread"), ("completed", None)]
+                await connection.run_sync(check_mapped_schema)
+        finally:
+            await engine.dispose()
+
+    migrate("upgrade", "027")
+
+    async def seed() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+        try:
+            async with engine.begin() as connection:
+                for run_id, state in (("a", "queued"), ("b", "completed")):
+                    await connection.execute(text(
+                        "INSERT INTO yp_agent_run "
+                        "(id, owner_id, thread_id, state, version, event_seq, "
+                        "create_time, update_time, create_timestamp, update_timestamp) "
+                        "VALUES (:id, 1, 'shared-thread', :state, 0, 1, "
+                        "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)"
+                    ), {"id": run_id, "state": state})
+        finally:
+            await engine.dispose()
+
+    asyncio.run(seed())
+    migrate("upgrade", "head")
+    asyncio.run(inspect_rows())
+    migrate("downgrade", "-1")
+    migrate("upgrade", "head")
+    migrate("check")
+    asyncio.run(inspect_rows())
+
+
 async def _exercise_isolated_migrations(
     backend: str, base_url: URL, admin_database: str | None, database_env_key: str,
     private_root: Path, monkeypatch: pytest.MonkeyPatch,

@@ -19,6 +19,7 @@ class AgentRun(CustomBaseModel):
     __enable_auto_id__ = False
     __table_args__ = (
         UniqueConstraint("owner_id", "request_key", name="uq_yp_agent_run_owner_request_key"),
+        UniqueConstraint("active_thread_id", name="uq_yp_agent_run_active_thread_id"),
         {"comment": "智能体运行任务表"},
     )
 
@@ -69,6 +70,7 @@ class AgentRun(CustomBaseModel):
         Integer, nullable=False, default=0, server_default="0", comment="已开始的工具调用次数",
     )
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="检查点线程 ID")
+    active_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="未结束运行占用的检查点线程 ID")
     request_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="用户提交幂等键")
     state: Mapped[str] = mapped_column(String(32), nullable=False, comment="运行状态")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="并发更新版本号")

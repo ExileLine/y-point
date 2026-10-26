@@ -122,7 +122,7 @@ YPOINT_TEST_OLLAMA_M3=1 uv run pytest -q tests/test_runtime_checkpoint.py::test_
 
 `025` 迁移为生成产物增加可选来源文件 ID，并为 Run Event 增加 `artifact_id`。生成文件经 Artifact Service 校验后，在同一业务事务登记元数据和 `artifact_published` 引用事件；重复发布键与相同内容返回原产物，冲突内容拒绝。来源文件必须仍属于 Run 所有者且有效。事件不含文件正文；授权下载仍逐次检查所有权和期限。
 
-`026` 迁移增加 `publish_answer_artifact`，默认为 `false`。创建文本 Run 时可显式设为 `true`，worker 在回答完成后以固定发布键创建 `answer.txt`。worker 重启会扫描已完成但尚未发布的 Run 并补发，重复扫描不会重复产生文件或事件。`027` 迁移为缺少最终消息或产物校验失败的 Run 记录下一次补发时间，退避一小时，避免这些 Run 长期占满有限批量；磁盘或对象存储故障仍由 worker 下一轮重试。产物引用可从 `/api/v1/artifacts?run_id=`、`/events` 或 SSE 查询；启用导出的 Run 在产物发布前会保持 SSE 订阅，最多受原有空闲窗口限制。断线后仍可从游标补取。本机开发库已升级至 `027`；其他环境部署前需分别执行 `uv run alembic upgrade head`。应用启动时会检查业务模型需要的表和列，缺失时提示迁移，不会等到上传请求写入才报数据库错误。
+`026` 迁移增加 `publish_answer_artifact`，默认为 `false`。创建文本 Run 时可显式设为 `true`，worker 在回答完成后以固定发布键创建 `answer.txt`。worker 重启会扫描已完成但尚未发布的 Run 并补发，重复扫描不会重复产生文件或事件。`027` 迁移为缺少最终消息或产物校验失败的 Run 记录下一次补发时间，退避一小时，避免这些 Run 长期占满有限批量；磁盘或对象存储故障仍由 worker 下一轮重试。`028` 迁移为非终态 Run 回填唯一的活动线程占用标记，防止并发提交把两个 Run 放进同一检查点线程；若旧库已有这种冲突，须先处理冲突再升级。产物引用可从 `/api/v1/artifacts?run_id=`、`/events` 或 SSE 查询；启用导出的 Run 在产物发布前会保持 SSE 订阅，最多受原有空闲窗口限制。断线后仍可从游标补取。本机开发 SQLite 库已升级到 `028`，其他环境部署前需分别执行 `uv run alembic upgrade head`。应用启动时会检查业务模型需要的表和列，缺失时提示迁移，不会等到上传请求写入才报数据库错误。
 
 文件上传和生成产物共用 `ARTIFACT_OWNER_MAX_BYTES`（默认 1 GiB）及 `ARTIFACT_OWNER_MAX_FILES`（默认 1000）配额。`ARTIFACT_REQUIRE_MALWARE_SCAN=true` 时必须安装 `clamscan`，扫描器缺失、超时或扫描失败会拒绝文件；默认关闭适合本地开发，上线前应开启并验证扫描器。TXT 拒绝 NUL 字节，PDF 检查头部与结束标记，Office 检查全包、重复路径、加密条目、宏和解压体积。隔离 MySQL 库已验证两个事务争抢文件数或字节数配额；跨进程生产配额及真实扫描性能仍需目标环境验收。Runtime 状态、事件和检查点的写入与补偿规则见 `docs/m3-runtime-contract.md`。
 
