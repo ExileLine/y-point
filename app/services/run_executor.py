@@ -19,7 +19,8 @@ from uuid import UUID, uuid4
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage, get_buffer_string
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 from sqlalchemy import select
@@ -52,7 +53,9 @@ from app.services.run_manager import (
     timeout_run,
 )
 from app.services.runtime_checkpoint import open_async_checkpointer
-from app.services.runtime_adapter import DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
+from app.services.runtime_adapter import (
+    CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig,
+)
 from app.services.tool_registry import RESERVED_TOOL_NAMES
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
@@ -118,6 +121,34 @@ def _reported_model_usage(response: ModelResponse | ExtendedModelResponse | AIMe
     )
 
 
+async def _account_model_response(
+    response: ModelResponse | ExtendedModelResponse | AIMessage,
+    sessions: async_sessionmaker[AsyncSession], run_id: str, lease_token: str,
+    max_total_tokens: int | None, max_estimated_cost: Decimal | None,
+    cost_input_price: Decimal | None, cost_output_price: Decimal | None,
+) -> None:
+    tokens, input_tokens, output_tokens = _reported_model_usage(response)
+    cost = None
+    if max_estimated_cost is not None and input_tokens is not None and output_tokens is not None:
+        assert cost_input_price is not None and cost_output_price is not None
+        cost = (Decimal(input_tokens) * cost_input_price + Decimal(output_tokens) * cost_output_price) / 1_000_000
+    token_exceeded = cost_exceeded = False
+    if tokens is not None or cost is not None:
+        async with sessions.begin() as db:
+            if tokens is not None:
+                token_exceeded = await record_model_tokens(db, run_id, lease_token, tokens)
+            if cost is not None:
+                cost_exceeded = await record_model_cost(db, run_id, lease_token, cost)
+    if tokens is None and max_total_tokens is not None:
+        raise TokenUsageUnavailableError("上游未报告完整 Token 用量")
+    if cost is None and max_estimated_cost is not None:
+        raise CostUsageUnavailableError("上游未报告完整可计价用量")
+    if token_exceeded:
+        raise TokenBudgetExceeded("总 Token 用量已超过上限")
+    if cost_exceeded:
+        raise CostBudgetExceeded("估算成本已超过上限")
+
+
 class AuthorizedToolsMiddleware(AgentMiddleware):
     """计数模型调用，只展示获授权的工具并在执行前再次校验。"""
 
@@ -143,26 +174,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             await reserve_model_call(db, self.run_id, self.lease_token)
         visible_tools = [tool for tool in request.tools if getattr(tool, "name", None) in self.allowed_names]
         response = await handler(request.override(tools=visible_tools))
-        tokens, input_tokens, output_tokens = _reported_model_usage(response)
-        cost = None
-        if self.max_estimated_cost is not None and input_tokens is not None and output_tokens is not None:
-            assert self.cost_input_price is not None and self.cost_output_price is not None
-            cost = (Decimal(input_tokens) * self.cost_input_price + Decimal(output_tokens) * self.cost_output_price) / 1_000_000
-        token_exceeded = cost_exceeded = False
-        if tokens is not None or cost is not None:
-            async with self.sessions.begin() as db:
-                if tokens is not None:
-                    token_exceeded = await record_model_tokens(db, self.run_id, self.lease_token, tokens)
-                if cost is not None:
-                    cost_exceeded = await record_model_cost(db, self.run_id, self.lease_token, cost)
-        if tokens is None and self.max_total_tokens is not None:
-            raise TokenUsageUnavailableError("上游未报告完整 Token 用量")
-        if cost is None and self.max_estimated_cost is not None:
-            raise CostUsageUnavailableError("上游未报告完整可计价用量")
-        if token_exceeded:
-            raise TokenBudgetExceeded("总 Token 用量已超过上限")
-        if cost_exceeded:
-            raise CostBudgetExceeded("估算成本已超过上限")
+        await _account_model_response(
+            response, self.sessions, self.run_id, self.lease_token,
+            self.max_total_tokens, self.max_estimated_cost, self.cost_input_price, self.cost_output_price,
+        )
         return response
 
     async def awrap_tool_call(
@@ -407,17 +422,43 @@ async def execute_text_run(
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
 
     assert model is not None
+    runtime_config = RuntimeRunConfig.from_run(
+        run, tools, context_window=catalog_model.context_window if catalog_model is not None else None,
+    )
+    try:
+        input_budget = runtime_config.input_budget()
+    except ValueError:
+        return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
+    if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_text)]) > input_budget:
+        return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
+
+    async def summarize_history(messages: list[BaseMessage]) -> str:
+        async with sessions.begin() as db:
+            await reserve_model_call(db, run_id, lease_token)
+        prompt = CONVERSATION_SUMMARY_PROMPT.format(messages=get_buffer_string(messages))
+        response = await asyncio.wait_for(
+            model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds,
+        )
+        await _account_model_response(
+            response, sessions, run_id, lease_token,
+            run.max_total_tokens, run.max_estimated_cost, run.cost_input_price, run.cost_output_price,
+        )
+        summary = str(response.text).strip()
+        if not summary:
+            raise ValueError("对话摘要为空")
+        return summary
+
     started = None
     try:
         async with open_async_checkpointer(checkpoint_path) as checkpointer:
             runtime = DeepAgentsRuntimeAdapter(
-                RuntimeRunConfig.from_run(run, tools),
+                runtime_config,
                 model=model, tools=tools, interrupt_on=interrupt_on, checkpointer=checkpointer,
                 middleware=[AuthorizedToolsMiddleware(
                     {tool.name for tool in tools}, sessions, run_id, lease_token,
                     run.tool_timeout_seconds, run.max_total_tokens, run.max_estimated_cost,
                     run.cost_input_price, run.cost_output_price,
-                )],
+                )], summarizer=summarize_history,
             )
             snapshot = await runtime.state()
             actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")

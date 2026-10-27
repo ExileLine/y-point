@@ -4,6 +4,7 @@
 # @File    : message_attachments.py
 """批量读取消息中的上传文件引用及当前可用状态。"""
 
+import asyncio
 import hashlib
 import json
 
@@ -16,10 +17,11 @@ from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
-from app.services.artifact_store import artifact_root
+from app.services.attachment_text import (
+    CONTEXT_MEDIA_TYPES, MAX_CONTEXT_ATTACHMENT_BYTES, extract_context_text,
+)
+from app.services.artifact_store import MAX_FILE_BYTES, artifact_root
 from app.services.private_blob_store import read_blob
-
-MAX_CONTEXT_ATTACHMENT_BYTES = 16 * 1024
 
 
 class AttachmentContextUnavailable(ValueError):
@@ -27,7 +29,7 @@ class AttachmentContextUnavailable(ValueError):
 
 
 async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id: int) -> str | None:
-    """按提交顺序验证并读取本轮选择的 TXT；不把原文写入公开消息。"""
+    """按提交顺序验证并提取选中文件；原始字节不写入公开消息。"""
     references = (await db.scalars(select(AgentMessageAttachment).join(
         AgentRunMessage, AgentRunMessage.id == AgentMessageAttachment.message_id,
     ).where(
@@ -36,12 +38,12 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
     ).order_by(AgentMessageAttachment.position))).all()
     if not references:
         return None
-    if len(references) > 5 or sum(item.byte_size for item in references) > MAX_CONTEXT_ATTACHMENT_BYTES:
+    if len(references) > 5:
         raise AttachmentContextUnavailable("模型上下文附件超出限制")
     items = (await db.scalars(select(Artifact).where(
         Artifact.id.in_([item.artifact_id for item in references]), Artifact.owner_id == owner_id,
         Artifact.source == "upload", Artifact.run_id.is_(None), Artifact.state == "ready",
-        Artifact.status == 1, Artifact.is_deleted == 0, Artifact.media_type == "text/plain",
+        Artifact.status == 1, Artifact.is_deleted == 0, Artifact.media_type.in_(CONTEXT_MEDIA_TYPES),
         (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
     ))).all()
     by_id = {item.id: item for item in items}
@@ -50,17 +52,45 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
     chunks = []
     for reference in references:
         item = by_id[reference.artifact_id]
-        if item.byte_size != reference.byte_size or item.filename != reference.filename:
+        if (
+            item.byte_size != reference.byte_size or item.filename != reference.filename
+            or item.media_type != reference.media_type
+        ):
             raise AttachmentContextUnavailable("模型上下文附件已变化")
         try:
-            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_CONTEXT_ATTACHMENT_BYTES)
+            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
             if len(content) != item.byte_size or hashlib.sha256(content).hexdigest() != item.sha256:
                 raise AttachmentContextUnavailable("模型上下文附件校验失败")
-            decoded = content.decode("utf-8")
+            decoded = await asyncio.to_thread(extract_context_text, content, item.media_type)
         except (OSError, UnicodeError, ValueError, Boto3Error, BotoCoreError, ClientError):
             raise AttachmentContextUnavailable("模型上下文附件不可读取") from None
-        chunks.append(json.dumps({"filename": reference.filename, "content": decoded}, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 - 第三方解析器的损坏文件错误统一归类。
+            raise AttachmentContextUnavailable("模型上下文附件不可解析") from None
+        chunks.append(json.dumps({
+            "artifact_id": reference.artifact_id, "filename": reference.filename,
+            "media_type": reference.media_type, "content": decoded,
+        }, ensure_ascii=False))
+    if sum(len(chunk.encode("utf-8")) for chunk in chunks) > MAX_CONTEXT_ATTACHMENT_BYTES:
+        raise AttachmentContextUnavailable("模型上下文附件提取文本超过 16 KiB 限制")
     return "\n".join(chunks)
+
+
+async def load_run_context_artifact_ids(
+    db: AsyncSession, owner_id: int, run_ids: list[str],
+) -> dict[str, list[str]]:
+    """返回各 Run 用户消息曾选入模型上下文的上传文件 ID。"""
+    if not run_ids:
+        return {}
+    rows = (await db.execute(select(AgentRunMessage.run_id, AgentMessageAttachment.artifact_id).join(
+        AgentMessageAttachment, AgentMessageAttachment.message_id == AgentRunMessage.id,
+    ).where(
+        AgentRunMessage.run_id.in_(run_ids), AgentRunMessage.owner_id == owner_id,
+        AgentRunMessage.role == "user", AgentMessageAttachment.included_in_context.is_(True),
+    ).order_by(AgentRunMessage.id, AgentMessageAttachment.position))).all()
+    by_run: dict[str, list[str]] = {}
+    for run_id, artifact_id in rows:
+        by_run.setdefault(run_id, []).append(artifact_id)
+    return by_run
 
 
 async def load_message_attachments(
@@ -103,12 +133,14 @@ async def load_message_artifacts(
         Artifact.run_id.in_(message_by_run), Artifact.owner_id == owner_id, Artifact.source == "generated",
         Artifact.state != "pending",
     ).order_by(Artifact.create_time, Artifact.id))).all()
+    context_by_run = await load_run_context_artifact_ids(db, owner_id, list(message_by_run))
     now = shanghai_now(naive=True)
     by_message: dict[int, list[dict]] = {}
     for item in items:
         by_message.setdefault(message_by_run[item.run_id], []).append({
             "artifact_id": item.id, "filename": item.filename, "media_type": item.media_type,
             "byte_size": item.byte_size,
+            "context_artifact_ids": context_by_run.get(item.run_id, []),
             "available": item.state == "ready" and item.is_deleted == 0 and item.status == 1
             and (item.expires_at is None or item.expires_at > now),
         })

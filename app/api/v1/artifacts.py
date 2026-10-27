@@ -27,6 +27,7 @@ from app.schemas.artifact import ArtifactOut
 from app.services.artifact_store import (
     MAX_FILES, MAX_FILE_BYTES, ArtifactValidationError, artifact_root, enforce_owner_quota, save_upload, storage_path,
 )
+from app.services.message_attachments import load_run_context_artifact_ids
 from app.services.private_blob_store import delete_blob, read_blob, using_s3
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -97,7 +98,10 @@ async def read_artifact(
 ):
     """仅文件所有者可以查看不含存储路径的元数据。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
-    return api_response(data=ArtifactOut.model_validate(item).model_dump(mode="json"), datetime_format=False)
+    data = ArtifactOut.model_validate(item).model_dump(mode="json")
+    if item.source == "generated" and item.run_id is not None:
+        data["context_artifact_ids"] = (await load_run_context_artifact_ids(db, actor.id, [item.run_id])).get(item.run_id, [])
+    return api_response(data=data, datetime_format=False)
 
 
 @router.get("", summary="查询运行产物列表")
@@ -114,7 +118,10 @@ async def list_run_artifacts(
         (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
     ).order_by(Artifact.create_time, Artifact.id)
     items = (await db.scalars(statement)).all()
-    return api_response(data=[ArtifactOut.model_validate(item).model_dump(mode="json") for item in items], is_pop=False)
+    context_ids = (await load_run_context_artifact_ids(db, actor.id, [run_id])).get(run_id, [])
+    return api_response(data=[{
+        **ArtifactOut.model_validate(item).model_dump(mode="json"), "context_artifact_ids": context_ids,
+    } for item in items], is_pop=False)
 
 
 @router.get("/{artifact_id}/download", summary="下载私有文件")

@@ -21,6 +21,7 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentUpdateIn
 from app.services.identity import audit
+from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -34,8 +35,10 @@ async def _available_text_model(db: AsyncSession, model_id: int, max_output_toke
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
     if "text" not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过文本能力验证")
-    if model.context_window is not None and max_output_tokens > model.context_window:
-        raise CustomException(status_code=409, custom_code=10005, detail="最大输出 Token 数超过模型上下文窗口")
+    if model.context_window is not None and (
+        model.context_window - max_output_tokens < CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
+    ):
+        raise CustomException(status_code=409, custom_code=10005, detail="模型上下文窗口无法容纳输出上限和最低输入空间")
     return model
 
 

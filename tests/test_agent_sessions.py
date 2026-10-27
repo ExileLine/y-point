@@ -31,25 +31,29 @@ from app.models.artifact import Artifact
 from app.models.base import Base
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
-from app.services.run_dispatcher import dispatch_next_run
+from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact
 from app.services.artifact_store import publish_pending_answers
+from app.services.run_dispatcher import dispatch_next_run
 from app.services import runtime_adapter as runtime_adapter_module
 from app.services import run_dispatcher as run_dispatcher_module
 from app.services import message_attachments as message_attachments_module
+from app.services import worker_tools as worker_tools_module
 
 
 class SessionModel(FakeMessagesListChatModel):
     """支持 Agent 工具绑定接口的固定回答模型。"""
 
     seen_inputs: ClassVar[list[str]] = []
+    seen_tool_results: ClassVar[list[str]] = []
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
-        """测试模型不使用工具，保留自身实例。"""
+        """允许固定回答模型接入运行时工具。"""
         return self
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         """记录实际传给模型的用户消息内容。"""
         self.seen_inputs.extend(str(message.content) for message in messages if message.type == "human")
+        self.seen_tool_results.extend(str(message.content) for message in messages if message.type == "tool")
         return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
@@ -116,7 +120,9 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
         artifact_root.mkdir(mode=0o700)
         monkeypatch.setattr(artifact_api, "artifact_root", lambda: artifact_root)
         monkeypatch.setattr(message_attachments_module, "artifact_root", lambda: artifact_root)
+        monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: artifact_root)
         SessionModel.seen_inputs.clear()
+        SessionModel.seen_tool_results.clear()
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sessions.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -132,7 +138,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     ),
                     ModelCatalog(
                         id=1, provider_id=1, external_id="session-model", display_name="Session model",
-                        capabilities=["text"], verified_capabilities=["text"], capabilities_verified=True,
+                        capabilities=["text", "tools"], verified_capabilities=["text", "tools"], capabilities_verified=True,
                         context_window=8192, input_price=Decimal("1.5"), output_price=Decimal("2"),
                         creator_id=1, status=1, is_deleted=0,
                     ),
@@ -212,10 +218,79 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     ])
                     assert pdf_upload.status_code == 201
                     pdf_id = pdf_upload.json()["data"][0]["id"]
-                    assert (await client.post(f"{base}/{first_id}/runs", headers=alice, json={
-                        "request_key": "unsupported-context", "input_text": "第一轮",
+                    office_session = await client.post(base, headers=alice, json={"title": "办公文件会话"})
+                    assert office_session.status_code == 201
+                    office_id = office_session.json()["data"]["id"]
+                    corrupt_run = await client.post(f"{base}/{office_id}/runs", headers=alice, json={
+                        "request_key": "corrupt-pdf", "input_text": "读取 PDF",
                         "artifact_ids": [pdf_id], "context_artifact_ids": [pdf_id],
-                    })).status_code == 400
+                    })
+                    assert corrupt_run.status_code == 201
+                    corrupt_done = await dispatch_next_run(sessions, tmp_path / "checkpoint.db")
+                    assert corrupt_done.id == corrupt_run.json()["data"]["id"]
+                    assert corrupt_done.state == "failed" and corrupt_done.failure_code == "attachment_unavailable"
+                    office_upload = await client.post("/api/v1/artifacts/uploads", headers=alice, files=[
+                        ("files", ("source.pdf", render_document_artifact("source.pdf", "# PDF资料\n赤壁"), "application/pdf")),
+                        ("files", ("source.docx", render_document_artifact("source.docx", "# DOCX资料\n夷陵"),
+                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+                        ("files", ("source.xlsx", render_spreadsheet_artifact([
+                            ArtifactSheet(name="数据表", rows=[["战役", "年份"], ["夷陵之战", 222]]),
+                        ]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+                    ])
+                    assert office_upload.status_code == 201, office_upload.text
+                    office_artifact_ids = [item["id"] for item in office_upload.json()["data"]]
+                    office_run = await client.post(f"{base}/{office_id}/runs", headers=alice, json={
+                        "request_key": "office-context", "input_text": "总结这三份文件",
+                        "artifact_ids": office_artifact_ids, "context_artifact_ids": office_artifact_ids,
+                        "publish_answer_artifact": True,
+                    })
+                    assert office_run.status_code == 201, office_run.text
+                    office_run_id = office_run.json()["data"]["id"]
+
+                    async def office_model(db, run):
+                        return SessionModel(responses=[AIMessage(content="办公文件总结")])
+
+                    office_done = await dispatch_next_run(
+                        sessions, tmp_path / "checkpoint.db", resolve_model=office_model,
+                    )
+                    assert office_done.id == office_run_id and office_done.state == "completed"
+                    assert all(term in SessionModel.seen_inputs[-1] for term in ("赤壁", "夷陵", "数据表", "222"))
+                    assert await publish_pending_answers(sessions, artifact_root) == 1
+                    office_artifacts = (await client.get("/api/v1/artifacts", headers=alice, params={
+                        "run_id": office_run_id,
+                    })).json()["data"]
+                    assert office_artifacts[0]["context_artifact_ids"] == office_artifact_ids
+                    office_output_id = office_artifacts[0]["id"]
+                    assert (await client.get(f"/api/v1/artifacts/{office_output_id}", headers=alice)
+                        ).json()["data"]["context_artifact_ids"] == office_artifact_ids
+                    office_messages = (await client.get(f"{base}/{office_id}/messages", headers=alice)).json()["data"]
+                    assert office_messages[-1]["artifacts"][0]["context_artifact_ids"] == office_artifact_ids
+                    assert (await client.get(f"/api/v1/artifacts/{office_output_id}", headers=bob)).status_code == 404
+                    reuse_run = await client.post(f"{base}/{office_id}/runs", headers=alice, json={
+                        "request_key": "reuse-office-output", "input_text": "读取刚才生成的文件，再告诉我标题",
+                    })
+                    assert reuse_run.status_code == 201, reuse_run.text
+
+                    async def reuse_model(db, run):
+                        return SessionModel(responses=[
+                            AIMessage(content="", tool_calls=[{
+                                "name": "list_session_artifacts", "args": {}, "id": "reuse-list",
+                            }]),
+                            AIMessage(content="", tool_calls=[{
+                                "name": "read_generated_artifact",
+                                "args": {"artifact_id": office_output_id}, "id": "reuse-read",
+                            }]),
+                            AIMessage(content="已读取办公文件总结"),
+                        ])
+
+                    reused = await dispatch_next_run(
+                        sessions, tmp_path / "checkpoint.db", resolve_model=reuse_model,
+                        resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                    )
+                    assert reused.id == reuse_run.json()["data"]["id"] and reused.state == "completed", (
+                        reused.failure_code, reused.model_call_count, reused.tool_call_count,
+                    )
+                    assert any("办公文件总结" in result for result in SessionModel.seen_tool_results)
                     for bad_ids, expected_status in (
                         ([artifact_ids[0], artifact_ids[0]], 400),
                         ([bob_artifact], 404),

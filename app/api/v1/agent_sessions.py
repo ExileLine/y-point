@@ -31,6 +31,7 @@ from app.schemas.agent_session import (
 )
 from app.schemas.run import RunOut
 from app.services.identity import audit
+from app.services.attachment_text import CONTEXT_MEDIA_TYPES
 from app.services.message_attachments import MAX_CONTEXT_ATTACHMENT_BYTES, load_message_artifacts, load_message_attachments
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
 
@@ -235,10 +236,10 @@ async def submit_session_run(
         raise CustomException(status_code=409, custom_code=10005, detail="已有对话的会话不能切换模型，请创建新会话")
     artifacts = await _uploaded_artifacts(db, owner_id, body.artifact_ids)
     context_artifacts = [item for item in artifacts if item.id in context_ids]
-    if any(item.media_type != "text/plain" for item in context_artifacts):
-        raise CustomException(status_code=400, custom_code=10006, detail="当前只有 TXT 附件可进入模型上下文")
-    if sum(item.byte_size for item in context_artifacts) > MAX_CONTEXT_ATTACHMENT_BYTES:
-        raise CustomException(status_code=413, custom_code=10005, detail="模型上下文附件超过 16 KiB 限制")
+    if any(item.media_type not in CONTEXT_MEDIA_TYPES for item in context_artifacts):
+        raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型文本上下文")
+    if sum(item.byte_size for item in context_artifacts if item.media_type == "text/plain") > MAX_CONTEXT_ATTACHMENT_BYTES:
+        raise CustomException(status_code=413, custom_code=10005, detail="TXT 上下文附件超过 16 KiB 限制")
     options = dict(
         agent_id=agent_id, session_id=session_id, thread_id=session.thread_id,
         model_id=agent.default_model_id, input_text=body.input_text, request_key=body.request_key,

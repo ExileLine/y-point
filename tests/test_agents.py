@@ -145,6 +145,8 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert invalid.status_code == 409
                     too_large = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_output_tokens": 9000})
                     assert too_large.status_code == 409
+                    crowded = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_output_tokens": 7500})
+                    assert crowded.status_code == 409
                     unpriced = await client.post("/api/v1/agents", headers=alice, json={
                         **payload, "max_estimated_cost": "0.010000",
                     })

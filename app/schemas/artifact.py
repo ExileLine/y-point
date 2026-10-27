@@ -24,6 +24,7 @@ class ArtifactOut(BaseModel):
     state: str = Field(description="文件状态", examples=["ready"])
     run_id: str | None = Field(description="关联的运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     source_artifact_id: str | None = Field(description="生成产物的来源文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    context_artifact_ids: list[str] = Field(default_factory=list, description="本轮提供给模型的参考文件 ID；不代表模型实际引用的段落")
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])
 
 
@@ -35,7 +36,7 @@ class ArtifactReferenceOut(BaseModel):
     media_type: str = Field(description="提交时文件类型", examples=["text/plain"])
     byte_size: int = Field(description="提交时文件大小", examples=[1024])
     available: bool = Field(description="文件元数据当前是否有效；下载仍须逐次校验", examples=[True])
-    included_in_context: bool = Field(default=False, description="提交时是否选择将 TXT 内容送入本轮模型上下文", examples=[False])
+    included_in_context: bool = Field(default=False, description="提交时是否选择将可提取内容送入本轮模型上下文", examples=[False])
 
 
 class GeneratedArtifactReferenceOut(BaseModel):
@@ -46,3 +47,4 @@ class GeneratedArtifactReferenceOut(BaseModel):
     media_type: str = Field(description="服务端核验后的文件类型", examples=["application/vnd.openxmlformats-officedocument.wordprocessingml.document"])
     byte_size: int = Field(description="文件字节数", examples=[2048])
     available: bool = Field(description="产物当前是否有效；下载时仍需重新授权", examples=[True])
+    context_artifact_ids: list[str] = Field(default_factory=list, description="本轮提供给模型的参考文件 ID；不代表模型实际引用的段落")

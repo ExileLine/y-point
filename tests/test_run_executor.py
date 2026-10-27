@@ -1609,7 +1609,7 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert await load_message_artifacts(db, 1, [messages[-1]]) == {messages[-1].id: [{
                     "artifact_id": artifacts[0].id, "filename": "夷陵之战摘要.txt",
                     "media_type": "text/plain", "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
-                    "available": True,
+                    "available": True, "context_artifact_ids": [],
                 }]}
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
