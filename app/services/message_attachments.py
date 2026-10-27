@@ -88,3 +88,28 @@ async def load_message_attachments(
             "available": item.artifact_id in available,
         })
     return by_message
+
+
+async def load_message_artifacts(
+    db: AsyncSession, owner_id: int, assistant_messages: list[AgentRunMessage],
+) -> dict[int, list[dict]]:
+    """按 Run 批量关联生成产物，保留已删除产物的历史位置。"""
+    if not assistant_messages:
+        return {}
+    message_by_run = {message.run_id: message.id for message in assistant_messages if message.role == "assistant"}
+    if not message_by_run:
+        return {}
+    items = (await db.scalars(select(Artifact).where(
+        Artifact.run_id.in_(message_by_run), Artifact.owner_id == owner_id, Artifact.source == "generated",
+        Artifact.state != "pending",
+    ).order_by(Artifact.create_time, Artifact.id))).all()
+    now = shanghai_now(naive=True)
+    by_message: dict[int, list[dict]] = {}
+    for item in items:
+        by_message.setdefault(message_by_run[item.run_id], []).append({
+            "artifact_id": item.id, "filename": item.filename, "media_type": item.media_type,
+            "byte_size": item.byte_size,
+            "available": item.state == "ready" and item.is_deleted == 0 and item.status == 1
+            and (item.expires_at is None or item.expires_at > now),
+        })
+    return by_message

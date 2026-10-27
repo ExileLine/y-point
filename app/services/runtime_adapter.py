@@ -54,9 +54,17 @@ class DeepAgentsRuntimeAdapter:
         interrupt_on: dict[str, bool], checkpointer: Any, middleware: list[AgentMiddleware],
     ) -> None:
         self.config = config.graph_config()
+        system_prompt = config.system_prompt or ""
+        if "create_text_artifact" in config.tool_names:
+            system_prompt += (
+                "\n当用户要求生成可下载的文件时，按扩展名调用对应工具："
+                "TXT/Markdown/HTML/JSON/CSV 使用 create_text_artifact，DOCX/PDF 使用 create_document_artifact，"
+                "XLSX 使用 create_spreadsheet_artifact。工具成功后再回复用户。"
+                "Markdown 代码块不能代替文件产物。"
+            )
         self.agent = create_deep_agent(
             model=model, tools=tools, interrupt_on=interrupt_on,
-            checkpointer=checkpointer, middleware=middleware, system_prompt=config.system_prompt or None,
+            checkpointer=checkpointer, middleware=middleware, system_prompt=system_prompt or None,
         )
 
     async def state(self) -> Any:

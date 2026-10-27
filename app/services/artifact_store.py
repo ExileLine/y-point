@@ -43,6 +43,9 @@ MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+GENERATED_TEXT_MEDIA_TYPES = {
+    ".md": "text/markdown", ".html": "text/html", ".csv": "text/csv", ".json": "application/json",
+}
 
 
 class ArtifactValidationError(ValueError):
@@ -97,16 +100,17 @@ def _validate_office(path: Path, suffix: str) -> None:
         raise ArtifactValidationError("Office 文件损坏或不可读取") from exc
 
 
-def validate_file(path: Path, filename: str) -> str:
+def validate_file(path: Path, filename: str, *, generated: bool = False) -> str:
     """核验扩展名和实际文件结构，返回可信媒体类型。"""
     if not filename or len(filename) > 255 or filename in {".", ".."}:
         raise ArtifactValidationError("文件名无效")
     if Path(filename).name != filename or any(ord(char) < 32 for char in filename) or "\\" in filename:
         raise ArtifactValidationError("文件名包含非法字符")
     suffix = Path(filename).suffix.lower()
-    if suffix not in MEDIA_TYPES:
+    allowed_types = MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES if generated else MEDIA_TYPES
+    if suffix not in allowed_types:
         raise ArtifactValidationError("不支持的文件格式")
-    if suffix == ".txt":
+    if suffix in {".txt", ".md", ".html", ".csv", ".json"}:
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeError as exc:
@@ -122,7 +126,7 @@ def validate_file(path: Path, filename: str) -> str:
                 raise ArtifactValidationError("PDF 文件缺少结束标记")
     else:
         _validate_office(path, suffix)
-    return MEDIA_TYPES[suffix]
+    return allowed_types[suffix]
 
 
 async def scan_file(path: Path) -> None:
@@ -158,7 +162,7 @@ async def enforce_owner_quota(db: AsyncSession, owner_id: int, *, add_count: int
         raise ArtifactValidationError("文件所有者不存在")
     now = shanghai_now(naive=True)
     count, total = (await db.execute(select(func.count(Artifact.id), func.coalesce(func.sum(Artifact.byte_size), 0)).where(
-        Artifact.owner_id == owner_id, Artifact.state == "ready", Artifact.is_deleted == 0,
+        Artifact.owner_id == owner_id, Artifact.state.in_(("ready", "pending")), Artifact.is_deleted == 0,
         or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
     ))).one()
     if count + add_count > config.ARTIFACT_OWNER_MAX_FILES or total + add_bytes > config.ARTIFACT_OWNER_MAX_BYTES:
@@ -313,6 +317,90 @@ async def publish_generated_artifact(
         raise
 
 
+async def stage_generated_text_artifact(
+    sessions: async_sessionmaker[AsyncSession], run_id: str, owner_id: int, lease_token: str,
+    filename: str, content: str, root: Path,
+) -> Artifact:
+    """保留 TXT 工具的暂存入口与发布键。"""
+    if Path(filename).suffix.lower() != ".txt":
+        raise ArtifactValidationError("生成文件必须是 TXT")
+    return await stage_generated_artifact(sessions, run_id, owner_id, lease_token, filename, content.encode("utf-8"), root)
+
+
+async def stage_generated_artifact(
+    sessions: async_sessionmaker[AsyncSession], run_id: str, owner_id: int, lease_token: str,
+    filename: str, data: bytes, root: Path,
+) -> Artifact:
+    """幂等暂存已生成文件；Run 完成前不公开下载。"""
+    suffix = Path(filename).suffix.lower()
+    if suffix not in MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES or len(filename) > 120:
+        raise ArtifactValidationError("生成文件格式不支持或文件名超过 120 字符")
+    if not data or len(data) > MAX_FILE_BYTES:
+        raise ArtifactValidationError("生成文件为空或超过 10 MiB")
+    prefix = "model-txt-" if suffix == ".txt" else "model-file-"
+    publication_key = prefix + hashlib.sha256(filename.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(data).hexdigest()
+
+    async def existing_artifact() -> Artifact | None:
+        async with sessions() as db:
+            return await db.scalar(select(Artifact).where(
+                Artifact.run_id == run_id, Artifact.publication_key == publication_key,
+            ))
+
+    existing = await existing_artifact()
+    if existing is not None:
+        if existing.sha256 != digest or existing.filename != filename or existing.state != "pending":
+            raise ArtifactValidationError("同名生成文件内容冲突")
+        return existing
+
+    key = uuid4().hex
+    temporary = root / f".{key}.tmp"
+    remote_attempted = False
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+        media_type = validate_file(temporary, filename, generated=True)
+        await scan_file(temporary)
+        if using_s3():
+            remote_attempted = True
+            await store_blob(root, key, temporary)
+            temporary.unlink(missing_ok=True)
+        else:
+            os.replace(temporary, storage_path(root, key))
+        async with sessions.begin() as db:
+            run = await db.get(AgentRun, run_id)
+            now = shanghai_now(naive=True)
+            if (
+                run is None or run.owner_id != owner_id or run.state != "running"
+                or run.lease_token != lease_token or run.lease_expires_at is None or run.lease_expires_at <= now
+            ):
+                raise ArtifactValidationError("运行授权已失效")
+            count = await db.scalar(select(func.count(Artifact.id)).where(
+                Artifact.run_id == run_id, Artifact.source == "generated", Artifact.state == "pending",
+            ))
+            if count >= MAX_FILES:
+                raise ArtifactValidationError("单轮生成文件超过数量限制")
+            await enforce_owner_quota(db, owner_id, add_count=1, add_bytes=len(data))
+            artifact = Artifact(
+                id=str(uuid4()), owner_id=owner_id, run_id=run_id, publication_key=publication_key,
+                filename=filename, media_type=media_type, byte_size=len(data), sha256=digest, storage_key=key,
+                source="generated", state="pending", expires_at=now + timedelta(hours=1), is_deleted=0, status=1,
+            )
+            db.add(artifact)
+            await db.flush()
+        return artifact
+    except IntegrityError:
+        await _cleanup_uncommitted_blob(root, key, remote_attempted=remote_attempted)
+        existing = await existing_artifact()
+        if existing is not None and existing.sha256 == digest and existing.filename == filename and existing.state == "pending":
+            return existing
+        raise ArtifactValidationError("同名生成文件内容冲突") from None
+    except BaseException:
+        await _cleanup_uncommitted_blob(root, key, remote_attempted=remote_attempted)
+        raise
+
+
 async def publish_pending_answers(
     sessions: async_sessionmaker[AsyncSession], root: Path, *, limit: int = 100,
 ) -> int:
@@ -382,7 +470,7 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
     now = shanghai_now(naive=True)
     async with sessions.begin() as db:
         expired = list((await db.scalars(select(Artifact).where(
-            Artifact.state == "ready", Artifact.expires_at.is_not(None), Artifact.expires_at <= now,
+            Artifact.state.in_(("ready", "pending")), Artifact.expires_at.is_not(None), Artifact.expires_at <= now,
         ).order_by(Artifact.expires_at, Artifact.id).limit(limit))).all())
         for item in expired:
             item.state = "deleted"

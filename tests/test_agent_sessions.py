@@ -32,6 +32,7 @@ from app.models.base import Base
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.run_dispatcher import dispatch_next_run
+from app.services.artifact_store import publish_pending_answers
 from app.services import runtime_adapter as runtime_adapter_module
 from app.services import run_dispatcher as run_dispatcher_module
 from app.services import message_attachments as message_attachments_module
@@ -135,6 +136,12 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         context_window=8192, input_price=Decimal("1.5"), output_price=Decimal("2"),
                         creator_id=1, status=1, is_deleted=0,
                     ),
+                    ModelCatalog(
+                        id=2, provider_id=1, external_id="alternate-model", display_name="Alternate model",
+                        capabilities=["text"], verified_capabilities=["text"], capabilities_verified=True,
+                        context_window=8192, input_price=Decimal("1.5"), output_price=Decimal("2"),
+                        creator_id=1, status=1, is_deleted=0,
+                    ),
                 ])
 
             async def test_session():
@@ -225,17 +232,22 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
 
                     first_run = await client.post(f"{base}/{first_id}/runs", headers=alice, json={
                         "request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids,
-                        "context_artifact_ids": [artifact_ids[0]],
+                        "context_artifact_ids": [artifact_ids[0]], "publish_answer_artifact": True,
                     })
                     assert first_run.status_code == 201, first_run.text
                     first_run_id = first_run.json()["data"]["id"]
                     assert first_run.json()["data"]["agent_config_version"] == 1
                     assert first_run.json()["data"]["thread_id"] == first_thread
+                    assert first_run.json()["data"]["publish_answer_artifact"] is True
                     repeated = await client.post(f"{base}/{first_id}/runs", headers=alice, json={
                         "request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids,
-                        "context_artifact_ids": [artifact_ids[0]],
+                        "context_artifact_ids": [artifact_ids[0]], "publish_answer_artifact": True,
                     })
                     assert repeated.status_code == 201 and repeated.json()["data"]["id"] == first_run_id
+                    assert (await client.post(f"{base}/{first_id}/runs", headers=alice, json={
+                        "request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids,
+                        "context_artifact_ids": [artifact_ids[0]],
+                    })).status_code == 409
                     assert (await client.post(f"{base}/{first_id}/runs", headers=alice, json={
                         "request_key": "first-turn", "input_text": "不同内容", "artifact_ids": artifact_ids,
                         "context_artifact_ids": [artifact_ids[0]],
@@ -267,6 +279,33 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert "first attachment" in SessionModel.seen_inputs[-1]
                     assert "second attachment" not in SessionModel.seen_inputs[-1]
                     assert generation_settings[-1] == (Decimal("1.00"), 4096)
+                    assert await publish_pending_answers(sessions, artifact_root) == 1
+                    assert await publish_pending_answers(sessions, artifact_root) == 0
+                    published = await client.get("/api/v1/artifacts", headers=alice, params={"run_id": first_run_id})
+                    assert published.status_code == 200
+                    answer = published.json()["data"]
+                    assert len(answer) == 1 and answer[0]["filename"] == "answer.txt"
+                    answer_id = answer[0]["id"]
+                    downloaded = await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=alice)
+                    assert downloaded.status_code == 200 and downloaded.content == "第一答复".encode()
+                    assert (await client.get("/api/v1/artifacts", headers=bob, params={"run_id": first_run_id})
+                        ).status_code == 404
+                    assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=bob)
+                        ).status_code == 404
+                    events = (await client.get(f"/api/v1/runs/{first_run_id}/events", headers=alice)).json()["data"]
+                    assert [item["artifact_id"] for item in events if item["event_type"] == "artifact_published"] == [answer_id]
+                    streamed = await client.get(f"/api/v1/runs/{first_run_id}/stream", headers=alice)
+                    assert streamed.status_code == 200
+                    assert "event: artifact_published" in streamed.text and answer_id in streamed.text
+                    published_messages = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
+                    assert published_messages[0]["artifacts"] == []
+                    assert published_messages[1]["artifacts"][0]["artifact_id"] == answer_id
+                    assert published_messages[1]["artifacts"][0]["available"] is True
+                    assert (await client.delete(f"/api/v1/artifacts/{answer_id}", headers=alice)).status_code == 200
+                    assert (await client.get("/api/v1/artifacts", headers=alice, params={"run_id": first_run_id})
+                        ).json()["data"] == []
+                    assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=alice)
+                        ).status_code == 404
                     messages = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
                     assert [(item["role"], item["content"]) for item in messages] == [
                         ("user", "第一轮"), ("assistant", "第一答复"),
@@ -275,8 +314,11 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert all(item["available"] for item in messages[0]["attachments"])
                     assert [item["included_in_context"] for item in messages[0]["attachments"]] == [True, False]
                     assert messages[1]["attachments"] == []
+                    assert messages[1]["artifacts"][0]["artifact_id"] == answer_id
+                    assert messages[1]["artifacts"][0]["available"] is False
                     run_messages = (await client.get(f"/api/v1/runs/{first_run_id}/messages", headers=alice)).json()["data"]
                     assert [item["artifact_id"] for item in run_messages[0]["attachments"]] == artifact_ids
+                    assert run_messages[1]["artifacts"][0]["artifact_id"] == answer_id
                     assert (await client.get(f"{base}/{first_id}/messages?after={messages[0]['id']}", headers=alice)
                         ).json()["data"][0]["content"] == "第一答复"
                     assert (await client.get(f"{base}/{first_id}/messages", headers=bob)).status_code == 404
@@ -295,7 +337,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert edited.status_code == 200, edited.text
                     retry_after_edit = await client.post(f"{base}/{first_id}/runs", headers=alice, json={
                         "request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids,
-                        "context_artifact_ids": [artifact_ids[0]],
+                        "context_artifact_ids": [artifact_ids[0]], "publish_answer_artifact": True,
                     })
                     assert retry_after_edit.status_code == 201 and retry_after_edit.json()["data"]["id"] == first_run_id
                     next_run = await client.post(f"{base}/{first_id}/runs", headers=alice, json={
@@ -419,6 +461,22 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert (await client.delete(f"{base}/{first_id}", headers=alice)).status_code == 200
                     assert (await client.get(f"{base}/{first_id}", headers=alice)).status_code == 404
                     assert (await client.get(f"{base}/{second_id}", headers=alice)).status_code == 200
+                    switched = await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
+                        "expected_version": 4, "default_model_id": 2,
+                    })
+                    assert switched.status_code == 200
+                    incompatible = await client.post(f"{base}/{second_id}/runs", headers=alice, json={
+                        "request_key": "model-switch", "input_text": "继续旧会话",
+                    })
+                    assert incompatible.status_code == 409
+                    assert "创建新会话" in incompatible.json()["message"]
+                    fresh = await client.post(base, headers=alice, json={"title": "切换模型后"})
+                    assert fresh.status_code == 201
+                    fresh_run = await client.post(f"{base}/{fresh.json()['data']['id']}/runs", headers=alice, json={
+                        "request_key": "new-model", "input_text": "新的会话",
+                    })
+                    assert fresh_run.status_code == 201
+                    assert fresh_run.json()["data"]["model_id"] == 2
             finally:
                 app.dependency_overrides.pop(get_db_session, None)
         finally:

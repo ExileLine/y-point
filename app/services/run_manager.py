@@ -13,10 +13,12 @@ from uuid import uuid4
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_config
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
 from app.models.agent_session import AgentSession
+from app.models.artifact import Artifact
 from app.models.run_approval import RunApproval
 from app.models.base import shanghai_now
 
@@ -457,6 +459,26 @@ async def complete_run(
     if final_text is not None:
         db.add(AgentRunMessage(run_id=run_id, owner_id=run.owner_id, role="assistant", content=final_text))
         await db.flush()
+    pending = (await db.scalars(select(Artifact).where(
+        Artifact.run_id == run_id, Artifact.source == "generated", Artifact.state == "pending",
+    ).order_by(Artifact.create_time, Artifact.id))).all()
+    if pending:
+        retention_days = get_config().ARTIFACT_RETENTION_DAYS
+        if retention_days < 1:
+            raise ValueError("文件保留天数必须大于零")
+        expires_at = shanghai_now(naive=True) + timedelta(days=retention_days)
+        for offset, artifact in enumerate(pending, start=1):
+            artifact.state = "ready"
+            artifact.expires_at = expires_at
+            db.add(AgentRunEvent(
+                run_id=run_id, sequence=completed.event_seq + offset, protocol_version=1,
+                event_type="artifact_published", state="completed", artifact_id=artifact.id,
+            ))
+        await db.execute(update(AgentRun).where(AgentRun.id == run_id).values(
+            version=completed.version + len(pending), event_seq=completed.event_seq + len(pending),
+        ).execution_options(synchronize_session=False))
+        await db.flush()
+        await db.refresh(completed)
     return completed
 
 

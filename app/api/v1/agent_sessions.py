@@ -31,7 +31,7 @@ from app.schemas.agent_session import (
 )
 from app.schemas.run import RunOut
 from app.services.identity import audit
-from app.services.message_attachments import MAX_CONTEXT_ATTACHMENT_BYTES, load_message_attachments
+from app.services.message_attachments import MAX_CONTEXT_ATTACHMENT_BYTES, load_message_artifacts, load_message_attachments
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
 
 
@@ -77,9 +77,10 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
     saved_context = {item.artifact_id for item in saved_references if item.included_in_context}
     if (
         run.session_id != session_id or message is None or message.content != body.input_text
+        or run.publish_answer_artifact != body.publish_answer_artifact
         or saved_artifacts != body.artifact_ids or saved_context != set(body.context_artifact_ids)
     ):
-        raise CustomException(status_code=409, custom_code=10005, detail="同一提交键的会话、输入或附件不一致")
+        raise CustomException(status_code=409, custom_code=10005, detail="同一提交键的会话、输入、附件或产物设置不一致")
     return run
 
 
@@ -226,6 +227,12 @@ async def submit_session_run(
         raise CustomException(status_code=409, custom_code=10005, detail="会话或智能体不可用")
     model = await _available_text_model(db, agent.default_model_id, agent.max_output_tokens)
     _check_cost_pricing(model, agent.max_estimated_cost)
+    previous_model_id = await db.scalar(select(AgentRun.model_id).where(
+        AgentRun.session_id == session_id, AgentRun.owner_id == owner_id,
+        AgentRun.state == "completed",
+    ).order_by(AgentRun.create_time.desc(), AgentRun.id.desc()).limit(1))
+    if previous_model_id is not None and previous_model_id != model.id:
+        raise CustomException(status_code=409, custom_code=10005, detail="已有对话的会话不能切换模型，请创建新会话")
     artifacts = await _uploaded_artifacts(db, owner_id, body.artifact_ids)
     context_artifacts = [item for item in artifacts if item.id in context_ids]
     if any(item.media_type != "text/plain" for item in context_artifacts):
@@ -235,6 +242,7 @@ async def submit_session_run(
     options = dict(
         agent_id=agent_id, session_id=session_id, thread_id=session.thread_id,
         model_id=agent.default_model_id, input_text=body.input_text, request_key=body.request_key,
+        publish_answer_artifact=body.publish_answer_artifact,
         agent_config_version=agent.version, agent_system_prompt=agent.system_prompt,
         agent_temperature=agent.temperature, agent_max_output_tokens=agent.max_output_tokens,
         model_timeout_seconds=agent.model_timeout_seconds, tool_timeout_seconds=agent.tool_timeout_seconds,
@@ -304,9 +312,11 @@ async def list_session_messages(
     ).order_by(AgentRunMessage.id).limit(limit)
     messages = (await db.scalars(statement)).all()
     by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
+    by_artifact = await load_message_artifacts(db, actor.id, messages)
     result = []
     for item in messages:
         data = SessionMessageOut.model_validate(item).model_dump(mode="json")
         data["attachments"] = by_message.get(item.id, [])
+        data["artifacts"] = by_artifact.get(item.id, [])
         result.append(data)
     return api_response(data=result, is_pop=False)

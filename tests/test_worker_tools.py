@@ -16,6 +16,7 @@ from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.admin import Admin
+from app.models.artifact import Artifact
 from app.models.base import Base, shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
@@ -62,7 +63,10 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 assert await resolver(db, plain) == ([], {})
                 tools, interrupt_on = await resolver(db, enabled)
             assert interrupt_on == {"read_text_artifact": True}
-            assert {item.name for item in tools} == {"list_text_artifacts", "read_text_artifact"}
+            assert {item.name for item in tools} == {
+                "list_text_artifacts", "read_text_artifact", "create_text_artifact",
+                "create_document_artifact", "create_spreadsheet_artifact",
+            }
             list_tool, read_tool = (next(item for item in tools if item.name == name) for name in (
                 "list_text_artifacts", "read_text_artifact",
             ))
@@ -71,6 +75,33 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
             }]
             result = json.loads(await read_tool.ainvoke({"artifact_id": owned.id}))
             assert result == {"filename": "owned.txt", "content": "owned text"}
+            create_tool = next(item for item in tools if item.name == "create_text_artifact")
+            created = json.loads(await create_tool.ainvoke({
+                "filename": "summary.txt", "content": "generated summary",
+            }))
+            assert json.loads(await create_tool.ainvoke({
+                "filename": "summary.txt", "content": "generated summary",
+            })) == created
+            with pytest.raises(ValueError, match="冲突"):
+                await create_tool.ainvoke({"filename": "summary.txt", "content": "different"})
+            async with sessions() as db:
+                staged = await db.get(Artifact, created["artifact_id"])
+                assert staged.state == "pending" and staged.run_id == enabled.id
+                assert (root / staged.storage_key).read_text() == "generated summary"
+            doc_tool = next(item for item in tools if item.name == "create_document_artifact")
+            pdf = json.loads(await doc_tool.ainvoke({
+                "filename": "summary.pdf", "content": "# Summary\n\nGenerated summary",
+            }))
+            sheet_tool = next(item for item in tools if item.name == "create_spreadsheet_artifact")
+            xlsx = json.loads(await sheet_tool.ainvoke({
+                "filename": "summary.xlsx",
+                "sheets": [{"name": "Summary", "rows": [["Item", "Value"], ["Result", "generated"]]}],
+            }))
+            async with sessions() as db:
+                assert (await db.get(Artifact, pdf["artifact_id"])).media_type == "application/pdf"
+                assert (await db.get(Artifact, xlsx["artifact_id"])).media_type == (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             for artifact_id in (foreign.id, large.id):
                 with pytest.raises(ValueError, match="文件不可用"):
                     await read_tool.ainvoke({"artifact_id": artifact_id})
@@ -89,6 +120,8 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 await read_tool.ainvoke({"artifact_id": owned.id})
             with pytest.raises(ValueError, match="工具授权已失效"):
                 await list_tool.ainvoke({})
+            with pytest.raises(ValueError, match="工具授权已失效"):
+                await create_tool.ainvoke({"filename": "other.txt", "content": "x"})
             async with sessions.begin() as db:
                 provider = await db.get(ProviderConnection, 1)
                 provider.status = 0
@@ -130,3 +163,4 @@ def test_tool_registry_rejects_unsafe_declarations() -> None:
         registry.register(ToolSpec("write_external", factory, enabled, False, "write", "idempotent"))
     with pytest.raises(ValueError, match="写工具"):
         registry.register(ToolSpec("write_external", factory, enabled, True, "write", "safe"))
+    registry.register(ToolSpec("stage_text", factory, enabled, False, "write", "idempotent", staged=True))

@@ -33,7 +33,7 @@ from app.models.provider_connection import ProviderConnection
 from app.schemas.run import (
     ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, RunSnapshotOut, WorkerStatusOut,
 )
-from app.services.message_attachments import load_message_attachments
+from app.services.message_attachments import load_message_artifacts, load_message_attachments
 from app.services.run_manager import (
     TERMINAL_STATES, RunConflictError, RunNotFoundError, create_run, decide_approval, get_owned_approval,
     get_owned_messages, get_owned_run, replay_events, request_cancel,
@@ -153,10 +153,12 @@ async def read_messages(run_id: str, actor: Admin = Depends(get_current_admin), 
     await _owned_run(db, run_id, actor.id)
     messages = await get_owned_messages(db, run_id, actor.id)
     by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
+    by_artifact = await load_message_artifacts(db, actor.id, messages)
     result = []
     for item in messages:
         data = RunMessageOut.model_validate(item).model_dump(mode="json")
         data["attachments"] = by_message.get(item.id, [])
+        data["artifacts"] = by_artifact.get(item.id, [])
         result.append(data)
     return api_response(data=result, is_pop=False)
 

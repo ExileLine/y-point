@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from app.schemas.artifact import ArtifactReferenceOut
+from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 from app.schemas.run import RunOut
 
 
@@ -57,6 +57,9 @@ class SessionRunCreateIn(BaseModel):
 
     input_text: str = Field(min_length=1, max_length=32768, description="本轮用户输入", examples=["请总结需求"])
     request_key: str = Field(min_length=1, max_length=128, description="本轮提交幂等键", examples=["session-001"])
+    publish_answer_artifact: bool = Field(
+        default=False, description="是否将本轮最终回答发布为可下载的 TXT 产物", examples=[False],
+    )
     artifact_ids: list[ArtifactId] = Field(
         default_factory=list, max_length=5, description="本轮引用的已上传私有文件 ID，按展示顺序排列",
     )
@@ -82,3 +85,4 @@ class SessionMessageOut(BaseModel):
     content: str = Field(description="消息正文", examples=["已整理需求"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-26T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件")
+    artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物")

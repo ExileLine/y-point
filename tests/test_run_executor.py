@@ -35,7 +35,8 @@ from app.models.provider_connection import ProviderConnection
 from app.cli import run_worker as run_worker_module
 from app.services import run_executor as run_executor_module
 from app.services import worker_tools as worker_tools_module
-from app.services.artifact_store import save_upload
+from app.services.artifact_store import prune_artifacts, save_upload
+from app.services.message_attachments import load_message_artifacts
 from app.services.run_dispatcher import dispatch_next_run
 from app.services.run_executor import _approval_actions, execute_text_run
 from app.services.run_manager import (
@@ -1555,6 +1556,152 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
                     ("artifact_published", artifacts[0].id),
                 ]
+
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_model_created_text_file_is_published_with_assistant_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型选用文件工具时，完成的消息携带真正可下载的 TXT 产物。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'generated-run.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private-artifacts"
+        root.mkdir(mode=0o700)
+        monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: root)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="generated-owner", password="not-used", role="user", status=1, is_deleted=0))
+                db.add(ProviderConnection(
+                    id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
+                    creator_id=1, status=1, is_deleted=0,
+                ))
+                db.add(ModelCatalog(
+                    id=1, provider_id=1, external_id="tool-model", display_name="tool-model", creator_id=1,
+                    verified_capabilities=["text", "tools"], status=1, is_deleted=0,
+                ))
+                run = await create_run(db, 1, model_id=1, input_text="总结文档并生成一个 .txt 文件", max_model_calls=2)
+            result = await execute_text_run(
+                sessions, run.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": "create_text_artifact",
+                        "args": {"filename": "夷陵之战摘要.txt", "content": "夷陵之战摘要\n蜀汉战败。"},
+                        "id": "create-call",
+                    }]),
+                    AIMessage(content="已生成摘要文件。"),
+                ]), tmp_path / "generated-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert result.state == "completed" and result.tool_call_count == 1
+            async with sessions() as db:
+                artifacts = (await db.scalars(select(Artifact).where(Artifact.run_id == run.id))).all()
+                assert len(artifacts) == 1 and artifacts[0].state == "ready"
+                assert (root / artifacts[0].storage_key).read_text() == "夷陵之战摘要\n蜀汉战败。"
+                messages = await get_owned_messages(db, run.id, 1)
+                assert await load_message_artifacts(db, 1, [messages[-1]]) == {messages[-1].id: [{
+                    "artifact_id": artifacts[0].id, "filename": "夷陵之战摘要.txt",
+                    "media_type": "text/plain", "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
+                    "available": True,
+                }]}
+                events = await replay_events(db, run.id, 1)
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
+                    ("artifact_published", artifacts[0].id),
+                ]
+            async with sessions.begin() as db:
+                limited = await create_run(
+                    db, 1, model_id=1, input_text="再生成一个 TXT", max_model_calls=1,
+                )
+            stopped = await execute_text_run(
+                sessions, limited.id, ScriptedModel(responses=[AIMessage(content="", tool_calls=[{
+                    "name": "create_text_artifact",
+                    "args": {"filename": "limited.txt", "content": "partial"}, "id": "limited-call",
+                }])]), tmp_path / "limited-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert stopped.state == "failed" and stopped.failure_code == "model_call_budget_exceeded"
+            async with sessions.begin() as db:
+                staged = await db.scalar(select(Artifact).where(Artifact.run_id == limited.id))
+                assert staged is not None and staged.state == "pending"
+                assert await load_message_artifacts(db, 1, await get_owned_messages(db, limited.id, 1)) == {}
+                staged.expires_at = shanghai_now(naive=True) - timedelta(seconds=1)
+                staged_key = staged.storage_key
+            await prune_artifacts(sessions, root)
+            async with sessions() as db:
+                assert (await db.get(Artifact, staged.id)).state == "deleted"
+            assert not (root / staged_key).exists()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(("tool_name", "filename", "arguments", "media_type"), [
+    (
+        "create_document_artifact", "总结.docx", {"content": "# 总结\n\n夷陵之战。"},
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    (
+        "create_spreadsheet_artifact", "统计.xlsx",
+        {"sheets": [{"name": "汇总", "rows": [["事件", "年份"], ["夷陵之战", 222]]}]},
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+])
+def test_model_created_office_file_is_published_with_assistant_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, filename: str,
+    arguments: dict, media_type: str,
+) -> None:
+    """办公文件生成后经过相同的事务发布、事件和消息引用链路。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'office-run.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "private-artifacts"
+        root.mkdir(mode=0o700)
+        monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: root)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="office-owner", password="not-used", role="user", status=1, is_deleted=0))
+                db.add(ProviderConnection(
+                    id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
+                    creator_id=1, status=1, is_deleted=0,
+                ))
+                db.add(ModelCatalog(
+                    id=1, provider_id=1, external_id="tool-model", display_name="tool-model", creator_id=1,
+                    verified_capabilities=["text", "tools"], status=1, is_deleted=0,
+                ))
+                run = await create_run(db, 1, model_id=1, input_text=f"生成{filename}", max_model_calls=2)
+            completed = await execute_text_run(
+                sessions, run.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": tool_name, "args": {"filename": filename, **arguments}, "id": "office-call",
+                    }]),
+                    AIMessage(content="文件已生成。"),
+                ]), tmp_path / "office-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert completed.state == "completed" and completed.tool_call_count == 1
+            async with sessions() as db:
+                artifact = await db.scalar(select(Artifact).where(Artifact.run_id == run.id))
+                assert artifact is not None and artifact.state == "ready"
+                assert artifact.filename == filename and artifact.media_type == media_type
+                assert (root / artifact.storage_key).is_file()
+                messages = await get_owned_messages(db, run.id, 1)
+                linked = await load_message_artifacts(db, 1, [messages[-1]])
+                assert linked[messages[-1].id][0]["artifact_id"] == artifact.id
+                events = await replay_events(db, run.id, 1)
+                assert [event.artifact_id for event in events if event.event_type == "artifact_published"] == [artifact.id]
         finally:
             await engine.dispose()
 

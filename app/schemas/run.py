@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.artifact import ArtifactReferenceOut
+from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
 class RunCreateIn(BaseModel):
@@ -115,6 +115,7 @@ class RunMessageOut(BaseModel):
     content: str = Field(description="用户输入或最终可见回答", examples=["你好，我可以帮助你。"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-22T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件")
+    artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物")
 
 
 class ApprovalDecisionIn(BaseModel):

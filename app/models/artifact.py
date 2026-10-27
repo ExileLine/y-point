@@ -34,5 +34,5 @@ class Artifact(CustomBaseModel):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, comment="文件 SHA-256 摘要")
     storage_key: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, comment="随机私有存储键")
     source: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件来源：upload 或 generated")
-    state: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件状态：ready 或 deleted")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件状态：pending、ready 或 deleted")
     expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="文件到期时间")

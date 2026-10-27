@@ -61,6 +61,7 @@ class ToolSpec:
     requires_approval: bool
     effect: ToolEffect
     recovery: RecoveryPolicy
+    staged: bool = False
 
 
 class ToolRegistry:
@@ -76,8 +77,11 @@ class ToolRegistry:
             raise ValueError("工具名重复")
         if spec.effect not in {"read", "write"} or spec.recovery not in {"safe", "idempotent", "compensated"}:
             raise ValueError("工具副作用或恢复策略无效")
-        if spec.effect == "write" and (not spec.requires_approval or spec.recovery == "safe"):
-            raise ValueError("写工具必须经过审批并具备幂等或补偿策略")
+        if spec.effect == "write" and (
+            spec.recovery == "safe" or not spec.requires_approval
+            and not (spec.staged and spec.recovery == "idempotent")
+        ):
+            raise ValueError("写工具必须经过审批，或仅暂存并具备幂等策略")
         self._specs[spec.name] = spec
 
     async def resolve(
