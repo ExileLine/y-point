@@ -17,6 +17,8 @@ from uuid import uuid4
 import httpx
 import jwt
 import pytest
+from app.core.config import get_config
+from app.core.security import STREAM_COOKIE_NAME, STREAM_TICKET_SECONDS
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -380,6 +382,26 @@ async def exercise_run_api(database: Path) -> None:
             assert events[2]["tool_name"] == events[3]["tool_name"] == "echo_approved"
             assert events[2]["content"] is None and events[3]["content"] is None
             assert (await client.get(f"/api/v1/runs/{run_id}/events?after=6", headers=alice)).json()["data"] == []
+            snapshot_url = f"/api/v1/runs/{run_id}/snapshot"
+            assert (await client.get(snapshot_url, headers=bob)).status_code == 404
+            first_snapshot = await client.get(f"{snapshot_url}?limit=2", headers=alice)
+            assert first_snapshot.status_code == 200
+            assert first_snapshot.headers["cache-control"] == "no-store"
+            first_page = first_snapshot.json()["data"]
+            assert first_page["run"]["state"] == "completed"
+            assert first_page["latest_sequence"] == 6
+            assert first_page["next_after"] == 2 and first_page["has_more"] is True
+            assert [item["sequence"] for item in first_page["events"]] == [1, 2]
+            second_page = (await client.get(f"{snapshot_url}?after=2&limit=2", headers=alice)).json()["data"]
+            third_page = (await client.get(f"{snapshot_url}?after=4&limit=2", headers=alice)).json()["data"]
+            assert [item["sequence"] for item in second_page["events"]] == [3, 4]
+            assert second_page["next_after"] == 4 and second_page["has_more"] is True
+            assert [item["sequence"] for item in third_page["events"]] == [5, 6]
+            assert third_page["next_after"] == 6 and third_page["has_more"] is False
+            caught_up = (await client.get(f"{snapshot_url}?after=6", headers=alice)).json()["data"]
+            assert caught_up["events"] == [] and caught_up["next_after"] == 6
+            assert caught_up["has_more"] is False
+            assert (await client.get(f"{snapshot_url}?after=7", headers=alice)).status_code == 400
             stream = await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": f"{run_id}:1"})
             assert stream.status_code == 200 and stream.headers["content-type"].startswith("text/event-stream")
             assert all(f"id: {run_id}:{sequence}" in stream.text for sequence in range(2, 7))
@@ -388,6 +410,29 @@ async def exercise_run_api(database: Path) -> None:
             assert tool_call_id in stream.text and "echo_approved" in stream.text
             assert f"id: {run_id}:1" not in stream.text
             assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": "other:1"})).status_code == 400
+            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": f"{run_id}:7"})).status_code == 400
+            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": f"{run_id}:{'9' * 5000}"})).status_code == 400
+            assert (await client.post(f"/api/v1/runs/{run_id}/stream-ticket", headers=bob)).status_code == 404
+            assert (await client.post(f"/api/v1/runs/{run_id}/stream-ticket")).status_code == 401
+            ticket_response = await client.post(f"/api/v1/runs/{run_id}/stream-ticket", headers=alice)
+            assert ticket_response.status_code == 200
+            assert ticket_response.json()["data"]["expires_in"] == STREAM_TICKET_SECONDS
+            assert ticket_response.headers["cache-control"] == "no-store"
+            cookie_header = ticket_response.headers["set-cookie"]
+            assert "HttpOnly" in cookie_header and "SameSite=strict" in cookie_header
+            assert f"Path=/api/v1/runs/{run_id}/stream" in cookie_header
+            stream_ticket = ticket_response.cookies[STREAM_COOKIE_NAME]
+            cookie_stream = await client.get(f"/api/v1/runs/{run_id}/stream", headers={"Last-Event-ID": f"{run_id}:1"})
+            assert cookie_stream.status_code == 200 and "event: text_delta" in cookie_stream.text
+            assert (await client.get(f"/api/v1/runs/{uuid4()}/stream", headers={
+                "Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}",
+            })).status_code == 401
+            expired_claims = jwt.decode(stream_ticket, options={"verify_signature": False})
+            expired_claims["exp"] = 1
+            expired_ticket = jwt.encode(expired_claims, get_config().SECRET_KEY, algorithm="HS256")
+            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={
+                "Cookie": f"{STREAM_COOKIE_NAME}={expired_ticket}",
+            })).status_code == 401
             messages = (await client.get(f"/api/v1/runs/{run_id}/messages", headers=alice)).json()["data"]
             assert [(message["role"], message["content"]) for message in messages] == [("user", "hi"), ("assistant", "hello")]
 
@@ -484,6 +529,9 @@ async def exercise_run_api(database: Path) -> None:
                     await db.execute(update(Admin).where(Admin.id == 1).values(token_version=claims["ver"] + 1))
                 with pytest.raises(StopAsyncIteration):
                     await anext(live_stream.body_iterator)
+            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={
+                "Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}",
+            })).status_code == 401
     finally:
         app.dependency_overrides.pop(get_db_session, None)
         await engine.dispose()

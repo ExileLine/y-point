@@ -108,6 +108,35 @@ async def exercise_run_manager(database_path: Path) -> None:
         await engine.dispose()
 
 
+def test_heartbeat_survives_concurrent_text_event(tmp_path: Path) -> None:
+    """文本事件推进版本后，有效租约仍应能够续期。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'heartbeat-race.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                run = await create_run(db, 1, input_text="race")
+            async with sessions.begin() as db:
+                claimed = await claim_run(db, run.id)
+                token = claimed.lease_token
+            async with sessions() as watcher_db:
+                stale = await watcher_db.get(AgentRun, run.id)
+                assert stale.version == 1
+                async with sessions.begin() as stream_db:
+                    await append_text_delta(stream_db, run.id, token, "hello")
+                renewed = await heartbeat_run(watcher_db, run.id, token)
+                assert renewed.version == 3
+                assert renewed.lease_token == token
+                await watcher_db.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 async def exercise_cancel_and_recovery(database_path: Path) -> None:
     """验证取消确认、租约过期回收和旧执行器失效。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")

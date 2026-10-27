@@ -25,3 +25,14 @@ class ArtifactOut(BaseModel):
     run_id: str | None = Field(description="关联的运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     source_artifact_id: str | None = Field(description="生成产物的来源文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])
+
+
+class ArtifactReferenceOut(BaseModel):
+    """消息中的历史文件引用；下载仍使用文件授权接口。"""
+
+    artifact_id: str = Field(description="私有文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    filename: str = Field(description="提交时文件名", examples=["notes.txt"])
+    media_type: str = Field(description="提交时文件类型", examples=["text/plain"])
+    byte_size: int = Field(description="提交时文件大小", examples=[1024])
+    available: bool = Field(description="文件元数据当前是否有效；下载仍须逐次校验", examples=[True])
+    included_in_context: bool = Field(default=False, description="提交时是否选择将 TXT 内容送入本轮模型上下文", examples=[False])

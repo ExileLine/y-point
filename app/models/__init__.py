@@ -13,8 +13,11 @@ from app.models.provider_connection import ProviderConnection
 from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
 from app.models.agent_run import AgentRun
+from app.models.agent_config import AgentConfig
+from app.models.agent_session import AgentSession
 from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
+from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.run_approval import RunApproval
 from app.models.run_worker_heartbeat import RunWorkerHeartbeat
 from app.models.artifact import Artifact
@@ -29,8 +32,11 @@ __all__ = [
     "ModelCatalog",
     "ModelCallRecord",
     "AgentRun",
+    "AgentConfig",
+    "AgentSession",
     "AgentRunEvent",
     "AgentRunMessage",
+    "AgentMessageAttachment",
     "RunWorkerHeartbeat",
     "Artifact",
 ]

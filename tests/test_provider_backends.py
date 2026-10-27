@@ -217,6 +217,8 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     azure = build_chat_model(model, provider)
     assert isinstance(azure, AzureChatOpenAI)
     assert azure.deployment_name == "chat-deployment" and azure.max_retries == 0
+    configured_azure = build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
+    assert configured_azure.temperature == 0.25 and configured_azure.max_tokens == 2048
 
     provider.kind = "gemini"
     provider.base_url = "https://generativelanguage.googleapis.com"
@@ -226,6 +228,8 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     gemini = build_chat_model(model, provider)
     assert isinstance(gemini, ChatGoogleGenerativeAI)
     assert gemini.model == "gemini-2.5-flash-lite" and gemini.max_retries == 0
+    configured_gemini = build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
+    assert configured_gemini.temperature == 0.25 and configured_gemini.max_output_tokens == 2048
 
     calls: list[dict] = []
 
@@ -241,3 +245,5 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     model.external_id = "amazon.nova-micro-v1:0"
     build_chat_model(model, provider)
     assert calls == [{"model": "amazon.nova-micro-v1:0", "region_name": "us-east-1", "timeout": 5, "max_retries": 0}]
+    build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
+    assert calls[-1]["temperature"] == 0.25 and calls[-1]["max_tokens"] == 2048

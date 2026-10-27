@@ -120,10 +120,11 @@ async def _exercise_isolated_migrations(
         env.update({"DB_BACKEND": backend, database_env_key: name})
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "alembic", *args], cwd=root, env=env,
-                check=True, capture_output=True, text=True,
+                capture_output=True, text=True,
             )
+            assert result.returncode == 0, result.stderr
         engine = create_async_engine(base_url.set(database=name))
         try:
             async with engine.connect() as connection:

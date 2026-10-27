@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.artifact import ArtifactReferenceOut
+
 
 class RunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -53,6 +55,9 @@ class RunOut(BaseModel):
 
     id: str = Field(description="运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     model_id: int | None = Field(description="使用的模型 ID", examples=[1])
+    agent_id: int | None = Field(description="关联的智能体 ID", examples=[1])
+    session_id: str | None = Field(description="关联的会话 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    agent_config_version: int | None = Field(description="提交时的智能体配置版本", examples=[1])
     model_timeout_seconds: int = Field(description="本轮模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行最长秒数", examples=[30])
     max_queue_wait_seconds: int | None = Field(description="排队等待最长秒数", examples=[300])
@@ -95,12 +100,21 @@ class RunEventOut(BaseModel):
     create_time: datetime = Field(description="事件创建时间", examples=["2026-10-22T22:00:00"])
 
 
+class RunSnapshotOut(BaseModel):
+    run: RunOut = Field(description="读取快照时的运行状态")
+    events: list[RunEventOut] = Field(description="本页持久化事件")
+    latest_sequence: int = Field(description="快照固定的最后事件序号")
+    next_after: int = Field(description="下一页或 SSE 续传使用的游标")
+    has_more: bool = Field(description="快照上界内是否还有未读取事件")
+
+
 class RunMessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     role: Literal["user", "assistant"] = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="用户输入或最终可见回答", examples=["你好，我可以帮助你。"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-22T22:00:00"])
+    attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件")
 
 
 class ApprovalDecisionIn(BaseModel):

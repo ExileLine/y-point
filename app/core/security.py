@@ -22,6 +22,8 @@ from app.models.auth_session import AuthSession
 
 ACCESS_TOKEN_SECONDS = 7 * 24 * 60 * 60
 REFRESH_DAYS = 30
+STREAM_TICKET_SECONDS = 5 * 60
+STREAM_COOKIE_NAME = "yp_stream_ticket"
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
 
@@ -66,6 +68,20 @@ def make_access_token(admin: Admin, session_id: str) -> str:
     )
 
 
+def make_stream_ticket(admin: Admin, session_id: str, run_id: str) -> str:
+    """签发仅能订阅指定 Run 的短期 SSE Cookie 凭证。"""
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(admin.id), "sid": session_id, "ver": admin.token_version,
+            "type": "stream", "rid": run_id, "iat": now,
+            "exp": now + timedelta(seconds=STREAM_TICKET_SECONDS), "jti": str(uuid4()),
+        },
+        get_config().SECRET_KEY,
+        algorithm="HS256",
+    )
+
+
 def unauthorized() -> CustomException:
     """构造统一格式的未授权业务异常。"""
     return CustomException(status_code=401, custom_code=401, detail="未授权或令牌已失效")
@@ -95,13 +111,20 @@ async def get_current_admin(
     except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
         raise unauthorized() from None
 
+    return await _verified_admin(request, db, admin_id, session_id, payload["ver"], payload["exp"])
+
+
+async def _verified_admin(
+    request: Request, db: AsyncSession, admin_id: int, session_id: str, token_version: int, expires_at: int,
+) -> Admin:
+    """核对用户、登录会话和令牌版本，并保存 SSE 续流所需状态。"""
     admin = await db.get(Admin, admin_id)
     auth_session = await db.get(AuthSession, session_id)
     if (
         admin is None
         or admin.status != 1
         or admin.is_deleted != 0
-        or admin.token_version != payload["ver"]
+        or admin.token_version != token_version
         or auth_session is None
         or auth_session.admin_id != admin_id
         or auth_session.revoked_at is not None
@@ -109,9 +132,39 @@ async def get_current_admin(
     ):
         raise unauthorized()
     request.state.auth_session_id = session_id
-    request.state.auth_token_version = payload["ver"]
-    request.state.auth_token_expires_at = payload["exp"]
+    request.state.auth_token_version = token_version
+    request.state.auth_token_expires_at = expires_at
     return admin
+
+
+async def get_stream_admin(
+    request: Request, run_id: str,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db_session),
+) -> Admin:
+    """SSE 可使用原有 Bearer 或指定 Run 的短期 HttpOnly Cookie。"""
+    if credentials is not None:
+        return await get_current_admin(request, credentials, db)
+    ticket = request.cookies.get(STREAM_COOKIE_NAME)
+    if not ticket:
+        raise unauthorized()
+    try:
+        payload = jwt.decode(
+            ticket, get_config().SECRET_KEY, algorithms=["HS256"],
+            options={"require": ["sub", "sid", "ver", "type", "rid", "iat", "exp"]},
+        )
+        if (
+            payload["type"] != "stream" or payload["rid"] != run_id
+            or type(payload["ver"]) is not int or type(payload["exp"]) is not int
+        ):
+            raise unauthorized()
+        admin_id = int(payload["sub"])
+        session_id = payload["sid"]
+        if not isinstance(session_id, str) or not session_id:
+            raise unauthorized()
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError):
+        raise unauthorized() from None
+    return await _verified_admin(request, db, admin_id, session_id, payload["ver"], payload["exp"])
 
 
 async def require_admin(admin: Admin = Depends(get_current_admin)) -> Admin:

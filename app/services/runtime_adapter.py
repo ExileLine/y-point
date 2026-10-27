@@ -27,10 +27,11 @@ class RuntimeRunConfig:
     thread_id: str
     model_id: int | None
     tool_names: tuple[str, ...]
+    system_prompt: str | None = None
 
     @classmethod
     def from_run(cls, run: AgentRun, tools: Sequence[BaseTool]) -> "RuntimeRunConfig":
-        return cls(run.id, run.owner_id, run.thread_id, run.model_id, tuple(tool.name for tool in tools))
+        return cls(run.id, run.owner_id, run.thread_id, run.model_id, tuple(tool.name for tool in tools), run.agent_system_prompt)
 
     def graph_config(self) -> dict:
         return {
@@ -55,7 +56,7 @@ class DeepAgentsRuntimeAdapter:
         self.config = config.graph_config()
         self.agent = create_deep_agent(
             model=model, tools=tools, interrupt_on=interrupt_on,
-            checkpointer=checkpointer, middleware=middleware,
+            checkpointer=checkpointer, middleware=middleware, system_prompt=config.system_prompt or None,
         )
 
     async def state(self) -> Any:

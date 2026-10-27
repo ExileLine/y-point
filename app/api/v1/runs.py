@@ -17,7 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
-from app.core.security import get_current_admin, require_admin, utc_now
+from app.core.config import get_config
+from app.core.security import (
+    STREAM_COOKIE_NAME, STREAM_TICKET_SECONDS, get_current_admin, get_stream_admin,
+    make_stream_ticket, require_admin, utc_now,
+)
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
@@ -26,7 +30,10 @@ from app.models.artifact import Artifact
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
-from app.schemas.run import ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, WorkerStatusOut
+from app.schemas.run import (
+    ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, RunSnapshotOut, WorkerStatusOut,
+)
+from app.services.message_attachments import load_message_attachments
 from app.services.run_manager import (
     TERMINAL_STATES, RunConflictError, RunNotFoundError, create_run, decide_approval, get_owned_approval,
     get_owned_messages, get_owned_run, replay_events, request_cancel,
@@ -145,7 +152,13 @@ async def read_messages(run_id: str, actor: Admin = Depends(get_current_admin), 
     """返回用户输入及已落库的最终可见回答。"""
     await _owned_run(db, run_id, actor.id)
     messages = await get_owned_messages(db, run_id, actor.id)
-    return api_response(data=[RunMessageOut.model_validate(item).model_dump(mode="json") for item in messages], is_pop=False)
+    by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
+    result = []
+    for item in messages:
+        data = RunMessageOut.model_validate(item).model_dump(mode="json")
+        data["attachments"] = by_message.get(item.id, [])
+        result.append(data)
+    return api_response(data=result, is_pop=False)
 
 
 @router.get("/{run_id}/approval", summary="查询运行审批请求")
@@ -188,19 +201,59 @@ async def read_events(
     return api_response(data=[RunEventOut.model_validate(item).model_dump(mode="json") for item in events], is_pop=False)
 
 
+@router.get("/{run_id}/snapshot", summary="读取运行状态与有界事件快照")
+async def read_run_snapshot(
+    run_id: str, after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
+    limit: int = Query(default=100, ge=1, le=200, description="本次最多返回事件数"),
+    actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    """固定本次读取的事件上界，供刷新和断线后逐页追平。"""
+    run = await _owned_run(db, run_id, actor.id)
+    latest = run.event_seq
+    if after > latest:
+        raise CustomException(status_code=400, custom_code=10006, detail="事件游标超过当前运行序号")
+    events = await replay_events(db, run_id, actor.id, after=after, limit=limit, through=latest)
+    next_after = events[-1].sequence if events else after
+    snapshot = RunSnapshotOut(
+        run=RunOut.model_validate(run), events=[RunEventOut.model_validate(item) for item in events],
+        latest_sequence=latest, next_after=next_after, has_more=next_after < latest,
+    )
+    response = api_response(data=snapshot.model_dump(mode="json"), datetime_format=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/{run_id}/stream-ticket", summary="签发浏览器 SSE 订阅凭证")
+async def issue_stream_ticket(
+    run_id: str, request: Request, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    """用 Bearer 换取仅限当前 Run 的短期 HttpOnly Cookie。"""
+    await _owned_run(db, run_id, actor.id)
+    response = api_response(data={"expires_in": STREAM_TICKET_SECONDS})
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        key=STREAM_COOKIE_NAME, value=make_stream_ticket(actor, request.state.auth_session_id, run_id),
+        max_age=STREAM_TICKET_SECONDS, path=f"/api/v1/runs/{run_id}/stream",
+        secure=get_config().ENV_NAME not in {"development", "test"}, httponly=True, samesite="strict",
+    )
+    return response
+
+
 @router.get("/{run_id}/stream", summary="订阅文本运行状态事件")
 async def stream_events(
     run_id: str, request: Request, after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID", description="上次收到的运行 ID 与事件序号"),
-    actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+    actor: Admin = Depends(get_stream_admin), db: AsyncSession = Depends(get_db_session),
 ):
     """从持久化游标补发状态事件，运行终止后关闭流。"""
-    await _owned_run(db, run_id, actor.id)
+    run = await _owned_run(db, run_id, actor.id)
     if last_event_id is not None:
         prefix, separator, value = last_event_id.rpartition(":")
-        if separator != ":" or prefix != run_id or not value.isdecimal():
+        if separator != ":" or prefix != run_id or not value.isdecimal() or len(value) > 20:
             raise CustomException(status_code=400, custom_code=10006, detail="无效的 Last-Event-ID")
         after = max(after, int(value))
+    if after > run.event_seq:
+        raise CustomException(status_code=400, custom_code=10006, detail="事件游标超过当前运行序号")
     session_id = request.state.auth_session_id
     token_version = request.state.auth_token_version
     token_expires_at = request.state.auth_token_expires_at

@@ -8,7 +8,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel, ShanghaiDateTime
@@ -26,6 +26,11 @@ class AgentRun(CustomBaseModel):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="运行 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="运行所属用户 ID")
     agent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="关联智能体 ID")
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, comment="关联会话 ID")
+    agent_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时智能体配置版本")
+    agent_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True, comment="提交时系统指令快照")
+    agent_temperature: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, comment="提交时生成温度快照")
+    agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
     model_timeout_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=120, server_default="120", comment="模型生成超时秒数",

@@ -694,6 +694,8 @@ def test_model_adapter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapted.model_name == "chat-1" and str(adapted.openai_api_base).rstrip("/") == "https://models.example/v1"
     assert adapted.stream_usage is True and adapted.max_retries == 0
     assert adapted.default_headers["X-Tenant"] == "private-value"
+    configured = build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
+    assert configured.temperature == 0.25 and configured.max_tokens == 2048
 
     provider.kind = "ollama"
     provider.base_url = "http://127.0.0.1:11434/v1"
@@ -712,6 +714,8 @@ def test_model_adapter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapted.anthropic_api_url.rstrip("/") == "https://models.example"
     assert adapted.model == "chat-1" and adapted.max_retries == 0
     assert adapted.default_headers["anthropic-version"] == "2024-01-01"
+    configured = build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
+    assert configured.temperature == 0.25 and configured.max_tokens == 2048
 
     provider.status = 0
     with pytest.raises(CustomException) as disabled:
