@@ -63,4 +63,4 @@ line-length = 140
 select = ["E4", "E7", "E9", "F", "E501"]
 
 [tool.ruff.format]
-skip-magic-trailing-comma = true
+skip-magic-trailing-comma = false

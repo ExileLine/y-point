@@ -47,8 +47,18 @@ class MemoryS3:
         """从内存 S3 返回对象正文，缺失时模拟对象不存在错误。"""
         assert Bucket == "private-test"
         if Key not in self.objects:
-            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject")
-        return {"Body": io.BytesIO(self.objects[Key])}
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "NoSuchKey",
+                        "Message": "missing",
+                    },
+                },
+                "GetObject",
+            )
+        return {
+            "Body": io.BytesIO(self.objects[Key]),
+        }
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:
         """从内存 S3 删除对象，允许重复删除。"""
@@ -59,13 +69,25 @@ class MemoryS3:
         """按前缀和继续标记分页返回内存 S3 的旧对象。"""
         assert Bucket == "private-test"
         assert Prefix == "y-point/artifacts/"
-        self.list_calls.append({"Prefix": Prefix, "MaxKeys": MaxKeys, "ContinuationToken": ContinuationToken})
+        self.list_calls.append(
+            {
+                "Prefix": Prefix,
+                "MaxKeys": MaxKeys,
+                "ContinuationToken": ContinuationToken,
+            }
+        )
         old = datetime.now(timezone.utc) - timedelta(hours=2)
         keys = sorted(key for key in self.objects if key.startswith(Prefix))
         start = 0 if ContinuationToken is None else next((index for index, key in enumerate(keys) if key > ContinuationToken), len(keys))
         page = keys[start : start + MaxKeys]
         return {
-            "Contents": [{"Key": key, "LastModified": old} for key in page],
+            "Contents": [
+                {
+                    "Key": key,
+                    "LastModified": old,
+                }
+                for key in page
+            ],
             "IsTruncated": start + MaxKeys < len(keys),
             "NextContinuationToken": page[-1] if start + MaxKeys < len(keys) else None,
         }
@@ -138,7 +160,15 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
                 def fail_delete(**_kwargs):
                     """模拟远端对象删除失败，以验证原始异常和清理补偿。"""
-                    raise ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "unavailable"}}, "DeleteObject")
+                    raise ClientError(
+                        {
+                            "Error": {
+                                "Code": "ServiceUnavailable",
+                                "Message": "unavailable",
+                            },
+                        },
+                        "DeleteObject",
+                    )
 
                 patcher.setattr(fake, "delete_object", fail_delete)
                 async with sessions() as db:
@@ -261,7 +291,9 @@ def test_migrate_local_artifacts_is_verified_and_repeatable(tmp_path: Path, monk
             (root / second).write_bytes(b"damaged")
             with pytest.raises(artifact_store.ArtifactValidationError, match="本地文件摘要不一致"):
                 await migrate_local_artifacts_to_s3(sessions, root, batch_size=1)
-            assert fake.objects == {f"y-point/artifacts/{first}": b"file-1"}
+            assert fake.objects == {
+                f"y-point/artifacts/{first}": b"file-1",
+            }
             (root / second).write_bytes(b"file-2")
             assert await migrate_local_artifacts_to_s3(sessions, root, batch_size=1) == (1, 1)
             assert await migrate_local_artifacts_to_s3(sessions, root, batch_size=1) == (0, 2)

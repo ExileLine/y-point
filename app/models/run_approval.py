@@ -18,7 +18,9 @@ class RunApproval(CustomBaseModel):
     __enable_auto_id__ = False
     __table_args__ = (
         UniqueConstraint("run_id", "checkpoint_id", name="uq_yp_run_approval_run_checkpoint"),
-        {"comment": "运行人工审批请求表"},
+        {
+            "comment": "运行人工审批请求表",
+        },
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="审批请求 ID")

@@ -43,11 +43,27 @@ class FakeChatModel:
     async def ainvoke(self, messages: list, **kwargs) -> AIMessage:
         """返回测试所需的文本或工具调用。"""
         assert kwargs["max_tokens"] == 128
-        tool_calls = [{"name": "verify_capability", "args": {"value": "ping"}, "id": "call-1"}] if self.bound and self.tool_calls else []
+        tool_calls = (
+            [
+                {
+                    "name": "verify_capability",
+                    "args": {
+                        "value": "ping",
+                    },
+                    "id": "call-1",
+                }
+            ]
+            if self.bound and self.tool_calls
+            else []
+        )
         return AIMessage(
             content="OK" if not self.bound else "",
             tool_calls=tool_calls,
-            usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            usage_metadata={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+            },
         )
 
     async def astream(self, messages: list, **kwargs):
@@ -55,7 +71,12 @@ class FakeChatModel:
         assert kwargs["max_tokens"] == 128
         yield AIMessageChunk(content="O" if self.stream_text else "")
         yield AIMessageChunk(
-            content="K" if self.stream_text else "", usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16}
+            content="K" if self.stream_text else "",
+            usage_metadata={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+            },
         )
 
 
@@ -137,8 +158,21 @@ class StructuredChatModel(FakeChatModel):
     async def ainvoke(self, messages: list, **kwargs) -> dict:
         """返回原始消息、解析结果及可用 Token 用量。"""
         assert kwargs["max_tokens"] == 128
-        raw = AIMessage(content="secret-response", usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16})
-        return {"raw": raw, "parsed": {"value": self.value}, "parsing_error": None}
+        raw = AIMessage(
+            content="secret-response",
+            usage_metadata={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+            },
+        )
+        return {
+            "raw": raw,
+            "parsed": {
+                "value": self.value,
+            },
+            "parsing_error": None,
+        }
 
 
 class VisionChatModel(FakeChatModel):
@@ -169,7 +203,14 @@ class VisionChatModel(FakeChatModel):
             b"\x00\x00\xff",
             b"\xff\xff\x00",
         ]
-        return AIMessage(content=self.answer, usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16})
+        return AIMessage(
+            content=self.answer,
+            usage_metadata={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+            },
+        )
 
 
 async def exercise_capabilities() -> None:
@@ -223,7 +264,16 @@ async def exercise_capabilities() -> None:
     google_rate_limit = BackendFailureChatModel([GoogleRateLimitError("secret-response")])
     assert (await probe_capability(model, provider, "text", google_rate_limit)).failure == "rate_limit"
     assert google_rate_limit.calls == 1
-    google_gateway = BackendFailureChatModel([GoogleAPIError(503, {"message": "secret-response"})])
+    google_gateway = BackendFailureChatModel(
+        [
+            GoogleAPIError(
+                503,
+                {
+                    "message": "secret-response",
+                },
+            )
+        ]
+    )
     assert (await probe_capability(model, provider, "text", google_gateway)).available is True
     assert google_gateway.calls == 2
 
@@ -233,8 +283,13 @@ async def exercise_capabilities() -> None:
         [
             ClientError(
                 {
-                    "Error": {"Code": "ServiceUnavailableException", "Message": "secret-response"},
-                    "ResponseMetadata": {"HTTPStatusCode": 503},
+                    "Error": {
+                        "Code": "ServiceUnavailableException",
+                        "Message": "secret-response",
+                    },
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": 503,
+                    },
                 },
                 "Converse",
             )
@@ -274,11 +329,24 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
                 "output": [
                     {
                         "type": "reasoning",
-                        "summary": [{"type": "summary_text", "text": "public summary"}],
-                        "content": [{"type": "reasoning_text", "text": "hidden reasoning"}],
+                        "summary": [
+                            {
+                                "type": "summary_text",
+                                "text": "public summary",
+                            }
+                        ],
+                        "content": [
+                            {
+                                "type": "reasoning_text",
+                                "text": "hidden reasoning",
+                            }
+                        ],
                     }
                 ],
-                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                },
             },
         )
 
@@ -289,7 +357,13 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
     assert requests[0].url.path == "/v1/responses"
     assert requests[0].headers["authorization"] == "Bearer probe-secret"
     body = json.loads(requests[0].content)
-    assert body["reasoning"] == {"summary": "concise"} and body["store"] is False
+    assert (
+        body["reasoning"]
+        == {
+            "summary": "concise",
+        }
+        and body["store"] is False
+    )
 
     def without_summary(request: httpx.Request) -> httpx.Response:
         """模拟只有隐藏推理内容或普通回答的响应。"""
@@ -298,8 +372,25 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
             json={
                 "status": "completed",
                 "output": [
-                    {"type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": "hidden reasoning"}]},
-                    {"type": "message", "content": [{"type": "output_text", "text": "normal answer"}]},
+                    {
+                        "type": "reasoning",
+                        "summary": [],
+                        "content": [
+                            {
+                                "type": "reasoning_text",
+                                "text": "hidden reasoning",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "normal answer",
+                            }
+                        ],
+                    },
                 ],
             },
         )

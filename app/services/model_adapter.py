@@ -24,8 +24,20 @@ def build_chat_model(
     if model.provider_id != provider.id or model.status != 1 or provider.status != 1 or model.is_deleted != 0 or provider.is_deleted != 0:
         raise CustomException(status_code=409, custom_code=10005, detail="模型或供应商连接不可用")
     api_key, headers = decrypt_credentials(provider.encrypted_credentials)
-    generation = {"temperature": float(temperature)} if temperature is not None else {}
-    token_limit = {"max_tokens": max_output_tokens} if max_output_tokens is not None else {}
+    generation = (
+        {
+            "temperature": float(temperature),
+        }
+        if temperature is not None
+        else {}
+    )
+    token_limit = (
+        {
+            "max_tokens": max_output_tokens,
+        }
+        if max_output_tokens is not None
+        else {}
+    )
     if provider.kind == "azure_openai":
         if not api_key or not provider.api_version:
             raise CustomException(status_code=400, custom_code=10005, detail="Azure OpenAI 缺少 API 密钥或版本")
@@ -53,7 +65,13 @@ def build_chat_model(
             request_timeout=provider.timeout_seconds,
             retries=0,
             **generation,
-            **({"max_output_tokens": max_output_tokens} if max_output_tokens is not None else {}),
+            **(
+                {
+                    "max_output_tokens": max_output_tokens,
+                }
+                if max_output_tokens is not None
+                else {}
+            ),
         )
     if provider.kind == "bedrock":
         if not provider.region:
@@ -70,7 +88,16 @@ def build_chat_model(
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         base_url = provider.base_url.removesuffix("/v1")
-        default_headers = {**headers, **({"anthropic-version": provider.api_version} if provider.api_version else {})}
+        default_headers = {
+            **headers,
+            **(
+                {
+                    "anthropic-version": provider.api_version,
+                }
+                if provider.api_version
+                else {}
+            ),
+        }
         return ChatAnthropic(
             model=model.external_id,
             api_key=api_key,

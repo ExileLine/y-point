@@ -17,7 +17,9 @@ class Admin(CustomBaseModel):
     __table_args__ = (
         Index("uq_yp_admin_username", "username", unique=True),
         Index("uq_yp_admin_mail", "mail", unique=True),
-        {"comment": "用户表"},
+        {
+            "comment": "用户表",
+        },
     )
 
     username: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="用户名")

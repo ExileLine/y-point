@@ -49,7 +49,13 @@ def _client():
     options = {
         "endpoint_url": config.ARTIFACT_S3_ENDPOINT_URL or None,
         "region_name": config.ARTIFACT_S3_REGION or None,
-        "config": Config(connect_timeout=5, read_timeout=30, retries={"max_attempts": 1}),
+        "config": Config(
+            connect_timeout=5,
+            read_timeout=30,
+            retries={
+                "max_attempts": 1,
+            },
+        ),
     }
     if config.ARTIFACT_S3_ACCESS_KEY_ID:
         options["aws_access_key_id"] = config.ARTIFACT_S3_ACCESS_KEY_ID
@@ -63,7 +69,13 @@ async def store_blob(root: Path, key: str, path: Path) -> None:
         return
     config = get_config()
     await asyncio.to_thread(
-        _client().upload_file, str(path), config.ARTIFACT_S3_BUCKET, _object_key(key), ExtraArgs={"ServerSideEncryption": "AES256"}
+        _client().upload_file,
+        str(path),
+        config.ARTIFACT_S3_BUCKET,
+        _object_key(key),
+        ExtraArgs={
+            "ServerSideEncryption": "AES256",
+        },
     )
 
 
@@ -112,7 +124,11 @@ async def old_blob_batches(*, before: datetime, batch_size: int) -> AsyncIterato
     prefix = _object_key("0" * 32)[:-32]
     token = None
     while True:
-        options = {"Bucket": config.ARTIFACT_S3_BUCKET, "Prefix": prefix, "MaxKeys": batch_size}
+        options = {
+            "Bucket": config.ARTIFACT_S3_BUCKET,
+            "Prefix": prefix,
+            "MaxKeys": batch_size,
+        }
         if token is not None:
             options["ContinuationToken"] = token
         response = await asyncio.to_thread(_client().list_objects_v2, **options)

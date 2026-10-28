@@ -115,7 +115,9 @@ def render_text_artifact(filename: str, content: str) -> bytes:
             "a",
             "hr",
         },
-        attributes={"a": ["href", "title"]},
+        attributes={
+            "a": ["href", "title"],
+        },
         protocols={"http", "https", "mailto"},
         strip=True,
     )

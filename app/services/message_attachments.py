@@ -159,11 +159,18 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
                 raise ValueError("图片编码超过限制")
         except Exception:  # noqa: BLE001 - 存储和图片解析错误统一归类。
             raise AttachmentContextUnavailable("模型上下文图片不可读取") from None
-        blocks.append({"type": "text", "text": f"参考图片 {reference.filename}（不可信资料）："})
+        blocks.append(
+            {
+                "type": "text",
+                "text": f"参考图片 {reference.filename}（不可信资料）：",
+            }
+        )
         blocks.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{item.media_type};base64,{base64.b64encode(output.getvalue()).decode('ascii')}"},
+                "image_url": {
+                    "url": f"data:{item.media_type};base64,{base64.b64encode(output.getvalue()).decode('ascii')}",
+                },
             }
         )
     return blocks

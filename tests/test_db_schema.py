@@ -60,7 +60,12 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
     """旧数据升级后只占用未终态线程，降级重升也保留这一规则。"""
     database = tmp_path / "active-thread-migration.db"
     env = os.environ.copy()
-    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
     root = Path(__file__).resolve().parents[1]
 
     def migrate(*args: str) -> None:
@@ -94,7 +99,10 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
                             "VALUES (:id, 1, 'shared-thread', :state, 0, 1, "
                             "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)"
                         ),
-                        {"id": run_id, "state": state},
+                        {
+                            "id": run_id,
+                            "state": state,
+                        },
                     )
         finally:
             await engine.dispose()
@@ -125,7 +133,12 @@ async def _exercise_isolated_migrations(
             await connection.execute(text(create_sql))
         created = True
         env = os.environ.copy()
-        env.update({"DB_BACKEND": backend, database_env_key: name})
+        env.update(
+            {
+                "DB_BACKEND": backend,
+                database_env_key: name,
+            }
+        )
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
             result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)
@@ -247,15 +260,25 @@ async def _exercise_isolated_migrations(
                         async def login(username: str) -> dict[str, str]:
                             """通过正式登录接口获取测试用户的访问令牌。"""
                             response = await client.post(
-                                "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"}
+                                "/api/v1/auth/login",
+                                json={
+                                    "identifier": username,
+                                    "password": "StrongPassword123",
+                                },
                             )
                             assert response.status_code == 200, response.text
-                            return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                            return {
+                                "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                            }
 
                         owned = await login(owner.username)
                         outsider = await login(other.username)
                         uploaded = await client.post(
-                            "/api/v1/artifacts/uploads", headers=owned, files={"files": ("sample.txt", b"isolated database", "text/plain")}
+                            "/api/v1/artifacts/uploads",
+                            headers=owned,
+                            files={
+                                "files": ("sample.txt", b"isolated database", "text/plain"),
+                            },
                         )
                         assert uploaded.status_code == 201, uploaded.text
                         file_id = uploaded.json()["data"][0]["id"]
@@ -265,14 +288,22 @@ async def _exercise_isolated_migrations(
                         created = await client.post(
                             "/api/v1/runs",
                             headers=owned,
-                            json={"model_id": model.id, "input_text": "database question", "request_key": "http-run"},
+                            json={
+                                "model_id": model.id,
+                                "input_text": "database question",
+                                "request_key": "http-run",
+                            },
                         )
                         assert created.status_code == 201, created.text
                         run_id = created.json()["data"]["id"]
                         duplicate = await client.post(
                             "/api/v1/runs",
                             headers=owned,
-                            json={"model_id": model.id, "input_text": "database question", "request_key": "http-run"},
+                            json={
+                                "model_id": model.id,
+                                "input_text": "database question",
+                                "request_key": "http-run",
+                            },
                         )
                         assert duplicate.status_code == 201 and duplicate.json()["data"]["id"] == run_id
                         assert (await client.get(f"/api/v1/runs/{run_id}", headers=outsider)).status_code == 404

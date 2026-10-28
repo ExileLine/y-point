@@ -50,7 +50,12 @@ MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
 }
-GENERATED_TEXT_MEDIA_TYPES = {".md": "text/markdown", ".html": "text/html", ".csv": "text/csv", ".json": "application/json"}
+GENERATED_TEXT_MEDIA_TYPES = {
+    ".md": "text/markdown",
+    ".html": "text/html",
+    ".csv": "text/csv",
+    ".json": "application/json",
+}
 
 
 class ArtifactValidationError(ValueError):

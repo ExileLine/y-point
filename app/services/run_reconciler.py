@@ -60,7 +60,13 @@ async def reconcile_expired_runs(sessions: async_sessionmaker[AsyncSession], che
         agent = create_deep_agent(model=CheckpointReadModel(), tools=[], checkpointer=checkpointer)
         for run_id, owner_id, thread_id in candidates:
             try:
-                snapshot = await agent.aget_state({"configurable": {"thread_id": thread_id}})
+                snapshot = await agent.aget_state(
+                    {
+                        "configurable": {
+                            "thread_id": thread_id,
+                        },
+                    }
+                )
             except Exception as exc:  # noqa: BLE001 - 单个损坏的检查点不阻止其他运行回收。
                 logger.warning("运行 {} 的检查点读取失败：{}", run_id, type(exc).__name__)
                 continue

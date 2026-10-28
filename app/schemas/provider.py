@@ -26,7 +26,15 @@ class ProviderCreateIn(BaseModel):
         default=None, description="供应商接口基础地址；Gemini 和 Bedrock 可省略", examples=["https://api.example.com/v1"]
     )
     api_key: SecretStr | None = Field(default=None, description="接口密钥", examples=["sk-example-key"])
-    custom_headers: dict[str, SecretStr] | None = Field(default=None, description="自定义请求头", examples=[{"X-Tenant": "example-tenant"}])
+    custom_headers: dict[str, SecretStr] | None = Field(
+        default=None,
+        description="自定义请求头",
+        examples=[
+            {
+                "X-Tenant": "example-tenant",
+            }
+        ],
+    )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
     region: str | None = Field(default=None, max_length=64, description="服务区域", examples=["us-east-1"])
     timeout_seconds: int = Field(default=15, ge=1, le=120, description="请求超时时间（秒）", examples=[15])
@@ -41,7 +49,13 @@ class ProviderUpdateIn(BaseModel):
         default=None, description="接口密钥；省略时保留原值，传入 null 时清除", examples=["sk-new-example-key"]
     )
     custom_headers: dict[str, SecretStr] | None = Field(
-        default=None, description="自定义请求头；省略时保留原值，传入 null 时清除", examples=[{"X-Tenant": "new-example-tenant"}]
+        default=None,
+        description="自定义请求头；省略时保留原值，传入 null 时清除",
+        examples=[
+            {
+                "X-Tenant": "new-example-tenant",
+            }
+        ],
     )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
     region: str | None = Field(default=None, max_length=64, description="服务区域", examples=["us-east-1"])
@@ -135,7 +149,16 @@ class ModelImportItem(BaseModel):
 class ModelImportIn(BaseModel):
     provider_id: int = Field(gt=0, description="所属供应商连接 ID", examples=[1])
     models: list[ModelImportItem] = Field(
-        min_length=1, max_length=100, description="选中后要批量导入的模型及补充参数", examples=[[{"external_id": "gpt-4o-mini"}]]
+        min_length=1,
+        max_length=100,
+        description="选中后要批量导入的模型及补充参数",
+        examples=[
+            [
+                {
+                    "external_id": "gpt-4o-mini",
+                }
+            ]
+        ],
     )
 
 
@@ -168,7 +191,13 @@ class ConnectionTestOut(BaseModel):
     model_count: int | None = Field(default=None, description="上游返回的模型数量", examples=[3])
     models: list[str] = Field(default_factory=list, description="上游返回的可用模型 ID 列表", examples=[["gpt-4o-mini", "gpt-4o"]])
     model_names: dict[str, str] = Field(
-        default_factory=dict, description="上游提供的模型显示名称", examples=[{"gpt-4o-mini": "GPT-4o mini"}]
+        default_factory=dict,
+        description="上游提供的模型显示名称",
+        examples=[
+            {
+                "gpt-4o-mini": "GPT-4o mini",
+            }
+        ],
     )
     failure: (
         Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None
@@ -209,7 +238,15 @@ class CapabilityTestIn(BaseModel):
 class CapabilityTestOut(BaseModel):
     capability: ProbeCapability = Field(description="本次验证的能力", examples=["streaming"])
     result: ModelTestOut = Field(
-        description="脱敏后的调用结果", examples=[{"model_id": 1, "external_id": "gpt-4o-mini", "available": True, "latency_ms": 300}]
+        description="脱敏后的调用结果",
+        examples=[
+            {
+                "model_id": 1,
+                "external_id": "gpt-4o-mini",
+                "available": True,
+                "latency_ms": 300,
+            }
+        ],
     )
     verified_capabilities: list[Capability] = Field(description="当前已通过探测的能力", examples=[["text", "streaming"]])
 

@@ -61,7 +61,12 @@ def test_session_migration(tmp_path: Path) -> None:
     """独立 SQLite 库验证会话和快照列升降级及无外键。"""
     database = tmp_path / "sessions-migration.db"
     env = os.environ.copy()
-    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
     root = Path(__file__).resolve().parents[1]
     for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
         subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, check=True, capture_output=True, text=True)
@@ -192,19 +197,45 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
 
                     async def login(username: str) -> dict[str, str]:
                         """登录测试用户并返回 Bearer 请求头。"""
-                        response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                        response = await client.post(
+                            "/api/v1/auth/login",
+                            json={
+                                "identifier": username,
+                                "password": "StrongPassword123",
+                            },
+                        )
                         assert response.status_code == 200, response.text
-                        return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                        return {
+                            "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                        }
 
                     alice, bob = await login("session-alice"), await login("session-bob")
                     created = await client.post(
-                        "/api/v1/agents", headers=alice, json={"name": "需求助手", "default_model_id": 1, "system_prompt": "只回答需求问题"}
+                        "/api/v1/agents",
+                        headers=alice,
+                        json={
+                            "name": "需求助手",
+                            "default_model_id": 1,
+                            "system_prompt": "只回答需求问题",
+                        },
                     )
                     assert created.status_code == 201, created.text
                     agent_id = created.json()["data"]["id"]
                     base = f"/api/v1/agents/{agent_id}/sessions"
-                    first = await client.post(base, headers=alice, json={"title": "第一会话"})
-                    second = await client.post(base, headers=alice, json={"title": "第二会话"})
+                    first = await client.post(
+                        base,
+                        headers=alice,
+                        json={
+                            "title": "第一会话",
+                        },
+                    )
+                    second = await client.post(
+                        base,
+                        headers=alice,
+                        json={
+                            "title": "第二会话",
+                        },
+                    )
                     assert first.status_code == second.status_code == 201
                     first_id = first.json()["data"]["id"]
                     second_id = second.json()["data"]["id"]
@@ -213,9 +244,23 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert (await client.get(base, headers=bob)).status_code == 404
                     for method, path, data in (
                         ("GET", f"{base}/{first_id}", None),
-                        ("PUT", f"{base}/{first_id}", {"expected_version": 1, "title": "盗用"}),
+                        (
+                            "PUT",
+                            f"{base}/{first_id}",
+                            {
+                                "expected_version": 1,
+                                "title": "盗用",
+                            },
+                        ),
                         ("DELETE", f"{base}/{first_id}", None),
-                        ("POST", f"{base}/{first_id}/runs", {"request_key": "stolen", "input_text": "偷看"}),
+                        (
+                            "POST",
+                            f"{base}/{first_id}/runs",
+                            {
+                                "request_key": "stolen",
+                                "input_text": "偷看",
+                            },
+                        ),
                         ("GET", f"{base}/{first_id}/messages", None),
                     ):
                         response = await client.request(method, path, headers=bob, json=data)
@@ -262,7 +307,13 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert pdf_upload.status_code == 201
                     pdf_id = pdf_upload.json()["data"][0]["id"]
-                    office_session = await client.post(base, headers=alice, json={"title": "办公文件会话"})
+                    office_session = await client.post(
+                        base,
+                        headers=alice,
+                        json={
+                            "title": "办公文件会话",
+                        },
+                    )
                     assert office_session.status_code == 201
                     office_id = office_session.json()["data"]["id"]
                     corrupt_run = await client.post(
@@ -326,9 +377,15 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert office_done.id == office_run_id and office_done.state == "completed"
                     assert all(term in SessionModel.seen_inputs[-1] for term in ("赤壁", "夷陵", "数据表", "222"))
                     assert await publish_pending_answers(sessions, artifact_root) == 1
-                    office_artifacts = (await client.get("/api/v1/artifacts", headers=alice, params={"run_id": office_run_id})).json()[
-                        "data"
-                    ]
+                    office_artifacts = (
+                        await client.get(
+                            "/api/v1/artifacts",
+                            headers=alice,
+                            params={
+                                "run_id": office_run_id,
+                            },
+                        )
+                    ).json()["data"]
                     assert office_artifacts[0]["context_artifact_ids"] == office_artifact_ids
                     office_output_id = office_artifacts[0]["id"]
                     assert (await client.get(f"/api/v1/artifacts/{office_output_id}", headers=alice)).json()["data"][
@@ -340,7 +397,10 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     reuse_run = await client.post(
                         f"{base}/{office_id}/runs",
                         headers=alice,
-                        json={"request_key": "reuse-office-output", "input_text": "读取刚才生成的文件，再告诉我标题"},
+                        json={
+                            "request_key": "reuse-office-output",
+                            "input_text": "读取刚才生成的文件，再告诉我标题",
+                        },
                     )
                     assert reuse_run.status_code == 201, reuse_run.text
 
@@ -348,11 +408,26 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         """构建先读取旧产物再生成修订文件的假模型。"""
                         return SessionModel(
                             responses=[
-                                AIMessage(content="", tool_calls=[{"name": "list_session_artifacts", "args": {}, "id": "reuse-list"}]),
                                 AIMessage(
                                     content="",
                                     tool_calls=[
-                                        {"name": "read_generated_artifact", "args": {"artifact_id": office_output_id}, "id": "reuse-read"}
+                                        {
+                                            "name": "list_session_artifacts",
+                                            "args": {},
+                                            "id": "reuse-list",
+                                        }
+                                    ],
+                                ),
+                                AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "read_generated_artifact",
+                                            "args": {
+                                                "artifact_id": office_output_id,
+                                            },
+                                            "id": "reuse-read",
+                                        }
                                     ],
                                 ),
                                 AIMessage(content="已读取办公文件总结"),
@@ -379,7 +454,11 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         rejected = await client.post(
                             f"{base}/{first_id}/runs",
                             headers=alice,
-                            json={"request_key": "invalid-attachment", "input_text": "第一轮", "artifact_ids": bad_ids},
+                            json={
+                                "request_key": "invalid-attachment",
+                                "input_text": "第一轮",
+                                "artifact_ids": bad_ids,
+                            },
                         )
                         assert rejected.status_code == expected_status, rejected.text
                     assert (
@@ -451,27 +530,53 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         await client.post(
                             f"{base}/{first_id}/runs",
                             headers=alice,
-                            json={"request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids[::-1]},
+                            json={
+                                "request_key": "first-turn",
+                                "input_text": "第一轮",
+                                "artifact_ids": artifact_ids[::-1],
+                            },
                         )
                     ).status_code == 409
                     assert (
                         await client.post(
                             f"{base}/{first_id}/runs",
                             headers=alice,
-                            json={"request_key": "first-turn", "input_text": "第一轮", "artifact_ids": artifact_ids},
+                            json={
+                                "request_key": "first-turn",
+                                "input_text": "第一轮",
+                                "artifact_ids": artifact_ids,
+                            },
                         )
                     ).status_code == 409
                     assert (
                         await client.post(
-                            f"{base}/{first_id}/runs", headers=alice, json={"request_key": "too-early", "input_text": "下一轮"}
+                            f"{base}/{first_id}/runs",
+                            headers=alice,
+                            json={
+                                "request_key": "too-early",
+                                "input_text": "下一轮",
+                            },
                         )
                     ).status_code == 409
                     assert (
-                        await client.put(f"{base}/{first_id}", headers=alice, json={"expected_version": 2, "archived": True})
+                        await client.put(
+                            f"{base}/{first_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 2,
+                                "archived": True,
+                            },
+                        )
                     ).status_code == 409
                     assert (
                         await client.post(
-                            "/api/v1/runs", headers=alice, json={"model_id": 1, "thread_id": first_thread, "input_text": "绕过会话"}
+                            "/api/v1/runs",
+                            headers=alice,
+                            json={
+                                "model_id": 1,
+                                "thread_id": first_thread,
+                                "input_text": "绕过会话",
+                            },
                         )
                     ).status_code == 409
 
@@ -488,14 +593,28 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert generation_settings[-1] == (Decimal("1.00"), 4096)
                     assert await publish_pending_answers(sessions, artifact_root) == 1
                     assert await publish_pending_answers(sessions, artifact_root) == 0
-                    published = await client.get("/api/v1/artifacts", headers=alice, params={"run_id": first_run_id})
+                    published = await client.get(
+                        "/api/v1/artifacts",
+                        headers=alice,
+                        params={
+                            "run_id": first_run_id,
+                        },
+                    )
                     assert published.status_code == 200
                     answer = published.json()["data"]
                     assert len(answer) == 1 and answer[0]["filename"] == "answer.txt"
                     answer_id = answer[0]["id"]
                     downloaded = await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=alice)
                     assert downloaded.status_code == 200 and downloaded.content == "第一答复".encode()
-                    assert (await client.get("/api/v1/artifacts", headers=bob, params={"run_id": first_run_id})).status_code == 404
+                    assert (
+                        await client.get(
+                            "/api/v1/artifacts",
+                            headers=bob,
+                            params={
+                                "run_id": first_run_id,
+                            },
+                        )
+                    ).status_code == 404
                     assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=bob)).status_code == 404
                     events = (await client.get(f"/api/v1/runs/{first_run_id}/events", headers=alice)).json()["data"]
                     assert [item["artifact_id"] for item in events if item["event_type"] == "artifact_published"] == [answer_id]
@@ -507,7 +626,15 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert published_messages[1]["artifacts"][0]["artifact_id"] == answer_id
                     assert published_messages[1]["artifacts"][0]["available"] is True
                     assert (await client.delete(f"/api/v1/artifacts/{answer_id}", headers=alice)).status_code == 200
-                    assert (await client.get("/api/v1/artifacts", headers=alice, params={"run_id": first_run_id})).json()["data"] == []
+                    assert (
+                        await client.get(
+                            "/api/v1/artifacts",
+                            headers=alice,
+                            params={
+                                "run_id": first_run_id,
+                            },
+                        )
+                    ).json()["data"] == []
                     assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=alice)).status_code == 404
                     messages = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
                     assert [(item["role"], item["content"]) for item in messages] == [("user", "第一轮"), ("assistant", "第一答复")]
@@ -558,7 +685,12 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert retry_after_edit.status_code == 201 and retry_after_edit.json()["data"]["id"] == first_run_id
                     next_run = await client.post(
-                        f"{base}/{first_id}/runs", headers=alice, json={"request_key": "second-turn", "input_text": "第二轮"}
+                        f"{base}/{first_id}/runs",
+                        headers=alice,
+                        json={
+                            "request_key": "second-turn",
+                            "input_text": "第二轮",
+                        },
                     )
                     assert next_run.status_code == 201, next_run.text
                     assert next_run.json()["data"]["agent_config_version"] == 2
@@ -579,7 +711,12 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         assert old.agent_max_output_tokens == 4096
                         assert new.agent_max_output_tokens == 2048
                     other_run = await client.post(
-                        f"{base}/{second_id}/runs", headers=alice, json={"request_key": "other-session", "input_text": "独立会话"}
+                        f"{base}/{second_id}/runs",
+                        headers=alice,
+                        json={
+                            "request_key": "other-session",
+                            "input_text": "独立会话",
+                        },
                     )
                     assert other_run.status_code == 201
 
@@ -649,11 +786,20 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     budget_config = await client.put(
                         f"/api/v1/agents/{agent_id}",
                         headers=alice,
-                        json={"expected_version": 2, "max_total_tokens": 10000, "max_estimated_cost": "0.010000"},
+                        json={
+                            "expected_version": 2,
+                            "max_total_tokens": 10000,
+                            "max_estimated_cost": "0.010000",
+                        },
                     )
                     assert budget_config.status_code == 200, budget_config.text
                     budget_run = await client.post(
-                        f"{base}/{second_id}/runs", headers=alice, json={"request_key": "budgeted-turn", "input_text": "预算快照"}
+                        f"{base}/{second_id}/runs",
+                        headers=alice,
+                        json={
+                            "request_key": "budgeted-turn",
+                            "input_text": "预算快照",
+                        },
                     )
                     assert budget_run.status_code == 201, budget_run.text
                     budget_id = budget_run.json()["data"]["id"]
@@ -663,11 +809,20 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     cleared = await client.put(
                         f"/api/v1/agents/{agent_id}",
                         headers=alice,
-                        json={"expected_version": 3, "max_total_tokens": None, "max_estimated_cost": None},
+                        json={
+                            "expected_version": 3,
+                            "max_total_tokens": None,
+                            "max_estimated_cost": None,
+                        },
                     )
                     assert cleared.status_code == 200
                     retried_budget = await client.post(
-                        f"{base}/{second_id}/runs", headers=alice, json={"request_key": "budgeted-turn", "input_text": "预算快照"}
+                        f"{base}/{second_id}/runs",
+                        headers=alice,
+                        json={
+                            "request_key": "budgeted-turn",
+                            "input_text": "预算快照",
+                        },
                     )
                     assert retried_budget.status_code == 201 and retried_budget.json()["data"]["id"] == budget_id
                     async with sessions() as db:
@@ -677,13 +832,32 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         assert saved_budget.cost_input_price == Decimal("1.500000")
                         assert saved_budget.cost_output_price == Decimal("2.000000")
                     assert (await client.post(f"/api/v1/runs/{budget_id}/cancel", headers=alice)).status_code == 200
-                    renamed = await client.put(f"{base}/{second_id}", headers=alice, json={"expected_version": 5, "title": "已改名"})
+                    renamed = await client.put(
+                        f"{base}/{second_id}",
+                        headers=alice,
+                        json={
+                            "expected_version": 5,
+                            "title": "已改名",
+                        },
+                    )
                     assert renamed.status_code == 200 and renamed.json()["data"]["title"] == "已改名"
-                    archived = await client.put(f"{base}/{first_id}", headers=alice, json={"expected_version": 3, "archived": True})
+                    archived = await client.put(
+                        f"{base}/{first_id}",
+                        headers=alice,
+                        json={
+                            "expected_version": 3,
+                            "archived": True,
+                        },
+                    )
                     assert archived.status_code == 200 and archived.json()["data"]["archived"] is True
                     assert (
                         await client.post(
-                            f"{base}/{first_id}/runs", headers=alice, json={"request_key": "archived-turn", "input_text": "不能提交"}
+                            f"{base}/{first_id}/runs",
+                            headers=alice,
+                            json={
+                                "request_key": "archived-turn",
+                                "input_text": "不能提交",
+                            },
                         )
                     ).status_code == 409
                     assert (await client.get(f"{base}?archived=true", headers=alice)).json()["data"]["total"] == 1
@@ -691,20 +865,39 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert (await client.get(f"{base}/{first_id}", headers=alice)).status_code == 404
                     assert (await client.get(f"{base}/{second_id}", headers=alice)).status_code == 200
                     switched = await client.put(
-                        f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 4, "default_model_id": 2}
+                        f"/api/v1/agents/{agent_id}",
+                        headers=alice,
+                        json={
+                            "expected_version": 4,
+                            "default_model_id": 2,
+                        },
                     )
                     assert switched.status_code == 200
                     incompatible = await client.post(
-                        f"{base}/{second_id}/runs", headers=alice, json={"request_key": "model-switch", "input_text": "继续旧会话"}
+                        f"{base}/{second_id}/runs",
+                        headers=alice,
+                        json={
+                            "request_key": "model-switch",
+                            "input_text": "继续旧会话",
+                        },
                     )
                     assert incompatible.status_code == 409
                     assert "创建新会话" in incompatible.json()["message"]
-                    fresh = await client.post(base, headers=alice, json={"title": "切换模型后"})
+                    fresh = await client.post(
+                        base,
+                        headers=alice,
+                        json={
+                            "title": "切换模型后",
+                        },
+                    )
                     assert fresh.status_code == 201
                     fresh_run = await client.post(
                         f"{base}/{fresh.json()['data']['id']}/runs",
                         headers=alice,
-                        json={"request_key": "new-model", "input_text": "新的会话"},
+                        json={
+                            "request_key": "new-model",
+                            "input_text": "新的会话",
+                        },
                     )
                     assert fresh_run.status_code == 201
                     assert fresh_run.json()["data"]["model_id"] == 2

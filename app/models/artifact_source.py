@@ -16,7 +16,9 @@ class ArtifactSource(CustomBaseModel):
     __table_args__ = (
         UniqueConstraint("target_artifact_id", "source_artifact_id", name="uq_yp_artifact_source_pair"),
         UniqueConstraint("target_artifact_id", "position", name="uq_yp_artifact_source_position"),
-        {"comment": "模型生成文件与此前读取的旧产物关系"},
+        {
+            "comment": "模型生成文件与此前读取的旧产物关系",
+        },
     )
 
     target_artifact_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="新产物 ID")

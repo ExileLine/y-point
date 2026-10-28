@@ -13,7 +13,12 @@ from app.models.base import CustomBaseModel
 
 class AgentRunEvent(CustomBaseModel):
     __table_name__ = "agent_run_event"
-    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_yp_agent_run_event_run_sequence"), {"comment": "智能体运行事件表"})
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_yp_agent_run_event_run_sequence"),
+        {
+            "comment": "智能体运行事件表",
+        },
+    )
 
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="所属运行 ID")
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, comment="运行内单调事件序号")

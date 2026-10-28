@@ -59,7 +59,15 @@ def _list_text_artifacts(context: ToolContext) -> BaseTool:
                 )
             ).all()
         return json.dumps(
-            [{"artifact_id": item.id, "filename": item.filename, "byte_size": item.byte_size} for item in items], ensure_ascii=False
+            [
+                {
+                    "artifact_id": item.id,
+                    "filename": item.filename,
+                    "byte_size": item.byte_size,
+                }
+                for item in items
+            ],
+            ensure_ascii=False,
         )
 
     return list_text_artifacts
@@ -104,7 +112,13 @@ def _read_text_artifact(context: ToolContext) -> BaseTool:
             decoded = content.decode("utf-8")
         except (OSError, UnicodeError, BotoCoreError, ClientError):
             raise ValueError("文件不可用") from None
-        return json.dumps({"filename": filename, "content": decoded}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "filename": filename,
+                "content": decoded,
+            },
+            ensure_ascii=False,
+        )
 
     return read_text_artifact
 
@@ -138,7 +152,15 @@ def _list_session_artifacts(context: ToolContext) -> BaseTool:
                 )
             ).all()
         return json.dumps(
-            [{"artifact_id": item.id, "filename": item.filename, "media_type": item.media_type} for item in items], ensure_ascii=False
+            [
+                {
+                    "artifact_id": item.id,
+                    "filename": item.filename,
+                    "media_type": item.media_type,
+                }
+                for item in items
+            ],
+            ensure_ascii=False,
         )
 
     return list_session_artifacts
@@ -196,7 +218,13 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
                 raise ValueError("产物不可读取")
             db.add(RunArtifactRead(run_id=run.id, owner_id=context.owner_id, source_artifact_id=artifact_id))
         return json.dumps(
-            {"artifact_id": artifact_id, "filename": filename, "media_type": media_type, "content": extracted}, ensure_ascii=False
+            {
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "media_type": media_type,
+                "content": extracted,
+            },
+            ensure_ascii=False,
         )
 
     return read_generated_artifact
@@ -214,7 +242,13 @@ def _create_text_artifact(context: ToolContext) -> BaseTool:
         artifact = await stage_generated_artifact(
             context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
         )
-        return json.dumps({"artifact_id": artifact.id, "filename": artifact.filename}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+            },
+            ensure_ascii=False,
+        )
 
     return create_text_artifact
 
@@ -231,7 +265,13 @@ def _create_document_artifact(context: ToolContext) -> BaseTool:
         artifact = await stage_generated_artifact(
             context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
         )
-        return json.dumps({"artifact_id": artifact.id, "filename": artifact.filename}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+            },
+            ensure_ascii=False,
+        )
 
     return create_document_artifact
 
@@ -250,7 +290,13 @@ def _create_spreadsheet_artifact(context: ToolContext) -> BaseTool:
         artifact = await stage_generated_artifact(
             context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
         )
-        return json.dumps({"artifact_id": artifact.id, "filename": artifact.filename}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+            },
+            ensure_ascii=False,
+        )
 
     return create_spreadsheet_artifact
 

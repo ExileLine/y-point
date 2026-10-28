@@ -76,7 +76,18 @@ async def exercise_run_manager(database_path: Path) -> None:
                 await append_text_delta(db, run_id, "wrong-token", "private")
             heartbeat = await heartbeat_run(db, run_id, token)
             assert heartbeat.version == 2
-            await create_approval_request(db, run_id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}])
+            await create_approval_request(
+                db,
+                run_id,
+                token,
+                "checkpoint-1",
+                [
+                    {
+                        "name": "search",
+                        "arguments_hash": "a" * 64,
+                    }
+                ],
+            )
             paused = await get_owned_run(db, run_id, 1)
             assert paused.state == "waiting_for_approval" and paused.lease_token is None
             with pytest.raises(RunConflictError):
@@ -172,7 +183,12 @@ async def exercise_cancel_and_recovery(database_path: Path) -> None:
 
 async def exercise_atomic_submit_and_claim(database_path: Path) -> None:
     """验证未提交的调度意图不会留下记录，竞争领取只成功一次。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}", connect_args={"timeout": 10})
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        connect_args={
+            "timeout": 10,
+        },
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with engine.begin() as connection:
@@ -204,7 +220,12 @@ async def exercise_atomic_submit_and_claim(database_path: Path) -> None:
 
 async def exercise_concurrent_tool_events(database_path: Path) -> None:
     """验证并发工具事件共享运行内连续游标且受租约约束。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}", connect_args={"timeout": 10})
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        connect_args={
+            "timeout": 10,
+        },
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with engine.begin() as connection:
@@ -338,7 +359,18 @@ async def exercise_approval_expiry(database_path: Path) -> None:
         async with sessions.begin() as db:
             run = await create_run(db, 1)
             token = (await claim_run(db, run.id)).lease_token
-            approval = await create_approval_request(db, run.id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}])
+            approval = await create_approval_request(
+                db,
+                run.id,
+                token,
+                "checkpoint-1",
+                [
+                    {
+                        "name": "search",
+                        "arguments_hash": "a" * 64,
+                    }
+                ],
+            )
             approval_id = approval.id
             with pytest.raises(RunConflictError):
                 await resume_approved_run(db, run.id)

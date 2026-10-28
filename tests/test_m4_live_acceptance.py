@@ -80,9 +80,17 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                login = await client.post("/api/v1/auth/login", json={"identifier": "m4-live", "password": "StrongPassword123"})
+                login = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "m4-live",
+                        "password": "StrongPassword123",
+                    },
+                )
                 assert login.status_code == 200, login.text
-                headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+                headers = {
+                    "Authorization": f"Bearer {login.json()['data']['access_token']}",
+                }
                 created = await client.post(
                     "/api/v1/agents",
                     headers=headers,
@@ -98,13 +106,21 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
                 assert created.status_code == 201, created.text
                 base = f"/api/v1/agents/{created.json()['data']['id']}/sessions"
-                session = await client.post(base, headers=headers, json={"title": "M4 real files"})
+                session = await client.post(
+                    base,
+                    headers=headers,
+                    json={
+                        "title": "M4 real files",
+                    },
+                )
                 assert session.status_code == 201, session.text
                 session_base = f"{base}/{session.json()['data']['id']}"
                 upload = await client.post(
                     "/api/v1/artifacts/uploads",
                     headers=headers,
-                    files={"files": ("facts.txt", "Project ALPHA-42. Budget 17. Owner Alice.".encode(), "text/plain")},
+                    files={
+                        "files": ("facts.txt", "Project ALPHA-42. Budget 17. Owner Alice.".encode(), "text/plain"),
+                    },
                 )
                 assert upload.status_code == 201, upload.text
                 source_id = upload.json()["data"][0]["id"]
@@ -234,7 +250,9 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 second_upload = await client.post(
                     "/api/v1/artifacts/uploads",
                     headers=headers,
-                    files={"files": ("second.txt", b"Project BETA-73. Budget 29. Owner Bob.", "text/plain")},
+                    files={
+                        "files": ("second.txt", b"Project BETA-73. Budget 29. Owner Bob.", "text/plain"),
+                    },
                 )
                 assert second_upload.status_code == 201, second_upload.text
                 second_id = second_upload.json()["data"][0]["id"]

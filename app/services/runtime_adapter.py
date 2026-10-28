@@ -74,7 +74,15 @@ class RuntimeRunConfig:
 
     def graph_config(self) -> dict:
         """返回包含检查点线程和运行元数据的图配置。"""
-        return {"configurable": {"thread_id": self.thread_id}, "metadata": {"run_id": self.run_id, "tool_count": len(self.tool_names)}}
+        return {
+            "configurable": {
+                "thread_id": self.thread_id,
+            },
+            "metadata": {
+                "run_id": self.run_id,
+                "tool_count": len(self.tool_names),
+            },
+        }
 
 
 class RuntimeAdapter(Protocol):

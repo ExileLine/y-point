@@ -211,7 +211,11 @@ class BaseConfig(BaseSettings):
         :return:
         """
         return "mysql://{}:{}@{}:{}/{}".format(
-            self.MYSQL_USERNAME, quote_plus(self.MYSQL_PASSWORD), self.MYSQL_HOSTNAME, self.MYSQL_PORT, self.MYSQL_DATABASE
+            self.MYSQL_USERNAME,
+            quote_plus(self.MYSQL_PASSWORD),
+            self.MYSQL_HOSTNAME,
+            self.MYSQL_PORT,
+            self.MYSQL_DATABASE,
         )
 
     @property
@@ -221,7 +225,11 @@ class BaseConfig(BaseSettings):
         :return:
         """
         return "mysql+asyncmy://{}:{}@{}:{}/{}".format(
-            self.MYSQL_USERNAME, quote_plus(self.MYSQL_PASSWORD), self.MYSQL_HOSTNAME, self.MYSQL_PORT, self.MYSQL_DATABASE
+            self.MYSQL_USERNAME,
+            quote_plus(self.MYSQL_PASSWORD),
+            self.MYSQL_HOSTNAME,
+            self.MYSQL_PORT,
+            self.MYSQL_DATABASE,
         )
 
     @property

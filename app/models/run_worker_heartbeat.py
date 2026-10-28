@@ -19,7 +19,9 @@ class RunWorkerHeartbeat(CustomBaseModel):
     __table_name__ = "run_worker_heartbeat"
     __enable_auto_id__ = False
     __enable_audit_columns__ = False
-    __table_args__ = {"comment": "运行执行器心跳表"}
+    __table_args__ = {
+        "comment": "运行执行器心跳表",
+    }
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="执行器启动实例 ID")
     started_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="执行器启动时间")

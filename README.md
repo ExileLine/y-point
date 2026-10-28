@@ -4,15 +4,17 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 
 ## 核心业务概览
 
-当前代码覆盖 M0a～M4 的本地主要链路：用户登录后配置供应商和模型，创建 Agent 与独立会话；每轮消息提交为持久化 Run，由独立 worker 调用 DeepAgents，保存检查点、最终消息和可重放事件。Agent 可显式共享给指定用户，但会话、附件、产物和运行仍按实际使用者隔离。浏览器通过快照与 SSE 游标恢复运行进度，最终回答以消息接口为准。
+当前代码覆盖 M0a～M4 的本地主要链路：用户登录后配置供应商和模型，可创建 Agent 与独立会话进行多轮对话，也可直接提交不关联 Agent 的文本 Run。两种入口都创建持久化 Run，由独立 worker 调用 DeepAgents，保存检查点、最终消息和可重放事件。Agent 可显式共享给指定用户，但会话、附件、产物和运行仍按实际使用者隔离。浏览器通过快照与 SSE 游标恢复运行进度，最终回答以消息接口为准。
 
 | 业务环节 | 当前能力 |
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商凭据加密；模型接入、能力探测、用量及估算成本记录。 |
-| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、指定用户共享与撤权；长会话摘要和窗口预算。 |
+| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、模型及工具预算；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系。 |
 | 实时与恢复 | 持久化事件、SSE、快照和游标补发；助手消息关联产物，上传附件保留在用户消息中。 |
+
+核心业务闭环：认证与资源授权后，用户通过 Agent 会话或独立文本入口提交 Run；业务事务保存输入、排队状态和首个事件，worker 领取后按模型配置执行并持续写入事件。完成时保存最终消息和检查点引用，生成文件与助手消息关联；前端按事件游标追平过程，再从消息接口读取最终结果。文件正文留在私有存储，下载时重新校验所有权和有效期。
 
 M0a～M4 的已实现能力与整体验收状态不同：本机 Ollama 已覆盖部分真实模型链路，更多供应商、目标业务数据库、对象存储、浏览器断网恢复、部署故障及复杂文件场景仍有待验证；M5 的完整 Tool Registry、Skill 和 MCP 尚未交付。逐项结果和限制见 `y-point-server-todo.md`。
 
@@ -141,6 +143,7 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 | 提交本轮 | `POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs`，传 `{"request_key":"turn-1-uuid","input_text":"请记住代号 ALPHA-42"}`；取新 `run_id`。要让模型按需生成文件，只需在 `input_text` 提出格式要求；`publish_answer_artifact:true` 专用于把最终回答额外导出为 `answer.txt`。 | 同一事务内使会话版本递增，并创建 `yp_agent_run`（初始 `queued`、事件序号 1、会话线程及 Agent 配置快照）、`yp_agent_run_message` 的用户消息和 `yp_agent_run_event` 的 `queued` 事件。提交键在同一用户下唯一；每轮使用新键，网络重试沿用原键。 |
 | 执行与完成 | `GET /api/v1/runs/{run_id}` 可查询状态；收到 `completed` 后用 `GET /api/v1/runs/{run_id}/messages` 取完整回答。 | Worker 领取后写 `running` 事件，按会话线程读取历史检查点，模型增量写事件表；完成时在一个业务事务中写 `assistant` 消息、`completed` 事件和 `checkpoint_id`。 |
 | 继续对话 | 向同一会话提交新 `request_key`，例如 `{"request_key":"turn-2-uuid","input_text":"代号是什么？"}`。 | 新 Run 的事件序号重新从 1 开始，沿用会话 `thread_id` 从 Checkpointer 恢复历史。上一轮未终结时拒绝再提交。 |
+| 独立文本运行（另一入口） | 无需创建 Agent 或会话，使用 Bearer 调用 `POST /api/v1/runs`，例如 `{"model_id":1,"input_text":"请介绍一下你自己","request_key":"direct-1"}`；取响应 `data.id` 作为 `run_id`。可选传 `thread_id` 续接独立运行的检查点线程。 | 服务端校验模型和供应商，调用与会话入口相同的 Run 创建逻辑，保存排队 Run、用户消息和 `queued` 事件；不保存 Agent 配置快照或会话附件，也不关联 Agent/会话。之后共用 `/api/v1/runs/{run_id}` 的状态、消息、快照和 SSE 接口。会话入口不会通过 HTTP 调用此入口。 |
 
 ### 实时流与页面恢复
 
@@ -182,4 +185,4 @@ uvx ruff check app migrations tests local_run.py
 uvx ruff format --check app migrations tests local_run.py
 ```
 
-服务端编码规范以 `y-point-server-todo.md` 为准。Ruff 的行宽为 140，并忽略仅因末尾逗号而强制拆行的格式策略；Python 文件头与中文函数说明覆盖应用、迁移、命令和测试（包括嵌套函数）。Schema 字段的中文说明和有效示例也包含工具输入模型。SSE、文件下载和 Swagger 分别保留事件流、文件和 HTML 媒体协议，其余成功 JSON 响应使用 `api_response`。
+服务端编码规范以 `y-point-server-todo.md` 为准。Ruff 行宽为 140，保留尾逗号固定的多行格式；非空字典字面量逐项换行，`return` 和 `return await` 中需要换行的函数调用逐参数换行。Python 文件头与中文函数说明覆盖应用、迁移、命令和测试（包括嵌套函数）。Schema 字段的中文说明和有效示例也包含工具输入模型。SSE、文件下载和 Swagger 分别保留事件流、文件和 HTML 媒体协议，其余成功 JSON 响应使用 `api_response`。

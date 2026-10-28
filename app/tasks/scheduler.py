@@ -64,7 +64,9 @@ class TriggerHandler:
 
         run_date = datetime.strptime(self.trigger_time, "%Y-%m-%d %H:%M:%S")
         trigger = DateTrigger(run_date=run_date, timezone=self.timezone)
-        self.trigger_param = {"trigger_time": run_date}
+        self.trigger_param = {
+            "trigger_time": run_date,
+        }
         return trigger
 
     def interval_trigger(self):
@@ -73,7 +75,9 @@ class TriggerHandler:
             raise TypeError("IntervalTrigger 参数 interval_kw 错误")
 
         trigger = IntervalTrigger(timezone=self.timezone, **self.interval_kw)
-        self.trigger_param = {"interval_kw": self.interval_kw}
+        self.trigger_param = {
+            "interval_kw": self.interval_kw,
+        }
         return trigger
 
     def cron_trigger(self):
@@ -82,12 +86,18 @@ class TriggerHandler:
             raise TypeError("CronTrigger 缺少 cron_expression")
 
         trigger = CronTrigger.from_crontab(expr=self.cron_expression, timezone=self.timezone)
-        self.trigger_param = {"cron_expression": self.cron_expression}
+        self.trigger_param = {
+            "cron_expression": self.cron_expression,
+        }
         return trigger
 
     def get_trigger(self):
         """按配置的触发类型构建并保存任务触发器。"""
-        trigger_dict = {"date": self.date_trigger, "interval": self.interval_trigger, "cron": self.cron_trigger}
+        trigger_dict = {
+            "date": self.date_trigger,
+            "interval": self.interval_trigger,
+            "cron": self.cron_trigger,
+        }
         self.trigger = trigger_dict.get(self.trigger_type)()
         return self.trigger
 
@@ -139,7 +149,10 @@ class TaskHandler(TriggerHandler):
         """返回指定任务的 ID 与下次执行时间，不存在时返回空字典。"""
         job = scheduler.get_job(task_id)
         if job:
-            res = {"id": job.id, "next_run_time": job.next_run_time}
+            res = {
+                "id": job.id,
+                "next_run_time": job.next_run_time,
+            }
             return res
         return {}
 
@@ -149,7 +162,10 @@ class TaskHandler(TriggerHandler):
         all_jobs = scheduler.get_jobs()
         task_states = []
         for job in all_jobs:
-            d = {"id": job.id, "next_run_time": job.next_run_time}
+            d = {
+                "id": job.id,
+                "next_run_time": job.next_run_time,
+            }
             task_states.append(d)
         return task_states
 
@@ -185,7 +201,15 @@ async def scheduler_init():
     test1 = TaskHandler(
         task_id=TaskDict.test_sync_task.__name__,
         trigger_type=TriggerType.interval,
-        interval_kw={"weeks": 0, "days": 0, "hours": 0, "minutes": 0, "seconds": 5, "start_date": None, "end_date": None},
+        interval_kw={
+            "weeks": 0,
+            "days": 0,
+            "hours": 0,
+            "minutes": 0,
+            "seconds": 5,
+            "start_date": None,
+            "end_date": None,
+        },
         task_function_name=TaskDict.test_sync_task.__name__,
     )
     test1.add_task()
@@ -193,7 +217,15 @@ async def scheduler_init():
     test2 = TaskHandler(
         task_id=TaskDict.test_async_task.__name__,
         trigger_type=TriggerType.interval,
-        interval_kw={"weeks": 0, "days": 0, "hours": 0, "minutes": 0, "seconds": 5, "start_date": None, "end_date": None},
+        interval_kw={
+            "weeks": 0,
+            "days": 0,
+            "hours": 0,
+            "minutes": 0,
+            "seconds": 5,
+            "start_date": None,
+            "end_date": None,
+        },
         task_function_name=TaskDict.test_async_task.__name__,
     )
     test2.add_task()

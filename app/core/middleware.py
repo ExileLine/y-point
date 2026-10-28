@@ -203,9 +203,15 @@ class RequestLoggingMiddleware:
             nonlocal sent
             if not sent:
                 sent = True
-                return {"type": "http.request", "body": body, "more_body": False}
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": False,
+                }
             if disconnected:
-                return {"type": "http.disconnect"}
+                return {
+                    "type": "http.disconnect",
+                }
             return await original_receive()
 
         return receive

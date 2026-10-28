@@ -14,7 +14,9 @@ from app.models.base import CustomBaseModel, ShanghaiDateTime
 class AuthSession(CustomBaseModel):
     __table_name__ = "auth_session"
     __enable_auto_id__ = False
-    __table_args__ = {"comment": "用户登录会话表"}
+    __table_args__ = {
+        "comment": "用户登录会话表",
+    }
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="会话 ID")
     admin_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="所属用户 ID")

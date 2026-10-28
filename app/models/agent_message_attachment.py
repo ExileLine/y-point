@@ -15,7 +15,9 @@ class AgentMessageAttachment(CustomBaseModel):
     __table_args__ = (
         UniqueConstraint("message_id", "artifact_id", name="uq_yp_agent_message_attachment_message_artifact"),
         UniqueConstraint("message_id", "position", name="uq_yp_agent_message_attachment_message_position"),
-        {"comment": "会话用户消息的上传文件引用"},
+        {
+            "comment": "会话用户消息的上传文件引用",
+        },
     )
 
     message_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="所属消息 ID")

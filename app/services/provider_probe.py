@@ -59,7 +59,11 @@ def validate_custom_headers(headers: dict[str, str]) -> None:
         if not valid_name or len(value) > 4096 or any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise CustomException(status_code=400, custom_code=10006, detail="自定义请求头无效")
         try:
-            httpx.Headers({name: value})
+            httpx.Headers(
+                {
+                    name: value,
+                }
+            )
         except (ValueError, TypeError):
             raise CustomException(status_code=400, custom_code=10006, detail="自定义请求头无效") from None
         if name.lower() in forbidden:
@@ -69,11 +73,19 @@ def validate_custom_headers(headers: dict[str, str]) -> None:
 def provider_request_headers(provider: ProviderConnection) -> dict[str, str]:
     """解密供应商凭据并生成访问上游所需的请求头。"""
     api_key, custom_headers = decrypt_credentials(provider.encrypted_credentials)
-    headers = {"accept": "application/json", **custom_headers}
+    headers = {
+        "accept": "application/json",
+        **custom_headers,
+    }
     if provider.kind == "anthropic":
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
-        headers.update({"x-api-key": api_key, "anthropic-version": provider.api_version or "2023-06-01"})
+        headers.update(
+            {
+                "x-api-key": api_key,
+                "anthropic-version": provider.api_version or "2023-06-01",
+            }
+        )
     elif provider.kind == "azure_openai":
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
@@ -174,7 +186,10 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
                 raise ValueError("too many model pages")
         except (ValueError, KeyError, TypeError):
             return ConnectionTestOut(
-                available=False, latency_ms=latency_ms, upstream_status_code=upstream_status_code, failure="invalid_response"
+                available=False,
+                latency_ms=latency_ms,
+                upstream_status_code=upstream_status_code,
+                failure="invalid_response",
             )
         return ConnectionTestOut(
             available=True,

@@ -98,7 +98,11 @@ class CustomBaseModel(Base):
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
-            ShanghaiDateTime(), nullable=False, default=lambda: shanghai_now(naive=True), comment="创建时间", sort_order=1000
+            ShanghaiDateTime(),
+            nullable=False,
+            default=lambda: shanghai_now(naive=True),
+            comment="创建时间",
+            sort_order=1000,
         )
 
     @declared_attr

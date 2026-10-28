@@ -69,90 +69,234 @@ async def exercise_auth(database: Path | URL) -> None:
     app.dependency_overrides[get_db_session] = test_session
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            login = await client.post("/api/v1/auth/login", json={"identifier": "root", "password": PASSWORD})
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "root",
+                    "password": PASSWORD,
+                },
+            )
             assert login.status_code == 200, login.text
             assert login.json()["message"] == "操作成功"
             root_tokens = response_data(login)
             assert root_tokens["expires_in"] == ACCESS_TOKEN_SECONDS == 604800
             root_payload = jwt.decode(root_tokens["access_token"], get_config().SECRET_KEY, algorithms=["HS256"])
             assert root_payload["exp"] - root_payload["iat"] == ACCESS_TOKEN_SECONDS
-            root_headers = {"Authorization": f"Bearer {root_tokens['access_token']}"}
+            root_headers = {
+                "Authorization": f"Bearer {root_tokens['access_token']}",
+            }
             assert response_data(await client.get("/api/v1/auth/me", headers=root_headers))["role"] == "admin"
 
             created = await client.post(
-                "/api/v1/users", headers=root_headers, json={"username": "Alice", "mail": "alice@example.com", "password": PASSWORD}
+                "/api/v1/users",
+                headers=root_headers,
+                json={
+                    "username": "Alice",
+                    "mail": "alice@example.com",
+                    "password": PASSWORD,
+                },
             )
             assert created.status_code == 201, created.text
             alice_id = response_data(created)["id"]
             assert "password" not in response_data(created)
-            duplicate = await client.post("/api/v1/users", headers=root_headers, json={"username": "alice", "password": PASSWORD})
+            duplicate = await client.post(
+                "/api/v1/users",
+                headers=root_headers,
+                json={
+                    "username": "alice",
+                    "password": PASSWORD,
+                },
+            )
             assert duplicate.status_code == 409
             assert duplicate.json()["code"] == 10003
 
-            alice_login = await client.post("/api/v1/auth/login", json={"identifier": "ALICE@example.com", "password": PASSWORD})
+            alice_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "ALICE@example.com",
+                    "password": PASSWORD,
+                },
+            )
             assert alice_login.status_code == 200, alice_login.text
             alice_tokens = response_data(alice_login)
-            alice_headers = {"Authorization": f"Bearer {alice_tokens['access_token']}"}
+            alice_headers = {
+                "Authorization": f"Bearer {alice_tokens['access_token']}",
+            }
             forbidden = await client.get("/api/v1/users", headers=alice_headers)
             assert forbidden.status_code == 403
             assert forbidden.json()["code"] == 403
             assert (await client.get("/api/v1/users/1", headers=alice_headers)).status_code == 403
             assert (await client.get("/api/v1/users/audit/events", headers=alice_headers)).status_code == 403
-            updated_profile = await client.put("/api/v1/auth/me", headers=alice_headers, json={"nickname": "Alice"})
+            updated_profile = await client.put(
+                "/api/v1/auth/me",
+                headers=alice_headers,
+                json={
+                    "nickname": "Alice",
+                },
+            )
             assert response_data(updated_profile)["nickname"] == "Alice"
 
-            rotated = await client.post("/api/v1/auth/refresh", json={"refresh_token": alice_tokens["refresh_token"]})
+            rotated = await client.post(
+                "/api/v1/auth/refresh",
+                json={
+                    "refresh_token": alice_tokens["refresh_token"],
+                },
+            )
             assert rotated.status_code == 200, rotated.text
             rotated_data = response_data(rotated)
             assert rotated_data["refresh_token"] != alice_tokens["refresh_token"]
             assert rotated_data["expires_in"] == ACCESS_TOKEN_SECONDS
             rotated_payload = jwt.decode(rotated_data["access_token"], get_config().SECRET_KEY, algorithms=["HS256"])
             assert rotated_payload["exp"] - rotated_payload["iat"] == ACCESS_TOKEN_SECONDS
-            assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": alice_tokens["refresh_token"]})).status_code == 401
+            assert (
+                await client.post(
+                    "/api/v1/auth/refresh",
+                    json={
+                        "refresh_token": alice_tokens["refresh_token"],
+                    },
+                )
+            ).status_code == 401
 
             assert (
                 await client.post(
-                    "/api/v1/auth/password", headers=alice_headers, json={"current_password": PASSWORD, "new_password": NEW_PASSWORD}
+                    "/api/v1/auth/password",
+                    headers=alice_headers,
+                    json={
+                        "current_password": PASSWORD,
+                        "new_password": NEW_PASSWORD,
+                    },
                 )
             ).status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=alice_headers)).status_code == 401
             rotated_token = response_data(rotated)["refresh_token"]
-            assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": rotated_token})).status_code == 401
-            assert (await client.post("/api/v1/auth/login", json={"identifier": "alice", "password": PASSWORD})).status_code == 401
-            relogin = await client.post("/api/v1/auth/login", json={"identifier": "alice", "password": NEW_PASSWORD})
+            assert (
+                await client.post(
+                    "/api/v1/auth/refresh",
+                    json={
+                        "refresh_token": rotated_token,
+                    },
+                )
+            ).status_code == 401
+            assert (
+                await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "alice",
+                        "password": PASSWORD,
+                    },
+                )
+            ).status_code == 401
+            relogin = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "alice",
+                    "password": NEW_PASSWORD,
+                },
+            )
             assert relogin.status_code == 200
-            alice_headers = {"Authorization": f"Bearer {response_data(relogin)['access_token']}"}
+            alice_headers = {
+                "Authorization": f"Bearer {response_data(relogin)['access_token']}",
+            }
 
-            reset = await client.post(f"/api/v1/users/{alice_id}/reset-password", headers=root_headers, json={"new_password": PASSWORD})
+            reset = await client.post(
+                f"/api/v1/users/{alice_id}/reset-password",
+                headers=root_headers,
+                json={
+                    "new_password": PASSWORD,
+                },
+            )
             assert reset.status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=alice_headers)).status_code == 401
-            relogin = await client.post("/api/v1/auth/login", json={"identifier": "alice", "password": PASSWORD})
+            relogin = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "alice",
+                    "password": PASSWORD,
+                },
+            )
             assert relogin.status_code == 200
-            alice_headers = {"Authorization": f"Bearer {response_data(relogin)['access_token']}"}
+            alice_headers = {
+                "Authorization": f"Bearer {response_data(relogin)['access_token']}",
+            }
 
-            assert (await client.put(f"/api/v1/users/{alice_id}", headers=root_headers, json={"role": "admin"})).status_code == 200
+            assert (
+                await client.put(
+                    f"/api/v1/users/{alice_id}",
+                    headers=root_headers,
+                    json={
+                        "role": "admin",
+                    },
+                )
+            ).status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=alice_headers)).status_code == 401
-            relogin = await client.post("/api/v1/auth/login", json={"identifier": "alice", "password": PASSWORD})
+            relogin = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "alice",
+                    "password": PASSWORD,
+                },
+            )
             assert relogin.status_code == 200
-            alice_headers = {"Authorization": f"Bearer {response_data(relogin)['access_token']}"}
+            alice_headers = {
+                "Authorization": f"Bearer {response_data(relogin)['access_token']}",
+            }
             assert (await client.get("/api/v1/users", headers=alice_headers)).status_code == 200
 
-            assert (await client.put(f"/api/v1/users/{alice_id}", headers=root_headers, json={"role": "user"})).status_code == 200
+            assert (
+                await client.put(
+                    f"/api/v1/users/{alice_id}",
+                    headers=root_headers,
+                    json={
+                        "role": "user",
+                    },
+                )
+            ).status_code == 200
             assert (await client.get("/api/v1/users", headers=alice_headers)).status_code == 401
-            relogin = await client.post("/api/v1/auth/login", json={"identifier": "alice", "password": PASSWORD})
+            relogin = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "alice",
+                    "password": PASSWORD,
+                },
+            )
             assert relogin.status_code == 200
-            alice_headers = {"Authorization": f"Bearer {response_data(relogin)['access_token']}"}
+            alice_headers = {
+                "Authorization": f"Bearer {response_data(relogin)['access_token']}",
+            }
 
-            assert (await client.put(f"/api/v1/users/{alice_id}", headers=root_headers, json={"status": 0})).status_code == 200
+            assert (
+                await client.put(
+                    f"/api/v1/users/{alice_id}",
+                    headers=root_headers,
+                    json={
+                        "status": 0,
+                    },
+                )
+            ).status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=alice_headers)).status_code == 401
-            assert (await client.put("/api/v1/users/1", headers=root_headers, json={"status": 0})).status_code == 409
+            assert (
+                await client.put(
+                    "/api/v1/users/1",
+                    headers=root_headers,
+                    json={
+                        "status": 0,
+                    },
+                )
+            ).status_code == 409
             events = await client.get("/api/v1/users/audit/events", headers=root_headers)
             assert events.status_code == 200
             assert any(event["action"] == "auth.password_changed" for event in response_data(events))
 
             assert (await client.post("/api/v1/auth/logout", headers=root_headers)).status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=root_headers)).status_code == 401
-            assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": root_tokens["refresh_token"]})).status_code == 401
+            assert (
+                await client.post(
+                    "/api/v1/auth/refresh",
+                    json={
+                        "refresh_token": root_tokens["refresh_token"],
+                    },
+                )
+            ).status_code == 401
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()
@@ -174,9 +318,23 @@ async def exercise_login_limit(database: Path | URL) -> None:
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             for _ in range(5):
-                response = await client.post("/api/v1/auth/login", json={"identifier": "unknown", "password": "wrong"})
+                response = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "unknown",
+                        "password": "wrong",
+                    },
+                )
                 assert response.status_code == 401
-            assert (await client.post("/api/v1/auth/login", json={"identifier": "unknown", "password": "wrong"})).status_code == 429
+            assert (
+                await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "unknown",
+                        "password": "wrong",
+                    },
+                )
+            ).status_code == 429
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()
@@ -198,7 +356,13 @@ async def exercise_concurrent_login_limit(database: URL) -> None:
 
             async def failed_login() -> httpx.Response:
                 """以相同账号和来源地址提交错误凭据。"""
-                return await client.post("/api/v1/auth/login", json={"identifier": "parallel-unknown", "password": "wrong"})
+                return await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "parallel-unknown",
+                        "password": "wrong",
+                    },
+                )
 
             async def assert_counts() -> None:
                 """检查账号和来源地址的失败次数都没有丢失。"""
@@ -261,7 +425,12 @@ async def exercise_isolated_m1_auth(backend: str, base_url: URL, admin_database:
             await connection.execute(text(f"CREATE DATABASE {identifier}"))
         created = True
         env = os.environ.copy()
-        env.update({"DB_BACKEND": backend, "POSTGRESQL_DATABASE" if backend == "postgres" else "MYSQL_DATABASE": database_name})
+        env.update(
+            {
+                "DB_BACKEND": backend,
+                "POSTGRESQL_DATABASE" if backend == "postgres" else "MYSQL_DATABASE": database_name,
+            }
+        )
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
             result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)

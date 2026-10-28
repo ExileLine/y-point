@@ -24,7 +24,12 @@ target_metadata = Base.metadata
 def run_migrations_offline() -> None:
     """按配置生成离线迁移 SQL，不建立数据库连接。"""
     context.configure(
-        url=get_config().database_url, target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle": "named"}
+        url=get_config().database_url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={
+            "paramstyle": "named",
+        },
     )
     with context.begin_transaction():
         context.run_migrations()

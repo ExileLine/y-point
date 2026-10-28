@@ -74,9 +74,17 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
 
             async def login(username: str) -> dict[str, str]:
                 """返回指定用户的 Bearer 请求头。"""
-                response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                response = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": username,
+                        "password": "StrongPassword123",
+                    },
+                )
                 assert response.status_code == 200, response.text
-                return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                return {
+                    "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                }
 
             alice = await login("file-alice")
             bob = await login("file-bob")
@@ -102,7 +110,11 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                     ),
                 )
                 quota_rejected = await client.post(
-                    "/api/v1/artifacts/uploads", headers=alice, files={"files": ("over-quota.txt", b"new file", "text/plain")}
+                    "/api/v1/artifacts/uploads",
+                    headers=alice,
+                    files={
+                        "files": ("over-quota.txt", b"new file", "text/plain"),
+                    },
                 )
                 assert quota_rejected.status_code == 400
                 async with sessions() as db:
@@ -149,17 +161,27 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                     stored = (await db.scalars(select(Artifact))).all()
                     assert {path.name for path in root.iterdir()} == {item.storage_key for item in stored}
             disguised = await client.post(
-                "/api/v1/artifacts/uploads", headers=alice, files={"files": ("fake.docx", office_bytes("xlsx"), "application/octet-stream")}
+                "/api/v1/artifacts/uploads",
+                headers=alice,
+                files={
+                    "files": ("fake.docx", office_bytes("xlsx"), "application/octet-stream"),
+                },
             )
             assert disguised.status_code == 400
             binary_text = await client.post(
-                "/api/v1/artifacts/uploads", headers=alice, files={"files": ("binary.txt", b"text\x00binary", "text/plain")}
+                "/api/v1/artifacts/uploads",
+                headers=alice,
+                files={
+                    "files": ("binary.txt", b"text\x00binary", "text/plain"),
+                },
             )
             assert binary_text.status_code == 400
             truncated_pdf = await client.post(
                 "/api/v1/artifacts/uploads",
                 headers=alice,
-                files={"files": ("truncated.pdf", b"%PDF-1.7\nmissing trailer", "application/pdf")},
+                files={
+                    "files": ("truncated.pdf", b"%PDF-1.7\nmissing trailer", "application/pdf"),
+                },
             )
             assert truncated_pdf.status_code == 400
             duplicate_office = BytesIO()
@@ -170,7 +192,9 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             duplicated = await client.post(
                 "/api/v1/artifacts/uploads",
                 headers=alice,
-                files={"files": ("duplicate.docx", duplicate_office.getvalue(), "application/octet-stream")},
+                files={
+                    "files": ("duplicate.docx", duplicate_office.getvalue(), "application/octet-stream"),
+                },
             )
             assert duplicated.status_code == 400
             too_many = await client.post(
@@ -178,11 +202,20 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             )
             assert too_many.status_code == 400
             oversized = await client.post(
-                "/api/v1/artifacts/uploads", headers=alice, files={"files": ("large.txt", b"a" * (10 * 1024 * 1024 + 1), "text/plain")}
+                "/api/v1/artifacts/uploads",
+                headers=alice,
+                files={
+                    "files": ("large.txt", b"a" * (10 * 1024 * 1024 + 1), "text/plain"),
+                },
             )
             assert oversized.status_code in {400, 413}
             rejected_early = await client.post(
-                "/api/v1/artifacts/uploads", headers={**alice, "Content-Length": str(52 * 1024 * 1024)}, content=b"small"
+                "/api/v1/artifacts/uploads",
+                headers={
+                    **alice,
+                    "Content-Length": str(52 * 1024 * 1024),
+                },
+                content=b"small",
             )
             assert rejected_early.status_code == 413
             first_id = artifacts[0]["id"]
@@ -219,9 +252,23 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
                     ("artifact_published", generated.id)
                 ]
-            listed = await client.get("/api/v1/artifacts", headers=alice, params={"run_id": run.id})
+            listed = await client.get(
+                "/api/v1/artifacts",
+                headers=alice,
+                params={
+                    "run_id": run.id,
+                },
+            )
             assert listed.status_code == 200 and [item["id"] for item in listed.json()["data"]] == [generated.id]
-            assert (await client.get("/api/v1/artifacts", headers=bob, params={"run_id": run.id})).status_code == 404
+            assert (
+                await client.get(
+                    "/api/v1/artifacts",
+                    headers=bob,
+                    params={
+                        "run_id": run.id,
+                    },
+                )
+            ).status_code == 404
 
             async with sessions.begin() as db:
                 stored = await db.get(Artifact, generated.id)
@@ -235,7 +282,15 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             expired_count, orphan_count = await prune_artifacts(sessions, root)
             assert expired_count == 1 and orphan_count == 1
             assert not orphan.exists() and fresh.exists() and not (root / generated.storage_key).exists()
-            assert (await client.get("/api/v1/artifacts", headers=alice, params={"run_id": run.id})).json()["data"] == []
+            assert (
+                await client.get(
+                    "/api/v1/artifacts",
+                    headers=alice,
+                    params={
+                        "run_id": run.id,
+                    },
+                )
+            ).json()["data"] == []
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()
@@ -394,7 +449,15 @@ def test_mysql_concurrent_artifact_quota(monkeypatch: pytest.MonkeyPatch, max_fi
         ArtifactValidationError("temporary quota failure"),
         OSError("temporary disk failure"),
         S3UploadFailedError("temporary transfer failure"),
-        ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "unavailable"}}, "PutObject"),
+        ClientError(
+            {
+                "Error": {
+                    "Code": "ServiceUnavailable",
+                    "Message": "unavailable",
+                },
+            },
+            "PutObject",
+        ),
     ],
     ids=["validation", "local-storage", "s3-transfer", "s3-service"],
 )
@@ -508,7 +571,18 @@ def test_publication_cleanup_failure_preserves_validation_error(tmp_path: Path, 
 async def exercise_stream_limit() -> None:
     """验证无 Content-Length 的分块请求仍受总量限制。"""
     chunks = iter(
-        [{"type": "http.request", "body": b"abc", "more_body": True}, {"type": "http.request", "body": b"def", "more_body": False}]
+        [
+            {
+                "type": "http.request",
+                "body": b"abc",
+                "more_body": True,
+            },
+            {
+                "type": "http.request",
+                "body": b"def",
+                "more_body": False,
+            },
+        ]
     )
     sent = []
 
@@ -526,7 +600,12 @@ async def exercise_stream_limit() -> None:
         await limited_receive()
 
     middleware = ArtifactUploadLimitMiddleware(downstream, max_bytes=5)
-    scope = {"type": "http", "method": "POST", "path": "/api/v1/artifacts/uploads", "headers": []}
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/artifacts/uploads",
+        "headers": [],
+    }
     await middleware(scope, receive, send)
     assert sent[0]["type"] == "http.response.start" and sent[0]["status"] == 413
 

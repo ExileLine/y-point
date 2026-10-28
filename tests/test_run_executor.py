@@ -203,7 +203,18 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
             limited = await create_run(db, 1, input_text="调用工具后总结", max_model_calls=1)
         model = ScriptedModel(
             responses=[
-                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "budget-call"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "echo_approved",
+                            "args": {
+                                "text": "tool result",
+                            },
+                            "id": "budget-call",
+                        }
+                    ],
+                ),
                 AIMessage(content="should not be returned"),
             ]
         )
@@ -225,7 +236,18 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
             allowed.id,
             ScriptedModel(
                 responses=[
-                    AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "allowed-call"}]),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "echo_approved",
+                                "args": {
+                                    "text": "tool result",
+                                },
+                                "id": "allowed-call",
+                            }
+                        ],
+                    ),
                     AIMessage(content="done"),
                 ]
             ),
@@ -243,7 +265,11 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
     """验证上游用量累计、超限、缺失用量和工具循环停止规则。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+    }
 
     async def resolve_tools(db, run):
         """向预算测试运行提供受授权工具。"""
@@ -311,7 +337,15 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
                     AIMessage(
                         content="",
                         usage_metadata=usage,
-                        tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "token-tool"}],
+                        tool_calls=[
+                            {
+                                "name": "echo_approved",
+                                "args": {
+                                    "text": "result",
+                                },
+                                "id": "token-tool",
+                            }
+                        ],
                     ),
                     AIMessage(content="must not be returned", usage_metadata=usage),
                 ]
@@ -333,7 +367,11 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     pricing = (Decimal("2"), Decimal("4"), "USD")
-    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+    }
 
     async def resolve_tools(db, run):
         """提供无需审批的受控工具，验证后续模型调用被拦截。"""
@@ -444,7 +482,15 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
                     AIMessage(
                         content="",
                         usage_metadata=usage,
-                        tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "cost-tool"}],
+                        tool_calls=[
+                            {
+                                "name": "echo_approved",
+                                "args": {
+                                    "text": "result",
+                                },
+                                "id": "cost-tool",
+                            }
+                        ],
                     ),
                     AIMessage(content="must not be returned", usage_metadata=usage),
                 ]
@@ -477,8 +523,30 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
             db.add(Admin(id=1, username="tool-budget-user", password="not-used", role="user", status=1, is_deleted=0))
             limited = await create_run(db, 1, input_text="调用两次工具", max_tool_calls=1)
         responses = [
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "first"}, "id": "tool-first"}]),
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "second"}, "id": "tool-second"}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "first",
+                        },
+                        "id": "tool-first",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "second",
+                        },
+                        "id": "tool-second",
+                    }
+                ],
+            ),
             AIMessage(content="should not be returned"),
         ]
         rejected = await execute_text_run(
@@ -536,7 +604,18 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
             broken.id,
             ScriptedModel(
                 responses=[
-                    AIMessage(content="", tool_calls=[{"name": "failing_tool", "args": {"secret": "private-input"}, "id": "failure"}]),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "failing_tool",
+                                "args": {
+                                    "secret": "private-input",
+                                },
+                                "id": "failure",
+                            }
+                        ],
+                    ),
                     AIMessage(content="done"),
                 ]
             ),
@@ -588,7 +667,18 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
             limited.id,
             ScriptedModel(
                 responses=[
-                    AIMessage(content="", tool_calls=[{"name": "slow_tool", "args": {"secret": "private-input"}, "id": "slow-call"}]),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "slow_tool",
+                                "args": {
+                                    "secret": "private-input",
+                                },
+                                "id": "slow-call",
+                            }
+                        ],
+                    ),
                     AIMessage(content="should not be returned"),
                 ]
             ),
@@ -617,7 +707,18 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
             quick.id,
             ScriptedModel(
                 responses=[
-                    AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "quick-call"}]),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "echo_approved",
+                                "args": {
+                                    "text": "result",
+                                },
+                                "id": "quick-call",
+                            }
+                        ],
+                    ),
                     AIMessage(content="done"),
                 ]
             ),
@@ -636,16 +737,39 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
     """验证审批后重新解析工具并从持久化检查点完成同一个 Run。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+    }
     responses = iter(
         [
             AIMessage(
                 content="",
                 usage_metadata=usage,
-                tool_calls=[{"name": "echo_approved", "args": {"text": "approved result"}, "id": "call-1"}],
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "approved result",
+                        },
+                        "id": "call-1",
+                    }
+                ],
             ),
             AIMessage(content="tool completed", usage_metadata=usage),
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "must not run"}, "id": "call-2"}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "must not run",
+                        },
+                        "id": "call-2",
+                    }
+                ],
+            ),
             AIMessage(content="must not appear"),
         ]
     )
@@ -659,7 +783,9 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
         user = await db.get(Admin, run.owner_id)
         if user is None or user.status != 1:
             raise RuntimeError("用户不可用")
-        return [echo_approved], {"echo_approved": True}
+        return [echo_approved], {
+            "echo_approved": True,
+        }
 
     try:
         async with engine.begin() as connection:
@@ -713,10 +839,18 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="unused")]),
                 tools=[echo_approved],
-                interrupt_on={"echo_approved": True},
+                interrupt_on={
+                    "echo_approved": True,
+                },
                 checkpointer=checkpointer,
             )
-            snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
+            snapshot = await agent.aget_state(
+                {
+                    "configurable": {
+                        "thread_id": run.thread_id,
+                    },
+                }
+            )
             assert any(isinstance(message, ToolMessage) and message.content == "approved result" for message in snapshot.values["messages"])
 
         async with sessions.begin() as db:
@@ -742,10 +876,18 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="unused")]),
                 tools=[echo_approved],
-                interrupt_on={"echo_approved": True},
+                interrupt_on={
+                    "echo_approved": True,
+                },
                 checkpointer=checkpointer,
             )
-            snapshot = await agent.aget_state({"configurable": {"thread_id": revoked.thread_id}})
+            snapshot = await agent.aget_state(
+                {
+                    "configurable": {
+                        "thread_id": revoked.thread_id,
+                    },
+                }
+            )
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
     finally:
         await engine.dispose()
@@ -757,8 +899,30 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     responses = iter(
         [
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "first"}, "id": "call-1"}]),
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "second"}, "id": "call-2"}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "first",
+                        },
+                        "id": "call-1",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_approved",
+                        "args": {
+                            "text": "second",
+                        },
+                        "id": "call-2",
+                    }
+                ],
+            ),
             AIMessage(content="both completed"),
         ]
     )
@@ -769,7 +933,9 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
 
     async def resolve_tools(db, run):
         """为每次恢复重新提供需审批的测试工具。"""
-        return [echo_approved], {"echo_approved": True}
+        return [echo_approved], {
+            "echo_approved": True,
+        }
 
     try:
         async with engine.begin() as connection:
@@ -812,10 +978,18 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="unused")]),
                 tools=[echo_approved],
-                interrupt_on={"echo_approved": True},
+                interrupt_on={
+                    "echo_approved": True,
+                },
                 checkpointer=checkpointer,
             )
-            snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
+            snapshot = await agent.aget_state(
+                {
+                    "configurable": {
+                        "thread_id": run.thread_id,
+                    },
+                }
+            )
             assert [message.content for message in snapshot.values["messages"] if isinstance(message, ToolMessage)] == ["first", "second"]
     finally:
         await engine.dispose()
@@ -829,12 +1003,27 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
     async def resolve_model(db, run):
         """提供单次需审批的工具调用。"""
         return ScriptedModel(
-            responses=[AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "private"}, "id": "call-1"}])]
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "echo_approved",
+                            "args": {
+                                "text": "private",
+                            },
+                            "id": "call-1",
+                        }
+                    ],
+                )
+            ]
         )
 
     async def resolve_tools(db, run):
         """提供恢复前仍可使用的同名工具。"""
-        return [echo_approved], {"echo_approved": True}
+        return [echo_approved], {
+            "echo_approved": True,
+        }
 
     try:
         async with engine.begin() as connection:
@@ -848,7 +1037,12 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
         assert paused.state == "waiting_for_approval"
         async with sessions.begin() as db:
             approval = await decide_approval(db, run.id, 1, "approve")
-            approval.actions = [{"name": "echo_approved", "arguments_hash": "0" * 64}]
+            approval.actions = [
+                {
+                    "name": "echo_approved",
+                    "arguments_hash": "0" * 64,
+                }
+            ]
         failed = await dispatch_next_run(
             sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
@@ -857,10 +1051,18 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="unused")]),
                 tools=[echo_approved],
-                interrupt_on={"echo_approved": True},
+                interrupt_on={
+                    "echo_approved": True,
+                },
                 checkpointer=checkpointer,
             )
-            snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
+            snapshot = await agent.aget_state(
+                {
+                    "configurable": {
+                        "thread_id": run.thread_id,
+                    },
+                }
+            )
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
     finally:
         await engine.dispose()
@@ -894,7 +1096,13 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 )
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[], checkpointer=checkpointer)
-            snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
+            snapshot = await agent.aget_state(
+                {
+                    "configurable": {
+                        "thread_id": run.thread_id,
+                    },
+                }
+            )
             assert snapshot.metadata.get("tool_count") == 0, snapshot.metadata
         async with sessions.begin() as db:
             interrupted = await db.get(AgentRun, run.id)
@@ -937,8 +1145,22 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 model=ScriptedModel(responses=[AIMessage(content="不属于该运行")]), tools=[], checkpointer=checkpointer
             )
             await agent.ainvoke(
-                {"messages": [{"role": "user", "content": "检查归属"}]},
-                {"configurable": {"thread_id": foreign.thread_id}, "metadata": {"run_id": "another-run"}},
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "检查归属",
+                        }
+                    ],
+                },
+                {
+                    "configurable": {
+                        "thread_id": foreign.thread_id,
+                    },
+                    "metadata": {
+                        "run_id": "another-run",
+                    },
+                },
             )
         async with sessions.begin() as db:
             await db.execute(
@@ -958,8 +1180,22 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="旧版回答")]), tools=[], checkpointer=checkpointer)
             await agent.ainvoke(
-                {"messages": [{"role": "user", "content": "旧版检查点"}]},
-                {"configurable": {"thread_id": legacy.thread_id}, "metadata": {"run_id": legacy.id}},
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "旧版检查点",
+                        }
+                    ],
+                },
+                {
+                    "configurable": {
+                        "thread_id": legacy.thread_id,
+                    },
+                    "metadata": {
+                        "run_id": legacy.id,
+                    },
+                },
             )
         async with sessions.begin() as db:
             await db.execute(
@@ -979,16 +1215,44 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
             agent = create_deep_agent(
                 model=ScriptedModel(
                     responses=[
-                        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "pending"}, "id": "call-pending"}])
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "echo_approved",
+                                    "args": {
+                                        "text": "pending",
+                                    },
+                                    "id": "call-pending",
+                                }
+                            ],
+                        )
                     ]
                 ),
                 tools=[echo_approved],
-                interrupt_on={"echo_approved": True},
+                interrupt_on={
+                    "echo_approved": True,
+                },
                 checkpointer=checkpointer,
             )
             await agent.ainvoke(
-                {"messages": [{"role": "user", "content": "审批工具"}]},
-                {"configurable": {"thread_id": pending.thread_id}, "metadata": {"run_id": pending.id, "tool_count": 0}},
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "审批工具",
+                        }
+                    ],
+                },
+                {
+                    "configurable": {
+                        "thread_id": pending.thread_id,
+                    },
+                    "metadata": {
+                        "run_id": pending.id,
+                        "tool_count": 0,
+                    },
+                },
             )
         async with sessions.begin() as db:
             await db.execute(
@@ -1009,7 +1273,16 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 model=ScriptedModel(
                     responses=[
                         AIMessage(
-                            content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool-result"}, "id": "call-complete"}]
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "echo_approved",
+                                    "args": {
+                                        "text": "tool-result",
+                                    },
+                                    "id": "call-complete",
+                                }
+                            ],
                         ),
                         AIMessage(content="工具执行完成"),
                     ]
@@ -1018,8 +1291,23 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 checkpointer=checkpointer,
             )
             await agent.ainvoke(
-                {"messages": [{"role": "user", "content": "调用工具后回答"}]},
-                {"configurable": {"thread_id": tool_run.thread_id}, "metadata": {"run_id": tool_run.id, "tool_count": 1}},
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "调用工具后回答",
+                        }
+                    ],
+                },
+                {
+                    "configurable": {
+                        "thread_id": tool_run.thread_id,
+                    },
+                    "metadata": {
+                        "run_id": tool_run.id,
+                        "tool_count": 1,
+                    },
+                },
             )
         async with sessions.begin() as db:
             await db.execute(
@@ -1060,7 +1348,16 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
                 responses=[
                     AIMessage(
                         content="",
-                        tool_calls=[{"name": "write_file", "args": {"file_path": "/private", "content": "secret"}, "id": "call-1"}],
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {
+                                    "file_path": "/private",
+                                    "content": "secret",
+                                },
+                                "id": "call-1",
+                            }
+                        ],
                     )
                 ]
             ),
@@ -1076,7 +1373,13 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
 
         async def colliding_tools(db, run):
             """模拟业务工具占用 DeepAgents 内置名称。"""
-            return [echo_approved.model_copy(update={"name": "write_file"})], {}
+            return [
+                echo_approved.model_copy(
+                    update={
+                        "name": "write_file",
+                    }
+                )
+            ], {}
 
         rejected = await execute_text_run(
             sessions,
@@ -1166,13 +1469,24 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
 
                 async def login(username: str) -> str:
                     """通过正式登录接口获取测试用户的访问令牌。"""
-                    response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                    response = await client.post(
+                        "/api/v1/auth/login",
+                        json={
+                            "identifier": username,
+                            "password": "StrongPassword123",
+                        },
+                    )
                     assert response.status_code == 200, response.text
                     return response.json()["data"]["access_token"]
 
                 root_token = await login("root")
                 runner_token = await login("runner")
-                claims = jwt.decode(runner_token, options={"verify_signature": False})
+                claims = jwt.decode(
+                    runner_token,
+                    options={
+                        "verify_signature": False,
+                    },
+                )
                 request = SimpleNamespace(
                     state=SimpleNamespace(
                         auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
@@ -1198,10 +1512,23 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
                         disabled = await client.put(
-                            "/api/v1/users/2", headers={"Authorization": f"Bearer {root_token}"}, json={"status": 0}
+                            "/api/v1/users/2",
+                            headers={
+                                "Authorization": f"Bearer {root_token}",
+                            },
+                            json={
+                                "status": 0,
+                            },
                         )
                         assert disabled.status_code == 200, disabled.text
-                        assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {runner_token}"})).status_code == 401
+                        assert (
+                            await client.get(
+                                "/api/v1/auth/me",
+                                headers={
+                                    "Authorization": f"Bearer {runner_token}",
+                                },
+                            )
+                        ).status_code == 401
                         with pytest.raises(StopAsyncIteration):
                             await anext(stream.body_iterator)
                         result = await asyncio.wait_for(task, timeout=4)
@@ -1274,13 +1601,24 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
 
                 async def login(username: str) -> str:
                     """通过正式登录接口获取测试用户的访问令牌。"""
-                    response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                    response = await client.post(
+                        "/api/v1/auth/login",
+                        json={
+                            "identifier": username,
+                            "password": "StrongPassword123",
+                        },
+                    )
                     assert response.status_code == 200, response.text
                     return response.json()["data"]["access_token"]
 
                 owner_token = await login("agent-owner")
                 recipient_token = await login("agent-recipient")
-                claims = jwt.decode(recipient_token, options={"verify_signature": False})
+                claims = jwt.decode(
+                    recipient_token,
+                    options={
+                        "verify_signature": False,
+                    },
+                )
                 request = SimpleNamespace(
                     state=SimpleNamespace(
                         auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
@@ -1304,14 +1642,24 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
                     )
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
-                        revoked = await client.delete("/api/v1/agents/1/shares/2", headers={"Authorization": f"Bearer {owner_token}"})
+                        revoked = await client.delete(
+                            "/api/v1/agents/1/shares/2",
+                            headers={
+                                "Authorization": f"Bearer {owner_token}",
+                            },
+                        )
                         assert revoked.status_code == 200, revoked.text
                         with pytest.raises(StopAsyncIteration):
                             await anext(stream.body_iterator)
                         result = await asyncio.wait_for(task, timeout=4)
                         assert result.state == "cancelled" and SlowModel.stopped.is_set()
                         assert (
-                            await client.get(f"/api/v1/runs/{run_id}", headers={"Authorization": f"Bearer {recipient_token}"})
+                            await client.get(
+                                f"/api/v1/runs/{run_id}",
+                                headers={
+                                    "Authorization": f"Bearer {recipient_token}",
+                                },
+                            )
                         ).status_code == 404
                         async with sessions() as db:
                             assert [message.role for message in await get_owned_messages(db, run_id, 2)] == ["user"]
@@ -1466,7 +1814,16 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
                     run.id,
                     ScriptedModel(
                         responses=[
-                            AIMessage(content="", tool_calls=[{"name": "slow_read", "args": {}, "id": "slow-read-call"}]),
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "slow_read",
+                                        "args": {},
+                                        "id": "slow-read-call",
+                                    }
+                                ],
+                            ),
                             AIMessage(content="unreachable"),
                         ]
                     ),
@@ -1602,7 +1959,16 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
             sessions,
             first.id,
             ScriptedModel(
-                responses=[AIMessage(content="first answer", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})]
+                responses=[
+                    AIMessage(
+                        content="first answer",
+                        usage_metadata={
+                            "input_tokens": 10,
+                            "output_tokens": 5,
+                            "total_tokens": 15,
+                        },
+                    )
+                ]
             ),
             checkpoint_path,
             lease_seconds=2,
@@ -1615,7 +1981,16 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
             sessions,
             second.id,
             ScriptedModel(
-                responses=[AIMessage(content="second answer", usage_metadata={"input_tokens": 20, "output_tokens": 8, "total_tokens": 28})]
+                responses=[
+                    AIMessage(
+                        content="second answer",
+                        usage_metadata={
+                            "input_tokens": 20,
+                            "output_tokens": 8,
+                            "total_tokens": 28,
+                        },
+                    )
+                ]
             ),
             checkpoint_path,
             lease_seconds=2,
@@ -1667,8 +2042,22 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
                 agent = create_deep_agent(
                     model=ScriptedModel(responses=[AIMessage(content="unrecorded answer")]), tools=[], checkpointer=checkpointer
                 )
-                config = {"configurable": {"thread_id": first.thread_id}}
-                await agent.ainvoke({"messages": [{"role": "user", "content": "unrecorded input"}]}, config)
+                config = {
+                    "configurable": {
+                        "thread_id": first.thread_id,
+                    },
+                }
+                await agent.ainvoke(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "unrecorded input",
+                            }
+                        ],
+                    },
+                    config,
+                )
                 assert (await agent.aget_state(config)).config["configurable"]["checkpoint_id"] != completed.checkpoint_id
         async with sessions.begin() as db:
             followup = await create_run(db, 1, thread_id=first.thread_id, input_text="second")
@@ -1796,7 +2185,15 @@ def test_approval_actions_hide_arguments() -> None:
                 interrupts=[
                     SimpleNamespace(
                         value={
-                            "action_requests": [{"name": "search", "args": {"token": "private-secret"}, "description": "private-secret"}]
+                            "action_requests": [
+                                {
+                                    "name": "search",
+                                    "args": {
+                                        "token": "private-secret",
+                                    },
+                                    "description": "private-secret",
+                                }
+                            ],
                         }
                     )
                 ]
@@ -1892,7 +2289,16 @@ def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytes
             responses = iter(
                 [
                     AIMessage(
-                        content="", tool_calls=[{"name": "read_text_artifact", "args": {"artifact_id": artifact_id}, "id": "read-call"}]
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_text_artifact",
+                                "args": {
+                                    "artifact_id": artifact_id,
+                                },
+                                "id": "read-call",
+                            }
+                        ],
                     ),
                     AIMessage(content="文件已读取"),
                 ]
@@ -1947,7 +2353,16 @@ def test_worker_lists_owned_text_artifacts_without_approval(tmp_path: Path, monk
                 run.id,
                 ScriptedModel(
                     responses=[
-                        AIMessage(content="", tool_calls=[{"name": "list_text_artifacts", "args": {}, "id": "list-call"}]),
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "list_text_artifacts",
+                                    "args": {},
+                                    "id": "list-call",
+                                }
+                            ],
+                        ),
                         AIMessage(content="已找到文件"),
                     ]
                 ),
@@ -2078,7 +2493,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             tool_calls=[
                                 {
                                     "name": "create_text_artifact",
-                                    "args": {"filename": "夷陵之战摘要.txt", "content": "夷陵之战摘要\n蜀汉战败。"},
+                                    "args": {
+                                        "filename": "夷陵之战摘要.txt",
+                                        "content": "夷陵之战摘要\n蜀汉战败。",
+                                    },
                                     "id": "create-call",
                                 }
                             ],
@@ -2108,7 +2526,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             "context_artifact_ids": [],
                             "read_source_artifact_ids": [],
                         }
-                    ]
+                    ],
                 }
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
@@ -2126,7 +2544,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             tool_calls=[
                                 {
                                     "name": "create_text_artifact",
-                                    "args": {"filename": "limited.txt", "content": "partial"},
+                                    "args": {
+                                        "filename": "limited.txt",
+                                        "content": "partial",
+                                    },
                                     "id": "limited-call",
                                 }
                             ],
@@ -2237,7 +2658,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             tool_calls=[
                                 {
                                     "name": "create_text_artifact",
-                                    "args": {"filename": "delivered.txt", "content": "交付内容"},
+                                    "args": {
+                                        "filename": "delivered.txt",
+                                        "content": "交付内容",
+                                    },
                                     "id": "delivered-call",
                                 }
                             ],
@@ -2281,7 +2705,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             tool_calls=[
                                 {
                                     "name": "create_text_artifact",
-                                    "args": {"filename": "recovered.txt", "content": "纠正后交付"},
+                                    "args": {
+                                        "filename": "recovered.txt",
+                                        "content": "纠正后交付",
+                                    },
                                     "id": "retry-call",
                                 }
                             ],
@@ -2371,7 +2798,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             tool_calls=[
                                 {
                                     "name": "create_text_artifact",
-                                    "args": {"filename": "wrong.txt", "content": "正文"},
+                                    "args": {
+                                        "filename": "wrong.txt",
+                                        "content": "正文",
+                                    },
                                     "id": "wrong-format-call",
                                 }
                             ],
@@ -2401,14 +2831,30 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
         (
             "create_document_artifact",
             "总结.docx",
-            {"content": "# 总结\n\n夷陵之战。"},
+            {
+                "content": "# 总结\n\n夷陵之战。",
+            },
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ),
-        ("create_document_artifact", "总结.pdf", {"content": "# 总结\n\n夷陵之战。"}, "application/pdf"),
+        (
+            "create_document_artifact",
+            "总结.pdf",
+            {
+                "content": "# 总结\n\n夷陵之战。",
+            },
+            "application/pdf",
+        ),
         (
             "create_spreadsheet_artifact",
             "统计.xlsx",
-            {"sheets": [{"name": "汇总", "rows": [["事件", "年份"], ["夷陵之战", 222]]}]},
+            {
+                "sheets": [
+                    {
+                        "name": "汇总",
+                        "rows": [["事件", "年份"], ["夷陵之战", 222]],
+                    }
+                ],
+            },
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
     ],
@@ -2461,7 +2907,17 @@ def test_model_created_office_file_is_published_with_assistant_message(
                 ScriptedModel(
                     responses=[
                         AIMessage(
-                            content="", tool_calls=[{"name": tool_name, "args": {"filename": filename, **arguments}, "id": "office-call"}]
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": tool_name,
+                                    "args": {
+                                        "filename": filename,
+                                        **arguments,
+                                    },
+                                    "id": "office-call",
+                                }
+                            ],
                         ),
                         AIMessage(content="文件已生成。"),
                     ]

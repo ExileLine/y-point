@@ -49,7 +49,11 @@ def api_response(
         if data.get("update_time"):
             data["update_time"] = TimeTools.convert_to_standard_format(data["update_time"])
 
-    content = {"code": code, "message": message, "data": data}
+    content = {
+        "code": code,
+        "message": message,
+        "data": data,
+    }
 
     if not content.get("data") and is_pop:
         content.pop("data")

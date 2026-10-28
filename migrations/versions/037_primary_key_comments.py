@@ -40,7 +40,13 @@ def _set_comments(comment: str) -> None:
     if dialect == "sqlite":
         return
     for table in INTEGER_KEY_TABLES:
-        kwargs = {"existing_autoincrement": True} if dialect == "mysql" else {}
+        kwargs = (
+            {
+                "existing_autoincrement": True,
+            }
+            if dialect == "mysql"
+            else {}
+        )
         op.alter_column(table, "id", existing_type=sa.Integer(), existing_nullable=False, comment=comment, **kwargs)
 
 

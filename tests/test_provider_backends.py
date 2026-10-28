@@ -45,7 +45,20 @@ async def exercise_http_backends() -> None:
         assert request.headers["api-key"] == "azure-secret" and "authorization" not in request.headers
         assert "model" not in json.loads(request.content)
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": "OK"}}], "usage": {"prompt_tokens": 8, "completion_tokens": 3}}
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "OK",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 3,
+                },
+            },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(azure_success)) as client:
@@ -86,18 +99,28 @@ async def exercise_http_backends() -> None:
                             "displayName": "Gemini Flash Lite",
                             "supportedGenerationMethods": ["generateContent"],
                         }
-                    ]
+                    ],
                 },
             )
         return httpx.Response(
             200,
-            json={"models": [{"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]}], "nextPageToken": "page-2"},
+            json={
+                "models": [
+                    {
+                        "name": "models/embedding-001",
+                        "supportedGenerationMethods": ["embedContent"],
+                    }
+                ],
+                "nextPageToken": "page-2",
+            },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(gemini_models)) as client:
         discovered = await probe_provider(gemini, client)
     assert discovered.available is True and discovered.models == ["gemini-2.5-flash-lite"]
-    assert discovered.model_names == {"gemini-2.5-flash-lite": "Gemini Flash Lite"}
+    assert discovered.model_names == {
+        "gemini-2.5-flash-lite": "Gemini Flash Lite",
+    }
 
     def gemini_success(request: httpx.Request) -> httpx.Response:
         """确认 Gemini 使用 generateContent 协议并解析候选和用量。"""
@@ -107,8 +130,21 @@ async def exercise_http_backends() -> None:
         return httpx.Response(
             200,
             json={
-                "candidates": [{"content": {"parts": [{"text": "OK"}]}}],
-                "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 3},
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": "OK",
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 8,
+                    "candidatesTokenCount": 3,
+                },
             },
         )
 
@@ -118,7 +154,18 @@ async def exercise_http_backends() -> None:
 
     def no_text(request: httpx.Request) -> httpx.Response:
         """拒绝 Gemini 仅返回候选壳而没有文本的响应。"""
-        return httpx.Response(200, json={"candidates": [{"content": {"parts": []}}]})
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [],
+                        },
+                    }
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(no_text)) as client:
         assert (await probe_model(model, gemini, client)).failure == "invalid_response"
@@ -141,21 +188,47 @@ class FakeBedrockClient:
 
     def list_foundation_models(self, **kwargs) -> dict:
         """返回一个可发现的文本模型。"""
-        assert kwargs == {"byOutputModality": "TEXT"}
+        assert kwargs == {
+            "byOutputModality": "TEXT",
+        }
         return {
-            "ResponseMetadata": {"HTTPStatusCode": 200},
-            "modelSummaries": [{"modelId": "amazon.nova-micro-v1:0", "modelName": "Nova Micro"}],
+            "ResponseMetadata": {
+                "HTTPStatusCode": 200,
+            },
+            "modelSummaries": [
+                {
+                    "modelId": "amazon.nova-micro-v1:0",
+                    "modelName": "Nova Micro",
+                }
+            ],
         }
 
     def converse(self, **kwargs) -> dict:
         """返回最小文本与标准 Bedrock 用量。"""
         self.calls += 1
         assert kwargs["modelId"] == "amazon.nova-micro-v1:0"
-        assert kwargs["messages"][0]["content"] == [{"text": "Hi"}]
+        assert kwargs["messages"][0]["content"] == [
+            {
+                "text": "Hi",
+            }
+        ]
         return {
-            "ResponseMetadata": {"HTTPStatusCode": 200},
-            "output": {"message": {"content": [{"text": "OK"}]}},
-            "usage": {"inputTokens": 8, "outputTokens": 3},
+            "ResponseMetadata": {
+                "HTTPStatusCode": 200,
+            },
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "text": "OK",
+                        }
+                    ],
+                },
+            },
+            "usage": {
+                "inputTokens": 8,
+                "outputTokens": 3,
+            },
         }
 
 
@@ -183,7 +256,15 @@ async def exercise_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
     def invalid_control_request(**kwargs) -> dict:
         """模拟控制面无效请求并确认连接诊断返回安全故障类别。"""
         raise ClientError(
-            {"Error": {"Code": "ValidationException", "Message": "secret"}, "ResponseMetadata": {"HTTPStatusCode": 400}},
+            {
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "secret",
+                },
+                "ResponseMetadata": {
+                    "HTTPStatusCode": 400,
+                },
+            },
             "ListFoundationModels",
         )
 
@@ -196,7 +277,15 @@ async def exercise_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
         if fake.calls == 1:
             fake.calls += 1
             raise ClientError(
-                {"Error": {"Code": "ServiceUnavailableException", "Message": "secret"}, "ResponseMetadata": {"HTTPStatusCode": 503}},
+                {
+                    "Error": {
+                        "Code": "ServiceUnavailableException",
+                        "Message": "secret",
+                    },
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": 503,
+                    },
+                },
                 "Converse",
             )
         return FakeBedrockClient.converse(fake, **kwargs)
@@ -263,6 +352,13 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     provider.encrypted_credentials = None
     model.external_id = "amazon.nova-micro-v1:0"
     build_chat_model(model, provider)
-    assert calls == [{"model": "amazon.nova-micro-v1:0", "region_name": "us-east-1", "timeout": 5, "max_retries": 0}]
+    assert calls == [
+        {
+            "model": "amazon.nova-micro-v1:0",
+            "region_name": "us-east-1",
+            "timeout": 5,
+            "max_retries": 0,
+        }
+    ]
     build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
     assert calls[-1]["temperature"] == 0.25 and calls[-1]["max_tokens"] == 2048

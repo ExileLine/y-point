@@ -72,7 +72,11 @@ async def record_login_failure(db: AsyncSession, identifier: str, client_ip: str
     table = AuthAttempt.__table__
     for key in (f"account:{identifier.lower()}", f"ip:{client_ip}"):
         attempt_id = hashlib.sha256(key.encode()).hexdigest()
-        values = {"id": attempt_id, "failures": 0, "window_started_at": now}
+        values = {
+            "id": attempt_id,
+            "failures": 0,
+            "window_started_at": now,
+        }
         dialect = db.bind.dialect.name
         if dialect == "postgresql":
             statement = postgres_insert(table).values(**values).on_conflict_do_nothing(index_elements=[table.c.id])

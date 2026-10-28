@@ -44,24 +44,78 @@ def echo(text: str) -> str:
 def run_phase(phase: str, database_path: Path) -> dict:
     """在一个进程内运行指定阶段并返回不含对话正文的验证结果。"""
     responses = {
-        "start": AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-1"}]),
+        "start": AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "echo",
+                    "args": {
+                        "text": "hello",
+                    },
+                    "id": "call-1",
+                }
+            ],
+        ),
         "resume": AIMessage(content="finished"),
         "followup": AIMessage(content="second answer"),
         "read": AIMessage(content="unused"),
     }
     model = ScriptedModel(responses=[responses[phase]])
-    config = {"configurable": {"thread_id": "persistent-approval"}}
+    config = {
+        "configurable": {
+            "thread_id": "persistent-approval",
+        },
+    }
     with open_sqlite_checkpointer(database_path) as checkpointer:
-        agent = create_deep_agent(model=model, tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer)
+        agent = create_deep_agent(
+            model=model,
+            tools=[echo],
+            interrupt_on={
+                "echo": True,
+            },
+            checkpointer=checkpointer,
+        )
         if phase == "start":
-            result = agent.invoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "say hello",
+                        }
+                    ],
+                },
+                config,
+            )
             assert result["__interrupt__"]
         elif phase == "resume":
-            result = agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+            result = agent.invoke(
+                Command(
+                    resume={
+                        "decisions": [
+                            {
+                                "type": "approve",
+                            }
+                        ],
+                    }
+                ),
+                config,
+            )
             assert not result.get("__interrupt__")
         elif phase == "followup":
             events = list(
-                agent.stream({"messages": [{"role": "user", "content": "one more"}]}, config, stream_mode=["updates", "messages"])
+                agent.stream(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "one more",
+                            }
+                        ],
+                    },
+                    config,
+                    stream_mode=["updates", "messages"],
+                )
             )
             assert any(mode == "messages" for mode, _ in events)
         state = agent.get_state(config)
@@ -118,22 +172,65 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
     async def exercise() -> None:
         """在两次独立的异步检查点连接中完成审批恢复。"""
         database_path = tmp_path / "async-checkpoints.db"
-        config = {"configurable": {"thread_id": "async-approval"}}
-        tool_call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-async"}])
+        config = {
+            "configurable": {
+                "thread_id": "async-approval",
+            },
+        }
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "echo",
+                    "args": {
+                        "text": "hello",
+                    },
+                    "id": "call-async",
+                }
+            ],
+        )
         async with open_async_sqlite_checkpointer(database_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer
+                model=ScriptedModel(responses=[tool_call]),
+                tools=[echo],
+                interrupt_on={
+                    "echo": True,
+                },
+                checkpointer=checkpointer,
             )
-            paused = await agent.ainvoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
+            paused = await agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "say hello",
+                        }
+                    ],
+                },
+                config,
+            )
             assert paused["__interrupt__"]
         async with open_async_sqlite_checkpointer(database_path) as checkpointer:
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="finished")]),
                 tools=[echo],
-                interrupt_on={"echo": True},
+                interrupt_on={
+                    "echo": True,
+                },
                 checkpointer=checkpointer,
             )
-            resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+            resumed = await agent.ainvoke(
+                Command(
+                    resume={
+                        "decisions": [
+                            {
+                                "type": "approve",
+                            }
+                        ],
+                    }
+                ),
+                config,
+            )
             assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
             assert resumed["messages"][-1].content == "finished"
 
@@ -166,24 +263,67 @@ def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pyte
 
     async def exercise() -> None:
         """在隔离环境执行异步场景：真实 PostgreSQL 检查点在断开连接后恢复同一审批和工具结果。"""
-        config = {"configurable": {"thread_id": f"checkpoint-{uuid4()}"}}
-        tool_call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-postgres"}])
+        config = {
+            "configurable": {
+                "thread_id": f"checkpoint-{uuid4()}",
+            },
+        }
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "echo",
+                    "args": {
+                        "text": "hello",
+                    },
+                    "id": "call-postgres",
+                }
+            ],
+        )
         async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
             await checkpointer.setup()
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer
+                model=ScriptedModel(responses=[tool_call]),
+                tools=[echo],
+                interrupt_on={
+                    "echo": True,
+                },
+                checkpointer=checkpointer,
             )
-            paused = await agent.ainvoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
+            paused = await agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "say hello",
+                        }
+                    ],
+                },
+                config,
+            )
             assert paused["__interrupt__"]
             paused_id = (await agent.aget_state(config)).config["configurable"]["checkpoint_id"]
         async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
             agent = create_deep_agent(
                 model=ScriptedModel(responses=[AIMessage(content="finished")]),
                 tools=[echo],
-                interrupt_on={"echo": True},
+                interrupt_on={
+                    "echo": True,
+                },
                 checkpointer=checkpointer,
             )
-            resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+            resumed = await agent.ainvoke(
+                Command(
+                    resume={
+                        "decisions": [
+                            {
+                                "type": "approve",
+                            }
+                        ],
+                    }
+                ),
+                config,
+            )
             assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
             assert resumed["messages"][-1].content == "finished"
             assert (await agent.aget_state(config)).config["configurable"]["checkpoint_id"] != paused_id
@@ -210,8 +350,25 @@ def test_live_ollama_deep_agent_tool_stream_and_usage() -> None:
         checkpointer=InMemorySaver(),
         system_prompt="Call the echo tool exactly once with text 'hello'. After the tool result, give a short final answer.",
     )
-    config = {"configurable": {"thread_id": "live-ollama-m3"}}
-    events = list(agent.stream({"messages": [{"role": "user", "content": "Use echo now."}]}, config, stream_mode=["updates", "messages"]))
+    config = {
+        "configurable": {
+            "thread_id": "live-ollama-m3",
+        },
+    }
+    events = list(
+        agent.stream(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Use echo now.",
+                    }
+                ],
+            },
+            config,
+            stream_mode=["updates", "messages"],
+        )
+    )
     messages = agent.get_state(config).values["messages"]
 
     assert any(mode == "messages" for mode, _ in events)

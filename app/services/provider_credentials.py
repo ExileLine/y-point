@@ -26,7 +26,14 @@ def encrypt_credentials(api_key: str | None, custom_headers: dict[str, str]) -> 
     """加密 API 密钥与自定义请求头，空凭据不占用密文列。"""
     if not api_key and not custom_headers:
         return None
-    payload = json.dumps({"api_key": api_key, "custom_headers": custom_headers}, ensure_ascii=False, separators=(",", ":"))
+    payload = json.dumps(
+        {
+            "api_key": api_key,
+            "custom_headers": custom_headers,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return _cipher().encrypt(payload.encode()).decode()
 
 

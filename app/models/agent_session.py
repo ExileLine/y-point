@@ -14,7 +14,12 @@ from app.models.base import CustomBaseModel
 class AgentSession(CustomBaseModel):
     __table_name__ = "agent_session"
     __enable_auto_id__ = False
-    __table_args__ = (UniqueConstraint("thread_id", name="uq_yp_agent_session_thread_id"), {"comment": "智能体私有对话会话表"})
+    __table_args__ = (
+        UniqueConstraint("thread_id", name="uq_yp_agent_session_thread_id"),
+        {
+            "comment": "智能体私有对话会话表",
+        },
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="会话 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="会话所属用户 ID")

@@ -654,7 +654,13 @@ async def timeout_run(db: AsyncSession, run_id: str, lease_token: str, failure_c
     if run is None:
         raise RunNotFoundError("运行不存在")
     return await _change_state(
-        db, run, "timed_out", now=shanghai_now(naive=True), lease_token=lease_token, failure_code=failure_code, require_lease=True
+        db,
+        run,
+        "timed_out",
+        now=shanghai_now(naive=True),
+        lease_token=lease_token,
+        failure_code=failure_code,
+        require_lease=True,
     )
 
 

@@ -16,7 +16,9 @@ class ModelCatalog(CustomBaseModel):
     __table_args__ = (
         UniqueConstraint("provider_id", "external_id", name="uq_yp_model_catalog_provider_external"),
         UniqueConstraint("default_slot", name="uq_yp_model_catalog_default_slot"),
-        {"comment": "可选模型表"},
+        {
+            "comment": "可选模型表",
+        },
     )
 
     provider_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="所属供应商连接 ID")

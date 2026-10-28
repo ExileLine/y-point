@@ -18,5 +18,9 @@ def page_size(page: int, size: int) -> tuple:
 
 def query_result(records: list, now_page: int, total: int) -> dict:
     """将分页记录、当前页码和总数组装为查询结果。"""
-    res = {"records": records, "now_page": now_page, "total": total}
+    res = {
+        "records": records,
+        "now_page": now_page,
+        "total": total,
+    }
     return res

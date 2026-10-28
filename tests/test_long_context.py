@@ -54,7 +54,14 @@ class TrackingModel(FakeMessagesListChatModel):
         return ChatResult(
             generations=[
                 ChatGeneration(
-                    message=AIMessage(content=answer, usage_metadata={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25})
+                    message=AIMessage(
+                        content=answer,
+                        usage_metadata={
+                            "input_tokens": 20,
+                            "output_tokens": 5,
+                            "total_tokens": 25,
+                        },
+                    )
                 )
             ]
         )

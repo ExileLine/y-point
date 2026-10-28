@@ -85,10 +85,26 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
     app.dependency_overrides[get_db_session] = test_session
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            root_login = await client.post("/api/v1/auth/login", json={"identifier": "root", "password": PASSWORD})
-            user_login = await client.post("/api/v1/auth/login", json={"identifier": "reader", "password": PASSWORD})
-            root_headers = {"Authorization": f"Bearer {root_login.json()['data']['access_token']}"}
-            user_headers = {"Authorization": f"Bearer {user_login.json()['data']['access_token']}"}
+            root_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "root",
+                    "password": PASSWORD,
+                },
+            )
+            user_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "reader",
+                    "password": PASSWORD,
+                },
+            )
+            root_headers = {
+                "Authorization": f"Bearer {root_login.json()['data']['access_token']}",
+            }
+            user_headers = {
+                "Authorization": f"Bearer {user_login.json()['data']['access_token']}",
+            }
             assert (await client.get("/api/v1/providers", headers=user_headers)).status_code == 403
             assert (await client.get("/api/v1/providers/kinds", headers=user_headers)).status_code == 403
             assert (await client.get("/api/v1/models", headers=user_headers)).status_code == 403
@@ -122,7 +138,9 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                         "kind": "openai_compatible",
                         "base_url": "http://models.example/v1",
                         "api_key": "top-secret-credential",
-                        "custom_headers": {"X-Tenant": "tenant-secret"},
+                        "custom_headers": {
+                            "X-Tenant": "tenant-secret",
+                        },
                     },
                 )
             finally:
@@ -138,7 +156,11 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             ollama = await client.post(
                 "/api/v1/providers",
                 headers=root_headers,
-                json={"name": "Local Ollama", "kind": "ollama", "base_url": "http://127.0.0.1:11434/v1"},
+                json={
+                    "name": "Local Ollama",
+                    "kind": "ollama",
+                    "base_url": "http://127.0.0.1:11434/v1",
+                },
             )
             assert ollama.status_code == 201 and ollama.json()["data"]["has_api_key"] is False
             assert (await client.delete(f"/api/v1/providers/{ollama.json()['data']['id']}", headers=root_headers)).status_code == 200
@@ -150,27 +172,50 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 "api_version": "2024-10-21",
                 "api_key": "azure-secret",
             }
-            assert (await client.post("/api/v1/providers", headers=root_headers, json={**azure_body, "api_key": None})).status_code == 400
+            assert (
+                await client.post(
+                    "/api/v1/providers",
+                    headers=root_headers,
+                    json={
+                        **azure_body,
+                        "api_key": None,
+                    },
+                )
+            ).status_code == 400
             azure = await client.post("/api/v1/providers", headers=root_headers, json=azure_body)
             assert azure.status_code == 201 and azure.json()["data"]["has_api_key"] is True
             assert "azure-secret" not in azure.text
             assert (await client.delete(f"/api/v1/providers/{azure.json()['data']['id']}", headers=root_headers)).status_code == 200
 
-            gemini_body = {"name": "Gemini Test", "kind": "gemini", "api_key": "gemini-secret"}
+            gemini_body = {
+                "name": "Gemini Test",
+                "kind": "gemini",
+                "api_key": "gemini-secret",
+            }
             gemini = await client.post("/api/v1/providers", headers=root_headers, json=gemini_body)
             assert gemini.status_code == 201
             assert gemini.json()["data"]["base_url"] == "https://generativelanguage.googleapis.com"
             assert "gemini-secret" not in gemini.text
             assert (await client.delete(f"/api/v1/providers/{gemini.json()['data']['id']}", headers=root_headers)).status_code == 200
 
-            bedrock_body = {"name": "Bedrock Test", "kind": "bedrock", "region": "us-east-1"}
+            bedrock_body = {
+                "name": "Bedrock Test",
+                "kind": "bedrock",
+                "region": "us-east-1",
+            }
             bedrock = await client.post("/api/v1/providers", headers=root_headers, json=bedrock_body)
             assert bedrock.status_code == 201
             assert bedrock.json()["data"]["base_url"] == "https://bedrock-runtime.us-east-1.amazonaws.com"
             assert bedrock.json()["data"]["has_api_key"] is False
             assert (await client.delete(f"/api/v1/providers/{bedrock.json()['data']['id']}", headers=root_headers)).status_code == 200
             invalid_bedrock = await client.post(
-                "/api/v1/providers", headers=root_headers, json={**bedrock_body, "name": "Invalid Bedrock", "api_key": "not-used"}
+                "/api/v1/providers",
+                headers=root_headers,
+                json={
+                    **bedrock_body,
+                    "name": "Invalid Bedrock",
+                    "api_key": "not-used",
+                },
             )
             assert invalid_bedrock.status_code == 400
 
@@ -206,7 +251,13 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 """模拟上游成功响应，验证接口返回模型 ID 列表。"""
                 assert provider.id == provider_id
                 return ConnectionTestOut(
-                    available=True, latency_ms=4, model_count=2, models=["model-1", "model-2"], model_names={"model-2": "Second Model"}
+                    available=True,
+                    latency_ms=4,
+                    model_count=2,
+                    models=["model-1", "model-2"],
+                    model_names={
+                        "model-2": "Second Model",
+                    },
                 )
 
             monkeypatch.setattr(providers_api, "probe_provider", fake_success_probe)
@@ -219,14 +270,29 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             discovered = await client.get(discovery_path, headers=root_headers)
             assert discovered.status_code == 200
             assert discovered.json()["data"]["models"] == [
-                {"external_id": "model-1", "display_name": "model-1", "already_added": False},
-                {"external_id": "model-2", "display_name": "Second Model", "already_added": False},
+                {
+                    "external_id": "model-1",
+                    "display_name": "model-1",
+                    "already_added": False,
+                },
+                {
+                    "external_id": "model-2",
+                    "display_name": "Second Model",
+                    "already_added": False,
+                },
             ]
             import_body = {
                 "provider_id": provider_id,
                 "models": [
-                    {"external_id": "model-1"},
-                    {"external_id": "model-2", "display_name": "Second Model", "capabilities": ["text"], "context_window": 8192},
+                    {
+                        "external_id": "model-1",
+                    },
+                    {
+                        "external_id": "model-2",
+                        "display_name": "Second Model",
+                        "capabilities": ["text"],
+                        "context_window": 8192,
+                    },
                 ],
             }
             assert (await client.post("/api/v1/models/import", headers=user_headers, json=import_body)).status_code == 403
@@ -244,18 +310,39 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             assert all(model["already_added"] for model in discovered_again.json()["data"]["models"])
             repeated = await client.post("/api/v1/models/import", headers=root_headers, json=import_body)
             assert repeated.status_code == 200
-            assert repeated.json()["data"] == {"created": [], "skipped_existing": ["model-1", "model-2"]}
+            assert repeated.json()["data"] == {
+                "created": [],
+                "skipped_existing": ["model-1", "model-2"],
+            }
             duplicate_import = await client.post(
                 "/api/v1/models/import",
                 headers=root_headers,
-                json={"provider_id": provider_id, "models": [{"external_id": "model-3"}, {"external_id": "model-3"}]},
+                json={
+                    "provider_id": provider_id,
+                    "models": [
+                        {
+                            "external_id": "model-3",
+                        },
+                        {
+                            "external_id": "model-3",
+                        },
+                    ],
+                },
             )
             assert duplicate_import.status_code == 400
             assert (await client.delete(f"/api/v1/models/{imported_ids[0]}", headers=root_headers)).status_code == 200
             restored = await client.post(
                 "/api/v1/models/import",
                 headers=root_headers,
-                json={"provider_id": provider_id, "models": [{"external_id": "model-1", "display_name": "Restored Model"}]},
+                json={
+                    "provider_id": provider_id,
+                    "models": [
+                        {
+                            "external_id": "model-1",
+                            "display_name": "Restored Model",
+                        }
+                    ],
+                },
             )
             assert restored.status_code == 201
             assert restored.json()["data"]["created"][0]["id"] == imported_ids[0]
@@ -266,7 +353,13 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 assert "top-secret-credential" not in provider.encrypted_credentials
                 original_ciphertext = provider.encrypted_credentials
 
-            updated = await client.put(f"/api/v1/providers/{provider_id}", headers=root_headers, json={"remark": "可用连接"})
+            updated = await client.put(
+                f"/api/v1/providers/{provider_id}",
+                headers=root_headers,
+                json={
+                    "remark": "可用连接",
+                },
+            )
             assert updated.status_code == 200, updated.text
             async with sessions() as db:
                 provider = await db.get(ProviderConnection, provider_id)
@@ -274,14 +367,22 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             duplicate = await client.post(
                 "/api/v1/providers",
                 headers=root_headers,
-                json={"name": "test provider", "kind": "openai_compatible", "base_url": "https://models.example/v1"},
+                json={
+                    "name": "test provider",
+                    "kind": "openai_compatible",
+                    "base_url": "https://models.example/v1",
+                },
             )
             assert duplicate.status_code == 409
             assert (
                 await client.post(
                     "/api/v1/providers",
                     headers=root_headers,
-                    json={"name": "   ", "kind": "openai_compatible", "base_url": "https://models.example/v1"},
+                    json={
+                        "name": "   ",
+                        "kind": "openai_compatible",
+                        "base_url": "https://models.example/v1",
+                    },
                 )
             ).status_code == 400
             assert (
@@ -292,11 +393,19 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                         "name": "Bad Headers",
                         "kind": "openai_compatible",
                         "base_url": "https://models.example/v1",
-                        "custom_headers": {"X-Tenant": "first\nsecond"},
+                        "custom_headers": {
+                            "X-Tenant": "first\nsecond",
+                        },
                     },
                 )
             ).status_code == 400
-            cleared = await client.put(f"/api/v1/providers/{provider_id}", headers=root_headers, json={"api_key": None})
+            cleared = await client.put(
+                f"/api/v1/providers/{provider_id}",
+                headers=root_headers,
+                json={
+                    "api_key": None,
+                },
+            )
             assert cleared.status_code == 200 and cleared.json()["data"]["has_api_key"] is False
             assert cleared.json()["data"]["has_custom_headers"] is True
 
@@ -319,7 +428,12 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 await client.post(
                     "/api/v1/models",
                     headers=root_headers,
-                    json={"provider_id": provider_id, "external_id": "chat-1", "display_name": "Duplicate", "capabilities": ["text"]},
+                    json={
+                        "provider_id": provider_id,
+                        "external_id": "chat-1",
+                        "display_name": "Duplicate",
+                        "capabilities": ["text"],
+                    },
                 )
             ).status_code == 409
             assert (await client.delete(f"/api/v1/providers/{provider_id}", headers=root_headers)).status_code == 409
@@ -373,13 +487,27 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             assert failed_test.status_code == 200 and failed_test.json()["data"]["failure"] == "rate_limit"
             calls_path = f"/api/v1/models/{model_id}/calls"
             assert (await client.get(calls_path, headers=user_headers)).status_code == 403
-            calls = await client.get(calls_path, headers=root_headers, params={"page": 1, "size": 1})
+            calls = await client.get(
+                calls_path,
+                headers=root_headers,
+                params={
+                    "page": 1,
+                    "size": 1,
+                },
+            )
             assert calls.status_code == 200 and calls.json()["data"]["total"] == 2
             assert len(calls.json()["data"]["records"]) == 1
             assert calls.json()["data"]["records"][0]["failure"] == "rate_limit"
             assert calls.json()["data"]["records"][0]["estimated_cost"] is None
             assert "top-secret-credential" not in calls.text
-            older_calls = await client.get(calls_path, headers=root_headers, params={"page": 2, "size": 1})
+            older_calls = await client.get(
+                calls_path,
+                headers=root_headers,
+                params={
+                    "page": 2,
+                    "size": 1,
+                },
+            )
             assert older_calls.json()["data"]["records"][0]["estimated_cost"] == "0.000040000000"
 
             failing_capabilities = {"tools"}
@@ -399,44 +527,116 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
 
             monkeypatch.setattr(models_api, "probe_capability", fake_capability_probe)
             capability_path = f"/api/v1/models/{model_id}/capabilities/test"
-            assert (await client.post(capability_path, headers=user_headers, json={"capability": "text"})).status_code == 403
-            unsupported_summary = await client.post(capability_path, headers=root_headers, json={"capability": "reasoning_summary"})
+            assert (
+                await client.post(
+                    capability_path,
+                    headers=user_headers,
+                    json={
+                        "capability": "text",
+                    },
+                )
+            ).status_code == 403
+            unsupported_summary = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "reasoning_summary",
+                },
+            )
             assert unsupported_summary.status_code == 200
             assert unsupported_summary.json()["data"]["result"]["failure"] == "unsupported_capability"
             assert unsupported_summary.json()["data"]["verified_capabilities"] == []
-            text_probe = await client.post(capability_path, headers=root_headers, json={"capability": "text"})
+            text_probe = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "text",
+                },
+            )
             assert text_probe.status_code == 200 and text_probe.json()["data"]["verified_capabilities"] == ["text"]
-            stream_probe = await client.post(capability_path, headers=root_headers, json={"capability": "streaming"})
+            stream_probe = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "streaming",
+                },
+            )
             assert stream_probe.status_code == 200
             assert stream_probe.json()["data"]["verified_capabilities"] == ["streaming", "text"]
             verified_model = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
             assert verified_model.json()["data"]["capabilities_verified"] is True
-            tool_probe = await client.post(capability_path, headers=root_headers, json={"capability": "tools"})
+            tool_probe = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "tools",
+                },
+            )
             assert tool_probe.json()["data"]["result"]["failure"] == "invalid_response"
             assert tool_probe.json()["data"]["verified_capabilities"] == ["streaming", "text"]
             failing_capabilities.add("text")
-            failed_retest = await client.post(capability_path, headers=root_headers, json={"capability": "text"})
+            failed_retest = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "text",
+                },
+            )
             assert failed_retest.json()["data"]["verified_capabilities"] == ["streaming"]
             assert (await client.get(f"/api/v1/models/{model_id}", headers=root_headers)).json()["data"]["capabilities_verified"] is False
             failing_capabilities.remove("text")
-            assert (await client.post(capability_path, headers=root_headers, json={"capability": "text"})).json()["data"][
-                "verified_capabilities"
-            ] == ["streaming", "text"]
-            structured_probe = await client.post(capability_path, headers=root_headers, json={"capability": "structured_output"})
+            assert (
+                await client.post(
+                    capability_path,
+                    headers=root_headers,
+                    json={
+                        "capability": "text",
+                    },
+                )
+            ).json()["data"]["verified_capabilities"] == ["streaming", "text"]
+            structured_probe = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "structured_output",
+                },
+            )
             assert structured_probe.status_code == 200
             assert structured_probe.json()["data"]["verified_capabilities"] == ["streaming", "structured_output", "text"]
             assert (await client.get(calls_path, headers=root_headers)).json()["data"]["total"] == 9
-            latest_call = await client.get(calls_path, headers=root_headers, params={"size": 1})
+            latest_call = await client.get(
+                calls_path,
+                headers=root_headers,
+                params={
+                    "size": 1,
+                },
+            )
             assert latest_call.json()["data"]["records"][0]["call_type"] == "structured_output_probe"
-            vision_probe = await client.post(capability_path, headers=root_headers, json={"capability": "vision"})
+            vision_probe = await client.post(
+                capability_path,
+                headers=root_headers,
+                json={
+                    "capability": "vision",
+                },
+            )
             assert vision_probe.status_code == 200
             assert vision_probe.json()["data"]["verified_capabilities"] == ["streaming", "structured_output", "text", "vision"]
-            assert (await client.get(calls_path, headers=root_headers, params={"size": 1})).json()["data"]["records"][0][
-                "call_type"
-            ] == "vision_probe"
+            assert (
+                await client.get(
+                    calls_path,
+                    headers=root_headers,
+                    params={
+                        "size": 1,
+                    },
+                )
+            ).json()["data"]["records"][0]["call_type"] == "vision_probe"
             assert (await client.get(calls_path, headers=root_headers)).json()["data"]["total"] == 10
             changed_provider = await client.put(
-                f"/api/v1/providers/{provider_id}", headers=root_headers, json={"base_url": "https://new-models.example/v1"}
+                f"/api/v1/providers/{provider_id}",
+                headers=root_headers,
+                json={
+                    "base_url": "https://new-models.example/v1",
+                },
             )
             assert changed_provider.status_code == 200
             invalidated = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
@@ -459,7 +659,13 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             async with sessions() as db:
                 defaults = (await db.scalars(select(ModelCatalog).where(ModelCatalog.is_default.is_(True)))).all()
                 assert len(defaults) == 1 and defaults[0].default_slot == "global"
-            disabled = await client.put(f"/api/v1/providers/{provider_id}", headers=root_headers, json={"status": 0})
+            disabled = await client.put(
+                f"/api/v1/providers/{provider_id}",
+                headers=root_headers,
+                json={
+                    "status": 0,
+                },
+            )
             assert disabled.status_code == 200
             model = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
             assert model.json()["data"]["is_default"] is False
@@ -486,7 +692,12 @@ async def exercise_probe() -> None:
         kind="openai",
         base_url="https://models.example/v1",
         timeout_seconds=5,
-        encrypted_credentials=encrypt_credentials("probe-secret", {"X-Tenant": "private-value"}),
+        encrypted_credentials=encrypt_credentials(
+            "probe-secret",
+            {
+                "X-Tenant": "private-value",
+            },
+        ),
     )
 
     def success(request: httpx.Request) -> httpx.Response:
@@ -494,14 +705,29 @@ async def exercise_probe() -> None:
         assert request.headers["authorization"] == "Bearer probe-secret"
         assert request.headers["x-tenant"] == "private-value"
         assert str(request.url) == "https://models.example/v1/models"
-        return httpx.Response(200, json={"data": [{"id": "model-1"}, {"id": "model-2", "display_name": "Second Model"}]})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "model-1",
+                    },
+                    {
+                        "id": "model-2",
+                        "display_name": "Second Model",
+                    },
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(success)) as client:
         result = await probe_provider(provider, client)
         assert result.available is True and result.model_count == 2
         assert result.upstream_status_code == 200
         assert result.models == ["model-1", "model-2"]
-        assert result.model_names == {"model-2": "Second Model"}
+        assert result.model_names == {
+            "model-2": "Second Model",
+        }
         assert result.latency_ms >= 0
 
     provider.kind = "ollama"
@@ -516,8 +742,18 @@ async def exercise_probe() -> None:
             json={
                 "object": "list",
                 "data": [
-                    {"id": "qwen3.8:latest", "object": "model", "created": 1788138025, "owned_by": "library"},
-                    {"id": "deepseek-r1:1.5b", "object": "model", "created": 1779964005, "owned_by": "library"},
+                    {
+                        "id": "qwen3.8:latest",
+                        "object": "model",
+                        "created": 1788138025,
+                        "owned_by": "library",
+                    },
+                    {
+                        "id": "deepseek-r1:1.5b",
+                        "object": "model",
+                        "created": 1779964005,
+                        "owned_by": "library",
+                    },
                 ],
             },
         )
@@ -529,7 +765,12 @@ async def exercise_probe() -> None:
         assert result.model_names == {}
 
     provider.kind = "openai"
-    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
+    provider.encrypted_credentials = encrypt_credentials(
+        "probe-secret",
+        {
+            "X-Tenant": "private-value",
+        },
+    )
 
     provider_attempts = 0
 
@@ -557,7 +798,19 @@ async def exercise_probe() -> None:
 
     def invalid_models(request: httpx.Request) -> httpx.Response:
         """返回缺少有效模型 ID 的上游列表。"""
-        return httpx.Response(200, json={"data": [{"id": "model-1"}, {"id": "  "}]})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "model-1",
+                    },
+                    {
+                        "id": "  ",
+                    },
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(invalid_models)) as client:
         result = await probe_provider(provider, client)
@@ -621,7 +874,12 @@ async def exercise_model_probe() -> None:
         kind="openai_compatible",
         base_url="https://models.example/v1",
         timeout_seconds=5,
-        encrypted_credentials=encrypt_credentials("probe-secret", {"X-Tenant": "private-value"}),
+        encrypted_credentials=encrypt_credentials(
+            "probe-secret",
+            {
+                "X-Tenant": "private-value",
+            },
+        ),
     )
 
     def compatible_success(request: httpx.Request) -> httpx.Response:
@@ -632,7 +890,20 @@ async def exercise_model_probe() -> None:
         assert json.loads(request.content)["model"] == "chat-1"
         assert json.loads(request.content)["max_tokens"] == 1
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": "pong"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "pong",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                },
+            },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(compatible_success)) as client:
@@ -661,7 +932,18 @@ async def exercise_model_probe() -> None:
     def openai_success(request: httpx.Request) -> httpx.Response:
         """检查官方 OpenAI 请求使用当前的输出令牌参数。"""
         assert json.loads(request.content)["max_completion_tokens"] == 1
-        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "pong",
+                        },
+                    }
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(openai_success)) as client:
         result = await probe_model(model, provider, client)
@@ -684,13 +966,29 @@ async def exercise_model_probe() -> None:
         """检查 Ollama 的 OpenAI 兼容请求无需 API 密钥。"""
         assert request.headers.get("authorization") is None
         assert str(request.url) == "https://models.example/v1/chat/completions"
-        return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "pong",
+                        },
+                    }
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(ollama_success)) as client:
         assert (await probe_model(model, provider, client)).available is True
 
     provider.kind = "anthropic"
-    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
+    provider.encrypted_credentials = encrypt_credentials(
+        "probe-secret",
+        {
+            "X-Tenant": "private-value",
+        },
+    )
 
     def anthropic_success(request: httpx.Request) -> httpx.Response:
         """检查 Anthropic Messages 请求的路径和认证头。"""
@@ -698,7 +996,21 @@ async def exercise_model_probe() -> None:
         assert request.headers["x-api-key"] == "probe-secret"
         assert request.headers["anthropic-version"] == "2023-06-01"
         assert json.loads(request.content)["max_tokens"] == 1
-        return httpx.Response(200, json={"content": [{"type": "text", "text": "pong"}], "usage": {"input_tokens": 10, "output_tokens": 5}})
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "pong",
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                },
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(anthropic_success)) as client:
         result = await probe_model(model, provider, client)
@@ -726,7 +1038,12 @@ async def exercise_model_probe() -> None:
 
     def invalid_response(request: httpx.Request) -> httpx.Response:
         """模拟上游成功状态但响应结构无效。"""
-        return httpx.Response(200, json={"choices": []})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(invalid_response)) as client:
         assert (await probe_model(model, provider, client)).failure == "invalid_response"
@@ -771,7 +1088,12 @@ def test_postgres_m2_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
                 await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
             created = True
             env = os.environ.copy()
-            env.update({"DB_BACKEND": "postgres", "POSTGRESQL_DATABASE": database_name})
+            env.update(
+                {
+                    "DB_BACKEND": "postgres",
+                    "POSTGRESQL_DATABASE": database_name,
+                }
+            )
             root = Path(__file__).resolve().parents[1]
             for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
                 result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)
@@ -810,7 +1132,12 @@ def test_model_adapter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
         timeout_seconds=8,
         status=1,
         is_deleted=0,
-        encrypted_credentials=encrypt_credentials("probe-secret", {"X-Tenant": "private-value"}),
+        encrypted_credentials=encrypt_credentials(
+            "probe-secret",
+            {
+                "X-Tenant": "private-value",
+            },
+        ),
     )
     model = ModelCatalog(id=2, provider_id=1, external_id="chat-1", display_name="Chat 1", status=1, is_deleted=0)
     adapted = build_chat_model(model, provider)
@@ -831,7 +1158,12 @@ def test_model_adapter_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
 
     provider.kind = "anthropic"
     provider.base_url = "https://models.example/v1"
-    provider.encrypted_credentials = encrypt_credentials("probe-secret", {"X-Tenant": "private-value"})
+    provider.encrypted_credentials = encrypt_credentials(
+        "probe-secret",
+        {
+            "X-Tenant": "private-value",
+        },
+    )
     provider.api_version = "2024-01-01"
     adapted = build_chat_model(model, provider)
     assert isinstance(adapted, ChatAnthropic)

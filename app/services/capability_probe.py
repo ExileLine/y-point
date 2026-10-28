@@ -38,7 +38,16 @@ VERIFY_TOOL = {
     "function": {
         "name": "verify_capability",
         "description": "验证模型是否可以调用工具",
-        "parameters": {"type": "object", "properties": {"value": {"type": "string", "description": "固定验证值"}}, "required": ["value"]},
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "description": "固定验证值",
+                },
+            },
+            "required": ["value"],
+        },
     },
 }
 
@@ -46,7 +55,14 @@ STRUCTURED_SCHEMA = {
     "title": "VerifyStructuredOutput",
     "description": "返回固定验证值",
     "type": "object",
-    "properties": {"value": {"type": "string", "enum": ["ping"], "description": "固定验证值", "examples": ["ping"]}},
+    "properties": {
+        "value": {
+            "type": "string",
+            "enum": ["ping"],
+            "description": "固定验证值",
+            "examples": ["ping"],
+        },
+    },
     "required": ["value"],
     "additionalProperties": False,
 }
@@ -79,7 +95,11 @@ async def _probe_reasoning_summary(
     started = time.perf_counter()
     if provider.kind != "openai":
         return ModelTestOut(
-            model_id=model.id, external_id=model.external_id, available=False, latency_ms=0, failure="unsupported_capability"
+            model_id=model.id,
+            external_id=model.external_id,
+            available=False,
+            latency_ms=0,
+            failure="unsupported_capability",
         )
     headers = provider_request_headers(provider)
     base_url = httpx.URL(provider.base_url)
@@ -87,7 +107,9 @@ async def _probe_reasoning_summary(
     payload = {
         "model": model.external_id,
         "input": "Reply with OK.",
-        "reasoning": {"summary": "concise"},
+        "reasoning": {
+            "summary": "concise",
+        },
         "max_output_tokens": 128,
         "store": False,
     }
@@ -198,14 +220,32 @@ async def probe_capability(
                     raw = response.get("raw") if isinstance(response, dict) else None
                     usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
                     parsed = response.get("parsed") if isinstance(response, dict) else None
-                    if not isinstance(raw, AIMessage) or parsed != {"value": "ping"} or response.get("parsing_error") is not None:
+                    if (
+                        not isinstance(raw, AIMessage)
+                        or parsed
+                        != {
+                            "value": "ping",
+                        }
+                        or response.get("parsing_error") is not None
+                    ):
                         failure = "invalid_response"
                 elif capability == "vision":
                     prompt = "Name the colors in the image from top-left to bottom-right. Reply with English color names only."
                     message = await chat_model.ainvoke(
                         [
                             HumanMessage(
-                                content=[{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": VISION_IMAGE_URL}}]
+                                content=[
+                                    {
+                                        "type": "text",
+                                        "text": prompt,
+                                    },
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": VISION_IMAGE_URL,
+                                        },
+                                    },
+                                ]
                             )
                         ],
                         max_tokens=512,

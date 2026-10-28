@@ -22,7 +22,11 @@ def register_exception_handlers(app: FastAPI, debug: bool):
 
     def _build_response(*, code: int, message: str, http_status: int, data: Any = None, request_id: Optional[str] = None) -> JSONResponse:
         """构建携带业务码和可选请求标识的异常响应。"""
-        content = {"code": code, "message": message, "data": data}
+        content = {
+            "code": code,
+            "message": message,
+            "data": data,
+        }
         if data is None:
             content.pop("data")
         if request_id:
@@ -35,7 +39,11 @@ def register_exception_handlers(app: FastAPI, debug: bool):
         request_id = _get_request_id(request)
         logger.bind(request_id=request_id).warning(f"CustomException: {exc.detail}")
         return _build_response(
-            code=exc.custom_code, message=str(exc.detail), http_status=exc.status_code, data=exc.data, request_id=request_id
+            code=exc.custom_code,
+            message=str(exc.detail),
+            http_status=exc.status_code,
+            data=exc.data,
+            request_id=request_id,
         )
 
     @app.exception_handler(HTTPException)
@@ -61,8 +69,17 @@ def register_exception_handlers(app: FastAPI, debug: bool):
         if debug:
             for error in exc.errors():
                 error_messages.append(
-                    {"type": "validation_error", "msg": error.get("msg"), "loc": list(error.get("loc")), "input": error.get("type")}
+                    {
+                        "type": "validation_error",
+                        "msg": error.get("msg"),
+                        "loc": list(error.get("loc")),
+                        "input": error.get("type"),
+                    }
                 )
         return _build_response(
-            code=400, message="缺少必要的参数，参数类型错误", http_status=400, data=error_messages if debug else None, request_id=request_id
+            code=400,
+            message="缺少必要的参数，参数类型错误",
+            http_status=400,
+            data=error_messages if debug else None,
+            request_id=request_id,
         )

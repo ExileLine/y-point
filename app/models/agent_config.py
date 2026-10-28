@@ -15,7 +15,9 @@ from app.models.base import CustomBaseModel
 
 class AgentConfig(CustomBaseModel):
     __table_name__ = "agent_config"
-    __table_args__ = {"comment": "用户智能体配置表"}
+    __table_args__ = {
+        "comment": "用户智能体配置表",
+    }
 
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="智能体所属用户 ID")
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="智能体名称")

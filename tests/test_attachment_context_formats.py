@@ -76,7 +76,9 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
                 for term in ("赤壁", "夷陵", "数据表", "222"):
                     assert term in context
                 assert "display only" not in context
-                assert await load_run_context_artifact_ids(db, 1, [run.id]) == {run.id: [item.id for item in artifacts[:3]]}
+                assert await load_run_context_artifact_ids(db, 1, [run.id]) == {
+                    run.id: [item.id for item in artifacts[:3]],
+                }
             async with sessions.begin() as db:
                 claimed = await claim_run(db, run.id)
                 await complete_run(db, run.id, claimed.lease_token, final_text="已生成总结")

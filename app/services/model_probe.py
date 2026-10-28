@@ -26,17 +26,59 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
     base_url = httpx.URL(provider.base_url)
     if provider.kind == "anthropic":
         endpoint = "messages"
-        payload = {"model": model.external_id, "max_tokens": 1, "messages": [{"role": "user", "content": "Hi"}]}
+        payload = {
+            "model": model.external_id,
+            "max_tokens": 1,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hi",
+                }
+            ],
+        }
     elif provider.kind == "azure_openai":
         endpoint = f"openai/deployments/{quote(model.external_id, safe='')}/chat/completions"
-        payload = {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 16, "stream": False}
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hi",
+                }
+            ],
+            "max_tokens": 16,
+            "stream": False,
+        }
     elif provider.kind == "gemini":
         endpoint = f"{provider.api_version or 'v1beta'}/models/{quote(model.external_id, safe='')}:generateContent"
-        payload = {"contents": [{"role": "user", "parts": [{"text": "Hi"}]}], "generationConfig": {"maxOutputTokens": 64}}
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "Hi",
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 64,
+            },
+        }
     else:
         endpoint = "chat/completions"
         token_field = "max_completion_tokens" if provider.kind == "openai" else "max_tokens"
-        payload = {"model": model.external_id, token_field: 1, "messages": [{"role": "user", "content": "Hi"}], "stream": False}
+        payload = {
+            "model": model.external_id,
+            token_field: 1,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hi",
+                }
+            ],
+            "stream": False,
+        }
     url = base_url.copy_with(path=f"{base_url.path.rstrip('/')}/{endpoint}")
     if provider.kind == "azure_openai":
         url = url.copy_add_param("api-version", provider.api_version)

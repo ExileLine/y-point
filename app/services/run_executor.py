@@ -80,7 +80,13 @@ def _summary_messages_without_images(messages: list[BaseMessage]) -> list[BaseMe
                     text_parts.append(block.get("text", ""))
                 elif isinstance(block, dict) and block.get("type") not in {"image", "image_url"}:
                     text_parts.append(str(block))
-            result.append(message.model_copy(update={"content": "\n".join(text_parts)}))
+            result.append(
+                message.model_copy(
+                    update={
+                        "content": "\n".join(text_parts),
+                    }
+                )
+            )
         else:
             result.append(message)
     return result
@@ -319,7 +325,10 @@ def _approval_actions(snapshot) -> list[dict]:
                     raise ValueError("不支持的审批动作格式")
                 arguments = json.dumps(action["args"], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
                 digest = hmac.new(get_config().SECRET_KEY.encode(), arguments.encode(), hashlib.sha256).hexdigest()
-                approved_action = {"name": action["name"], "arguments_hash": digest}
+                approved_action = {
+                    "name": action["name"],
+                    "arguments_hash": digest,
+                }
                 if action["name"] == "read_text_artifact":
                     resource_id = action["args"].get("artifact_id")
                     try:
@@ -568,7 +577,17 @@ async def execute_text_run(
         input_budget = runtime_config.input_budget()
     except ValueError:
         return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
-    input_content = [{"type": "text", "text": input_text}, *image_blocks] if image_blocks else input_text
+    input_content = (
+        [
+            {
+                "type": "text",
+                "text": input_text,
+            },
+            *image_blocks,
+        ]
+        if image_blocks
+        else input_text
+    )
     image_token_reserve = 2048 * sum(block.get("type") == "image_url" for block in image_blocks)
     if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_content)]) + image_token_reserve > input_budget:
         return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
@@ -684,9 +703,25 @@ async def execute_text_run(
                 return await _finish_interrupted(sessions, run_id, lease_token, "checkpoint_mismatch")
             previous_message_count = len(snapshot.values.get("messages", []))
             invocation = (
-                Command(resume={"decisions": [{"type": "approve"} for _ in actions]})
+                Command(
+                    resume={
+                        "decisions": [
+                            {
+                                "type": "approve",
+                            }
+                            for _ in actions
+                        ],
+                    }
+                )
                 if resume
-                else {"messages": [{"role": "user", "content": input_content}]}
+                else {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": input_content,
+                        }
+                    ],
+                }
             )
             started = time.perf_counter()
             deadline = time.monotonic() + min(timeout_seconds, run.model_timeout_seconds)
@@ -717,7 +752,12 @@ async def execute_text_run(
                 checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
                 if not checkpoint_id:
                     return await _finish_interrupted(
-                        sessions, run_id, lease_token, "checkpoint_error", catalog_model=catalog_model, started=started
+                        sessions,
+                        run_id,
+                        lease_token,
+                        "checkpoint_error",
+                        catalog_model=catalog_model,
+                        started=started,
                     )
                 messages = snapshot.values.get("messages", [])
                 new_messages = messages[previous_message_count:]
@@ -751,7 +791,7 @@ async def execute_text_run(
                                         f"请调用文件生成工具交付 {formats} 文件，再给出最终回复；代码块不能代替文件。"
                                     ),
                                 }
-                            ]
+                            ],
                         }
                         runtime = build_runtime()
                         # 检查点按 run_id 去重；纠正尝试不参与无工具运行的自动补偿。
@@ -761,7 +801,12 @@ async def execute_text_run(
             final_text = str(messages[-1].text) if messages and isinstance(messages[-1], AIMessage) else ""
             if not final_text.strip():
                 return await _finish_interrupted(
-                    sessions, run_id, lease_token, "empty_response", catalog_model=catalog_model, started=started
+                    sessions,
+                    run_id,
+                    lease_token,
+                    "empty_response",
+                    catalog_model=catalog_model,
+                    started=started,
                 )
             async with sessions.begin() as db:
                 user = await db.get(Admin, run.owner_id)
@@ -783,33 +828,68 @@ async def execute_text_run(
                 return result
     except ModelCallBudgetExceeded:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "model_call_budget_exceeded", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "model_call_budget_exceeded",
+            catalog_model=catalog_model,
+            started=started,
         )
     except SummaryModelError:
         return await _finish_interrupted(sessions, run_id, lease_token, "summary_error", catalog_model=catalog_model, started=started)
     except TokenBudgetExceeded:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "token_budget_exceeded", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "token_budget_exceeded",
+            catalog_model=catalog_model,
+            started=started,
         )
     except TokenUsageUnavailableError:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "token_usage_unavailable", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "token_usage_unavailable",
+            catalog_model=catalog_model,
+            started=started,
         )
     except CostBudgetExceeded:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "cost_budget_exceeded", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "cost_budget_exceeded",
+            catalog_model=catalog_model,
+            started=started,
         )
     except CostUsageUnavailableError:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "cost_usage_unavailable", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "cost_usage_unavailable",
+            catalog_model=catalog_model,
+            started=started,
         )
     except ToolCallBudgetExceeded:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "tool_call_budget_exceeded", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "tool_call_budget_exceeded",
+            catalog_model=catalog_model,
+            started=started,
         )
     except ToolExecutionTimeoutError:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, "tool_execution_timeout", catalog_model=catalog_model, started=started
+            sessions,
+            run_id,
+            lease_token,
+            "tool_execution_timeout",
+            catalog_model=catalog_model,
+            started=started,
         )
     except LeaseMonitorError:
         return await _finish_interrupted(sessions, run_id, lease_token, "lease_monitor_error", catalog_model=catalog_model, started=started)

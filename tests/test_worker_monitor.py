@@ -168,12 +168,30 @@ async def exercise_worker_health_api(database_path: Path) -> None:
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             unavailable = await client.get("/api/v1/health/worker")
-            assert unavailable.status_code == 503 and unavailable.json()["data"] == {"worker_available": False}
+            assert unavailable.status_code == 503 and unavailable.json()["data"] == {
+                "worker_available": False,
+            }
             assert (await client.get("/api/v1/runs/workers/status")).status_code == 401
-            admin_login = await client.post("/api/v1/auth/login", json={"identifier": "worker-admin", "password": "StrongPassword123"})
-            user_login = await client.post("/api/v1/auth/login", json={"identifier": "worker-user", "password": "StrongPassword123"})
-            admin = {"Authorization": f"Bearer {admin_login.json()['data']['access_token']}"}
-            user = {"Authorization": f"Bearer {user_login.json()['data']['access_token']}"}
+            admin_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "worker-admin",
+                    "password": "StrongPassword123",
+                },
+            )
+            user_login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "identifier": "worker-user",
+                    "password": "StrongPassword123",
+                },
+            )
+            admin = {
+                "Authorization": f"Bearer {admin_login.json()['data']['access_token']}",
+            }
+            user = {
+                "Authorization": f"Bearer {user_login.json()['data']['access_token']}",
+            }
             assert (await client.get("/api/v1/runs/workers/status", headers=user)).status_code == 403
             details = await client.get("/api/v1/runs/workers/status", headers=admin)
             assert details.status_code == 200 and details.json()["data"]["queued_runs"] == 1
@@ -181,7 +199,9 @@ async def exercise_worker_health_api(database_path: Path) -> None:
             async with sessions.begin() as db:
                 await register_worker(db, "worker-api")
             healthy = await client.get("/api/v1/health/worker")
-            assert healthy.status_code == 200 and healthy.json()["data"] == {"worker_available": True}
+            assert healthy.status_code == 200 and healthy.json()["data"] == {
+                "worker_available": True,
+            }
             assert (await client.get("/api/v1/runs/workers/status", headers=admin)).json()["data"]["active_workers"] == 1
     finally:
         app.dependency_overrides.pop(get_db_session, None)
@@ -324,7 +344,12 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
                 )
             )
             run = await create_run(db, 1, model_id=1, input_text="阻塞模型调用")
-        child_env = {**os.environ, "DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database_path), "DEBUG": "false"}
+        child_env = {
+            **os.environ,
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database_path),
+            "DEBUG": "false",
+        }
         command = (sys.executable, "-m", "app.cli.run_worker", "--checkpoint-db", str(checkpoint_path), "--once")
         first_worker = await asyncio.create_subprocess_exec(
             *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE

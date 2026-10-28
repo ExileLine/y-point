@@ -36,7 +36,12 @@ def test_agent_config_migration(tmp_path: Path) -> None:
     """独立 SQLite 库验证新表迁移、回退及无外键结构。"""
     database = tmp_path / "agent-migration.db"
     env = os.environ.copy()
-    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
     root = Path(__file__).resolve().parents[1]
     for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
         subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, check=True, capture_output=True, text=True)
@@ -70,7 +75,12 @@ def test_agent_limits_backfill(tmp_path: Path) -> None:
     """已有 Agent 升级到 033 后保留配置并获得默认超时。"""
     database = tmp_path / "agent-limits-backfill.db"
     env = os.environ.copy()
-    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
     root = Path(__file__).resolve().parents[1]
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "032"], cwd=root, env=env, check=True, capture_output=True, text=True)
     with sqlite3.connect(database) as connection:
@@ -160,9 +170,17 @@ def test_private_agent_crud(tmp_path: Path) -> None:
 
                     async def login(username: str) -> dict[str, str]:
                         """取得测试用户的 Bearer 请求头。"""
-                        response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                        response = await client.post(
+                            "/api/v1/auth/login",
+                            json={
+                                "identifier": username,
+                                "password": "StrongPassword123",
+                            },
+                        )
                         assert response.status_code == 200, response.text
-                        return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                        return {
+                            "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                        }
 
                     alice, bob = await login("agent-alice"), await login("agent-bob")
                     admin = await login("agent-admin")
@@ -178,13 +196,41 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                         "max_total_tokens": 10000,
                     }
                     assert (await client.post("/api/v1/agents", json=payload)).status_code == 401
-                    invalid = await client.post("/api/v1/agents", headers=alice, json={**payload, "default_model_id": 2})
+                    invalid = await client.post(
+                        "/api/v1/agents",
+                        headers=alice,
+                        json={
+                            **payload,
+                            "default_model_id": 2,
+                        },
+                    )
                     assert invalid.status_code == 409
-                    too_large = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_output_tokens": 9000})
+                    too_large = await client.post(
+                        "/api/v1/agents",
+                        headers=alice,
+                        json={
+                            **payload,
+                            "max_output_tokens": 9000,
+                        },
+                    )
                     assert too_large.status_code == 409
-                    crowded = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_output_tokens": 7500})
+                    crowded = await client.post(
+                        "/api/v1/agents",
+                        headers=alice,
+                        json={
+                            **payload,
+                            "max_output_tokens": 7500,
+                        },
+                    )
                     assert crowded.status_code == 409
-                    unpriced = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_estimated_cost": "0.010000"})
+                    unpriced = await client.post(
+                        "/api/v1/agents",
+                        headers=alice,
+                        json={
+                            **payload,
+                            "max_estimated_cost": "0.010000",
+                        },
+                    )
                     assert unpriced.status_code == 409
                     for field, invalid_value in (
                         ("model_timeout_seconds", 121),
@@ -194,7 +240,14 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                         ("max_total_tokens", 0),
                         ("max_estimated_cost", "0.0000001"),
                     ):
-                        rejected = await client.post("/api/v1/agents", headers=alice, json={**payload, field: invalid_value})
+                        rejected = await client.post(
+                            "/api/v1/agents",
+                            headers=alice,
+                            json={
+                                **payload,
+                                field: invalid_value,
+                            },
+                        )
                         assert rejected.status_code == 400, rejected.text
                     created = await client.post("/api/v1/agents", headers=alice, json=payload)
                     assert created.status_code == 201, created.text
@@ -205,17 +258,62 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert agent["max_model_calls"] == 3 and agent["max_tool_calls"] == 5
                     assert agent["max_total_tokens"] == 10000 and agent["max_estimated_cost"] is None
                     agent_id = agent["id"]
-                    assert (await client.put("/api/v1/models/1", headers=admin, json={"status": 0})).status_code == 409
-                    assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 409
-                    assert (await client.put("/api/v1/providers/1", headers=admin, json={"status": 0})).status_code == 409
-                    assert (await client.put("/api/v1/models/1", headers=admin, json={"external_id": "replacement"})).status_code == 409
                     assert (
-                        await client.put("/api/v1/providers/1", headers=admin, json={"base_url": "http://localhost:11435/v1"})
+                        await client.put(
+                            "/api/v1/models/1",
+                            headers=admin,
+                            json={
+                                "status": 0,
+                            },
+                        )
                     ).status_code == 409
-                    assert (await client.put("/api/v1/models/1", headers=admin, json={"display_name": "Renamed"})).status_code == 200
+                    assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 409
+                    assert (
+                        await client.put(
+                            "/api/v1/providers/1",
+                            headers=admin,
+                            json={
+                                "status": 0,
+                            },
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            "/api/v1/models/1",
+                            headers=admin,
+                            json={
+                                "external_id": "replacement",
+                            },
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            "/api/v1/providers/1",
+                            headers=admin,
+                            json={
+                                "base_url": "http://localhost:11435/v1",
+                            },
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            "/api/v1/models/1",
+                            headers=admin,
+                            json={
+                                "display_name": "Renamed",
+                            },
+                        )
+                    ).status_code == 200
                     assert (await client.get(f"/api/v1/agents/{agent_id}", headers=bob)).status_code == 404
                     assert (
-                        await client.put(f"/api/v1/agents/{agent_id}", headers=bob, json={"expected_version": 1, "name": "steal"})
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}",
+                            headers=bob,
+                            json={
+                                "expected_version": 1,
+                                "name": "steal",
+                            },
+                        )
                     ).status_code == 404
                     assert (await client.delete(f"/api/v1/agents/{agent_id}", headers=bob)).status_code == 404
                     assert (await client.get("/api/v1/agents", headers=bob)).json()["data"]["total"] == 0
@@ -238,27 +336,64 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert updated.json()["data"]["max_total_tokens"] is None
                     assert (
                         await client.put(
-                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "tool_timeout_seconds": None}
+                            f"/api/v1/agents/{agent_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 2,
+                                "tool_timeout_seconds": None,
+                            },
                         )
                     ).status_code == 400
                     assert (
                         await client.put(
-                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "max_estimated_cost": "0.020000"}
+                            f"/api/v1/agents/{agent_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 2,
+                                "max_estimated_cost": "0.020000",
+                            },
                         )
-                    ).status_code == 409
-                    assert (
-                        await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 1, "name": "覆盖新版"})
-                    ).status_code == 409
-                    assert (
-                        await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "default_model_id": 2})
                     ).status_code == 409
                     assert (
                         await client.put(
-                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "max_output_tokens": 9000}
+                            f"/api/v1/agents/{agent_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 1,
+                                "name": "覆盖新版",
+                            },
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 2,
+                                "default_model_id": 2,
+                            },
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}",
+                            headers=alice,
+                            json={
+                                "expected_version": 2,
+                                "max_output_tokens": 9000,
+                            },
                         )
                     ).status_code == 409
                     assert (await client.delete(f"/api/v1/agents/{agent_id}", headers=alice)).status_code == 200
-                    assert (await client.put("/api/v1/models/1", headers=admin, json={"status": 0})).status_code == 200
+                    assert (
+                        await client.put(
+                            "/api/v1/models/1",
+                            headers=admin,
+                            json={
+                                "status": 0,
+                            },
+                        )
+                    ).status_code == 200
                     assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 200
                     assert (await client.get(f"/api/v1/agents/{agent_id}", headers=alice)).status_code == 404
                     assert (await client.get("/api/v1/agents", headers=alice)).json()["data"]["total"] == 0
@@ -331,27 +466,90 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
 
                 async def login(name: str) -> dict[str, str]:
                     """通过正式登录接口获取测试用户的访问令牌。"""
-                    response = await client.post("/api/v1/auth/login", json={"identifier": name, "password": "StrongPassword123"})
+                    response = await client.post(
+                        "/api/v1/auth/login",
+                        json={
+                            "identifier": name,
+                            "password": "StrongPassword123",
+                        },
+                    )
                     assert response.status_code == 200, response.text
-                    return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                    return {
+                        "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                    }
 
                 owner, recipient, stranger = await login("share-owner"), await login("share-recipient"), await login("share-stranger")
                 created = await client.post(
                     "/api/v1/agents",
                     headers=owner,
-                    json={"name": "Private prompt", "default_model_id": 1, "system_prompt": "owner-only-secret"},
+                    json={
+                        "name": "Private prompt",
+                        "default_model_id": 1,
+                        "system_prompt": "owner-only-secret",
+                    },
                 )
                 assert created.status_code == 201, created.text
                 agent_id = created.json()["data"]["id"]
                 base = f"/api/v1/agents/{agent_id}"
-                assert (await client.post(f"{base}/sessions", headers=recipient, json={"title": "mine"})).status_code == 404
-                assert (await client.post(f"{base}/shares", headers=recipient, json={"user_id": 2})).status_code == 404
-                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 1})).status_code == 404
-                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 999})).status_code == 404
-                granted = await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})
+                assert (
+                    await client.post(
+                        f"{base}/sessions",
+                        headers=recipient,
+                        json={
+                            "title": "mine",
+                        },
+                    )
+                ).status_code == 404
+                assert (
+                    await client.post(
+                        f"{base}/shares",
+                        headers=recipient,
+                        json={
+                            "user_id": 2,
+                        },
+                    )
+                ).status_code == 404
+                assert (
+                    await client.post(
+                        f"{base}/shares",
+                        headers=owner,
+                        json={
+                            "user_id": 1,
+                        },
+                    )
+                ).status_code == 404
+                assert (
+                    await client.post(
+                        f"{base}/shares",
+                        headers=owner,
+                        json={
+                            "user_id": 999,
+                        },
+                    )
+                ).status_code == 404
+                granted = await client.post(
+                    f"{base}/shares",
+                    headers=owner,
+                    json={
+                        "user_id": 2,
+                    },
+                )
                 assert granted.status_code == 200, granted.text
-                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
-                assert (await client.get(f"{base}/shares", headers=owner)).json()["data"] == [{"user_id": 2, "username": "share-recipient"}]
+                assert (
+                    await client.post(
+                        f"{base}/shares",
+                        headers=owner,
+                        json={
+                            "user_id": 2,
+                        },
+                    )
+                ).status_code == 200
+                assert (await client.get(f"{base}/shares", headers=owner)).json()["data"] == [
+                    {
+                        "user_id": 2,
+                        "username": "share-recipient",
+                    }
+                ]
                 shared = (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"]
                 assert len(shared) == 1 and shared[0]["id"] == agent_id
                 assert "system_prompt" not in shared[0]
@@ -361,10 +559,22 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 assert (await client.get(f"{base}/shares", headers=recipient)).status_code == 404
                 assert (await client.get("/api/v1/agents/shared", headers=stranger)).json()["data"] == []
 
-                owner_session = await client.post(f"{base}/sessions", headers=owner, json={"title": "owner history"})
+                owner_session = await client.post(
+                    f"{base}/sessions",
+                    headers=owner,
+                    json={
+                        "title": "owner history",
+                    },
+                )
                 assert owner_session.status_code == 201
                 owner_session_id = owner_session.json()["data"]["id"]
-                recipient_session = await client.post(f"{base}/sessions", headers=recipient, json={"title": "recipient history"})
+                recipient_session = await client.post(
+                    f"{base}/sessions",
+                    headers=recipient,
+                    json={
+                        "title": "recipient history",
+                    },
+                )
                 assert recipient_session.status_code == 201, recipient_session.text
                 recipient_session_id = recipient_session.json()["data"]["id"]
                 assert (await client.get(f"{base}/sessions", headers=recipient)).json()["data"]["total"] == 1
@@ -411,7 +621,10 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 submitted = await client.post(
                     f"{base}/sessions/{recipient_session_id}/runs",
                     headers=recipient,
-                    json={"input_text": "hello", "request_key": "share-queued"},
+                    json={
+                        "input_text": "hello",
+                        "request_key": "share-queued",
+                    },
                 )
                 assert submitted.status_code == 201, submitted.text
                 run_id = submitted.json()["data"]["id"]
@@ -428,7 +641,10 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     await client.post(
                         f"{base}/sessions/{recipient_session_id}/runs",
                         headers=recipient,
-                        json={"input_text": "again", "request_key": "share-revoked"},
+                        json={
+                            "input_text": "again",
+                            "request_key": "share-revoked",
+                        },
                     )
                 ).status_code == 404
                 assert (await client.delete(f"{base}/shares/2", headers=owner)).status_code == 404
@@ -439,7 +655,15 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     assert (await db.scalars(select(AgentShare))).all() == []
                     actions = (await db.scalars(select(AuditEvent.action).where(AuditEvent.target_id == 2))).all()
                     assert {"agent.shared", "agent.share_revoked"} <= set(actions)
-                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
+                assert (
+                    await client.post(
+                        f"{base}/shares",
+                        headers=owner,
+                        json={
+                            "user_id": 2,
+                        },
+                    )
+                ).status_code == 200
                 assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=recipient)).status_code == 200
                 assert (await client.delete(base, headers=owner)).status_code == 200
                 assert (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"] == []

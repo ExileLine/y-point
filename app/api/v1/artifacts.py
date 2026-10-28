@@ -98,7 +98,10 @@ async def upload_artifacts(
         await _cleanup_failed_uploads(saved, root)
         raise
     return api_response(
-        http_code=201, code=201, data=[ArtifactOut.model_validate(item).model_dump(mode="json") for item, _ in saved], is_pop=False
+        http_code=201,
+        code=201,
+        data=[ArtifactOut.model_validate(item).model_dump(mode="json") for item, _ in saved],
+        is_pop=False,
     )
 
 
@@ -159,12 +162,22 @@ async def download_artifact(artifact_id: str, actor: Admin = Depends(get_current
         return Response(
             content,
             media_type=item.media_type,
-            headers={"Content-Disposition": f"attachment; filename*=utf-8''{quote(item.filename)}", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Content-Disposition": f"attachment; filename*=utf-8''{quote(item.filename)}",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
     path = storage_path(artifact_root(), item.storage_key)
     if not path.is_file() or path.is_symlink():
         raise CustomException(status_code=404, custom_code=10002, detail="文件不存在")
-    return FileResponse(path, media_type=item.media_type, filename=item.filename, headers={"X-Content-Type-Options": "nosniff"})
+    return FileResponse(
+        path,
+        media_type=item.media_type,
+        filename=item.filename,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.delete("/{artifact_id}", summary="删除私有文件")
@@ -178,4 +191,8 @@ async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_a
         await delete_blob(artifact_root(), item.storage_key)
     except (OSError, BotoCoreError, ClientError) as exc:
         logger.warning("已撤销文件 {} 的访问，但文件清理失败：{}", artifact_id, type(exc).__name__)
-    return api_response(data={"id": artifact_id})
+    return api_response(
+        data={
+            "id": artifact_id,
+        }
+    )

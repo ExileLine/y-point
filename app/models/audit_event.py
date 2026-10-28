@@ -11,7 +11,9 @@ from app.models.base import CustomBaseModel
 
 class AuditEvent(CustomBaseModel):
     __table_name__ = "audit_event"
-    __table_args__ = {"comment": "用户操作审计表"}
+    __table_args__ = {
+        "comment": "用户操作审计表",
+    }
 
     actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="操作用户 ID")
     target_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="目标用户 ID")

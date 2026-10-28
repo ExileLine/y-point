@@ -24,14 +24,25 @@ def test_health() -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"code": 200, "message": "操作成功", "data": {"status": "ok"}}
+    assert response.json() == {
+        "code": 200,
+        "message": "操作成功",
+        "data": {
+            "status": "ok",
+        },
+    }
 
 
 def test_initial_migration(tmp_path: Path) -> None:
     """验证迁移后的表字段与模型一致且不包含外键约束。"""
     database = tmp_path / "platform.db"
     env = os.environ.copy()
-    env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True
     )

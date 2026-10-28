@@ -32,7 +32,18 @@ def tool_model() -> ScriptedModel:
     """构建先调用回声工具、再返回最终消息的假模型。"""
     return ScriptedModel(
         responses=[
-            AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-1"}]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo",
+                        "args": {
+                            "text": "hello",
+                        },
+                        "id": "call-1",
+                    }
+                ],
+            ),
             AIMessage(content="finished"),
         ]
     )
@@ -42,9 +53,26 @@ def test_tool_stream_and_checkpoint() -> None:
     """验证工具调用、流式事件和内存检查点的最终消息一致。"""
     checkpointer = InMemorySaver()
     agent = create_deep_agent(model=tool_model(), tools=[echo], checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": "tool-stream"}}
+    config = {
+        "configurable": {
+            "thread_id": "tool-stream",
+        },
+    }
 
-    events = list(agent.stream({"messages": [{"role": "user", "content": "say hello"}]}, config, stream_mode=["updates", "messages"]))
+    events = list(
+        agent.stream(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "say hello",
+                    }
+                ],
+            },
+            config,
+            stream_mode=["updates", "messages"],
+        )
+    )
     state = agent.get_state(config)
 
     assert any(mode == "messages" for mode, _ in events)
@@ -57,11 +85,26 @@ def test_tool_stream_and_checkpoint() -> None:
 def test_skill_loading() -> None:
     """验证运行时从指定目录加载 Skill 元数据。"""
     agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="ok")]), skills=["/skills/"], checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "skill"}}
+    config = {
+        "configurable": {
+            "thread_id": "skill",
+        },
+    }
     skill = "---\nname: example\ndescription: A local verification skill\n---\n\n# Example\nUse concise answers.\n"
 
     agent.invoke(
-        {"messages": [{"role": "user", "content": "hello"}], "files": {"/skills/example/SKILL.md": create_file_data(skill)}}, config
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello",
+                }
+            ],
+            "files": {
+                "/skills/example/SKILL.md": create_file_data(skill),
+            },
+        },
+        config,
     )
 
     assert any(item["name"] == "example" for item in agent.get_state(config).values["skills_metadata"])
@@ -69,14 +112,46 @@ def test_skill_loading() -> None:
 
 def test_approval_resume() -> None:
     """验证工具审批中断后可恢复并完成调用。"""
-    agent = create_deep_agent(model=tool_model(), tools=[echo], interrupt_on={"echo": True}, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "approval"}}
+    agent = create_deep_agent(
+        model=tool_model(),
+        tools=[echo],
+        interrupt_on={
+            "echo": True,
+        },
+        checkpointer=InMemorySaver(),
+    )
+    config = {
+        "configurable": {
+            "thread_id": "approval",
+        },
+    }
 
-    paused = agent.invoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
+    paused = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "say hello",
+                }
+            ],
+        },
+        config,
+    )
     assert paused["__interrupt__"]
     assert not any(isinstance(message, ToolMessage) for message in paused["messages"])
 
-    resumed = agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+    resumed = agent.invoke(
+        Command(
+            resume={
+                "decisions": [
+                    {
+                        "type": "approve",
+                    }
+                ],
+            }
+        ),
+        config,
+    )
     assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
     assert resumed["messages"][-1].content == "finished"
 
@@ -101,16 +176,39 @@ def test_async_cancellation_reaches_tool() -> None:
 
         model = ScriptedModel(
             responses=[
-                AIMessage(content="", tool_calls=[{"name": "slow_tool", "args": {}, "id": "call-slow"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "slow_tool",
+                            "args": {},
+                            "id": "call-slow",
+                        }
+                    ],
+                ),
                 AIMessage(content="finished"),
             ]
         )
         agent = create_deep_agent(model=model, tools=[slow_tool], checkpointer=InMemorySaver())
-        config = {"configurable": {"thread_id": "cancel"}}
+        config = {
+            "configurable": {
+                "thread_id": "cancel",
+            },
+        }
 
         async def consume() -> None:
             """消费异步图事件以驱动待取消的工具调用。"""
-            async for _ in agent.astream({"messages": [{"role": "user", "content": "wait"}]}, config):
+            async for _ in agent.astream(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "wait",
+                        }
+                    ],
+                },
+                config,
+            ):
                 pass
 
         task = asyncio.create_task(consume())

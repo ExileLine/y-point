@@ -20,7 +20,13 @@ from app.services.probe_retry import PROBE_RETRY_DELAY_SECONDS, RETRYABLE_UPSTRE
 
 def _bedrock_client(provider: ProviderConnection, service: str) -> Any:
     """使用进程的 AWS 凭据链构造指定区域的无自动重试客户端。"""
-    config = Config(connect_timeout=provider.timeout_seconds, read_timeout=provider.timeout_seconds, retries={"max_attempts": 0})
+    config = Config(
+        connect_timeout=provider.timeout_seconds,
+        read_timeout=provider.timeout_seconds,
+        retries={
+            "max_attempts": 0,
+        },
+    )
     return boto3.client(service, region_name=provider.region, config=config)
 
 
@@ -112,8 +118,19 @@ async def probe_bedrock_model(model: ModelCatalog, provider: ProviderConnection)
                 response = await asyncio.to_thread(
                     client.converse,
                     modelId=model.external_id,
-                    messages=[{"role": "user", "content": [{"text": "Hi"}]}],
-                    inferenceConfig={"maxTokens": 64},
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "text": "Hi",
+                                }
+                            ],
+                        }
+                    ],
+                    inferenceConfig={
+                        "maxTokens": 64,
+                    },
                 )
                 failure = None
                 break

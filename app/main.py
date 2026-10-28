@@ -23,7 +23,9 @@ project_config = get_config()
 def create_app():
     """创建 FastAPI 应用并注册中间件、路由及静态资源。"""
     debug = project_config.DEBUG
-    kw = {"debug": debug}
+    kw = {
+        "debug": debug,
+    }
 
     app = FastAPI(
         title=project_config.DOCS_TITLE,
@@ -69,7 +71,11 @@ def create_app():
     @app.get("/", summary="检查服务根入口", tags=["root"])
     async def root_redirect():
         """使用统一成功响应返回服务的基础存活状态。"""
-        return api_response(data={"status": "ok"})
+        return api_response(
+            data={
+                "status": "ok",
+            }
+        )
 
     if project_config.DOCS_ENABLE:
 

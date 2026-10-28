@@ -55,9 +55,20 @@ def test_image_validation_and_summary_redaction(tmp_path: Path) -> None:
     history = [
         HumanMessage(
             content=[
-                {"type": "text", "text": "Describe the picture"},
-                {"type": "text", "text": "Reference image.png"},
-                {"type": "image_url", "image_url": {"url": secret}},
+                {
+                    "type": "text",
+                    "text": "Describe the picture",
+                },
+                {
+                    "type": "text",
+                    "text": "Reference image.png",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": secret,
+                    },
+                },
             ]
         )
     ]
@@ -124,24 +135,52 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                 )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                login = await client.post("/api/v1/auth/login", json={"identifier": "vision-owner", "password": "StrongPassword123"})
-                headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+                login = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "vision-owner",
+                        "password": "StrongPassword123",
+                    },
+                )
+                headers = {
+                    "Authorization": f"Bearer {login.json()['data']['access_token']}",
+                }
                 agent = await client.post(
-                    "/api/v1/agents", headers=headers, json={"name": "Vision", "default_model_id": 1, "max_output_tokens": 256}
+                    "/api/v1/agents",
+                    headers=headers,
+                    json={
+                        "name": "Vision",
+                        "default_model_id": 1,
+                        "max_output_tokens": 256,
+                    },
                 )
                 assert agent.status_code == 201, agent.text
                 base = f"/api/v1/agents/{agent.json()['data']['id']}/sessions"
-                session = await client.post(base, headers=headers, json={"title": "Vision session"})
+                session = await client.post(
+                    base,
+                    headers=headers,
+                    json={
+                        "title": "Vision session",
+                    },
+                )
                 assert session.status_code == 201
                 base += f"/{session.json()['data']['id']}"
                 image = BytesIO()
                 Image.new("RGB", (16, 16), color="red").save(image, format="PNG")
                 bad = await client.post(
-                    "/api/v1/artifacts/uploads", headers=headers, files={"files": ("fake.png", b"not an image", "image/png")}
+                    "/api/v1/artifacts/uploads",
+                    headers=headers,
+                    files={
+                        "files": ("fake.png", b"not an image", "image/png"),
+                    },
                 )
                 assert bad.status_code == 400
                 uploaded = await client.post(
-                    "/api/v1/artifacts/uploads", headers=headers, files={"files": ("red.png", image.getvalue(), "image/png")}
+                    "/api/v1/artifacts/uploads",
+                    headers=headers,
+                    files={
+                        "files": ("red.png", image.getvalue(), "image/png"),
+                    },
                 )
                 assert uploaded.status_code == 201, uploaded.text
                 image_id = uploaded.json()["data"][0]["id"]
@@ -164,11 +203,25 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                     """返回可观测的假视觉模型。"""
                     return VisionModel(responses=[AIMessage(content="Red")])
 
-                result = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", **{} if live else {"resolve_model": resolve_model})
+                result = await dispatch_next_run(
+                    sessions,
+                    tmp_path / "checkpoints.db",
+                    **{}
+                    if live
+                    else {
+                        "resolve_model": resolve_model,
+                    },
+                )
                 assert result is not None and result.id == run_id and result.state == "completed"
                 async with open_async_checkpointer(tmp_path / "checkpoints.db") as checkpointer:
                     graph = create_deep_agent(model=VisionModel(responses=[AIMessage(content="unused")]), checkpointer=checkpointer)
-                    state = await graph.aget_state({"configurable": {"thread_id": session.json()["data"]["thread_id"]}})
+                    state = await graph.aget_state(
+                        {
+                            "configurable": {
+                                "thread_id": session.json()["data"]["thread_id"],
+                            },
+                        }
+                    )
                 assert "messages" in state.values, tuple(state.values)
                 image_urls = [
                     block["image_url"]["url"]
@@ -191,7 +244,12 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                 deleted = await client.delete(f"/api/v1/artifacts/{image_id}", headers=headers)
                 assert deleted.status_code == 200
                 next_run = await client.post(
-                    f"{base}/runs", headers=headers, json={"input_text": "Describe again", "request_key": "vision-two"}
+                    f"{base}/runs",
+                    headers=headers,
+                    json={
+                        "input_text": "Describe again",
+                        "request_key": "vision-two",
+                    },
                 )
                 assert next_run.status_code == 201
                 next_result = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", resolve_model=resolve_model)
@@ -211,7 +269,11 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                     )
                 ).status_code == 404
                 another = await client.post(
-                    "/api/v1/artifacts/uploads", headers=headers, files={"files": ("red-again.png", image.getvalue(), "image/png")}
+                    "/api/v1/artifacts/uploads",
+                    headers=headers,
+                    files={
+                        "files": ("red-again.png", image.getvalue(), "image/png"),
+                    },
                 )
                 assert another.status_code == 201
                 another_id = another.json()["data"][0]["id"]

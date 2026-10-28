@@ -121,7 +121,13 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
 
             async def always_collides(*args, **kwargs):
                 """模拟无法匹配已有提交键的数据库唯一约束冲突。"""
-                raise IntegrityError("INSERT INTO secret_table", {"secret": "private"}, Exception("unique conflict"))
+                raise IntegrityError(
+                    "INSERT INTO secret_table",
+                    {
+                        "secret": "private",
+                    },
+                    Exception("unique conflict"),
+                )
 
             monkeypatch.setattr(runs_api, "create_run", always_collides)
             async with sessions() as db:
@@ -198,15 +204,48 @@ async def exercise_run_api(database: Path) -> None:
 
             async def login(username: str) -> dict[str, str]:
                 """登录指定测试用户并返回 Bearer 请求头。"""
-                response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
+                response = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": username,
+                        "password": "StrongPassword123",
+                    },
+                )
                 assert response.status_code == 200, response.text
-                return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+                return {
+                    "Authorization": f"Bearer {response.json()['data']['access_token']}",
+                }
 
             alice = await login("alice")
             bob = await login("bob")
-            assert (await client.post("/api/v1/runs", json={"model_id": 1, "input_text": "hi"})).status_code == 401
-            assert (await client.post("/api/v1/runs", headers=alice, json={"model_id": 999, "input_text": "hi"})).status_code == 404
-            created = await client.post("/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once"})
+            assert (
+                await client.post(
+                    "/api/v1/runs",
+                    json={
+                        "model_id": 1,
+                        "input_text": "hi",
+                    },
+                )
+            ).status_code == 401
+            assert (
+                await client.post(
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 999,
+                        "input_text": "hi",
+                    },
+                )
+            ).status_code == 404
+            created = await client.post(
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                },
+            )
             assert created.status_code == 201, created.text
             run = created.json()["data"]
             run_id = run["id"]
@@ -222,62 +261,146 @@ async def exercise_run_api(database: Path) -> None:
             assert run["cost_currency"] is None
             assert run["max_tool_calls"] is None and run["tool_call_count"] == 0
             assert "lease_token" not in run and "checkpoint_id" not in run and "owner_id" not in run
-            duplicate = await client.post("/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once"})
+            duplicate = await client.post(
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                },
+            )
             assert duplicate.status_code == 201 and duplicate.json()["data"]["id"] == run_id
             timeout_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "model_timeout_seconds": 60}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "model_timeout_seconds": 60,
+                },
             )
             assert timeout_conflict.status_code == 409
             tool_timeout_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "tool_timeout_seconds": 30}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "tool_timeout_seconds": 30,
+                },
             )
             assert tool_timeout_conflict.status_code == 409
             queue_timeout_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_queue_wait_seconds": 30}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "max_queue_wait_seconds": 30,
+                },
             )
             assert queue_timeout_conflict.status_code == 409
             tool_config_conflict = await client.post(
                 "/api/v1/runs",
                 headers=alice,
-                json={"model_id": 1, "input_text": "hi", "request_key": "once", "enable_text_artifact_tool": True},
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "enable_text_artifact_tool": True,
+                },
             )
             assert tool_config_conflict.status_code == 409
             budget_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_model_calls": 2}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "max_model_calls": 2,
+                },
             )
             assert budget_conflict.status_code == 409
             token_budget_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_total_tokens": 100}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "max_total_tokens": 100,
+                },
             )
             assert token_budget_conflict.status_code == 409
             cost_budget_conflict = await client.post(
                 "/api/v1/runs",
                 headers=alice,
-                json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_estimated_cost": "0.010000"},
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "max_estimated_cost": "0.010000",
+                },
             )
             assert cost_budget_conflict.status_code == 409
             tool_budget_conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "request_key": "once", "max_tool_calls": 2}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "request_key": "once",
+                    "max_tool_calls": 2,
+                },
             )
             assert tool_budget_conflict.status_code == 409
             for invalid_budget in (0, 101):
                 for field in ("max_model_calls", "max_tool_calls"):
                     invalid = await client.post(
-                        "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", field: invalid_budget}
+                        "/api/v1/runs",
+                        headers=alice,
+                        json={
+                            "model_id": 1,
+                            "input_text": "hi",
+                            field: invalid_budget,
+                        },
                     )
                     assert invalid.status_code == 400
             for invalid_tokens in (0, 10000001):
                 invalid = await client.post(
-                    "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "max_total_tokens": invalid_tokens}
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 1,
+                        "input_text": "hi",
+                        "max_total_tokens": invalid_tokens,
+                    },
                 )
                 assert invalid.status_code == 400
             for invalid_cost in ("0", "-1", "0.0000001", "1000000000000"):
                 invalid = await client.post(
-                    "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "max_estimated_cost": invalid_cost}
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 1,
+                        "input_text": "hi",
+                        "max_estimated_cost": invalid_cost,
+                    },
                 )
                 assert invalid.status_code == 400
             unpriced = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "max_estimated_cost": "0.010000"}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "hi",
+                    "max_estimated_cost": "0.010000",
+                },
             )
             assert unpriced.status_code == 409
             async with sessions.begin() as db:
@@ -287,12 +410,24 @@ async def exercise_run_api(database: Path) -> None:
             for invalid_timeout in (0, 121):
                 for field in ("model_timeout_seconds", "tool_timeout_seconds"):
                     invalid = await client.post(
-                        "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", field: invalid_timeout}
+                        "/api/v1/runs",
+                        headers=alice,
+                        json={
+                            "model_id": 1,
+                            "input_text": "hi",
+                            field: invalid_timeout,
+                        },
                     )
                     assert invalid.status_code == 400
             for invalid_wait in (0, 86401):
                 invalid = await client.post(
-                    "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "hi", "max_queue_wait_seconds": invalid_wait}
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 1,
+                        "input_text": "hi",
+                        "max_queue_wait_seconds": invalid_wait,
+                    },
                 )
                 assert invalid.status_code == 400
             bounded = await client.post(
@@ -311,7 +446,13 @@ async def exercise_run_api(database: Path) -> None:
             assert bounded.json()["data"]["max_queue_wait_seconds"] == 300
             assert bounded.json()["data"]["queue_expires_at"] is not None
             enabled_tool = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "读取我的文本文件", "enable_text_artifact_tool": True}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "读取我的文本文件",
+                    "enable_text_artifact_tool": True,
+                },
             )
             assert enabled_tool.status_code == 409
             async with sessions.begin() as db:
@@ -330,19 +471,36 @@ async def exercise_run_api(database: Path) -> None:
             assert enabled_tool.status_code == 201
             assert enabled_tool.json()["data"]["enable_text_artifact_tool"] is True
             disabled_duplicate = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "读取我的文本文件", "request_key": "artifact-enabled"}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "读取我的文本文件",
+                    "request_key": "artifact-enabled",
+                },
             )
             assert disabled_duplicate.status_code == 409
             answer_export = await client.post(
                 "/api/v1/runs",
                 headers=alice,
-                json={"model_id": 1, "input_text": "导出回答", "publish_answer_artifact": True, "request_key": "answer-export"},
+                json={
+                    "model_id": 1,
+                    "input_text": "导出回答",
+                    "publish_answer_artifact": True,
+                    "request_key": "answer-export",
+                },
             )
             assert answer_export.status_code == 201
             assert answer_export.json()["data"]["publish_answer_artifact"] is True
             assert (
                 await client.post(
-                    "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "导出回答", "request_key": "answer-export"}
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 1,
+                        "input_text": "导出回答",
+                        "request_key": "answer-export",
+                    },
                 )
             ).status_code == 409
             answer_id = answer_export.json()["data"]["id"]
@@ -397,11 +555,23 @@ async def exercise_run_api(database: Path) -> None:
             )
             assert repeated_budget.status_code == 201 and repeated_budget.json()["data"]["id"] == budgeted.json()["data"]["id"]
             conflict = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "different", "request_key": "once"}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "different",
+                    "request_key": "once",
+                },
             )
             assert conflict.status_code == 409
             concurrent_thread = await client.post(
-                "/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "next", "thread_id": run["thread_id"]}
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "next",
+                    "thread_id": run["thread_id"],
+                },
             )
             assert concurrent_thread.status_code == 409
             for suffix in ("", "/messages", "/events", "/stream"):
@@ -450,16 +620,41 @@ async def exercise_run_api(database: Path) -> None:
             assert caught_up["events"] == [] and caught_up["next_after"] == 6
             assert caught_up["has_more"] is False
             assert (await client.get(f"{snapshot_url}?after=7", headers=alice)).status_code == 400
-            stream = await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": f"{run_id}:1"})
+            stream = await client.get(
+                f"/api/v1/runs/{run_id}/stream",
+                headers={
+                    **alice,
+                    "Last-Event-ID": f"{run_id}:1",
+                },
+            )
             assert stream.status_code == 200 and stream.headers["content-type"].startswith("text/event-stream")
             assert all(f"id: {run_id}:{sequence}" in stream.text for sequence in range(2, 7))
             assert "event: text_delta" in stream.text and '"content": "hello"' in stream.text
             assert "event: tool_started" in stream.text and "event: tool_completed" in stream.text
             assert tool_call_id in stream.text and "echo_approved" in stream.text
             assert f"id: {run_id}:1" not in stream.text
-            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": "other:1"})).status_code == 400
-            assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers={**alice, "Last-Event-ID": f"{run_id}:7"})).status_code == 400
-            invalid_cursor = {**alice, "Last-Event-ID": f"{run_id}:{'9' * 5000}"}
+            assert (
+                await client.get(
+                    f"/api/v1/runs/{run_id}/stream",
+                    headers={
+                        **alice,
+                        "Last-Event-ID": "other:1",
+                    },
+                )
+            ).status_code == 400
+            assert (
+                await client.get(
+                    f"/api/v1/runs/{run_id}/stream",
+                    headers={
+                        **alice,
+                        "Last-Event-ID": f"{run_id}:7",
+                    },
+                )
+            ).status_code == 400
+            invalid_cursor = {
+                **alice,
+                "Last-Event-ID": f"{run_id}:{'9' * 5000}",
+            }
             assert (await client.get(f"/api/v1/runs/{run_id}/stream", headers=invalid_cursor)).status_code == 400
             assert (await client.post(f"/api/v1/runs/{run_id}/stream-ticket", headers=bob)).status_code == 404
             assert (await client.post(f"/api/v1/runs/{run_id}/stream-ticket")).status_code == 401
@@ -471,46 +666,106 @@ async def exercise_run_api(database: Path) -> None:
             assert "HttpOnly" in cookie_header and "SameSite=strict" in cookie_header
             assert f"Path=/api/v1/runs/{run_id}/stream" in cookie_header
             stream_ticket = ticket_response.cookies[STREAM_COOKIE_NAME]
-            cookie_stream = await client.get(f"/api/v1/runs/{run_id}/stream", headers={"Last-Event-ID": f"{run_id}:1"})
+            cookie_stream = await client.get(
+                f"/api/v1/runs/{run_id}/stream",
+                headers={
+                    "Last-Event-ID": f"{run_id}:1",
+                },
+            )
             assert cookie_stream.status_code == 200 and "event: text_delta" in cookie_stream.text
             assert (
-                await client.get(f"/api/v1/runs/{uuid4()}/stream", headers={"Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}"})
+                await client.get(
+                    f"/api/v1/runs/{uuid4()}/stream",
+                    headers={
+                        "Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}",
+                    },
+                )
             ).status_code == 401
-            expired_claims = jwt.decode(stream_ticket, options={"verify_signature": False})
+            expired_claims = jwt.decode(
+                stream_ticket,
+                options={
+                    "verify_signature": False,
+                },
+            )
             expired_claims["exp"] = 1
             expired_ticket = jwt.encode(expired_claims, get_config().SECRET_KEY, algorithm="HS256")
             assert (
-                await client.get(f"/api/v1/runs/{run_id}/stream", headers={"Cookie": f"{STREAM_COOKIE_NAME}={expired_ticket}"})
+                await client.get(
+                    f"/api/v1/runs/{run_id}/stream",
+                    headers={
+                        "Cookie": f"{STREAM_COOKIE_NAME}={expired_ticket}",
+                    },
+                )
             ).status_code == 401
             messages = (await client.get(f"/api/v1/runs/{run_id}/messages", headers=alice)).json()["data"]
             assert [(message["role"], message["content"]) for message in messages] == [("user", "hi"), ("assistant", "hello")]
 
-            queued = await client.post("/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "stop"})
+            queued = await client.post(
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "stop",
+                },
+            )
             cancelled = await client.post(f"/api/v1/runs/{queued.json()['data']['id']}/cancel", headers=alice)
             assert cancelled.status_code == 200 and cancelled.json()["data"]["state"] == "cancelled"
             assert (await client.post(f"/api/v1/runs/{queued.json()['data']['id']}/cancel", headers=alice)).status_code == 200
 
-            pending = await client.post("/api/v1/runs", headers=alice, json={"model_id": 1, "input_text": "approve tool"})
+            pending = await client.post(
+                "/api/v1/runs",
+                headers=alice,
+                json={
+                    "model_id": 1,
+                    "input_text": "approve tool",
+                },
+            )
             pending_id = pending.json()["data"]["id"]
             assert (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=alice)).status_code == 404
             async with sessions.begin() as db:
                 claimed = await claim_run(db, pending_id)
                 await create_approval_request(
-                    db, pending_id, claimed.lease_token, "checkpoint-approval", [{"name": "search", "arguments_hash": "a" * 64}]
+                    db,
+                    pending_id,
+                    claimed.lease_token,
+                    "checkpoint-approval",
+                    [
+                        {
+                            "name": "search",
+                            "arguments_hash": "a" * 64,
+                        }
+                    ],
                 )
             assert (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=bob)).status_code == 404
             assert (
-                await client.post(f"/api/v1/runs/{pending_id}/approval/decision", headers=bob, json={"decision": "approve"})
+                await client.post(
+                    f"/api/v1/runs/{pending_id}/approval/decision",
+                    headers=bob,
+                    json={
+                        "decision": "approve",
+                    },
+                )
             ).status_code == 404
             approval = (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=alice)).json()["data"]
             assert approval["state"] == "pending" and approval["actions"] == [
-                {"name": "search", "arguments_hash": "a" * 64, "resource_id": None, "resource_name": None}
+                {
+                    "name": "search",
+                    "arguments_hash": "a" * 64,
+                    "resource_id": None,
+                    "resource_name": None,
+                }
             ]
             assert "checkpoint_id" not in approval and "owner_id" not in approval
             async with sessions.begin() as db:
                 with pytest.raises(RunConflictError):
                     await resume_approved_run(db, pending_id)
-            decision = await client.post(f"/api/v1/runs/{pending_id}/approval/decision", headers=alice, json={"decision": "reject"})
+            decision = await client.post(
+                f"/api/v1/runs/{pending_id}/approval/decision",
+                headers=alice,
+                json={
+                    "decision": "reject",
+                },
+            )
             assert decision.status_code == 200 and decision.json()["data"]["state"] == "rejected"
             rejected_run = (await client.get(f"/api/v1/runs/{pending_id}", headers=alice)).json()["data"]
             assert rejected_run["state"] == "cancelled" and rejected_run["failure_code"] == "approval_rejected"
@@ -520,7 +775,13 @@ async def exercise_run_api(database: Path) -> None:
             async with sessions.begin() as db:
                 with pytest.raises(RunConflictError):
                     await resume_approved_run(db, pending_id)
-            repeated = await client.post(f"/api/v1/runs/{pending_id}/approval/decision", headers=alice, json={"decision": "approve"})
+            repeated = await client.post(
+                f"/api/v1/runs/{pending_id}/approval/decision",
+                headers=alice,
+                json={
+                    "decision": "approve",
+                },
+            )
             assert repeated.status_code == 409
 
             resource_id = str(uuid4())
@@ -548,7 +809,13 @@ async def exercise_run_api(database: Path) -> None:
                     enabled_id,
                     claimed.lease_token,
                     "checkpoint-file",
-                    [{"name": "read_text_artifact", "arguments_hash": "b" * 64, "resource_id": resource_id}],
+                    [
+                        {
+                            "name": "read_text_artifact",
+                            "arguments_hash": "b" * 64,
+                            "resource_id": resource_id,
+                        }
+                    ],
                 )
             preview = (await client.get(f"/api/v1/runs/{enabled_id}/approval", headers=alice)).json()["data"]
             assert preview["actions"][0] == {
@@ -559,7 +826,12 @@ async def exercise_run_api(database: Path) -> None:
             }
             assert (await client.get(f"/api/v1/runs/{enabled_id}/approval", headers=bob)).status_code == 404
 
-            claims = jwt.decode(alice["Authorization"].split()[1], options={"verify_signature": False})
+            claims = jwt.decode(
+                alice["Authorization"].split()[1],
+                options={
+                    "verify_signature": False,
+                },
+            )
             async with sessions() as stream_db:
                 stream_actor = SimpleNamespace(id=1)
                 expired_request = SimpleNamespace(
@@ -585,7 +857,12 @@ async def exercise_run_api(database: Path) -> None:
                 with pytest.raises(StopAsyncIteration):
                     await anext(live_stream.body_iterator)
             assert (
-                await client.get(f"/api/v1/runs/{run_id}/stream", headers={"Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}"})
+                await client.get(
+                    f"/api/v1/runs/{run_id}/stream",
+                    headers={
+                        "Cookie": f"{STREAM_COOKIE_NAME}={stream_ticket}",
+                    },
+                )
             ).status_code == 401
     finally:
         app.dependency_overrides.pop(get_db_session, None)

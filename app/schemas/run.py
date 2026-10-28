@@ -164,7 +164,15 @@ class ApprovalOut(BaseModel):
     id: str = Field(description="审批请求 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     run_id: str = Field(description="所属运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     actions: list[ApprovalActionOut] = Field(
-        description="待审批的工具及参数摘要", examples=[[{"name": "web_search", "arguments_hash": "a" * 64}]]
+        description="待审批的工具及参数摘要",
+        examples=[
+            [
+                {
+                    "name": "web_search",
+                    "arguments_hash": "a" * 64,
+                }
+            ]
+        ],
     )
     state: str = Field(description="审批状态", examples=["pending"])
     expires_at: datetime = Field(description="审批到期时间", examples=["2026-10-22T23:00:00"])

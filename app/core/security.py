@@ -103,7 +103,9 @@ async def get_current_admin(
             credentials.credentials,
             get_config().SECRET_KEY,
             algorithms=["HS256"],
-            options={"require": ["sub", "sid", "ver", "type", "iat", "exp"]},
+            options={
+                "require": ["sub", "sid", "ver", "type", "iat", "exp"],
+            },
         )
         if payload["type"] != "access" or type(payload["ver"]) is not int or type(payload["exp"]) is not int:
             raise unauthorized()
@@ -152,7 +154,12 @@ async def get_stream_admin(
         raise unauthorized()
     try:
         payload = jwt.decode(
-            ticket, get_config().SECRET_KEY, algorithms=["HS256"], options={"require": ["sub", "sid", "ver", "type", "rid", "iat", "exp"]}
+            ticket,
+            get_config().SECRET_KEY,
+            algorithms=["HS256"],
+            options={
+                "require": ["sub", "sid", "ver", "type", "rid", "iat", "exp"],
+            },
         )
         if payload["type"] != "stream" or payload["rid"] != run_id or type(payload["ver"]) is not int or (type(payload["exp"]) is not int):
             raise unauthorized()

@@ -13,7 +13,9 @@ from app.models.base import CustomBaseModel
 
 class ModelCallRecord(CustomBaseModel):
     __table_name__ = "model_call_record"
-    __table_args__ = {"comment": "模型调用诊断记录表"}
+    __table_args__ = {
+        "comment": "模型调用诊断记录表",
+    }
 
     actor_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="发起调用的用户 ID")
     provider_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="调用时的供应商连接 ID")

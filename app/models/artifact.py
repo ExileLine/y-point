@@ -20,7 +20,9 @@ class Artifact(CustomBaseModel):
     __enable_auto_id__ = False
     __table_args__ = (
         UniqueConstraint("run_id", "publication_key", name="uq_yp_artifact_run_publication_key"),
-        {"comment": "用户附件与运行产物表"},
+        {
+            "comment": "用户附件与运行产物表",
+        },
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="文件 ID")

@@ -20,7 +20,9 @@ class AgentRun(CustomBaseModel):
     __table_args__ = (
         UniqueConstraint("owner_id", "request_key", name="uq_yp_agent_run_owner_request_key"),
         UniqueConstraint("active_thread_id", name="uq_yp_agent_run_active_thread_id"),
-        {"comment": "智能体运行任务表"},
+        {
+            "comment": "智能体运行任务表",
+        },
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="运行 ID")

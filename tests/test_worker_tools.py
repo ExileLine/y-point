@@ -79,7 +79,9 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
             async with sessions() as db:
                 assert await resolver(db, plain) == ([], {})
                 tools, interrupt_on = await resolver(db, enabled)
-            assert interrupt_on == {"read_text_artifact": True}
+            assert interrupt_on == {
+                "read_text_artifact": True,
+            }
             assert {item.name for item in tools} == {
                 "list_text_artifacts",
                 "read_text_artifact",
@@ -90,24 +92,76 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
             list_tool, read_tool = (
                 next(item for item in tools if item.name == name) for name in ("list_text_artifacts", "read_text_artifact")
             )
-            assert json.loads(await list_tool.ainvoke({})) == [{"artifact_id": owned.id, "filename": "owned.txt", "byte_size": 10}]
-            result = json.loads(await read_tool.ainvoke({"artifact_id": owned.id}))
-            assert result == {"filename": "owned.txt", "content": "owned text"}
+            assert json.loads(await list_tool.ainvoke({})) == [
+                {
+                    "artifact_id": owned.id,
+                    "filename": "owned.txt",
+                    "byte_size": 10,
+                }
+            ]
+            result = json.loads(
+                await read_tool.ainvoke(
+                    {
+                        "artifact_id": owned.id,
+                    }
+                )
+            )
+            assert result == {
+                "filename": "owned.txt",
+                "content": "owned text",
+            }
             create_tool = next(item for item in tools if item.name == "create_text_artifact")
-            created = json.loads(await create_tool.ainvoke({"filename": "summary.txt", "content": "generated summary"}))
-            assert json.loads(await create_tool.ainvoke({"filename": "summary.txt", "content": "generated summary"})) == created
+            created = json.loads(
+                await create_tool.ainvoke(
+                    {
+                        "filename": "summary.txt",
+                        "content": "generated summary",
+                    }
+                )
+            )
+            assert (
+                json.loads(
+                    await create_tool.ainvoke(
+                        {
+                            "filename": "summary.txt",
+                            "content": "generated summary",
+                        }
+                    )
+                )
+                == created
+            )
             with pytest.raises(ValueError, match="冲突"):
-                await create_tool.ainvoke({"filename": "summary.txt", "content": "different"})
+                await create_tool.ainvoke(
+                    {
+                        "filename": "summary.txt",
+                        "content": "different",
+                    }
+                )
             async with sessions() as db:
                 staged = await db.get(Artifact, created["artifact_id"])
                 assert staged.state == "pending" and staged.run_id == enabled.id
                 assert (root / staged.storage_key).read_text() == "generated summary"
             doc_tool = next(item for item in tools if item.name == "create_document_artifact")
-            pdf = json.loads(await doc_tool.ainvoke({"filename": "summary.pdf", "content": "# Summary\n\nGenerated summary"}))
+            pdf = json.loads(
+                await doc_tool.ainvoke(
+                    {
+                        "filename": "summary.pdf",
+                        "content": "# Summary\n\nGenerated summary",
+                    }
+                )
+            )
             sheet_tool = next(item for item in tools if item.name == "create_spreadsheet_artifact")
             xlsx = json.loads(
                 await sheet_tool.ainvoke(
-                    {"filename": "summary.xlsx", "sheets": [{"name": "Summary", "rows": [["Item", "Value"], ["Result", "generated"]]}]}
+                    {
+                        "filename": "summary.xlsx",
+                        "sheets": [
+                            {
+                                "name": "Summary",
+                                "rows": [["Item", "Value"], ["Result", "generated"]],
+                            }
+                        ],
+                    }
                 )
             )
             async with sessions() as db:
@@ -117,12 +171,20 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 )
             for artifact_id in (foreign.id, large.id):
                 with pytest.raises(ValueError, match="文件不可用"):
-                    await read_tool.ainvoke({"artifact_id": artifact_id})
+                    await read_tool.ainvoke(
+                        {
+                            "artifact_id": artifact_id,
+                        }
+                    )
             async with sessions.begin() as db:
                 item = await db.get(type(owned), owned.id)
                 item.expires_at = shanghai_now(naive=True) - timedelta(seconds=1)
             with pytest.raises(ValueError, match="文件不可用"):
-                await read_tool.ainvoke({"artifact_id": owned.id})
+                await read_tool.ainvoke(
+                    {
+                        "artifact_id": owned.id,
+                    }
+                )
             assert json.loads(await list_tool.ainvoke({})) == []
             async with sessions.begin() as db:
                 item = await db.get(type(owned), owned.id)
@@ -130,16 +192,29 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 owner = await db.get(Admin, 1)
                 owner.status = 0
             with pytest.raises(ValueError, match="工具授权已失效"):
-                await read_tool.ainvoke({"artifact_id": owned.id})
+                await read_tool.ainvoke(
+                    {
+                        "artifact_id": owned.id,
+                    }
+                )
             with pytest.raises(ValueError, match="工具授权已失效"):
                 await list_tool.ainvoke({})
             with pytest.raises(ValueError, match="工具授权已失效"):
-                await create_tool.ainvoke({"filename": "other.txt", "content": "x"})
+                await create_tool.ainvoke(
+                    {
+                        "filename": "other.txt",
+                        "content": "x",
+                    }
+                )
             async with sessions.begin() as db:
                 provider = await db.get(ProviderConnection, 1)
                 provider.status = 0
             with pytest.raises(ValueError, match="工具授权已失效"):
-                await read_tool.ainvoke({"artifact_id": owned.id})
+                await read_tool.ainvoke(
+                    {
+                        "artifact_id": owned.id,
+                    }
+                )
             with pytest.raises(ValueError, match="工具授权已失效"):
                 await list_tool.ainvoke({})
             async with sessions.begin() as db:

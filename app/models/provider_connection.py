@@ -11,7 +11,12 @@ from app.models.base import CustomBaseModel
 
 class ProviderConnection(CustomBaseModel):
     __table_name__ = "provider_connection"
-    __table_args__ = (UniqueConstraint("name_key", name="uq_yp_provider_connection_name_key"), {"comment": "模型供应商连接表"})
+    __table_args__ = (
+        UniqueConstraint("name_key", name="uq_yp_provider_connection_name_key"),
+        {
+            "comment": "模型供应商连接表",
+        },
+    )
 
     name: Mapped[str] = mapped_column(String(128), nullable=False, comment="连接名称")
     name_key: Mapped[str] = mapped_column(String(128), nullable=False, comment="小写连接名称唯一键")

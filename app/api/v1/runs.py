@@ -270,7 +270,11 @@ async def issue_stream_ticket(
 ):
     """用 Bearer 换取仅限当前 Run 的短期 HttpOnly Cookie。"""
     await _owned_run(db, run_id, actor.id)
-    response = api_response(data={"expires_in": STREAM_TICKET_SECONDS})
+    response = api_response(
+        data={
+            "expires_in": STREAM_TICKET_SECONDS,
+        }
+    )
     response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
         key=STREAM_COOKIE_NAME,
@@ -355,5 +359,10 @@ async def stream_events(
         await db.rollback()
 
     return StreamingResponse(
-        event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
