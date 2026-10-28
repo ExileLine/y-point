@@ -1,9 +1,12 @@
 """验证小窗口模型的长会话摘要边界。"""
 
 import asyncio
+import os
 from decimal import Decimal
 from pathlib import Path
 from typing import ClassVar
+
+import pytest
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
@@ -12,12 +15,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
 from app.models.agent_run_message import AgentRunMessage
 from app.models.agent_session import AgentSession
 from app.models.base import Base
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.run_executor import execute_text_run
+from app.services.model_adapter import build_chat_model
 from app.services.run_manager import create_run
 from app.services.runtime_adapter import RuntimeRunConfig
 
@@ -56,6 +61,11 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="long-context-owner", password="unused", role="user", status=1, is_deleted=0))
+                db.add(AgentConfig(
+                    id=1, owner_id=1, name="Long context", system_prompt="简洁回答", default_model_id=1,
+                    temperature=Decimal("1"), max_output_tokens=256, enabled=True, version=1,
+                    is_deleted=0, status=1,
+                ))
                 db.add(ProviderConnection(
                     id=1, name="long-context-provider", name_key="long-context-provider", kind="ollama",
                     base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
@@ -133,6 +143,11 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="summary-error-owner", password="unused", role="user", status=1, is_deleted=0))
+                db.add(AgentConfig(
+                    id=1, owner_id=1, name="Summary", system_prompt="简洁回答", default_model_id=1,
+                    temperature=Decimal("1"), max_output_tokens=256, enabled=True, version=1,
+                    is_deleted=0, status=1,
+                ))
                 db.add(ProviderConnection(
                     id=1, name="summary-error-provider", name_key="summary-error-provider", kind="ollama",
                     base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
@@ -206,3 +221,59 @@ def test_context_window_reserves_space_for_input_and_output() -> None:
         pass
     else:
         raise AssertionError("上下文窗口应拒绝过高的输出预算")
+
+
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_OLLAMA_M4_LONG") != "1", reason="需显式启用真实长会话验收")
+def test_live_ollama_long_session_summary(tmp_path: Path) -> None:
+    """真实模型在小窗口内摘要旧消息，保留业务历史并继续回答。"""
+
+    async def exercise() -> None:
+        """在隔离业务库和检查点中连续执行两轮长输入。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'live-long.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "live-long-checkpoint.db"
+        first_input = "请记住项目代号 ALPHA-42。下面是测试填充资料：" + "甲乙丙丁" * 500
+        second_input = "请只回答之前的项目代号。下面是另一批测试填充资料：" + "戊己庚辛" * 500
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all([
+                    Admin(id=1, username="m4-long", password="unused", role="user", status=1, is_deleted=0),
+                    AgentConfig(id=1, owner_id=1, name="Long context", system_prompt="保留项目代号并简短回答。",
+                                default_model_id=1, temperature=Decimal("0"), max_output_tokens=256,
+                                enabled=True, version=1, is_deleted=0, status=1),
+                    ProviderConnection(id=1, name="long-ollama", name_key="long-ollama", kind="ollama",
+                                       base_url="http://127.0.0.1:11434/v1", timeout_seconds=120,
+                                       creator_id=1, status=1, is_deleted=0),
+                    ModelCatalog(id=1, provider_id=1, external_id="gemma4:31b-cloud", display_name="Gemma4",
+                                 verified_capabilities=["text"], context_window=2048,
+                                 creator_id=1, status=1, is_deleted=0),
+                    AgentSession(id="e" * 36, owner_id=1, agent_id=1, thread_id="f" * 36,
+                                 title="真实长会话", archived=False, version=1),
+                ])
+            async with sessions() as db:
+                model = build_chat_model(await db.get(ModelCatalog, 1), await db.get(ProviderConnection, 1))
+            runs = []
+            for text in (first_input, second_input):
+                async with sessions.begin() as db:
+                    run = await create_run(
+                        db, 1, agent_id=1, model_id=1, session_id="e" * 36, thread_id="f" * 36,
+                        agent_config_version=1, agent_system_prompt="保留项目代号并简短回答。",
+                        agent_temperature=Decimal("0"), agent_max_output_tokens=256,
+                        input_text=text, max_model_calls=6,
+                    )
+                result = await execute_text_run(sessions, run.id, model, checkpoint, timeout_seconds=120)
+                assert result.state == "completed", result.failure_code
+                runs.append(result)
+            assert runs[-1].model_call_count >= 2
+            async with sessions() as db:
+                messages = (await db.scalars(select(AgentRunMessage).where(
+                    AgentRunMessage.owner_id == 1,
+                ).order_by(AgentRunMessage.id))).all()
+                assert [item.content for item in messages if item.role == "user"] == [first_input, second_input]
+                assert "ALPHA-42" in [item.content for item in messages if item.role == "assistant"][-1]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())

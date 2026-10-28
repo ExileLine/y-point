@@ -8,7 +8,8 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
@@ -17,19 +18,33 @@ from app.core.security import get_current_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
+from app.models.agent_run import AgentRun
+from app.models.agent_share import AgentShare
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
-from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentUpdateIn
+from app.schemas.agent import (
+    AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut,
+)
+from app.services.agent_access import can_use_agent
 from app.services.identity import audit
+from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+def _shared_data(agent: AgentConfig) -> dict:
+    return SharedAgentOut.model_validate({
+        "id": agent.id, "owner_id": agent.owner_id, "name": agent.name,
+        "description": agent.description, "icon": agent.icon,
+        "welcome_message": agent.welcome_message, "enabled": agent.enabled,
+    }).model_dump(mode="json")
+
+
 async def _available_text_model(db: AsyncSession, model_id: int, max_output_tokens: int) -> ModelCatalog:
     """确认默认模型及供应商可用，且模型已经通过文本能力验证。"""
-    model = await db.get(ModelCatalog, model_id)
+    model = await db.get(ModelCatalog, model_id, with_for_update=True)
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
@@ -87,11 +102,86 @@ async def list_agents(
     return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
 
+@router.get("/shared", summary="查询共享给我的智能体")
+async def list_shared_agents(actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    agents = (await db.scalars(select(AgentConfig).join(AgentShare, AgentShare.agent_id == AgentConfig.id).where(
+        AgentShare.user_id == actor.id, AgentConfig.is_deleted == 0,
+    ).order_by(AgentConfig.id.desc()))).all()
+    return api_response(data=[_shared_data(agent) for agent in agents], is_pop=False)
+
+
+@router.get("/shared/{agent_id}", summary="查询共享智能体资料")
+async def get_shared_agent(
+    agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    agent = await db.get(AgentConfig, agent_id)
+    if agent is None or agent.owner_id == actor.id or not await can_use_agent(db, agent_id, actor.id):
+        raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
+    return api_response(data=_shared_data(agent), datetime_format=False)
+
+
 @router.get("/{agent_id}", summary="查询我的智能体详情")
 async def get_agent(agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """读取当前用户的指定 Agent 配置。"""
     agent = await _owned_agent(db, agent_id, actor.id)
     return api_response(data=AgentOut.model_validate(agent).model_dump(mode="json"), datetime_format=False)
+
+
+@router.get("/{agent_id}/shares", summary="查询智能体指定用户授权")
+async def list_agent_shares(
+    agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    await _owned_agent(db, agent_id, actor.id)
+    rows = (await db.execute(select(Admin).join(AgentShare, AgentShare.user_id == Admin.id).where(
+        AgentShare.agent_id == agent_id,
+    ).order_by(Admin.id))).scalars().all()
+    return api_response(data=[AgentShareOut(user_id=user.id, username=user.username).model_dump() for user in rows], is_pop=False)
+
+
+@router.post("/{agent_id}/shares", summary="授权指定用户使用智能体")
+async def grant_agent_share(
+    agent_id: int, body: AgentShareIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    await _owned_agent(db, agent_id, actor.id)
+    locked_agent = await db.scalar(select(AgentConfig).where(
+        AgentConfig.id == agent_id, AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0,
+    ).with_for_update())
+    if locked_agent is None:
+        raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
+    user = await db.get(Admin, body.user_id)
+    if user is None or user.id == actor.id or user.status != 1 or user.is_deleted != 0:
+        raise CustomException(status_code=404, custom_code=10002, detail="用户不存在或不可共享")
+    recipient_id, recipient_name = user.id, user.username
+    if not await can_use_agent(db, agent_id, recipient_id):
+        db.add(AgentShare(agent_id=agent_id, user_id=recipient_id, is_deleted=0, status=1))
+        audit(db, "agent.shared", actor_id=actor.id, target_id=recipient_id, subject=str(agent_id))
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            if not await can_use_agent(db, agent_id, recipient_id):
+                raise CustomException(status_code=409, custom_code=10005, detail="授权状态已变化") from None
+    return api_response(data=AgentShareOut(user_id=recipient_id, username=recipient_name).model_dump())
+
+
+@router.delete("/{agent_id}/shares/{user_id}", summary="撤销指定用户的智能体授权")
+async def revoke_agent_share(
+    agent_id: int, user_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+):
+    await _owned_agent(db, agent_id, actor.id)
+    await db.scalar(select(AgentConfig.id).where(AgentConfig.id == agent_id).with_for_update())
+    removed = await db.execute(delete(AgentShare).where(AgentShare.agent_id == agent_id, AgentShare.user_id == user_id))
+    if removed.rowcount == 0:
+        raise CustomException(status_code=404, custom_code=10002, detail="授权不存在")
+    active_ids = (await db.scalars(select(AgentRun.id).where(
+        AgentRun.agent_id == agent_id, AgentRun.owner_id == user_id,
+        AgentRun.state.not_in(TERMINAL_STATES),
+    ))).all()
+    for run_id in active_ids:
+        await request_cancel(db, run_id, user_id)
+    audit(db, "agent.share_revoked", actor_id=actor.id, target_id=user_id, subject=str(agent_id))
+    await db.commit()
+    return api_response(message="授权已撤销")
 
 
 @router.put("/{agent_id}", summary="修改我的智能体")
@@ -140,6 +230,15 @@ async def delete_agent(agent_id: int, actor: Admin = Depends(get_current_admin),
     if result.rowcount != 1:
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail="智能体配置版本已变化")
+    recipients = (await db.scalars(select(AgentShare.user_id).where(AgentShare.agent_id == agent_id))).all()
+    await db.execute(delete(AgentShare).where(AgentShare.agent_id == agent_id))
+    if recipients:
+        active_runs = (await db.execute(select(AgentRun.id, AgentRun.owner_id).where(
+            AgentRun.agent_id == agent_id, AgentRun.owner_id.in_(recipients),
+            AgentRun.state.not_in(TERMINAL_STATES),
+        ))).all()
+        for run_id, owner_id in active_runs:
+            await request_cancel(db, run_id, owner_id)
     audit(db, "agent.deleted", actor_id=actor.id, target_id=agent_id)
     await db.commit()
     return api_response(message="智能体已删除")

@@ -2,7 +2,11 @@
 
 import re
 
-_ACTION = re.compile(r"生成|创建|制作|导出|保存为|输出为|写成|做成|转成|转换成|\b(?:generate|create|export)\b", re.I)
+_ACTION = re.compile(
+    r"生成|创建|制作|导出|保存为|输出(?:为)?|写成|做成|做一份|整理成|给我一份|提供一份|转(?:换)?(?:成|为)"
+    r"|\b(?:generate|create|export)\b",
+    re.I,
+)
 _NOT_REQUEST = re.compile(r"(?:不要|不用|不必|无需|别|请勿|如何|怎么|怎样|为什么|是否|能否)(?:帮我|为我|给我)?\s*$", re.I)
 _FORMAT = re.compile(
     r"(?<![a-z])\.?((?:docx|xlsx|pdf|txt|md|html|json|csv))(?![a-z])|(?<![a-z])(?:Word|Excel|Markdown)(?![a-z])",

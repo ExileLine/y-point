@@ -12,6 +12,7 @@ from app.core.response import api_response
 from app.core.security import require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
 from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
 from app.schemas.provider import (
@@ -201,8 +202,15 @@ async def update_model(
     model_id: int, body: ModelUpdateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """修改模型信息；人工更改能力后重新标为未验证。"""
+    await db.scalar(select(ModelCatalog.id).where(ModelCatalog.id == model_id).with_for_update())
     model = await get_model_or_404(db, model_id)
     fields = body.model_fields_set
+    if ("status" in fields and body.status == 0) or fields & {"external_id", "capabilities", "context_window"}:
+        linked = await db.scalar(select(AgentConfig.id).where(
+            AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0,
+        ).limit(1))
+        if linked is not None:
+            raise CustomException(status_code=409, custom_code=10005, detail="模型仍被 Agent 引用，请先更换其默认模型")
     for name in ("external_id", "display_name", "context_window", "input_price", "output_price", "price_currency", "status"):
         if name in fields:
             value = getattr(body, name)
@@ -230,7 +238,13 @@ async def update_model(
 @router.delete("/{model_id}", summary="删除可选模型")
 async def delete_model(model_id: int, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """逻辑删除模型并清除默认标记。"""
+    await db.scalar(select(ModelCatalog.id).where(ModelCatalog.id == model_id).with_for_update())
     model = await get_model_or_404(db, model_id)
+    linked = await db.scalar(select(AgentConfig.id).where(
+        AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0,
+    ).limit(1))
+    if linked is not None:
+        raise CustomException(status_code=409, custom_code=10005, detail="模型仍被 Agent 引用，请先更换其默认模型")
     model.is_deleted = 1
     model.status = 0
     model.is_default = False

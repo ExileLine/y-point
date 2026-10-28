@@ -111,6 +111,15 @@ class PartialStreamChatModel(FakeChatModel):
         raise openai.APIStatusError("secret-response", response=response, body=None)
 
 
+class MalformedStreamChatModel(FakeChatModel):
+    """模拟上游流式事件让 SDK 收到非预期字段类型。"""
+
+    async def astream(self, messages: list, **kwargs):
+        """在迭代流式消息时抛出解析异常。"""
+        raise AttributeError("upstream-event-secret")
+        yield  # 保持异步迭代接口
+
+
 class StructuredChatModel(FakeChatModel):
     """模拟结构化输出及解析失败。"""
 
@@ -174,6 +183,9 @@ async def exercise_capabilities() -> None:
         assert result.estimated_cost == Decimal("0.000040")
     assert (await probe_capability(model, provider, "tools", FakeChatModel(tool_calls=False))).failure == "invalid_response"
     assert (await probe_capability(model, provider, "streaming", FakeChatModel(stream_text=False))).failure == "invalid_response"
+    malformed = await probe_capability(model, provider, "streaming", MalformedStreamChatModel())
+    assert malformed.available is False and malformed.failure == "invalid_response"
+    assert "upstream-event-secret" not in malformed.model_dump_json()
     structured = await probe_capability(model, provider, "structured_output", StructuredChatModel())
     assert structured.available is True and structured.input_tokens == 12 and structured.output_tokens == 4
     assert "secret-response" not in structured.model_dump_json()

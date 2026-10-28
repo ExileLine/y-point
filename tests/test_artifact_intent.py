@@ -16,6 +16,12 @@ from app.services.artifact_intent import requested_artifact_suffixes
     ("根据刚才生成的文件，再生成一份 PDF", frozenset({".pdf"})),
     ("请告诉我如何生成一个 docx 文件", None),
     ("不要生成 txt 文件，只回答问题", None),
+    ("请整理成一份 PDF 报告", frozenset({".pdf"})),
+    ("输出一份可下载的报告", frozenset()),
+    ("帮我做一份 Excel 表格", frozenset({".xlsx"})),
+    ("请给我一份 DOCX 文件", frozenset({".docx"})),
+    ("把这份 PDF 转换为 Word 文档", frozenset({".docx"})),
+    ("不要输出为 PDF，只给文字", None),
 ])
 def test_requested_artifact_suffixes(text: str, expected: frozenset[str] | None) -> None:
     assert requested_artifact_suffixes(text) == expected

@@ -25,6 +25,7 @@ from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_session import AgentSession
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
+from app.services.agent_access import can_use_agent
 from app.schemas.agent_session import (
     SessionCreateIn, SessionMessageOut, SessionOut, SessionPageOut, SessionRunCreateIn,
     SessionRunPageOut, SessionUpdateIn,
@@ -32,7 +33,7 @@ from app.schemas.agent_session import (
 from app.schemas.run import RunOut
 from app.services.identity import audit
 from app.services.attachment_text import CONTEXT_MEDIA_TYPES
-from app.services.message_attachments import MAX_CONTEXT_ATTACHMENT_BYTES, load_message_artifacts, load_message_attachments
+from app.services.message_attachments import IMAGE_CONTEXT_MEDIA_TYPES, MAX_CONTEXT_ATTACHMENT_BYTES, load_message_artifacts, load_message_attachments
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
 
 
@@ -40,15 +41,16 @@ router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["agent-sessions"]
 
 
 async def _agent(db: AsyncSession, agent_id: int, owner_id: int) -> AgentConfig:
-    """读取用户自己的 Agent，包括已删除但仍有会话历史的配置。"""
-    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id, AgentConfig.owner_id == owner_id))
-    if agent is None:
+    """所有者可读历史；指定用户仅在授权有效时使用共享 Agent。"""
+    agent = await db.get(AgentConfig, agent_id)
+    if agent is None or not await can_use_agent(db, agent_id, owner_id):
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     return agent
 
 
 async def _session(db: AsyncSession, agent_id: int, session_id: str, owner_id: int) -> AgentSession:
     """校验会话属于当前用户和路径中的 Agent。"""
+    await _agent(db, agent_id, owner_id)
     session = await db.scalar(select(AgentSession).where(
         AgentSession.id == session_id, AgentSession.agent_id == agent_id,
         AgentSession.owner_id == owner_id, AgentSession.is_deleted == 0,
@@ -116,7 +118,10 @@ async def create_session(
     agent_id: int, body: SessionCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
 ):
     """为当前用户的已启用 Agent 创建独立检查点线程。"""
-    agent = await _agent(db, agent_id, actor.id)
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id)
+        .with_for_update().execution_options(populate_existing=True))
+    if agent is None or not await can_use_agent(db, agent_id, actor.id):
+        raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     if agent.is_deleted != 0 or not agent.enabled:
         raise CustomException(status_code=409, custom_code=10005, detail="智能体不可用")
     session = AgentSession(
@@ -223,7 +228,10 @@ async def submit_session_run(
     existing = await _matching_retry(db, owner_id, session_id, body)
     if existing is not None:
         return _run_response(existing)
-    agent = await _agent(db, agent_id, owner_id)
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id)
+        .with_for_update().execution_options(populate_existing=True))
+    if agent is None or not await can_use_agent(db, agent_id, owner_id):
+        raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     if session.archived or agent.is_deleted != 0 or not agent.enabled:
         raise CustomException(status_code=409, custom_code=10005, detail="会话或智能体不可用")
     model = await _available_text_model(db, agent.default_model_id, agent.max_output_tokens)
@@ -236,8 +244,13 @@ async def submit_session_run(
         raise CustomException(status_code=409, custom_code=10005, detail="已有对话的会话不能切换模型，请创建新会话")
     artifacts = await _uploaded_artifacts(db, owner_id, body.artifact_ids)
     context_artifacts = [item for item in artifacts if item.id in context_ids]
-    if any(item.media_type not in CONTEXT_MEDIA_TYPES for item in context_artifacts):
-        raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型文本上下文")
+    image_artifacts = [item for item in context_artifacts if item.media_type in IMAGE_CONTEXT_MEDIA_TYPES]
+    if any(item.media_type not in CONTEXT_MEDIA_TYPES | IMAGE_CONTEXT_MEDIA_TYPES for item in context_artifacts):
+        raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型上下文")
+    if image_artifacts and "vision" not in (model.verified_capabilities or []):
+        raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过视觉能力验证")
+    if len(image_artifacts) > 2:
+        raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
     if sum(item.byte_size for item in context_artifacts if item.media_type == "text/plain") > MAX_CONTEXT_ATTACHMENT_BYTES:
         raise CustomException(status_code=413, custom_code=10005, detail="TXT 上下文附件超过 16 KiB 限制")
     options = dict(

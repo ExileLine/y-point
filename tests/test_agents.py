@@ -10,7 +10,9 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from sqlalchemy import inspect, select
@@ -21,8 +23,11 @@ from app.db.session import get_db_session
 from app.main import app
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
+from app.models.agent_share import AgentShare
 from app.models.audit_event import AuditEvent
+from app.models.artifact import Artifact
 from app.models.base import Base
+from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 
@@ -48,6 +53,10 @@ def test_agent_config_migration(tmp_path: Path) -> None:
                         column["name"] for column in schema.get_columns("yp_agent_config")
                     }
                     assert schema.get_foreign_keys("yp_agent_config") == []
+                    assert schema.get_foreign_keys("yp_agent_share") == []
+                    assert {column.name for column in AgentShare.__table__.columns} == {
+                        column["name"] for column in schema.get_columns("yp_agent_share")
+                    }
 
                 await connection.run_sync(inspect_schema)
         finally:
@@ -101,6 +110,7 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                 db.add_all([
                     Admin(id=1, username="agent-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                     Admin(id=2, username="agent-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                    Admin(id=3, username="agent-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
                     ProviderConnection(
                         id=1, name="agent-provider", name_key="agent-provider", kind="ollama",
                         base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
@@ -134,6 +144,7 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                         return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
 
                     alice, bob = await login("agent-alice"), await login("agent-bob")
+                    admin = await login("agent-admin")
                     payload = {
                         "name": " 需求助手 ", "default_model_id": 1,
                         "system_prompt": "只回答需求问题", "temperature": "0.70",
@@ -169,6 +180,14 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert agent["max_model_calls"] == 3 and agent["max_tool_calls"] == 5
                     assert agent["max_total_tokens"] == 10000 and agent["max_estimated_cost"] is None
                     agent_id = agent["id"]
+                    assert (await client.put("/api/v1/models/1", headers=admin, json={"status": 0})).status_code == 409
+                    assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 409
+                    assert (await client.put("/api/v1/providers/1", headers=admin, json={"status": 0})).status_code == 409
+                    assert (await client.put("/api/v1/models/1", headers=admin, json={"external_id": "replacement"})).status_code == 409
+                    assert (await client.put("/api/v1/providers/1", headers=admin, json={
+                        "base_url": "http://localhost:11435/v1",
+                    })).status_code == 409
+                    assert (await client.put("/api/v1/models/1", headers=admin, json={"display_name": "Renamed"})).status_code == 200
                     assert (await client.get(f"/api/v1/agents/{agent_id}", headers=bob)).status_code == 404
                     assert (await client.put(f"/api/v1/agents/{agent_id}", headers=bob, json={
                         "expected_version": 1, "name": "steal",
@@ -201,6 +220,8 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                         "expected_version": 2, "max_output_tokens": 9000,
                     })).status_code == 409
                     assert (await client.delete(f"/api/v1/agents/{agent_id}", headers=alice)).status_code == 200
+                    assert (await client.put("/api/v1/models/1", headers=admin, json={"status": 0})).status_code == 200
+                    assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 200
                     assert (await client.get(f"/api/v1/agents/{agent_id}", headers=alice)).status_code == 404
                     assert (await client.get("/api/v1/agents", headers=alice)).json()["data"]["total"] == 0
             finally:
@@ -211,6 +232,137 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                 actions = (await db.scalars(select(AuditEvent.action).where(AuditEvent.target_id == agent_id))).all()
                 assert {"agent.created", "agent.updated", "agent.deleted"} <= set(actions)
         finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_named_user_agent_share(tmp_path: Path) -> None:
+    """指定用户能创建自己的会话；撤权后历史入口关闭且排队运行取消。"""
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'named-share.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def test_session():
+            async with sessions() as db:
+                yield db
+
+        app.dependency_overrides[get_db_session] = test_session
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all([
+                    Admin(id=user_id, username=name, password=hash_password("StrongPassword123"),
+                          role="user", status=1, is_deleted=0)
+                    for user_id, name in ((1, "share-owner"), (2, "share-recipient"), (3, "share-stranger"))
+                ])
+                db.add(ProviderConnection(
+                    id=1, name="share-provider", name_key="share-provider", kind="ollama",
+                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
+                ))
+                db.add(ModelCatalog(
+                    id=1, provider_id=1, external_id="verified", display_name="Verified",
+                    capabilities=["text"], verified_capabilities=["text"], capabilities_verified=True,
+                    context_window=8192, creator_id=1, status=1, is_deleted=0,
+                ))
+
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                async def login(name: str) -> dict[str, str]:
+                    response = await client.post("/api/v1/auth/login", json={
+                        "identifier": name, "password": "StrongPassword123",
+                    })
+                    assert response.status_code == 200, response.text
+                    return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+
+                owner, recipient, stranger = await login("share-owner"), await login("share-recipient"), await login("share-stranger")
+                created = await client.post("/api/v1/agents", headers=owner, json={
+                    "name": "Private prompt", "default_model_id": 1, "system_prompt": "owner-only-secret",
+                })
+                assert created.status_code == 201, created.text
+                agent_id = created.json()["data"]["id"]
+                base = f"/api/v1/agents/{agent_id}"
+                assert (await client.post(f"{base}/sessions", headers=recipient, json={"title": "mine"})).status_code == 404
+                assert (await client.post(f"{base}/shares", headers=recipient, json={"user_id": 2})).status_code == 404
+                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 1})).status_code == 404
+                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 999})).status_code == 404
+                granted = await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})
+                assert granted.status_code == 200, granted.text
+                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
+                assert (await client.get(f"{base}/shares", headers=owner)).json()["data"] == [
+                    {"user_id": 2, "username": "share-recipient"},
+                ]
+                shared = (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"]
+                assert len(shared) == 1 and shared[0]["id"] == agent_id
+                assert "system_prompt" not in shared[0]
+                assert (await client.get(f"/api/v1/agents/shared/{agent_id}", headers=recipient)).json()["data"]["id"] == agent_id
+                assert (await client.get(f"/api/v1/agents/shared/{agent_id}", headers=stranger)).status_code == 404
+                assert (await client.get(base, headers=recipient)).status_code == 404
+                assert (await client.get(f"{base}/shares", headers=recipient)).status_code == 404
+                assert (await client.get("/api/v1/agents/shared", headers=stranger)).json()["data"] == []
+
+                owner_session = await client.post(f"{base}/sessions", headers=owner, json={"title": "owner history"})
+                assert owner_session.status_code == 201
+                owner_session_id = owner_session.json()["data"]["id"]
+                recipient_session = await client.post(f"{base}/sessions", headers=recipient, json={"title": "recipient history"})
+                assert recipient_session.status_code == 201, recipient_session.text
+                recipient_session_id = recipient_session.json()["data"]["id"]
+                assert (await client.get(f"{base}/sessions", headers=recipient)).json()["data"]["total"] == 1
+                assert (await client.get(f"{base}/sessions/{owner_session_id}/messages", headers=recipient)).status_code == 404
+                assert (await client.get(f"{base}/sessions/{recipient_session_id}/messages", headers=owner)).status_code == 404
+                assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=stranger)).status_code == 404
+                foreign_artifact_id = str(uuid4())
+                recipient_artifact_id = str(uuid4())
+                async with sessions.begin() as db:
+                    db.add_all([
+                        Artifact(
+                            id=artifact_id, owner_id=owner_id, filename=filename, media_type="text/plain",
+                            byte_size=4, sha256="a" * 64, storage_key=uuid4().hex, source="upload", state="ready",
+                            expires_at=shanghai_now(naive=True) + timedelta(days=1), status=1, is_deleted=0,
+                        )
+                        for artifact_id, owner_id, filename in (
+                            (foreign_artifact_id, 1, "owner.txt"), (recipient_artifact_id, 2, "recipient.txt"),
+                        )
+                    ])
+                assert (await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
+                    "input_text": "read owner file", "request_key": "share-foreign-file",
+                    "artifact_ids": [foreign_artifact_id], "context_artifact_ids": [foreign_artifact_id],
+                })).status_code == 404
+                submitted = await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
+                    "input_text": "hello", "request_key": "share-queued",
+                })
+                assert submitted.status_code == 201, submitted.text
+                run_id = submitted.json()["data"]["id"]
+                assert (await client.get(f"/api/v1/runs/{run_id}", headers=owner)).status_code == 404
+                assert (await client.get(f"/api/v1/runs/{run_id}", headers=recipient)).status_code == 200
+
+                revoked = await client.delete(f"{base}/shares/2", headers=owner)
+                assert revoked.status_code == 200, revoked.text
+                assert (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"] == []
+                assert (await client.get(f"{base}/sessions/{recipient_session_id}/messages", headers=recipient)).status_code == 404
+                assert (await client.get(f"/api/v1/runs/{run_id}", headers=recipient)).status_code == 404
+                assert (await client.get(f"/api/v1/artifacts/{recipient_artifact_id}", headers=recipient)).status_code == 200
+                assert (await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
+                    "input_text": "again", "request_key": "share-revoked",
+                })).status_code == 404
+                assert (await client.delete(f"{base}/shares/2", headers=owner)).status_code == 404
+                async with sessions() as db:
+                    from app.models.agent_run import AgentRun
+
+                    assert (await db.get(AgentRun, run_id)).state == "cancelled"
+                    assert (await db.scalars(select(AgentShare))).all() == []
+                    actions = (await db.scalars(select(AuditEvent.action).where(
+                        AuditEvent.target_id == 2,
+                    ))).all()
+                    assert {"agent.shared", "agent.share_revoked"} <= set(actions)
+                assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
+                assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=recipient)).status_code == 200
+                assert (await client.delete(base, headers=owner)).status_code == 200
+                assert (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"] == []
+                assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=recipient)).status_code == 404
+        finally:
+            app.dependency_overrides.pop(get_db_session, None)
             await engine.dispose()
 
     asyncio.run(exercise())

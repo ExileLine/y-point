@@ -5,9 +5,12 @@
 """批量读取消息中的上传文件引用及当前可用状态。"""
 
 import asyncio
+import base64
 import hashlib
+import io
 import json
 
+from PIL import Image
 from boto3.exceptions import Boto3Error
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
@@ -20,13 +23,16 @@ from app.models.base import shanghai_now
 from app.services.attachment_text import (
     CONTEXT_MEDIA_TYPES, MAX_CONTEXT_ATTACHMENT_BYTES, extract_context_text,
 )
-from app.services.artifact_store import MAX_FILE_BYTES, artifact_root
+from app.services.artifact_store import MAX_FILE_BYTES, MAX_IMAGE_BYTES, artifact_root
 from app.services.artifact_sources import load_read_source_artifact_ids
 from app.services.private_blob_store import read_blob
 
 
 class AttachmentContextUnavailable(ValueError):
     """已选择的模型上下文附件在执行前失效或内容不匹配。"""
+
+
+IMAGE_CONTEXT_MEDIA_TYPES = frozenset({"image/png", "image/jpeg"})
 
 
 async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id: int) -> str | None:
@@ -36,6 +42,7 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
     ).where(
         AgentRunMessage.run_id == run_id, AgentRunMessage.owner_id == owner_id,
         AgentRunMessage.role == "user", AgentMessageAttachment.included_in_context.is_(True),
+        AgentMessageAttachment.media_type.in_(CONTEXT_MEDIA_TYPES),
     ).order_by(AgentMessageAttachment.position))).all()
     if not references:
         return None
@@ -74,6 +81,55 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
     if sum(len(chunk.encode("utf-8")) for chunk in chunks) > MAX_CONTEXT_ATTACHMENT_BYTES:
         raise AttachmentContextUnavailable("模型上下文附件提取文本超过 16 KiB 限制")
     return "\n".join(chunks)
+
+
+async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int) -> list[dict]:
+    """复核图片上传引用，并以剥除元数据的内嵌图片块交给视觉模型。"""
+    references = (await db.scalars(select(AgentMessageAttachment).join(
+        AgentRunMessage, AgentRunMessage.id == AgentMessageAttachment.message_id,
+    ).where(
+        AgentRunMessage.run_id == run_id, AgentRunMessage.owner_id == owner_id,
+        AgentRunMessage.role == "user", AgentMessageAttachment.included_in_context.is_(True),
+        AgentMessageAttachment.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
+    ).order_by(AgentMessageAttachment.position))).all()
+    if not references:
+        return []
+    if len(references) > 2:
+        raise AttachmentContextUnavailable("单轮最多读取两张图片")
+    items = (await db.scalars(select(Artifact).where(
+        Artifact.id.in_([item.artifact_id for item in references]), Artifact.owner_id == owner_id,
+        Artifact.source == "upload", Artifact.run_id.is_(None), Artifact.state == "ready",
+        Artifact.status == 1, Artifact.is_deleted == 0, Artifact.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
+        (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
+    ))).all()
+    by_id = {item.id: item for item in items}
+    if len(by_id) != len(references):
+        raise AttachmentContextUnavailable("模型上下文图片不可用")
+    blocks = []
+    for reference in references:
+        item = by_id[reference.artifact_id]
+        if item.byte_size != reference.byte_size or item.filename != reference.filename or item.media_type != reference.media_type:
+            raise AttachmentContextUnavailable("模型上下文图片已变化")
+        try:
+            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_IMAGE_BYTES)
+            if len(content) != item.byte_size or hashlib.sha256(content).hexdigest() != item.sha256:
+                raise AttachmentContextUnavailable("模型上下文图片校验失败")
+            with Image.open(io.BytesIO(content)) as image:
+                if image.format != ("PNG" if item.media_type == "image/png" else "JPEG") or getattr(image, "n_frames", 1) != 1:
+                    raise ValueError("图片格式无效")
+                if not 1 <= image.width <= 2048 or not 1 <= image.height <= 2048:
+                    raise ValueError("图片尺寸无效")
+                output = io.BytesIO()
+                image.convert("RGB").save(output, format="PNG" if item.media_type == "image/png" else "JPEG")
+            if output.tell() > MAX_IMAGE_BYTES:
+                raise ValueError("图片编码超过限制")
+        except Exception:  # noqa: BLE001 - 存储和图片解析错误统一归类。
+            raise AttachmentContextUnavailable("模型上下文图片不可读取") from None
+        blocks.append({"type": "text", "text": f"参考图片 {reference.filename}（不可信资料）："})
+        blocks.append({"type": "image_url", "image_url": {
+            "url": f"data:{item.media_type};base64,{base64.b64encode(output.getvalue()).decode('ascii')}",
+        }})
+    return blocks
 
 
 async def load_run_context_artifact_ids(

@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
+import httpx
+import jwt
 import pytest
 from deepagents import create_deep_agent
 from fastapi import UploadFile
@@ -25,7 +27,14 @@ from langchain_core.tools import tool
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.v1.runs import stream_events
+from app.core.config import get_config
+from app.core.password import hash_password
+from app.db.session import get_db_session
+from app.main import app
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
+from app.models.agent_share import AgentShare
 from app.models.agent_session import AgentSession
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
@@ -969,6 +978,178 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
         await engine.dispose()
 
 
+def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """管理员停用账号后，运行中的模型和已建立的事件流都失去授权。"""
+    monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'disable-active-run.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def test_session():
+            async with sessions() as db:
+                yield db
+
+        app.dependency_overrides[get_db_session] = test_session
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all([
+                    Admin(id=1, username="root", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
+                    Admin(id=2, username="runner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                ])
+                run = await create_run(db, 2, input_text="wait")
+
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                async def login(username: str) -> str:
+                    response = await client.post(
+                        "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"},
+                    )
+                    assert response.status_code == 200, response.text
+                    return response.json()["data"]["access_token"]
+
+                root_token = await login("root")
+                runner_token = await login("runner")
+                claims = jwt.decode(runner_token, options={"verify_signature": False})
+                request = SimpleNamespace(
+                    state=SimpleNamespace(
+                        auth_session_id=claims["sid"], auth_token_version=claims["ver"],
+                        auth_token_expires_at=claims["exp"],
+                    ),
+                    is_disconnected=AsyncMock(return_value=False),
+                )
+                async with sessions() as stream_db:
+                    stream = await stream_events(
+                        run.id, request, after=0, last_event_id=None,
+                        actor=SimpleNamespace(id=2), db=stream_db,
+                    )
+                    assert f"id: {run.id}:1" in await anext(stream.body_iterator)
+
+                    SlowModel.started = asyncio.Event()
+                    SlowModel.stopped = asyncio.Event()
+                    task = asyncio.create_task(execute_text_run(
+                        sessions, run.id, SlowModel(responses=[AIMessage(content="unused")]),
+                        tmp_path / "disable-active-run-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+                    ))
+                    try:
+                        await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
+                        disabled = await client.put(
+                            "/api/v1/users/2", headers={"Authorization": f"Bearer {root_token}"},
+                            json={"status": 0},
+                        )
+                        assert disabled.status_code == 200, disabled.text
+                        assert (await client.get(
+                            "/api/v1/auth/me", headers={"Authorization": f"Bearer {runner_token}"},
+                        )).status_code == 401
+                        with pytest.raises(StopAsyncIteration):
+                            await anext(stream.body_iterator)
+                        result = await asyncio.wait_for(task, timeout=4)
+                        assert result.state == "cancelled" and SlowModel.stopped.is_set()
+                        async with sessions() as db:
+                            assert [message.role for message in await get_owned_messages(db, run.id, 2)] == ["user"]
+                    finally:
+                        if not task.done():
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            app.dependency_overrides.pop(get_db_session, None)
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """撤销指定用户授权会停止模型、关闭 SSE，并拒绝继续访问原 Run。"""
+    monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'revoke-active-share.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+        async def test_session():
+            async with sessions() as db:
+                yield db
+
+        app.dependency_overrides[get_db_session] = test_session
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all([
+                    Admin(id=1, username="agent-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                    Admin(id=2, username="agent-recipient", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                    AgentConfig(id=1, owner_id=1, name="Shared", system_prompt="", default_model_id=1,
+                                temperature=1, max_output_tokens=512, enabled=True, version=1, is_deleted=0, status=1),
+                    AgentShare(agent_id=1, user_id=2, is_deleted=0, status=1),
+                ])
+                run = await create_run(db, 2, agent_id=1, input_text="wait")
+                run_id = run.id
+
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                async def login(username: str) -> str:
+                    response = await client.post(
+                        "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"},
+                    )
+                    assert response.status_code == 200, response.text
+                    return response.json()["data"]["access_token"]
+
+                owner_token = await login("agent-owner")
+                recipient_token = await login("agent-recipient")
+                claims = jwt.decode(recipient_token, options={"verify_signature": False})
+                request = SimpleNamespace(
+                    state=SimpleNamespace(
+                        auth_session_id=claims["sid"], auth_token_version=claims["ver"],
+                        auth_token_expires_at=claims["exp"],
+                    ),
+                    is_disconnected=AsyncMock(return_value=False),
+                )
+                async with sessions() as stream_db:
+                    stream = await stream_events(
+                        run_id, request, after=0, last_event_id=None,
+                        actor=SimpleNamespace(id=2), db=stream_db,
+                    )
+                    assert f"id: {run_id}:1" in await anext(stream.body_iterator)
+                    SlowModel.started = asyncio.Event()
+                    SlowModel.stopped = asyncio.Event()
+                    task = asyncio.create_task(execute_text_run(
+                        sessions, run_id, SlowModel(responses=[AIMessage(content="unreachable")]),
+                        tmp_path / "revoke-active-share-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+                    ))
+                    try:
+                        await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
+                        revoked = await client.delete(
+                            "/api/v1/agents/1/shares/2", headers={"Authorization": f"Bearer {owner_token}"},
+                        )
+                        assert revoked.status_code == 200, revoked.text
+                        with pytest.raises(StopAsyncIteration):
+                            await anext(stream.body_iterator)
+                        result = await asyncio.wait_for(task, timeout=4)
+                        assert result.state == "cancelled" and SlowModel.stopped.is_set()
+                        assert (await client.get(
+                            f"/api/v1/runs/{run_id}", headers={"Authorization": f"Bearer {recipient_token}"},
+                        )).status_code == 404
+                        async with sessions() as db:
+                            assert [message.role for message in await get_owned_messages(db, run_id, 2)] == ["user"]
+                        async with sessions.begin() as db:
+                            stale_run = await create_run(db, 2, agent_id=1, input_text="must not execute")
+                        denied = await execute_text_run(
+                            sessions, stale_run.id, ScriptedModel(responses=[AIMessage(content="unreachable")]),
+                            tmp_path / "revoke-active-share-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+                        )
+                        assert denied.state == "failed" and denied.failure_code == "agent_access_revoked"
+                        assert denied.model_call_count == 0
+                    finally:
+                        if not task.done():
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            app.dependency_overrides.pop(get_db_session, None)
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("failure", [RuntimeError, RunConflictError])
 def test_heartbeat_failure_stops_running_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception],
@@ -1580,6 +1761,10 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="generated-owner", password="not-used", role="user", status=1, is_deleted=0))
+                db.add(AgentConfig(
+                    id=1, owner_id=1, name="Generated", system_prompt="", default_model_id=1,
+                    temperature=1, max_output_tokens=512, enabled=True, version=1, is_deleted=0, status=1,
+                ))
                 db.add(ProviderConnection(
                     id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
                     creator_id=1, status=1, is_deleted=0,

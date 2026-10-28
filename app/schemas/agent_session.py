@@ -64,7 +64,7 @@ class SessionRunCreateIn(BaseModel):
         default_factory=list, max_length=5, description="本轮引用的已上传私有文件 ID，按展示顺序排列",
     )
     context_artifact_ids: list[ArtifactId] = Field(
-        default_factory=list, max_length=5, description="本轮需要读取内容的 TXT 附件 ID，必须属于 artifact_ids",
+        default_factory=list, max_length=5, description="本轮需要模型读取的文本或图片附件 ID，必须属于 artifact_ids",
         examples=[["550e8400-e29b-41d4-a716-446655440000"]],
     )
 

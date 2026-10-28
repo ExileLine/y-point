@@ -12,6 +12,7 @@ from app.core.response import api_response
 from app.core.security import require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import DiscoveredModelOut, ModelDiscoveryOut, ProviderCreateIn, ProviderKindOut, ProviderOut, ProviderUpdateIn
@@ -115,6 +116,19 @@ async def update_provider(
     """更新连接配置，未传入的凭据保持原值。"""
     provider = await get_provider_or_404(db, provider_id)
     fields = body.model_fields_set
+    if ("status" in fields and body.status == 0) or fields & {
+        "base_url", "api_key", "custom_headers", "api_version", "region",
+    }:
+        await db.scalars(select(ModelCatalog.id).where(
+            ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0,
+        ).order_by(ModelCatalog.id).with_for_update())
+        linked = await db.scalar(select(AgentConfig.id).join(
+            ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id,
+        ).where(
+            ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0,
+        ).limit(1))
+        if linked is not None:
+            raise CustomException(status_code=409, custom_code=10005, detail="连接仍被 Agent 引用，请先更换其默认模型")
     for name in ("name", "api_version", "region", "timeout_seconds", "remark", "status"):
         if name in fields:
             value = getattr(body, name)

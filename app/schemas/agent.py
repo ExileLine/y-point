@@ -93,3 +93,24 @@ class AgentPageOut(BaseModel):
     total: int = Field(description="符合条件的总数", examples=[1])
     page: int = Field(description="页码", examples=[1])
     page_size: int = Field(description="每页数量", examples=[20])
+
+
+class AgentShareIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: int = Field(gt=0, description="指定共享的用户 ID", examples=[2])
+
+
+class AgentShareOut(BaseModel):
+    user_id: int = Field(description="获授权用户 ID", examples=[2])
+    username: str = Field(description="获授权用户名", examples=["alice"])
+
+
+class SharedAgentOut(BaseModel):
+    id: int = Field(description="智能体 ID", examples=[1])
+    owner_id: int = Field(description="智能体所有者 ID", examples=[1])
+    name: str = Field(description="智能体名称", examples=["需求分析助手"])
+    description: str | None = Field(description="智能体描述")
+    icon: str | None = Field(description="图标标识")
+    welcome_message: str | None = Field(description="欢迎语")
+    enabled: bool = Field(description="是否启用")

@@ -18,6 +18,7 @@ from app.models.agent_run import AgentRun
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.services.agent_access import can_access_run_agent
 
 RESERVED_TOOL_NAMES = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos"})
 ToolEffect = Literal["read", "write"]
@@ -42,6 +43,8 @@ class ToolContext:
             or run.lease_expires_at is None or run.lease_expires_at <= now
             or not enabled(run) or owner is None or owner.status != 1 or owner.is_deleted != 0
         ):
+            raise ValueError("工具授权已失效")
+        if not await can_access_run_agent(db, run.agent_id, self.owner_id):
             raise ValueError("工具授权已失效")
         if run.model_id is not None:
             model = await db.get(ModelCatalog, run.model_id)

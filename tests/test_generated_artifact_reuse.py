@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1 import artifacts as artifact_api
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_session import AgentSession
 from app.models.artifact import Artifact
@@ -50,6 +51,11 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(
             )
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="reuse-owner", password="unused", role="user", status=1, is_deleted=0))
+                db.add(AgentConfig(
+                    id=1, owner_id=1, name="Reusable", system_prompt="续编辑助手", default_model_id=1,
+                    temperature=Decimal("1"), max_output_tokens=512, enabled=True, version=1,
+                    is_deleted=0, status=1,
+                ))
                 db.add(ProviderConnection(
                     id=1, name="reuse", name_key="reuse", kind="ollama",
                     base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,

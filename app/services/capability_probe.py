@@ -235,7 +235,7 @@ async def probe_capability(
             failure = "authentication"
         except BotoCoreError as exc:
             failure = "timeout" if "Timeout" in type(exc).__name__ else "network"
-        except (NotImplementedError, ValueError, TypeError, KeyError):
+        except (NotImplementedError, ValueError, TypeError, KeyError, AttributeError):
             failure = "invalid_response"
         if attempt == 0 and status in RETRYABLE_UPSTREAM_STATUSES and not saw_chunk:
             await asyncio.sleep(PROBE_RETRY_DELAY_SECONDS)

@@ -13,6 +13,7 @@ import stat
 import time
 import zipfile
 import zlib
+from PIL import Image, UnidentifiedImageError
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -38,12 +39,16 @@ from app.services.private_blob_store import delete_blob, old_blob_batches, store
 
 MAX_FILES = 5
 MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
 ORPHAN_GRACE_SECONDS = 3600
 MEDIA_TYPES = {
     ".txt": "text/plain",
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
 }
 GENERATED_TEXT_MEDIA_TYPES = {
     ".md": "text/markdown", ".html": "text/html", ".csv": "text/csv", ".json": "application/json",
@@ -126,6 +131,23 @@ def validate_file(path: Path, filename: str, *, generated: bool = False) -> str:
             stream.seek(max(0, path.stat().st_size - 1024))
             if b"%%EOF" not in stream.read():
                 raise ArtifactValidationError("PDF 文件缺少结束标记")
+    elif suffix in {".png", ".jpg", ".jpeg"}:
+        if path.stat().st_size > MAX_IMAGE_BYTES:
+            raise ArtifactValidationError("图片超过 2 MiB")
+        try:
+            if suffix == ".png":
+                with path.open("rb") as stream:
+                    stream.seek(-12, os.SEEK_END)
+                    if stream.read() != b"\x00\x00\x00\x00IEND\xaeB`\x82":
+                        raise ArtifactValidationError("PNG 文件缺少结束块")
+            with Image.open(path) as image:
+                if image.format != ("PNG" if suffix == ".png" else "JPEG") or getattr(image, "n_frames", 1) != 1:
+                    raise ArtifactValidationError("图片格式与扩展名不一致")
+                if not 1 <= image.width <= 2048 or not 1 <= image.height <= 2048:
+                    raise ArtifactValidationError("图片尺寸超过限制")
+                image.load()
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise ArtifactValidationError("图片损坏或不可读取") from exc
     else:
         _validate_office(path, suffix)
     return allowed_types[suffix]

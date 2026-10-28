@@ -8,6 +8,9 @@ from datetime import timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.password import hash_password, verify_password
@@ -76,12 +79,19 @@ async def check_login_limit(db: AsyncSession, identifier: str, client_ip: str) -
 async def record_login_failure(db: AsyncSession, identifier: str, client_ip: str) -> None:
     """累计账号及来源地址的登录失败次数并记录审计事件。"""
     now = utc_now()
+    table = AuthAttempt.__table__
     for key in (f"account:{identifier.lower()}", f"ip:{client_ip}"):
         attempt_id = hashlib.sha256(key.encode()).hexdigest()
-        attempt = await db.get(AuthAttempt, attempt_id)
-        if attempt is None:
-            attempt = AuthAttempt(id=attempt_id, failures=0, window_started_at=now)
-            db.add(attempt)
+        values = {"id": attempt_id, "failures": 0, "window_started_at": now}
+        dialect = db.bind.dialect.name
+        if dialect == "postgresql":
+            statement = postgres_insert(table).values(**values).on_conflict_do_nothing(index_elements=[table.c.id])
+        elif dialect == "mysql":
+            statement = mysql_insert(table).values(**values).on_duplicate_key_update(failures=table.c.failures)
+        else:
+            statement = sqlite_insert(table).values(**values).on_conflict_do_nothing(index_elements=[table.c.id])
+        await db.execute(statement)
+        attempt = await db.get(AuthAttempt, attempt_id, with_for_update=True, populate_existing=True)
         if now - attempt.window_started_at >= timedelta(minutes=15):
             attempt.failures = 0
             attempt.window_started_at = now

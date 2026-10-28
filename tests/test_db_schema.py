@@ -29,6 +29,7 @@ from app.models.base import Base, shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.run_dispatcher import dispatch_next_run
+from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.run_manager import (
     RunConflictError, claim_run, complete_run, create_run, get_owned_messages, replay_events,
 )
@@ -248,8 +249,11 @@ async def _exercise_isolated_migrations(
                         )
                         assert duplicate.status_code == 201 and duplicate.json()["data"]["id"] == run_id
                         assert (await client.get(f"/api/v1/runs/{run_id}", headers=outsider)).status_code == 404
+                        checkpoint_path = private_root / "checkpoints.sqlite"
+                        async with open_async_checkpointer(checkpoint_path) as checkpointer:
+                            await checkpointer.setup()
                         result = await dispatch_next_run(
-                            sessions, private_root / "checkpoints.sqlite", resolve_model=resolve_model,
+                            sessions, checkpoint_path, resolve_model=resolve_model,
                             lease_seconds=2, poll_seconds=0.1,
                         )
                         assert result is not None and result.id == run_id and result.state == "completed"

@@ -504,7 +504,7 @@ async def fail_run(
     if failure_code not in {
         "model_error", "empty_response", "checkpoint_error", "checkpoint_mismatch", "runtime_error",
         "attachment_unavailable", "context_window_exceeded", "artifact_required", "summary_error",
-        "lease_monitor_error",
+        "lease_monitor_error", "agent_access_revoked",
         "model_call_budget_exceeded", "tool_call_budget_exceeded", "token_budget_exceeded", "token_usage_unavailable",
         "cost_budget_exceeded", "cost_usage_unavailable",
     }:

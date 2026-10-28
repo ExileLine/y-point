@@ -14,6 +14,7 @@ from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
 from app.models.agent_run import AgentRun
 from app.models.agent_config import AgentConfig
+from app.models.agent_share import AgentShare
 from app.models.agent_session import AgentSession
 from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
@@ -35,10 +36,12 @@ __all__ = [
     "ModelCallRecord",
     "AgentRun",
     "AgentConfig",
+    "AgentShare",
     "AgentSession",
     "AgentRunEvent",
     "AgentRunMessage",
     "AgentMessageAttachment",
+    "RunApproval",
     "RunWorkerHeartbeat",
     "Artifact",
     "ArtifactSource",

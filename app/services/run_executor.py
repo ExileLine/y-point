@@ -34,8 +34,9 @@ from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
+from app.services.agent_access import can_access_run_agent
 from app.services.artifact_intent import requested_artifact_suffixes
-from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context
+from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context, load_model_image_context
 from app.services.run_manager import (
     CostBudgetExceeded, ModelCallBudgetExceeded, RunConflictError, TokenBudgetExceeded, ToolCallBudgetExceeded,
     acknowledge_cancel,
@@ -62,6 +63,25 @@ from app.services.tool_registry import RESERVED_TOOL_NAMES
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
+
+
+def _summary_messages_without_images(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """摘要只保留图片旁的文字，避免把内嵌图片再次发给摘要模型。"""
+    result = []
+    for message in messages:
+        if isinstance(message.content, list):
+            text_parts = []
+            for block in message.content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif isinstance(block, dict) and block.get("type") not in {"image", "image_url"}:
+                    text_parts.append(str(block))
+            result.append(message.model_copy(update={"content": "\n".join(text_parts)}))
+        else:
+            result.append(message)
+    return result
 
 
 class ToolExecutionTimeoutError(Exception):
@@ -195,6 +215,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             raise PermissionError("运行未授权该工具")
         tool_call_id = str(uuid4())
         async with self.sessions.begin() as db:
+            run = await db.get(AgentRun, self.run_id)
+            if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
+                raise PermissionError("运行授权已失效")
             await reserve_tool_call(db, self.run_id, self.lease_token)
             await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, tool_name)
         try:
@@ -343,7 +366,8 @@ async def _watch_run(
                     should_cancel = True
                 else:
                     user = await db.get(Admin, run.owner_id)
-                    if user is None or user.status != 1 or user.is_deleted != 0:
+                    if (user is None or user.status != 1 or user.is_deleted != 0
+                        or not await can_access_run_agent(db, run.agent_id, run.owner_id)):
                         await request_cancel(db, run_id, run.owner_id)
                         should_cancel = True
                     else:
@@ -414,16 +438,22 @@ async def execute_text_run(
         user = await db.get(Admin, run.owner_id)
         if user is None or user.status != 1 or user.is_deleted != 0:
             return await fail_run(db, run_id, lease_token, "runtime_error")
+        if not await can_access_run_agent(db, run.agent_id, run.owner_id):
+            return await fail_run(db, run_id, lease_token, "agent_access_revoked")
         input_text = await db.scalar(select(AgentRunMessage.content).where(
             AgentRunMessage.run_id == run_id, AgentRunMessage.role == "user",
         ))
         if input_text is None:
             return await fail_run(db, run_id, lease_token, "runtime_error")
         required_artifact_suffixes = requested_artifact_suffixes(input_text) if run.session_id is not None else None
+        image_blocks: list[dict] = []
         if not resume:
             try:
                 attachment_context = await asyncio.wait_for(
                     load_model_attachment_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2),
+                )
+                image_blocks = await asyncio.wait_for(
+                    load_model_image_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2),
                 )
             except (AttachmentContextUnavailable, TimeoutError):
                 return await fail_run(db, run_id, lease_token, "attachment_unavailable")
@@ -452,6 +482,8 @@ async def execute_text_run(
             RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id,
         )) if resume else None
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
+        if image_blocks and (catalog_model is None or "vision" not in (catalog_model.verified_capabilities or [])):
+            return await fail_run(db, run_id, lease_token, "attachment_unavailable")
 
     assert model is not None
     runtime_config = RuntimeRunConfig.from_run(
@@ -461,13 +493,19 @@ async def execute_text_run(
         input_budget = runtime_config.input_budget()
     except ValueError:
         return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
-    if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_text)]) > input_budget:
+    input_content = [{"type": "text", "text": input_text}, *image_blocks] if image_blocks else input_text
+    image_token_reserve = 2048 * sum(block.get("type") == "image_url" for block in image_blocks)
+    if input_budget is not None and (
+        count_tokens_approximately([HumanMessage(content=input_content)]) + image_token_reserve > input_budget
+    ):
         return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
 
     async def summarize_history(messages: list[BaseMessage]) -> str:
         async with sessions.begin() as db:
             await reserve_model_call(db, run_id, lease_token)
-        prompt = CONVERSATION_SUMMARY_PROMPT.format(messages=get_buffer_string(messages))
+        prompt = CONVERSATION_SUMMARY_PROMPT.format(
+            messages=get_buffer_string(_summary_messages_without_images(messages)),
+        )
         try:
             response = await asyncio.wait_for(
                 model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds,
@@ -542,7 +580,7 @@ async def execute_text_run(
             previous_message_count = len(snapshot.values.get("messages", []))
             invocation = (
                 Command(resume={"decisions": [{"type": "approve"} for _ in actions]}) if resume
-                else {"messages": [{"role": "user", "content": input_text}]}
+                else {"messages": [{"role": "user", "content": input_content}]}
             )
             started = time.perf_counter()
             deadline = time.monotonic() + min(timeout_seconds, run.model_timeout_seconds)

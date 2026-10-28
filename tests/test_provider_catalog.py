@@ -5,8 +5,12 @@
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -14,7 +18,8 @@ from cryptography.fernet import Fernet
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -56,9 +61,9 @@ from app.services.provider_probe import normalize_base_url, probe_provider
 PASSWORD = "StrongPassword123"
 
 
-async def exercise_catalog(database: Path | str, monkeypatch: pytest.MonkeyPatch) -> None:
+async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.MonkeyPatch) -> None:
     """验证供应商和模型的管理员权限、密文存储及关联规则。"""
-    database_url = database if isinstance(database, str) else f"sqlite+aiosqlite:///{database}"
+    database_url = database if isinstance(database, (str, URL)) else f"sqlite+aiosqlite:///{database}"
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
@@ -666,6 +671,37 @@ def test_provider_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     """运行供应商和模型管理的 HTTP 集成用例。"""
     monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     asyncio.run(exercise_catalog(tmp_path / "catalog.db", monkeypatch))
+
+
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_POSTGRES_M2") != "1", reason="需显式启用隔离 PostgreSQL M2 验收")
+def test_postgres_m2_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """在随机 PostgreSQL 数据库验收迁移和供应商/模型 HTTP 流程。"""
+    monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    async def exercise() -> None:
+        """创建隔离库，运行迁移与业务测试后删除该库。"""
+        base_url = make_url(get_config().pg_async_url)
+        admin_engine = create_async_engine(base_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+        database_name = f"yp_m2_catalog_{uuid4().hex[:12]}"
+        created = False
+        try:
+            async with admin_engine.connect() as connection:
+                await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            created = True
+            env = os.environ.copy()
+            env.update({"DB_BACKEND": "postgres", "POSTGRESQL_DATABASE": database_name})
+            root = Path(__file__).resolve().parents[1]
+            for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
+                result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)
+                assert result.returncode == 0, result.stderr
+            await exercise_catalog(base_url.set(database=database_name), monkeypatch)
+        finally:
+            if created:
+                async with admin_engine.connect() as connection:
+                    await connection.execute(text(f'DROP DATABASE "{database_name}"'))
+            await admin_engine.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_provider_probe(monkeypatch: pytest.MonkeyPatch) -> None:

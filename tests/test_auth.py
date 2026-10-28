@@ -4,11 +4,18 @@
 # @File    : test_auth.py
 
 import asyncio
+import hashlib
+import os
+import subprocess
+import sys
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import jwt
 import pytest
+from sqlalchemy import delete, select, text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_config
@@ -16,7 +23,7 @@ from app.core.password import hash_password
 from app.core.security import ACCESS_TOKEN_SECONDS
 from app.db.session import get_db_session
 from app.main import app
-from app.models import Admin
+from app.models import Admin, AuthAttempt
 from app.models.base import Base
 from app.schemas.auth import (
     AuditOut,
@@ -44,9 +51,9 @@ def response_data(response: httpx.Response) -> dict | list:
     return body["data"]
 
 
-async def exercise_auth(database: Path) -> None:
+async def exercise_auth(database: Path | URL) -> None:
     """验证认证、管理员操作与令牌撤销的完整 HTTP 流程。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    engine = create_async_engine(database if isinstance(database, URL) else f"sqlite+aiosqlite:///{database}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -151,9 +158,9 @@ async def exercise_auth(database: Path) -> None:
         await engine.dispose()
 
 
-async def exercise_login_limit(database: Path) -> None:
+async def exercise_login_limit(database: Path | URL) -> None:
     """验证连续登录失败后的限流响应。"""
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    engine = create_async_engine(database if isinstance(database, URL) else f"sqlite+aiosqlite:///{database}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -175,6 +182,49 @@ async def exercise_login_limit(database: Path) -> None:
         await engine.dispose()
 
 
+async def exercise_concurrent_login_limit(database: URL) -> None:
+    """验证并发错误登录不会丢失计数或抛出数据库异常。"""
+    engine = create_async_engine(database)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def test_session():
+        """为并发请求提供独立数据库事务。"""
+        async with sessions() as db:
+            yield db
+
+    app.dependency_overrides[get_db_session] = test_session
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async def failed_login() -> httpx.Response:
+                """以相同账号和来源地址提交错误凭据。"""
+                return await client.post("/api/v1/auth/login", json={"identifier": "parallel-unknown", "password": "wrong"})
+
+            async def assert_counts() -> None:
+                """检查账号和来源地址的失败次数都没有丢失。"""
+                account_id = hashlib.sha256(b"account:parallel-unknown").hexdigest()
+                address_id = hashlib.sha256(b"ip:127.0.0.1").hexdigest()
+                async with sessions() as db:
+                    rows = (await db.scalars(select(AuthAttempt).where(AuthAttempt.id.in_([account_id, address_id])))).all()
+                    assert len(rows) == 2
+                    assert all(row.failures == 5 and row.locked_until is not None for row in rows)
+
+            responses = await asyncio.gather(*(failed_login() for _ in range(5)))
+            assert [response.status_code for response in responses] == [401] * 5
+            assert (await failed_login()).status_code == 429
+            await assert_counts()
+
+            async with sessions.begin() as db:
+                await db.execute(delete(AuthAttempt))
+            assert (await failed_login()).status_code == 401
+            responses = await asyncio.gather(*(failed_login() for _ in range(4)))
+            assert [response.status_code for response in responses] == [401] * 4
+            assert (await failed_login()).status_code == 429
+            await assert_counts()
+    finally:
+        app.dependency_overrides.clear()
+        await engine.dispose()
+
+
 def test_auth_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """运行认证与用户管理的 HTTP 集成用例。"""
     monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
@@ -184,6 +234,58 @@ def test_auth_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_login_rate_limit(tmp_path: Path) -> None:
     """运行数据库登录限流用例。"""
     asyncio.run(exercise_login_limit(tmp_path / "rate.db"))
+
+
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_POSTGRES_M1") != "1", reason="需显式启用隔离 PostgreSQL M1 验收")
+def test_postgres_m1_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """在隔离 PostgreSQL 库验证迁移、用户管理、撤权与登录限流。"""
+    asyncio.run(exercise_isolated_m1_auth("postgres", make_url(get_config().pg_async_url), "postgres", monkeypatch))
+
+
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_MYSQL_M1") != "1", reason="需显式启用隔离 MySQL M1 验收")
+def test_mysql_m1_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """在隔离 MySQL 库验证迁移、用户管理、撤权与登录限流。"""
+    asyncio.run(exercise_isolated_m1_auth("mysql", make_url(get_config().mysql_async_url), None, monkeypatch))
+
+
+async def exercise_isolated_m1_auth(backend: str, base_url: URL, admin_database: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """在随机测试库验收 M1 关键 HTTP 流程和并发失败计数。"""
+    monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
+    admin_engine = create_async_engine(base_url.set(database=admin_database), isolation_level="AUTOCOMMIT")
+    database_name = f"yp_m1_auth_{uuid4().hex[:12]}"
+    identifier = f'"{database_name}"' if backend == "postgres" else f"`{database_name}`"
+    created = False
+    try:
+        async with admin_engine.connect() as connection:
+            await connection.execute(text(f"CREATE DATABASE {identifier}"))
+        created = True
+        env = os.environ.copy()
+        env.update({"DB_BACKEND": backend, "POSTGRESQL_DATABASE" if backend == "postgres" else "MYSQL_DATABASE": database_name})
+        root = Path(__file__).resolve().parents[1]
+        for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
+            result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+        database_url = base_url.set(database=database_name)
+        await exercise_auth(database_url)
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(delete(AuthAttempt))
+        finally:
+            await engine.dispose()
+        await exercise_login_limit(database_url)
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(delete(AuthAttempt))
+        finally:
+            await engine.dispose()
+        await exercise_concurrent_login_limit(database_url)
+    finally:
+        if created:
+            async with admin_engine.connect() as connection:
+                await connection.execute(text(f"DROP DATABASE {identifier}"))
+        await admin_engine.dispose()
 
 
 def test_m1_route_summaries() -> None:

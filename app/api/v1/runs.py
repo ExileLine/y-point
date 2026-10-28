@@ -30,6 +30,7 @@ from app.models.artifact import Artifact
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.services.agent_access import can_access_run_agent
 from app.schemas.run import (
     ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, RunSnapshotOut, WorkerStatusOut,
 )
@@ -75,9 +76,12 @@ async def read_worker_status(_: Admin = Depends(require_admin), db: AsyncSession
 async def _owned_run(db: AsyncSession, run_id: str, owner_id: int):
     """将不存在或跨用户运行统一映射为公开的 404 错误。"""
     try:
-        return await get_owned_run(db, run_id, owner_id)
+        run = await get_owned_run(db, run_id, owner_id)
     except RunNotFoundError:
         raise CustomException(status_code=404, custom_code=10002, detail="运行不存在") from None
+    if not await can_access_run_agent(db, run.agent_id, owner_id):
+        raise CustomException(status_code=404, custom_code=10002, detail="运行不存在")
+    return run
 
 
 @router.post("", summary="创建文本运行")
@@ -276,6 +280,8 @@ async def stream_events(
             ):
                 break
             run = await get_owned_run(db, run_id, owner_id)
+            if not await can_access_run_agent(db, run.agent_id, owner_id):
+                break
             events = await replay_events(db, run_id, owner_id, after=cursor)
             for event in events:
                 cursor = event.sequence

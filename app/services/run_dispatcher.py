@@ -16,6 +16,7 @@ from app.models.agent_run import AgentRun
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.models.run_approval import RunApproval
+from app.services.agent_access import can_access_run_agent
 from app.services.model_adapter import build_chat_model
 from app.services.run_executor import ModelResolver, ToolResolver, execute_text_run
 from app.services.run_manager import RunConflictError
@@ -26,6 +27,8 @@ async def resolve_stored_model(db: AsyncSession, run: AgentRun) -> BaseChatModel
     user = await db.get(Admin, run.owner_id)
     if user is None or user.status != 1 or user.is_deleted != 0 or run.model_id is None:
         raise RunConflictError("用户或模型不可用")
+    if not await can_access_run_agent(db, run.agent_id, run.owner_id):
+        raise RunConflictError("智能体授权已撤销")
     model = await db.get(ModelCatalog, run.model_id)
     if model is None or model.status != 1 or model.is_deleted != 0:
         raise RunConflictError("模型不可用")
