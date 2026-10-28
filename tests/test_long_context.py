@@ -25,6 +25,7 @@ from app.services.runtime_adapter import RuntimeRunConfig
 class TrackingModel(FakeMessagesListChatModel):
     summary_calls: ClassVar[int] = 0
     normal_calls: ClassVar[int] = 0
+    fail_summary: ClassVar[bool] = False
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
         return self
@@ -32,6 +33,8 @@ class TrackingModel(FakeMessagesListChatModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         if any("压缩成准确的上下文摘要" in str(message.content) for message in messages):
             type(self).summary_calls += 1
+            if type(self).fail_summary:
+                raise RuntimeError("private-summary-error")
             answer = "此前的用户输入已压缩为摘要。"
         else:
             type(self).normal_calls += 1
@@ -113,6 +116,75 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
             assert rejected_input.state == "failed" and rejected_input.failure_code == "context_window_exceeded"
             assert TrackingModel.normal_calls + TrackingModel.summary_calls == before
         finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'summary-error.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "summary-error-checkpoint.db"
+        TrackingModel.summary_calls = TrackingModel.normal_calls = 0
+        TrackingModel.fail_summary = False
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="summary-error-owner", password="unused", role="user", status=1, is_deleted=0))
+                db.add(ProviderConnection(
+                    id=1, name="summary-error-provider", name_key="summary-error-provider", kind="ollama",
+                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
+                ))
+                db.add(ModelCatalog(
+                    id=1, provider_id=1, external_id="small-context", display_name="Small context",
+                    verified_capabilities=["text"], context_window=2048,
+                    creator_id=1, status=1, is_deleted=0,
+                ))
+                session = AgentSession(id="c" * 36, owner_id=1, agent_id=1, thread_id="d" * 36, title="摘要失败")
+                db.add(session)
+                await db.flush()
+            model = TrackingModel(responses=[AIMessage(content="fallback")])
+            for index in range(2):
+                async with sessions.begin() as db:
+                    run = await create_run(
+                        db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
+                        agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
+                        agent_max_output_tokens=256, input_text=f"第{index + 1}轮：" + "甲" * 2600,
+                        max_model_calls=3,
+                    )
+                TrackingModel.fail_summary = index == 1
+                result = await execute_text_run(sessions, run.id, model, checkpoint)
+                assert result.state == ("completed" if index == 0 else "failed")
+                if index == 1:
+                    assert result.failure_code == "summary_error"
+                    assert result.model_call_count >= 1
+                    assert TrackingModel.summary_calls >= 1
+                    async with sessions() as db:
+                        messages = (await db.scalars(select(AgentRunMessage).where(
+                            AgentRunMessage.run_id == run.id,
+                        ))).all()
+                        assert [message.role for message in messages] == ["user"]
+            TrackingModel.fail_summary = False
+            async with sessions.begin() as db:
+                followup = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
+                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=256, input_text="继续回答", max_model_calls=3,
+                )
+            resumed = await execute_text_run(sessions, followup.id, model, checkpoint)
+            assert resumed.state == "completed", resumed.failure_code
+            async with sessions.begin() as db:
+                later = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
+                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=256, input_text="再继续一轮", max_model_calls=3,
+                )
+            later_result = await execute_text_run(sessions, later.id, model, checkpoint)
+            assert later_result.state == "completed", later_result.failure_code
+        finally:
+            TrackingModel.fail_summary = False
             await engine.dispose()
 
     asyncio.run(exercise())

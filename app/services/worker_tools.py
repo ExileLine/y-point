@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
+from app.models.run_artifact_read import RunArtifactRead
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.services.attachment_text import GENERATED_CONTEXT_MEDIA_TYPES, extract_context_text
@@ -137,6 +138,18 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
             extracted = await asyncio.to_thread(extract_context_text, content, media_type)
         except Exception:  # noqa: BLE001 - 文件损坏和解析器异常不暴露存储细节。
             raise ValueError("产物不可读取") from None
+        async with context.sessions.begin() as db:
+            run = await context.require_active(db, enabled=lambda current: current.session_id is not None)
+            current = await db.get(Artifact, artifact_id)
+            if (
+                current is None or current.owner_id != context.owner_id or current.state != "ready"
+                or current.is_deleted != 0 or current.status != 1
+                or current.expires_at is not None and current.expires_at <= shanghai_now(naive=True)
+            ):
+                raise ValueError("产物不可读取")
+            db.add(RunArtifactRead(
+                run_id=run.id, owner_id=context.owner_id, source_artifact_id=artifact_id,
+            ))
         return json.dumps({
             "artifact_id": artifact_id, "filename": filename, "media_type": media_type,
             "content": extracted,

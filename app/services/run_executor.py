@@ -30,9 +30,11 @@ from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.agent_run_message import AgentRunMessage
+from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
+from app.services.artifact_intent import requested_artifact_suffixes
 from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context
 from app.services.run_manager import (
     CostBudgetExceeded, ModelCallBudgetExceeded, RunConflictError, TokenBudgetExceeded, ToolCallBudgetExceeded,
@@ -76,6 +78,10 @@ class TokenUsageUnavailableError(Exception):
 
 class CostUsageUnavailableError(Exception):
     """表示开启成本预算后上游模型未报告完整输入和输出用量。"""
+
+
+class SummaryModelError(Exception):
+    """摘要模型失败，当前线程最新检查点可能尚未提交到业务消息。"""
 
 
 def _reported_model_usage(response: ModelResponse | ExtendedModelResponse | AIMessage) -> tuple[int | None, int | None, int | None]:
@@ -295,6 +301,31 @@ async def _stream_model_text(
                 await append_text_delta(db, run_id, lease_token, content[offset:offset + 2048])
 
 
+async def _has_required_artifacts(
+    db: AsyncSession, run_id: str, owner_id: int, suffixes: frozenset[str],
+) -> bool:
+    filenames = (await db.scalars(select(Artifact.filename).where(
+        Artifact.run_id == run_id, Artifact.owner_id == owner_id,
+        Artifact.source == "generated", Artifact.state == "pending",
+        Artifact.is_deleted == 0, Artifact.status == 1,
+        Artifact.publication_key.like("model-%"),
+    ))).all()
+    return bool(filenames) and suffixes <= {Path(filename).suffix.lower() for filename in filenames}
+
+
+def _artifact_retry_tools_available(suffixes: frozenset[str], tools: list[BaseTool]) -> bool:
+    by_suffix = {
+        ".txt": "create_text_artifact", ".md": "create_text_artifact",
+        ".html": "create_text_artifact", ".json": "create_text_artifact", ".csv": "create_text_artifact",
+        ".docx": "create_document_artifact", ".pdf": "create_document_artifact",
+        ".xlsx": "create_spreadsheet_artifact",
+    }
+    available = {tool.name for tool in tools}
+    if not suffixes:
+        return bool(available & set(by_suffix.values()))
+    return {by_suffix[suffix] for suffix in suffixes} <= available
+
+
 async def _watch_run(
     sessions: async_sessionmaker[AsyncSession], run_id: str, lease_token: str, task: asyncio.Task,
     *, poll_seconds: float, lease_seconds: int,
@@ -388,6 +419,7 @@ async def execute_text_run(
         ))
         if input_text is None:
             return await fail_run(db, run_id, lease_token, "runtime_error")
+        required_artifact_suffixes = requested_artifact_suffixes(input_text) if run.session_id is not None else None
         if not resume:
             try:
                 attachment_context = await asyncio.wait_for(
@@ -436,37 +468,61 @@ async def execute_text_run(
         async with sessions.begin() as db:
             await reserve_model_call(db, run_id, lease_token)
         prompt = CONVERSATION_SUMMARY_PROMPT.format(messages=get_buffer_string(messages))
-        response = await asyncio.wait_for(
-            model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds,
-        )
+        try:
+            response = await asyncio.wait_for(
+                model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds,
+            )
+        except Exception as exc:
+            raise SummaryModelError("摘要模型调用失败") from exc
         await _account_model_response(
             response, sessions, run_id, lease_token,
             run.max_total_tokens, run.max_estimated_cost, run.cost_input_price, run.cost_output_price,
         )
         summary = str(response.text).strip()
         if not summary:
-            raise ValueError("对话摘要为空")
+            raise SummaryModelError("对话摘要为空")
         return summary
 
     started = None
     try:
         async with open_async_checkpointer(checkpoint_path) as checkpointer:
-            runtime = DeepAgentsRuntimeAdapter(
-                runtime_config,
-                model=model, tools=tools, interrupt_on=interrupt_on, checkpointer=checkpointer,
-                middleware=[AuthorizedToolsMiddleware(
-                    {tool.name for tool in tools}, sessions, run_id, lease_token,
-                    run.tool_timeout_seconds, run.max_total_tokens, run.max_estimated_cost,
-                    run.cost_input_price, run.cost_output_price,
-                )], summarizer=summarize_history,
-            )
+            def build_runtime() -> DeepAgentsRuntimeAdapter:
+                return DeepAgentsRuntimeAdapter(
+                    runtime_config,
+                    model=model, tools=tools, interrupt_on=interrupt_on, checkpointer=checkpointer,
+                    middleware=[AuthorizedToolsMiddleware(
+                        {tool.name for tool in tools}, sessions, run_id, lease_token,
+                        run.tool_timeout_seconds, run.max_total_tokens, run.max_estimated_cost,
+                        run.cost_input_price, run.cost_output_price,
+                    )], summarizer=summarize_history,
+                )
+
+            runtime = build_runtime()
             snapshot = await runtime.state()
             actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
             async with sessions() as db:
                 statement = select(AgentRun.checkpoint_id).where(
-                    AgentRun.thread_id == thread_id, AgentRun.owner_id == run.owner_id, AgentRun.state == "completed",
+                    AgentRun.thread_id == thread_id, AgentRun.owner_id == run.owner_id,
+                    (AgentRun.state == "completed") | (
+                        (AgentRun.state == "failed") & (AgentRun.failure_code == "artifact_required")
+                    ),
+                    AgentRun.checkpoint_id.is_not(None),
                 ).order_by(AgentRun.update_time.desc(), AgentRun.id.desc()).limit(1)
                 expected_checkpoint_id = await db.scalar(statement)
+                failed_summary = await db.scalar(select(AgentRun).where(
+                    AgentRun.thread_id == thread_id, AgentRun.owner_id == run.owner_id,
+                    AgentRun.state == "failed", AgentRun.failure_code == "summary_error",
+                ).order_by(AgentRun.create_time.desc(), AgentRun.id.desc()).limit(1))
+            if (
+                not resume and actual_checkpoint_id != expected_checkpoint_id
+                and expected_checkpoint_id is not None and failed_summary is not None
+                and (snapshot.metadata or {}).get("run_id") == failed_summary.id
+                and failed_summary.tool_call_count == 0
+                and failed_summary.create_time < run.create_time
+            ):
+                runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
+                snapshot = await runtime.state()
+                actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
             # 检查点可能先于业务事务提交；恢复审批还须核对已批准动作与当前工具授权。
             if resume:
                 try:
@@ -489,33 +545,61 @@ async def execute_text_run(
                 else {"messages": [{"role": "user", "content": input_text}]}
             )
             started = time.perf_counter()
-            task = asyncio.create_task(_stream_model_text(
-                runtime, invocation, sessions, run_id, lease_token,
-                publish_text=run.max_total_tokens is None and run.max_estimated_cost is None,
-            ))
-            watcher = asyncio.create_task(_watch_run(
-                sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds,
-            ))
-            try:
-                await asyncio.wait_for(task, timeout=min(timeout_seconds, run.model_timeout_seconds))
-            finally:
-                watcher.cancel()
-                with suppress(asyncio.CancelledError):
-                    await watcher
-            snapshot = await runtime.state()
-            checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
-            if not checkpoint_id:
-                return await _finish_interrupted(
-                    sessions, run_id, lease_token, "checkpoint_error", catalog_model=catalog_model, started=started,
-                )
-            messages = snapshot.values.get("messages", [])
-            new_messages = messages[previous_message_count:]
-            if snapshot.next:
-                actions = _approval_actions(snapshot)
-                async with sessions.begin() as db:
-                    await create_approval_request(db, run_id, lease_token, checkpoint_id, actions)
-                    _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
-                    return await db.get(AgentRun, run_id)
+            deadline = time.monotonic() + min(timeout_seconds, run.model_timeout_seconds)
+            for attempt in range(2):
+                task = asyncio.create_task(_stream_model_text(
+                    runtime, invocation, sessions, run_id, lease_token,
+                    publish_text=(
+                        run.max_total_tokens is None and run.max_estimated_cost is None
+                        and required_artifact_suffixes is None
+                    ),
+                ))
+                watcher = asyncio.create_task(_watch_run(
+                    sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds,
+                ))
+                try:
+                    await asyncio.wait_for(task, timeout=max(0, deadline - time.monotonic()))
+                finally:
+                    watcher.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await watcher
+                runtime.config["configurable"].pop("checkpoint_id", None)
+                snapshot = await runtime.state()
+                checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+                if not checkpoint_id:
+                    return await _finish_interrupted(
+                        sessions, run_id, lease_token, "checkpoint_error", catalog_model=catalog_model, started=started,
+                    )
+                messages = snapshot.values.get("messages", [])
+                new_messages = messages[previous_message_count:]
+                if snapshot.next:
+                    actions = _approval_actions(snapshot)
+                    async with sessions.begin() as db:
+                        await create_approval_request(db, run_id, lease_token, checkpoint_id, actions)
+                        _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
+                        return await db.get(AgentRun, run_id)
+                if attempt == 0 and not resume and required_artifact_suffixes is not None:
+                    async with sessions() as db:
+                        delivered = await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes)
+                        current = await db.get(AgentRun, run_id)
+                    can_retry = (
+                        not delivered and current is not None and current.state == "running"
+                        and current.lease_token == lease_token
+                        and _artifact_retry_tools_available(required_artifact_suffixes, tools)
+                        and (current.max_model_calls is None or current.model_call_count + 2 <= current.max_model_calls)
+                        and (current.max_tool_calls is None or current.tool_call_count < current.max_tool_calls)
+                    )
+                    if can_retry:
+                        formats = ", ".join(sorted(required_artifact_suffixes)) or "用户要求的文件格式"
+                        invocation = {"messages": [{"role": "user", "content": (
+                            "系统内部纠正提示（不是新的用户消息）：上一轮只有文字，尚未交付用户要求的文件。"
+                            f"请调用文件生成工具交付 {formats} 文件，再给出最终回复；代码块不能代替文件。"
+                        )}]}
+                        runtime = build_runtime()
+                        # 检查点按 run_id 去重；纠正尝试不参与无工具运行的自动补偿。
+                        runtime.config["metadata"]["run_id"] = f"{run_id}:retry"
+                        continue
+                break
             final_text = str(messages[-1].text) if messages and isinstance(messages[-1], AIMessage) else ""
             if not final_text.strip():
                 return await _finish_interrupted(
@@ -528,7 +612,17 @@ async def execute_text_run(
                     result = await acknowledge_cancel(db, run_id, lease_token)
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled", messages=new_messages)
                     return result
-                if run.max_total_tokens is not None or run.max_estimated_cost is not None:
+                if required_artifact_suffixes is not None:
+                    if not await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes):
+                        result = await fail_run(
+                            db, run_id, lease_token, "artifact_required", checkpoint_id=checkpoint_id,
+                        )
+                        _record_runtime_call(db, run, catalog_model, started, failure="artifact_required", messages=new_messages)
+                        return result
+                if (
+                    run.max_total_tokens is not None or run.max_estimated_cost is not None
+                    or required_artifact_suffixes is not None
+                ):
                     for offset in range(0, len(final_text), 2048):
                         await append_text_delta(db, run_id, lease_token, final_text[offset:offset + 2048])
                 result = await complete_run(db, run_id, lease_token, checkpoint_id=checkpoint_id, final_text=final_text)
@@ -537,6 +631,10 @@ async def execute_text_run(
     except ModelCallBudgetExceeded:
         return await _finish_interrupted(
             sessions, run_id, lease_token, "model_call_budget_exceeded", catalog_model=catalog_model, started=started,
+        )
+    except SummaryModelError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, "summary_error", catalog_model=catalog_model, started=started,
         )
     except TokenBudgetExceeded:
         return await _finish_interrupted(

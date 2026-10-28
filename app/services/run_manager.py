@@ -497,11 +497,13 @@ async def complete_expired_run(db: AsyncSession, run_id: str, *, checkpoint_id: 
     return completed
 
 
-async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code: str) -> AgentRun:
+async def fail_run(
+    db: AsyncSession, run_id: str, lease_token: str, failure_code: str, *, checkpoint_id: str | None = None,
+) -> AgentRun:
     """由持有租约的执行器记录分类故障，不保存原始异常信息。"""
     if failure_code not in {
         "model_error", "empty_response", "checkpoint_error", "checkpoint_mismatch", "runtime_error",
-        "attachment_unavailable", "context_window_exceeded",
+        "attachment_unavailable", "context_window_exceeded", "artifact_required", "summary_error",
         "lease_monitor_error",
         "model_call_budget_exceeded", "tool_call_budget_exceeded", "token_budget_exceeded", "token_usage_unavailable",
         "cost_budget_exceeded", "cost_usage_unavailable",
@@ -512,7 +514,7 @@ async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code
         raise RunNotFoundError("运行不存在")
     return await _change_state(
         db, run, "failed", now=shanghai_now(naive=True), lease_token=lease_token,
-        failure_code=failure_code, require_lease=True,
+        failure_code=failure_code, checkpoint_id=checkpoint_id, require_lease=True,
     )
 
 

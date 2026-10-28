@@ -26,6 +26,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.admin import Admin
+from app.models.agent_session import AgentSession
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
 from app.models.base import Base, shanghai_now
@@ -1609,7 +1610,7 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert await load_message_artifacts(db, 1, [messages[-1]]) == {messages[-1].id: [{
                     "artifact_id": artifacts[0].id, "filename": "夷陵之战摘要.txt",
                     "media_type": "text/plain", "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
-                    "available": True, "context_artifact_ids": [],
+                    "available": True, "context_artifact_ids": [], "read_source_artifact_ids": [],
                 }]}
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
@@ -1638,6 +1639,143 @@ def test_model_created_text_file_is_published_with_assistant_message(
             async with sessions() as db:
                 assert (await db.get(Artifact, staged.id)).state == "deleted"
             assert not (root / staged_key).exists()
+            async with sessions.begin() as db:
+                db.add(AgentSession(
+                    id="10000000-0000-0000-0000-000000000001", owner_id=1, agent_id=1,
+                    thread_id="20000000-0000-0000-0000-000000000001", title="文件交付检查",
+                ))
+                await db.flush()
+                missing = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id="10000000-0000-0000-0000-000000000001",
+                    thread_id="20000000-0000-0000-0000-000000000001", agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="总结文档并生成一个 .txt 文件", max_model_calls=2,
+                )
+            missing_result = await execute_text_run(
+                sessions, missing.id, ScriptedModel(responses=[AIMessage(content="这是文字总结。")]),
+                tmp_path / "required-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert missing_result.state == "failed" and missing_result.failure_code == "artifact_required"
+            assert missing_result.checkpoint_id is not None
+            async with sessions() as db:
+                assert [item.role for item in await get_owned_messages(db, missing.id, 1)] == ["user"]
+                assert not any(event.event_type == "text_delta" for event in await replay_events(db, missing.id, 1))
+            async with sessions.begin() as db:
+                continued = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
+                    thread_id=missing.thread_id, agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="继续正常回答",
+                )
+            continued_result = await execute_text_run(
+                sessions, continued.id, ScriptedModel(responses=[AIMessage(content="可以继续。")]),
+                tmp_path / "required-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert continued_result.state == "completed"
+            async with sessions.begin() as db:
+                delivered = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
+                    thread_id=missing.thread_id, agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="请生成一个 .txt 文件", max_model_calls=2,
+                )
+            delivered_result = await execute_text_run(
+                sessions, delivered.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": "create_text_artifact",
+                        "args": {"filename": "delivered.txt", "content": "交付内容"}, "id": "delivered-call",
+                    }]),
+                    AIMessage(content="文件已交付。"),
+                ]), tmp_path / "required-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert delivered_result.state == "completed"
+            async with sessions() as db:
+                delivered_events = await replay_events(db, delivered.id, 1)
+                assert any(event.event_type == "text_delta" for event in delivered_events)
+                assert any(event.event_type == "artifact_published" for event in delivered_events)
+            async with sessions.begin() as db:
+                retried = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
+                    thread_id=missing.thread_id, agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="请再生成一个 .txt 文件", max_model_calls=3,
+                )
+            retried_result = await execute_text_run(
+                sessions, retried.id, ScriptedModel(responses=[
+                    AIMessage(content="已生成文件，但尚未调用工具。"),
+                    AIMessage(content="", tool_calls=[{
+                        "name": "create_text_artifact",
+                        "args": {"filename": "recovered.txt", "content": "纠正后交付"}, "id": "retry-call",
+                    }]),
+                    AIMessage(content="文件已交付。"),
+                ]), tmp_path / "required-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert retried_result.state == "completed", (
+                retried_result.failure_code, retried_result.model_call_count, retried_result.tool_call_count,
+            )
+            assert retried_result.model_call_count == 3 and retried_result.tool_call_count == 1
+            async with sessions() as db:
+                retried_messages = await get_owned_messages(db, retried.id, 1)
+                assert [item.role for item in retried_messages] == ["user", "assistant"]
+                assert retried_messages[-1].content == "文件已交付。"
+                retried_events = await replay_events(db, retried.id, 1)
+                assert "已生成文件，但尚未调用工具" not in "".join(
+                    event.content or "" for event in retried_events if event.event_type == "text_delta"
+                )
+            async with sessions.begin() as db:
+                exhausted = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
+                    thread_id=missing.thread_id, agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="请生成一个 .txt 文件", max_model_calls=3,
+                )
+            exhausted_result = await execute_text_run(
+                sessions, exhausted.id, ScriptedModel(responses=[
+                    AIMessage(content="第一次只有文字。"), AIMessage(content="第二次仍只有文字。"),
+                ]), tmp_path / "required-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert exhausted_result.state == "failed" and exhausted_result.failure_code == "artifact_required"
+            assert exhausted_result.model_call_count == 2
+            async with sessions() as db:
+                assert [item.role for item in await get_owned_messages(db, exhausted.id, 1)] == ["user"]
+            async with sessions.begin() as db:
+                db.add(AgentSession(
+                    id="10000000-0000-0000-0000-000000000002", owner_id=1, agent_id=1,
+                    thread_id="20000000-0000-0000-0000-000000000002", title="格式检查",
+                ))
+                await db.flush()
+                wrong_format = await create_run(
+                    db, 1, agent_id=1, model_id=1, session_id="10000000-0000-0000-0000-000000000002",
+                    thread_id="20000000-0000-0000-0000-000000000002", agent_config_version=1,
+                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    input_text="请生成一个 .docx 文件", max_model_calls=2,
+                )
+            wrong_result = await execute_text_run(
+                sessions, wrong_format.id, ScriptedModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": "create_text_artifact",
+                        "args": {"filename": "wrong.txt", "content": "正文"}, "id": "wrong-format-call",
+                    }]),
+                    AIMessage(content="文件已生成。"),
+                ]), tmp_path / "wrong-format-checkpoint.db",
+                resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                lease_seconds=2, poll_seconds=0.1,
+            )
+            assert wrong_result.state == "failed" and wrong_result.failure_code == "artifact_required"
+            async with sessions() as db:
+                wrong_artifact = await db.scalar(select(Artifact).where(Artifact.run_id == wrong_format.id))
+                assert wrong_artifact is not None and wrong_artifact.state == "pending"
+                assert not any(event.event_type == "text_delta" for event in await replay_events(db, wrong_format.id, 1))
         finally:
             await engine.dispose()
 
@@ -1648,6 +1786,10 @@ def test_model_created_text_file_is_published_with_assistant_message(
     (
         "create_document_artifact", "总结.docx", {"content": "# 总结\n\n夷陵之战。"},
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    (
+        "create_document_artifact", "总结.pdf", {"content": "# 总结\n\n夷陵之战。"},
+        "application/pdf",
     ),
     (
         "create_spreadsheet_artifact", "统计.xlsx",

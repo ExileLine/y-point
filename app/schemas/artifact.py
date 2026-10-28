@@ -25,6 +25,7 @@ class ArtifactOut(BaseModel):
     run_id: str | None = Field(description="关联的运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     source_artifact_id: str | None = Field(description="生成产物的来源文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     context_artifact_ids: list[str] = Field(default_factory=list, description="本轮提供给模型的参考文件 ID；不代表模型实际引用的段落")
+    read_source_artifact_ids: list[str] = Field(default_factory=list, description="生成前成功读取的旧产物 ID；不证明实际引用")
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])
 
 
@@ -48,3 +49,4 @@ class GeneratedArtifactReferenceOut(BaseModel):
     byte_size: int = Field(description="文件字节数", examples=[2048])
     available: bool = Field(description="产物当前是否有效；下载时仍需重新授权", examples=[True])
     context_artifact_ids: list[str] = Field(default_factory=list, description="本轮提供给模型的参考文件 ID；不代表模型实际引用的段落")
+    read_source_artifact_ids: list[str] = Field(default_factory=list, description="生成前成功读取的旧产物 ID；不证明实际引用")

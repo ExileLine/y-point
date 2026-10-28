@@ -31,7 +31,9 @@ from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
+from app.models.artifact_source import ArtifactSource
 from app.models.base import shanghai_now
+from app.models.run_artifact_read import RunArtifactRead
 from app.services.private_blob_store import delete_blob, old_blob_batches, store_blob, using_s3
 
 MAX_FILES = 5
@@ -382,6 +384,10 @@ async def stage_generated_artifact(
             if count >= MAX_FILES:
                 raise ArtifactValidationError("单轮生成文件超过数量限制")
             await enforce_owner_quota(db, owner_id, add_count=1, add_bytes=len(data))
+            reads = (await db.scalars(select(RunArtifactRead.source_artifact_id).where(
+                RunArtifactRead.run_id == run_id, RunArtifactRead.owner_id == owner_id,
+            ).order_by(RunArtifactRead.id))).all()
+            source_ids = list(dict.fromkeys(reads))
             artifact = Artifact(
                 id=str(uuid4()), owner_id=owner_id, run_id=run_id, publication_key=publication_key,
                 filename=filename, media_type=media_type, byte_size=len(data), sha256=digest, storage_key=key,
@@ -389,6 +395,13 @@ async def stage_generated_artifact(
             )
             db.add(artifact)
             await db.flush()
+            db.add_all([
+                ArtifactSource(
+                    target_artifact_id=artifact.id, source_artifact_id=source_id,
+                    run_id=run_id, owner_id=owner_id, position=position,
+                )
+                for position, source_id in enumerate(source_ids)
+            ])
         return artifact
     except IntegrityError:
         await _cleanup_uncommitted_blob(root, key, remote_attempted=remote_attempted)

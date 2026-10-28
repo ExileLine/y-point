@@ -8,17 +8,23 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.v1 import artifacts as artifact_api
 from app.models.admin import Admin
+from app.models.agent_run import AgentRun
 from app.models.agent_session import AgentSession
 from app.models.artifact import Artifact
+from app.models.artifact_source import ArtifactSource
 from app.models.base import Base, shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services import worker_tools
 from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact
-from app.services.run_manager import claim_run, complete_run, create_run
+from app.services.artifact_sources import load_read_source_artifact_ids
+from app.services.message_attachments import load_message_artifacts
+from app.services.run_manager import claim_run, complete_run, create_run, get_owned_messages
 from app.services.worker_tools import make_worker_tool_resolver
 
 
@@ -120,7 +126,20 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(
                     assert "hidden" not in result["content"]
             with pytest.raises(ValueError, match="产物不可用"):
                 await by_name["read_generated_artifact"].ainvoke({"artifact_id": artifact_ids["private.txt"]})
-
+            await by_name["read_generated_artifact"].ainvoke({"artifact_id": artifact_ids["notes.md"]})
+            generated = json.loads(await by_name["create_text_artifact"].ainvoke({
+                "filename": "merged.txt", "content": "合并后的内容",
+            }))
+            source_ids = [artifact_ids[filename] for filename in expected]
+            async with sessions() as db:
+                assert await load_read_source_artifact_ids(db, 1, [generated["artifact_id"]]) == {
+                    generated["artifact_id"]: source_ids,
+                }
+                assert await load_read_source_artifact_ids(db, 2, [generated["artifact_id"]]) == {}
+                links = (await db.scalars(select(ArtifactSource).where(
+                    ArtifactSource.target_artifact_id == generated["artifact_id"],
+                ))).all()
+                assert [link.position for link in links] == list(range(len(source_ids)))
             async with sessions.begin() as db:
                 deleted = await db.get(Artifact, artifact_ids["notes.md"])
                 deleted.state = "deleted"
@@ -134,6 +153,25 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(
                 with pytest.raises(ValueError, match=error):
                     await by_name["read_generated_artifact"].ainvoke({"artifact_id": artifact_ids[filename]})
             assert len(json.loads(await by_name["list_session_artifacts"].ainvoke({}))) == 3
+            async with sessions.begin() as db:
+                active = await db.get(AgentRun, current.id)
+                await complete_run(db, current.id, active.lease_token, final_text="合并文件已生成")
+            async with sessions() as db:
+                assert await load_read_source_artifact_ids(db, 1, [generated["artifact_id"]]) == {
+                    generated["artifact_id"]: source_ids,
+                }
+                messages = await get_owned_messages(db, current.id, 1)
+                rendered = await load_message_artifacts(db, 1, [messages[-1]])
+                assert rendered[messages[-1].id][0]["read_source_artifact_ids"] == source_ids
+                actor = await db.get(Admin, 1)
+                detail = json.loads((await artifact_api.read_artifact(
+                    generated["artifact_id"], actor=actor, db=db,
+                )).body)["data"]
+                listed = json.loads((await artifact_api.list_run_artifacts(
+                    current.id, actor=actor, db=db,
+                )).body)["data"]
+                assert detail["read_source_artifact_ids"] == source_ids
+                assert listed[0]["read_source_artifact_ids"] == source_ids
         finally:
             await engine.dispose()
 

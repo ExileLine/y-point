@@ -21,6 +21,7 @@ from app.services.attachment_text import (
     CONTEXT_MEDIA_TYPES, MAX_CONTEXT_ATTACHMENT_BYTES, extract_context_text,
 )
 from app.services.artifact_store import MAX_FILE_BYTES, artifact_root
+from app.services.artifact_sources import load_read_source_artifact_ids
 from app.services.private_blob_store import read_blob
 
 
@@ -134,6 +135,7 @@ async def load_message_artifacts(
         Artifact.state != "pending",
     ).order_by(Artifact.create_time, Artifact.id))).all()
     context_by_run = await load_run_context_artifact_ids(db, owner_id, list(message_by_run))
+    read_sources = await load_read_source_artifact_ids(db, owner_id, [item.id for item in items])
     now = shanghai_now(naive=True)
     by_message: dict[int, list[dict]] = {}
     for item in items:
@@ -141,6 +143,7 @@ async def load_message_artifacts(
             "artifact_id": item.id, "filename": item.filename, "media_type": item.media_type,
             "byte_size": item.byte_size,
             "context_artifact_ids": context_by_run.get(item.run_id, []),
+            "read_source_artifact_ids": read_sources.get(item.id, []),
             "available": item.state == "ready" and item.is_deleted == 0 and item.status == 1
             and (item.expires_at is None or item.expires_at > now),
         })

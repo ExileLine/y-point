@@ -21,6 +21,8 @@ from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.run_approval import RunApproval
 from app.models.run_worker_heartbeat import RunWorkerHeartbeat
 from app.models.artifact import Artifact
+from app.models.artifact_source import ArtifactSource
+from app.models.run_artifact_read import RunArtifactRead
 
 __all__ = [
     "Admin",
@@ -39,4 +41,6 @@ __all__ = [
     "AgentMessageAttachment",
     "RunWorkerHeartbeat",
     "Artifact",
+    "ArtifactSource",
+    "RunArtifactRead",
 ]

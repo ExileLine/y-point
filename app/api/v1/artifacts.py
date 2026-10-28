@@ -27,6 +27,7 @@ from app.schemas.artifact import ArtifactOut
 from app.services.artifact_store import (
     MAX_FILES, MAX_FILE_BYTES, ArtifactValidationError, artifact_root, enforce_owner_quota, save_upload, storage_path,
 )
+from app.services.artifact_sources import load_read_source_artifact_ids
 from app.services.message_attachments import load_run_context_artifact_ids
 from app.services.private_blob_store import delete_blob, read_blob, using_s3
 
@@ -101,6 +102,9 @@ async def read_artifact(
     data = ArtifactOut.model_validate(item).model_dump(mode="json")
     if item.source == "generated" and item.run_id is not None:
         data["context_artifact_ids"] = (await load_run_context_artifact_ids(db, actor.id, [item.run_id])).get(item.run_id, [])
+        data["read_source_artifact_ids"] = (
+            await load_read_source_artifact_ids(db, actor.id, [item.id])
+        ).get(item.id, [])
     return api_response(data=data, datetime_format=False)
 
 
@@ -119,8 +123,10 @@ async def list_run_artifacts(
     ).order_by(Artifact.create_time, Artifact.id)
     items = (await db.scalars(statement)).all()
     context_ids = (await load_run_context_artifact_ids(db, actor.id, [run_id])).get(run_id, [])
+    read_sources = await load_read_source_artifact_ids(db, actor.id, [item.id for item in items])
     return api_response(data=[{
         **ArtifactOut.model_validate(item).model_dump(mode="json"), "context_artifact_ids": context_ids,
+        "read_source_artifact_ids": read_sources.get(item.id, []),
     } for item in items], is_pop=False)
 
 
