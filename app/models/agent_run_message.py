@@ -13,10 +13,7 @@ from app.models.base import CustomBaseModel
 
 class AgentRunMessage(CustomBaseModel):
     __table_name__ = "agent_run_message"
-    __table_args__ = (
-        UniqueConstraint("run_id", "role", name="uq_yp_agent_run_message_run_role"),
-        {"comment": "智能体运行可见消息表"},
-    )
+    __table_args__ = (UniqueConstraint("run_id", "role", name="uq_yp_agent_run_message_run_role"), {"comment": "智能体运行可见消息表"})
 
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="所属运行 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="消息所属用户 ID")

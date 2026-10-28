@@ -6,7 +6,7 @@
 from cryptography.fernet import Fernet
 import secrets
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     #  CREDENTIAL_ENCRYPTION_KEY
     print(secrets.token_urlsafe(48))
 

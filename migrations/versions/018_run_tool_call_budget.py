@@ -20,12 +20,9 @@ depends_on = None
 
 def upgrade() -> None:
     """为已有运行保留不限次数的行为，并从零开始记录工具调用。"""
+    op.add_column("yp_agent_run", sa.Column("max_tool_calls", sa.Integer(), nullable=True, comment="本次运行允许的工具调用次数上限"))
     op.add_column(
-        "yp_agent_run", sa.Column("max_tool_calls", sa.Integer(), nullable=True, comment="本次运行允许的工具调用次数上限"),
-    )
-    op.add_column(
-        "yp_agent_run",
-        sa.Column("tool_call_count", sa.Integer(), nullable=False, server_default="0", comment="已开始的工具调用次数"),
+        "yp_agent_run", sa.Column("tool_call_count", sa.Integer(), nullable=False, server_default="0", comment="已开始的工具调用次数")
     )
 
 

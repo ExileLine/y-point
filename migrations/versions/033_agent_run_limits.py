@@ -34,7 +34,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     """移除 Agent 的运行超时与预算字段。"""
     for name in (
-        "max_estimated_cost", "max_total_tokens", "max_tool_calls", "max_model_calls",
-        "tool_timeout_seconds", "model_timeout_seconds",
+        "max_estimated_cost",
+        "max_total_tokens",
+        "max_tool_calls",
+        "max_model_calls",
+        "tool_timeout_seconds",
+        "model_timeout_seconds",
     ):
         op.drop_column("yp_agent_config", name)

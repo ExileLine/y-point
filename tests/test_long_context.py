@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-27 21:03:14
+# @Author  : yangyuexiong
+# @File    : test_long_context.py
+
 """验证小窗口模型的长会话摘要边界。"""
 
 import asyncio
@@ -33,9 +38,11 @@ class TrackingModel(FakeMessagesListChatModel):
     fail_summary: ClassVar[bool] = False
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+        """兼容运行时工具绑定接口，并返回当前假模型。"""
         return self
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        """生成可计数的假模型回复，并按测试配置模拟摘要失败。"""
         if any("压缩成准确的上下文摘要" in str(message.content) for message in messages):
             type(self).summary_calls += 1
             if type(self).fail_summary:
@@ -44,13 +51,20 @@ class TrackingModel(FakeMessagesListChatModel):
         else:
             type(self).normal_calls += 1
             answer = "已收到"
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(
-            content=answer, usage_metadata={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
-        ))])
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(content=answer, usage_metadata={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25})
+                )
+            ]
+        )
 
 
 def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Path) -> None:
+    """验证长会话触发摘要且保留原始业务消息。"""
+
     async def exercise() -> None:
+        """在隔离环境执行异步场景：验证长会话触发摘要且保留原始业务消息。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'long-context.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         TrackingModel.summary_calls = TrackingModel.normal_calls = 0
@@ -61,24 +75,47 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="long-context-owner", password="unused", role="user", status=1, is_deleted=0))
-                db.add(AgentConfig(
-                    id=1, owner_id=1, name="Long context", system_prompt="简洁回答", default_model_id=1,
-                    temperature=Decimal("1"), max_output_tokens=256, enabled=True, version=1,
-                    is_deleted=0, status=1,
-                ))
-                db.add(ProviderConnection(
-                    id=1, name="long-context-provider", name_key="long-context-provider", kind="ollama",
-                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="small-context", display_name="Small context",
-                    verified_capabilities=["text"], context_window=2048,
-                    creator_id=1, status=1, is_deleted=0,
-                ))
-                session = AgentSession(
-                    id="a" * 36, owner_id=1, agent_id=1, thread_id="b" * 36,
-                    title="长对话", archived=False, version=1,
+                db.add(
+                    AgentConfig(
+                        id=1,
+                        owner_id=1,
+                        name="Long context",
+                        system_prompt="简洁回答",
+                        default_model_id=1,
+                        temperature=Decimal("1"),
+                        max_output_tokens=256,
+                        enabled=True,
+                        version=1,
+                        is_deleted=0,
+                        status=1,
+                    )
                 )
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="long-context-provider",
+                        name_key="long-context-provider",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="small-context",
+                        display_name="Small context",
+                        verified_capabilities=["text"],
+                        context_window=2048,
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                session = AgentSession(id="a" * 36, owner_id=1, agent_id=1, thread_id="b" * 36, title="长对话", archived=False, version=1)
                 db.add(session)
                 await db.flush()
             model = TrackingModel(responses=[AIMessage(content="fallback")])
@@ -86,10 +123,20 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
             for text in inputs:
                 async with sessions.begin() as db:
                     run = await create_run(
-                        db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                        agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1.00"),
-                        agent_max_output_tokens=256, input_text=text, max_model_calls=3,
-                        max_total_tokens=500, max_estimated_cost=Decimal("0.010000"),
+                        db,
+                        1,
+                        agent_id=1,
+                        model_id=1,
+                        session_id=session.id,
+                        thread_id=session.thread_id,
+                        agent_config_version=1,
+                        agent_system_prompt="简洁回答",
+                        agent_temperature=Decimal("1.00"),
+                        agent_max_output_tokens=256,
+                        input_text=text,
+                        max_model_calls=3,
+                        max_total_tokens=500,
+                        max_estimated_cost=Decimal("0.010000"),
                         cost_pricing=(Decimal("1"), Decimal("1"), "USD"),
                     )
                 result = await execute_text_run(sessions, run.id, model, checkpoint)
@@ -101,16 +148,24 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
             assert all(run.reported_total_tokens == run.model_call_count * 25 for run in completed_runs)
             assert all(run.estimated_cost == Decimal(run.model_call_count * 25) / 1_000_000 for run in completed_runs)
             async with sessions() as db:
-                messages = (await db.scalars(select(AgentRunMessage).where(
-                    AgentRunMessage.owner_id == 1,
-                ).order_by(AgentRunMessage.id))).all()
+                messages = (
+                    await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
+                ).all()
                 assert [message.content for message in messages if message.role == "user"] == inputs
                 assert [message.content for message in messages if message.role == "assistant"] == ["已收到", "已收到"]
             async with sessions.begin() as db:
                 impossible = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1.00"),
-                    agent_max_output_tokens=1800, input_text="输出预算过高",
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=session.id,
+                    thread_id=session.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="简洁回答",
+                    agent_temperature=Decimal("1.00"),
+                    agent_max_output_tokens=1800,
+                    input_text="输出预算过高",
                 )
             before = TrackingModel.normal_calls + TrackingModel.summary_calls
             rejected = await execute_text_run(sessions, impossible.id, model, checkpoint)
@@ -118,9 +173,17 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
             assert TrackingModel.normal_calls + TrackingModel.summary_calls == before
             async with sessions.begin() as db:
                 oversized = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1.00"),
-                    agent_max_output_tokens=256, input_text="超" * 10000,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=session.id,
+                    thread_id=session.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="简洁回答",
+                    agent_temperature=Decimal("1.00"),
+                    agent_max_output_tokens=256,
+                    input_text="超" * 10000,
                 )
             rejected_input = await execute_text_run(sessions, oversized.id, model, checkpoint)
             assert rejected_input.state == "failed" and rejected_input.failure_code == "context_window_exceeded"
@@ -132,7 +195,10 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
 
 
 def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Path) -> None:
+    """验证摘要失败返回明确终态，并保留历史以供后续会话恢复。"""
+
     async def exercise() -> None:
+        """在隔离环境执行异步场景：验证摘要失败返回明确终态，并保留历史以供后续会话恢复。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'summary-error.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         checkpoint = tmp_path / "summary-error-checkpoint.db"
@@ -143,20 +209,46 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="summary-error-owner", password="unused", role="user", status=1, is_deleted=0))
-                db.add(AgentConfig(
-                    id=1, owner_id=1, name="Summary", system_prompt="简洁回答", default_model_id=1,
-                    temperature=Decimal("1"), max_output_tokens=256, enabled=True, version=1,
-                    is_deleted=0, status=1,
-                ))
-                db.add(ProviderConnection(
-                    id=1, name="summary-error-provider", name_key="summary-error-provider", kind="ollama",
-                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="small-context", display_name="Small context",
-                    verified_capabilities=["text"], context_window=2048,
-                    creator_id=1, status=1, is_deleted=0,
-                ))
+                db.add(
+                    AgentConfig(
+                        id=1,
+                        owner_id=1,
+                        name="Summary",
+                        system_prompt="简洁回答",
+                        default_model_id=1,
+                        temperature=Decimal("1"),
+                        max_output_tokens=256,
+                        enabled=True,
+                        version=1,
+                        is_deleted=0,
+                        status=1,
+                    )
+                )
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="summary-error-provider",
+                        name_key="summary-error-provider",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="small-context",
+                        display_name="Small context",
+                        verified_capabilities=["text"],
+                        context_window=2048,
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
                 session = AgentSession(id="c" * 36, owner_id=1, agent_id=1, thread_id="d" * 36, title="摘要失败")
                 db.add(session)
                 await db.flush()
@@ -164,9 +256,17 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
             for index in range(2):
                 async with sessions.begin() as db:
                     run = await create_run(
-                        db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                        agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
-                        agent_max_output_tokens=256, input_text=f"第{index + 1}轮：" + "甲" * 2600,
+                        db,
+                        1,
+                        agent_id=1,
+                        model_id=1,
+                        session_id=session.id,
+                        thread_id=session.thread_id,
+                        agent_config_version=1,
+                        agent_system_prompt="简洁回答",
+                        agent_temperature=Decimal("1"),
+                        agent_max_output_tokens=256,
+                        input_text=f"第{index + 1}轮：" + "甲" * 2600,
                         max_model_calls=3,
                     )
                 TrackingModel.fail_summary = index == 1
@@ -177,24 +277,40 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                     assert result.model_call_count >= 1
                     assert TrackingModel.summary_calls >= 1
                     async with sessions() as db:
-                        messages = (await db.scalars(select(AgentRunMessage).where(
-                            AgentRunMessage.run_id == run.id,
-                        ))).all()
+                        messages = (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id))).all()
                         assert [message.role for message in messages] == ["user"]
             TrackingModel.fail_summary = False
             async with sessions.begin() as db:
                 followup = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
-                    agent_max_output_tokens=256, input_text="继续回答", max_model_calls=3,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=session.id,
+                    thread_id=session.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="简洁回答",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=256,
+                    input_text="继续回答",
+                    max_model_calls=3,
                 )
             resumed = await execute_text_run(sessions, followup.id, model, checkpoint)
             assert resumed.state == "completed", resumed.failure_code
             async with sessions.begin() as db:
                 later = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=session.id, thread_id=session.thread_id,
-                    agent_config_version=1, agent_system_prompt="简洁回答", agent_temperature=Decimal("1"),
-                    agent_max_output_tokens=256, input_text="再继续一轮", max_model_calls=3,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=session.id,
+                    thread_id=session.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="简洁回答",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=256,
+                    input_text="再继续一轮",
+                    max_model_calls=3,
                 )
             later_result = await execute_text_run(sessions, later.id, model, checkpoint)
             assert later_result.state == "completed", later_result.failure_code
@@ -206,14 +322,13 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
 
 
 def test_context_window_reserves_space_for_input_and_output() -> None:
+    """验证上下文窗口为输入和输出预留空间且拒绝不足预算。"""
     config = RuntimeRunConfig(
-        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(),
-        context_window=2048, max_output_tokens=256,
+        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=256
     )
     assert config.summarization_limits() == (960, 128)
     too_small = RuntimeRunConfig(
-        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(),
-        context_window=2048, max_output_tokens=1800,
+        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=1800
     )
     try:
         too_small.summarization_limits()
@@ -238,39 +353,76 @@ def test_live_ollama_long_session_summary(tmp_path: Path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add_all([
-                    Admin(id=1, username="m4-long", password="unused", role="user", status=1, is_deleted=0),
-                    AgentConfig(id=1, owner_id=1, name="Long context", system_prompt="保留项目代号并简短回答。",
-                                default_model_id=1, temperature=Decimal("0"), max_output_tokens=256,
-                                enabled=True, version=1, is_deleted=0, status=1),
-                    ProviderConnection(id=1, name="long-ollama", name_key="long-ollama", kind="ollama",
-                                       base_url="http://127.0.0.1:11434/v1", timeout_seconds=120,
-                                       creator_id=1, status=1, is_deleted=0),
-                    ModelCatalog(id=1, provider_id=1, external_id="gemma4:31b-cloud", display_name="Gemma4",
-                                 verified_capabilities=["text"], context_window=2048,
-                                 creator_id=1, status=1, is_deleted=0),
-                    AgentSession(id="e" * 36, owner_id=1, agent_id=1, thread_id="f" * 36,
-                                 title="真实长会话", archived=False, version=1),
-                ])
+                db.add_all(
+                    [
+                        Admin(id=1, username="m4-long", password="unused", role="user", status=1, is_deleted=0),
+                        AgentConfig(
+                            id=1,
+                            owner_id=1,
+                            name="Long context",
+                            system_prompt="保留项目代号并简短回答。",
+                            default_model_id=1,
+                            temperature=Decimal("0"),
+                            max_output_tokens=256,
+                            enabled=True,
+                            version=1,
+                            is_deleted=0,
+                            status=1,
+                        ),
+                        ProviderConnection(
+                            id=1,
+                            name="long-ollama",
+                            name_key="long-ollama",
+                            kind="ollama",
+                            base_url="http://127.0.0.1:11434/v1",
+                            timeout_seconds=120,
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        ModelCatalog(
+                            id=1,
+                            provider_id=1,
+                            external_id="gemma4:31b-cloud",
+                            display_name="Gemma4",
+                            verified_capabilities=["text"],
+                            context_window=2048,
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        AgentSession(
+                            id="e" * 36, owner_id=1, agent_id=1, thread_id="f" * 36, title="真实长会话", archived=False, version=1
+                        ),
+                    ]
+                )
             async with sessions() as db:
                 model = build_chat_model(await db.get(ModelCatalog, 1), await db.get(ProviderConnection, 1))
             runs = []
             for text in (first_input, second_input):
                 async with sessions.begin() as db:
                     run = await create_run(
-                        db, 1, agent_id=1, model_id=1, session_id="e" * 36, thread_id="f" * 36,
-                        agent_config_version=1, agent_system_prompt="保留项目代号并简短回答。",
-                        agent_temperature=Decimal("0"), agent_max_output_tokens=256,
-                        input_text=text, max_model_calls=6,
+                        db,
+                        1,
+                        agent_id=1,
+                        model_id=1,
+                        session_id="e" * 36,
+                        thread_id="f" * 36,
+                        agent_config_version=1,
+                        agent_system_prompt="保留项目代号并简短回答。",
+                        agent_temperature=Decimal("0"),
+                        agent_max_output_tokens=256,
+                        input_text=text,
+                        max_model_calls=6,
                     )
                 result = await execute_text_run(sessions, run.id, model, checkpoint, timeout_seconds=120)
                 assert result.state == "completed", result.failure_code
                 runs.append(result)
             assert runs[-1].model_call_count >= 2
             async with sessions() as db:
-                messages = (await db.scalars(select(AgentRunMessage).where(
-                    AgentRunMessage.owner_id == 1,
-                ).order_by(AgentRunMessage.id))).all()
+                messages = (
+                    await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
+                ).all()
                 assert [item.content for item in messages if item.role == "user"] == [first_input, second_input]
                 assert "ALPHA-42" in [item.content for item in messages if item.role == "assistant"][-1]
         finally:

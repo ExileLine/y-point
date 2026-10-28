@@ -70,12 +70,20 @@ class UserOut(BaseModel):
 class UserPage(BaseModel):
     items: list[UserOut] = Field(
         description="当前页的用户列表",
-        examples=[[
-            {
-                "id": 1, "username": "alice_01", "mail": "alice@example.com", "nickname": "Alice",
-                "role": "user", "status": 1, "last_login_at": "2026-10-22T10:00:00", "create_time": "2026-10-21T16:46:46",
-            }
-        ]],
+        examples=[
+            [
+                {
+                    "id": 1,
+                    "username": "alice_01",
+                    "mail": "alice@example.com",
+                    "nickname": "Alice",
+                    "role": "user",
+                    "status": 1,
+                    "last_login_at": "2026-10-22T10:00:00",
+                    "create_time": "2026-10-21T16:46:46",
+                }
+            ]
+        ],
     )
     total: int = Field(description="用户总数", examples=[36])
     page: int = Field(description="当前页码", examples=[1])

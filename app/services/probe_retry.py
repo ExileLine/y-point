@@ -13,8 +13,7 @@ PROBE_RETRY_DELAY_SECONDS = 0.2
 
 
 async def request_with_probe_retry(
-    client: httpx.AsyncClient, method: str, url: httpx.URL, *,
-    headers: dict[str, str], json_body: dict | None = None,
+    client: httpx.AsyncClient, method: str, url: httpx.URL, *, headers: dict[str, str], json_body: dict | None = None
 ) -> httpx.Response:
     """上游网关短暂故障时最多重发一次受限探测请求。"""
     for attempt in range(2):

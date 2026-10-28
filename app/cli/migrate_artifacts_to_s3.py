@@ -14,16 +14,16 @@ from app.services.artifact_store import artifact_root
 
 
 async def _run(batch_size: int) -> None:
+    """执行本地有效文件到 S3 的验证式迁移并输出统计。"""
     try:
-        uploaded, verified = await migrate_local_artifacts_to_s3(
-            AsyncSessionLocal, artifact_root(), batch_size=batch_size,
-        )
+        uploaded, verified = await migrate_local_artifacts_to_s3(AsyncSessionLocal, artifact_root(), batch_size=batch_size)
         print(f"上传 {uploaded} 个文件；验证已有远端文件 {verified} 个。")
     finally:
         await close_db()
 
 
 def main() -> None:
+    """解析命令行参数并启动文件迁移。"""
     parser = argparse.ArgumentParser(description="验证并复制当前业务库中有效的本地文件至 S3")
     parser.add_argument("--batch-size", type=int, default=100, help="每批读取的文件元数据数量，1 至 1000")
     args = parser.parse_args()

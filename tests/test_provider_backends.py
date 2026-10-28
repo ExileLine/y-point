@@ -27,8 +27,12 @@ from app.services.provider_probe import probe_provider
 async def exercise_http_backends() -> None:
     """验证 Azure 与 Gemini 的上游路径、认证、分页、用量和故障分类。"""
     azure = ProviderConnection(
-        id=1, kind="azure_openai", base_url="https://example.openai.azure.com", api_version="2024-10-21",
-        encrypted_credentials=encrypt_credentials("azure-secret", {}), timeout_seconds=5,
+        id=1,
+        kind="azure_openai",
+        base_url="https://example.openai.azure.com",
+        api_version="2024-10-21",
+        encrypted_credentials=encrypt_credentials("azure-secret", {}),
+        timeout_seconds=5,
     )
     model = ModelCatalog(id=1, provider_id=1, external_id="chat-deployment", input_price=Decimal("2"), output_price=Decimal("4"))
     unavailable = await probe_provider(azure)
@@ -40,10 +44,9 @@ async def exercise_http_backends() -> None:
         assert request.url.params["api-version"] == "2024-10-21"
         assert request.headers["api-key"] == "azure-secret" and "authorization" not in request.headers
         assert "model" not in json.loads(request.content)
-        return httpx.Response(200, json={
-            "choices": [{"message": {"content": "OK"}}],
-            "usage": {"prompt_tokens": 8, "completion_tokens": 3},
-        })
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "OK"}}], "usage": {"prompt_tokens": 8, "completion_tokens": 3}}
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(azure_success)) as client:
         result = await probe_model(model, azure, client)
@@ -59,8 +62,12 @@ async def exercise_http_backends() -> None:
     assert denied.failure == "authentication" and "azure-secret" not in denied.model_dump_json()
 
     gemini = ProviderConnection(
-        id=2, kind="gemini", base_url="https://generativelanguage.googleapis.com", api_version="v1beta",
-        encrypted_credentials=encrypt_credentials("gemini-secret", {}), timeout_seconds=5,
+        id=2,
+        kind="gemini",
+        base_url="https://generativelanguage.googleapis.com",
+        api_version="v1beta",
+        encrypted_credentials=encrypt_credentials("gemini-secret", {}),
+        timeout_seconds=5,
     )
     model.provider_id = 2
     model.external_id = "gemini-2.5-flash-lite"
@@ -70,16 +77,22 @@ async def exercise_http_backends() -> None:
         assert request.url.path == "/v1beta/models"
         assert request.headers["x-goog-api-key"] == "gemini-secret"
         if request.url.params.get("pageToken") == "page-2":
-            return httpx.Response(200, json={"models": [
-                {
-                    "name": "models/gemini-2.5-flash-lite", "displayName": "Gemini Flash Lite",
-                    "supportedGenerationMethods": ["generateContent"],
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash-lite",
+                            "displayName": "Gemini Flash Lite",
+                            "supportedGenerationMethods": ["generateContent"],
+                        }
+                    ]
                 },
-            ]})
-        return httpx.Response(200, json={
-            "models": [{"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]}],
-            "nextPageToken": "page-2",
-        })
+            )
+        return httpx.Response(
+            200,
+            json={"models": [{"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]}], "nextPageToken": "page-2"},
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(gemini_models)) as client:
         discovered = await probe_provider(gemini, client)
@@ -91,10 +104,13 @@ async def exercise_http_backends() -> None:
         assert request.url.path == "/v1beta/models/gemini-2.5-flash-lite:generateContent"
         assert request.headers["x-goog-api-key"] == "gemini-secret"
         assert json.loads(request.content)["contents"][0]["parts"][0]["text"] == "Hi"
-        return httpx.Response(200, json={
-            "candidates": [{"content": {"parts": [{"text": "OK"}]}}],
-            "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 3},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [{"content": {"parts": [{"text": "OK"}]}}],
+                "usageMetadata": {"promptTokenCount": 8, "candidatesTokenCount": 3},
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(gemini_success)) as client:
         result = await probe_model(model, gemini, client)
@@ -146,10 +162,7 @@ class FakeBedrockClient:
 async def exercise_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
     """验证 Bedrock 的发现、Converse、凭据失败及网关重试。"""
     provider = ProviderConnection(id=3, kind="bedrock", region="us-east-1", timeout_seconds=5)
-    model = ModelCatalog(
-        id=3, provider_id=3, external_id="amazon.nova-micro-v1:0",
-        input_price=Decimal("2"), output_price=Decimal("4"),
-    )
+    model = ModelCatalog(id=3, provider_id=3, external_id="amazon.nova-micro-v1:0", input_price=Decimal("2"), output_price=Decimal("4"))
     fake = FakeBedrockClient()
     monkeypatch.setattr(bedrock_probe, "_bedrock_client", lambda provider, service: fake)
     discovered = await probe_provider(provider)
@@ -211,8 +224,14 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     model = ModelCatalog(id=1, provider_id=1, external_id="chat-deployment", status=1, is_deleted=0)
     provider = ProviderConnection(
-        id=1, kind="azure_openai", base_url="https://example.openai.azure.com", api_version="2024-10-21",
-        encrypted_credentials=encrypt_credentials("azure-secret", {}), timeout_seconds=5, status=1, is_deleted=0,
+        id=1,
+        kind="azure_openai",
+        base_url="https://example.openai.azure.com",
+        api_version="2024-10-21",
+        encrypted_credentials=encrypt_credentials("azure-secret", {}),
+        timeout_seconds=5,
+        status=1,
+        is_deleted=0,
     )
     azure = build_chat_model(model, provider)
     assert isinstance(azure, AzureChatOpenAI)

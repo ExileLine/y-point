@@ -32,37 +32,38 @@ class MemoryS3:
     """只实现私有文件流程使用的 S3 方法。"""
 
     def __init__(self) -> None:
+        """初始化内存对象、加密参数和分页请求记录。"""
         self.objects: dict[str, bytes] = {}
         self.encryption: list[str] = []
         self.list_calls: list[dict] = []
 
     def upload_file(self, path: str, bucket: str, key: str, *, ExtraArgs: dict) -> None:
+        """将文件写入内存 S3，并记录服务端加密参数。"""
         assert bucket == "private-test" and key.startswith("y-point/artifacts/") and len(key) == 50
         self.encryption.append(ExtraArgs["ServerSideEncryption"])
         self.objects[key] = Path(path).read_bytes()
 
     def get_object(self, *, Bucket: str, Key: str) -> dict:
+        """从内存 S3 返回对象正文，缺失时模拟对象不存在错误。"""
         assert Bucket == "private-test"
         if Key not in self.objects:
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "missing"}}, "GetObject")
         return {"Body": io.BytesIO(self.objects[Key])}
 
     def delete_object(self, *, Bucket: str, Key: str) -> None:
+        """从内存 S3 删除对象，允许重复删除。"""
         assert Bucket == "private-test"
         self.objects.pop(Key, None)
 
-    def list_objects_v2(
-        self, *, Bucket: str, Prefix: str, MaxKeys: int, ContinuationToken: str | None = None,
-    ) -> dict:
+    def list_objects_v2(self, *, Bucket: str, Prefix: str, MaxKeys: int, ContinuationToken: str | None = None) -> dict:
+        """按前缀和继续标记分页返回内存 S3 的旧对象。"""
         assert Bucket == "private-test"
         assert Prefix == "y-point/artifacts/"
         self.list_calls.append({"Prefix": Prefix, "MaxKeys": MaxKeys, "ContinuationToken": ContinuationToken})
         old = datetime.now(timezone.utc) - timedelta(hours=2)
         keys = sorted(key for key in self.objects if key.startswith(Prefix))
-        start = 0 if ContinuationToken is None else next(
-            (index for index, key in enumerate(keys) if key > ContinuationToken), len(keys),
-        )
-        page = keys[start:start + MaxKeys]
+        start = 0 if ContinuationToken is None else next((index for index, key in enumerate(keys) if key > ContinuationToken), len(keys))
+        page = keys[start : start + MaxKeys]
         return {
             "Contents": [{"Key": key, "LastModified": old} for key in page],
             "IsTruncated": start + MaxKeys < len(keys),
@@ -74,12 +75,21 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     """对象上传、受控下载、产物发布和失联对象清理共用随机键。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：对象上传、受控下载、产物发布和失联对象清理共用随机键。"""
         fake = MemoryS3()
-        monkeypatch.setattr(private_blob_store, "get_config", lambda: SimpleNamespace(
-            ARTIFACT_STORAGE_BACKEND="s3", ARTIFACT_S3_BUCKET="private-test", ARTIFACT_S3_ENDPOINT_URL="",
-            ARTIFACT_S3_REGION="", ARTIFACT_S3_ACCESS_KEY_ID="test", ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
-            ARTIFACT_S3_PREFIX="y-point/artifacts/",
-        ))
+        monkeypatch.setattr(
+            private_blob_store,
+            "get_config",
+            lambda: SimpleNamespace(
+                ARTIFACT_STORAGE_BACKEND="s3",
+                ARTIFACT_S3_BUCKET="private-test",
+                ARTIFACT_S3_ENDPOINT_URL="",
+                ARTIFACT_S3_REGION="",
+                ARTIFACT_S3_ACCESS_KEY_ID="test",
+                ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
+                ARTIFACT_S3_PREFIX="y-point/artifacts/",
+            ),
+        )
         monkeypatch.setattr(private_blob_store.boto3, "client", lambda *args, **kwargs: fake)
         root = tmp_path / "staging"
         root.mkdir(mode=0o700)
@@ -91,9 +101,7 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="s3-owner", password="not-used", role="user", status=1, is_deleted=0))
-                uploaded, local = await save_upload(
-                    UploadFile(file=io.BytesIO(b"private input"), filename="input.txt"), 1, root,
-                )
+                uploaded, local = await save_upload(UploadFile(file=io.BytesIO(b"private input"), filename="input.txt"), 1, root)
                 assert not local.exists() and fake.objects[f"y-point/artifacts/{uploaded.storage_key}"] == b"private input"
                 db.add(uploaded)
                 run = await create_run(db, 1, input_text="生成产物")
@@ -110,9 +118,9 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 await private_blob_store.read_blob(root, generated.storage_key, max_bytes=3)
             assert fake.encryption == ["AES256", "AES256"]
             with monkeypatch.context() as patcher:
-                patcher.setattr(artifact_store, "get_config", lambda: SimpleNamespace(
-                    ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0,
-                ))
+                patcher.setattr(
+                    artifact_store, "get_config", lambda: SimpleNamespace(ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0)
+                )
                 before = dict(fake.objects)
                 with pytest.raises(artifact_store.ArtifactValidationError, match="保留天数"):
                     await save_upload(UploadFile(file=io.BytesIO(b"invalid retention"), filename="bad.txt"), 1, root)
@@ -127,7 +135,9 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 await artifact_api.delete_artifact(uploaded.id, actor=SimpleNamespace(id=1), db=db)
             assert f"y-point/artifacts/{uploaded.storage_key}" not in fake.objects
             with monkeypatch.context() as patcher:
+
                 def fail_delete(**_kwargs):
+                    """模拟远端对象删除失败，以验证原始异常和清理补偿。"""
                     raise ClientError({"Error": {"Code": "ServiceUnavailable", "Message": "unavailable"}}, "DeleteObject")
 
                 patcher.setattr(fake, "delete_object", fail_delete)
@@ -144,12 +154,21 @@ def test_s3_orphan_scan_paginates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     """前一页只有被引用对象时仍继续寻找后续页的孤儿对象。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：前一页只有被引用对象时仍继续寻找后续页的孤儿对象。"""
         fake = MemoryS3()
-        monkeypatch.setattr(private_blob_store, "get_config", lambda: SimpleNamespace(
-            ARTIFACT_STORAGE_BACKEND="s3", ARTIFACT_S3_BUCKET="private-test", ARTIFACT_S3_PREFIX="y-point/artifacts/",
-            ARTIFACT_S3_ENDPOINT_URL="", ARTIFACT_S3_REGION="", ARTIFACT_S3_ACCESS_KEY_ID="test",
-            ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
-        ))
+        monkeypatch.setattr(
+            private_blob_store,
+            "get_config",
+            lambda: SimpleNamespace(
+                ARTIFACT_STORAGE_BACKEND="s3",
+                ARTIFACT_S3_BUCKET="private-test",
+                ARTIFACT_S3_PREFIX="y-point/artifacts/",
+                ARTIFACT_S3_ENDPOINT_URL="",
+                ARTIFACT_S3_REGION="",
+                ARTIFACT_S3_ACCESS_KEY_ID="test",
+                ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
+            ),
+        )
         monkeypatch.setattr(private_blob_store.boto3, "client", lambda *args, **kwargs: fake)
         root = tmp_path / "staging"
         root.mkdir(mode=0o700)
@@ -160,11 +179,21 @@ def test_s3_orphan_scan_paginates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 for index, key in enumerate(("0" * 32, "a" * 32), start=1):
-                    db.add(Artifact(
-                        id=f"00000000-0000-4000-8000-{index:012d}", owner_id=1, filename="keep.txt",
-                        media_type="text/plain", byte_size=1, sha256="0" * 64, storage_key=key,
-                        source="upload", state="ready", status=1, is_deleted=0,
-                    ))
+                    db.add(
+                        Artifact(
+                            id=f"00000000-0000-4000-8000-{index:012d}",
+                            owner_id=1,
+                            filename="keep.txt",
+                            media_type="text/plain",
+                            byte_size=1,
+                            sha256="0" * 64,
+                            storage_key=key,
+                            source="upload",
+                            state="ready",
+                            status=1,
+                            is_deleted=0,
+                        )
+                    )
             fake.objects[f"y-point/artifacts/{'0' * 32}"] = b"first"
             fake.objects[f"y-point/artifacts/{'a' * 32}"] = b"second"
             fake.objects[f"y-point/artifacts/{'b' * 32}"] = b"third"
@@ -174,9 +203,7 @@ def test_s3_orphan_scan_paginates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             assert (expired, orphaned) == (0, 2)
             assert len(fake.list_calls) == 2
             assert fake.list_calls[1]["ContinuationToken"] == f"y-point/artifacts/{'a' * 32}"
-            assert {key[-32:] for key in fake.objects if key.startswith("y-point/artifacts/")} == {
-                "0" * 32, "a" * 32,
-            }
+            assert {key[-32:] for key in fake.objects if key.startswith("y-point/artifacts/")} == {"0" * 32, "a" * 32}
             assert "other-service/" + "c" * 32 in fake.objects
         finally:
             await engine.dispose()
@@ -188,12 +215,21 @@ def test_migrate_local_artifacts_is_verified_and_repeatable(tmp_path: Path, monk
     """摘要不一致时停止；修复后重跑跳过已验证的远端文件。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：摘要不一致时停止；修复后重跑跳过已验证的远端文件。"""
         fake = MemoryS3()
-        monkeypatch.setattr(private_blob_store, "get_config", lambda: SimpleNamespace(
-            ARTIFACT_STORAGE_BACKEND="s3", ARTIFACT_S3_BUCKET="private-test", ARTIFACT_S3_PREFIX="y-point/artifacts/",
-            ARTIFACT_S3_ENDPOINT_URL="", ARTIFACT_S3_REGION="", ARTIFACT_S3_ACCESS_KEY_ID="test",
-            ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
-        ))
+        monkeypatch.setattr(
+            private_blob_store,
+            "get_config",
+            lambda: SimpleNamespace(
+                ARTIFACT_STORAGE_BACKEND="s3",
+                ARTIFACT_S3_BUCKET="private-test",
+                ARTIFACT_S3_PREFIX="y-point/artifacts/",
+                ARTIFACT_S3_ENDPOINT_URL="",
+                ARTIFACT_S3_REGION="",
+                ARTIFACT_S3_ACCESS_KEY_ID="test",
+                ARTIFACT_S3_SECRET_ACCESS_KEY="secret",
+            ),
+        )
         monkeypatch.setattr(private_blob_store.boto3, "client", lambda *args, **kwargs: fake)
         root = tmp_path / "existing-files"
         root.mkdir(mode=0o700)
@@ -207,11 +243,21 @@ def test_migrate_local_artifacts_is_verified_and_repeatable(tmp_path: Path, monk
                 for index, key in enumerate((first, second), start=1):
                     content = f"file-{index}".encode()
                     (root / key).write_bytes(content)
-                    db.add(Artifact(
-                        id=f"00000000-0000-4000-8000-{index:012d}", owner_id=1, filename=f"{index}.txt",
-                        media_type="text/plain", byte_size=len(content), sha256=hashlib.sha256(content).hexdigest(),
-                        storage_key=key, source="upload", state="ready", status=1, is_deleted=0,
-                    ))
+                    db.add(
+                        Artifact(
+                            id=f"00000000-0000-4000-8000-{index:012d}",
+                            owner_id=1,
+                            filename=f"{index}.txt",
+                            media_type="text/plain",
+                            byte_size=len(content),
+                            sha256=hashlib.sha256(content).hexdigest(),
+                            storage_key=key,
+                            source="upload",
+                            state="ready",
+                            status=1,
+                            is_deleted=0,
+                        )
+                    )
             (root / second).write_bytes(b"damaged")
             with pytest.raises(artifact_store.ArtifactValidationError, match="本地文件摘要不一致"):
                 await migrate_local_artifacts_to_s3(sessions, root, batch_size=1)

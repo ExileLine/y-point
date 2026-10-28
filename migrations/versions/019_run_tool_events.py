@@ -20,10 +20,7 @@ depends_on = None
 
 def upgrade() -> None:
     """记录服务端工具调用 ID 和已授权工具名称。"""
-    op.add_column(
-        "yp_agent_run_event",
-        sa.Column("tool_call_id", sa.String(36), nullable=True, comment="服务端生成的工具调用关联 ID"),
-    )
+    op.add_column("yp_agent_run_event", sa.Column("tool_call_id", sa.String(36), nullable=True, comment="服务端生成的工具调用关联 ID"))
     op.add_column("yp_agent_run_event", sa.Column("tool_name", sa.String(128), nullable=True, comment="已授权工具名称"))
 
 

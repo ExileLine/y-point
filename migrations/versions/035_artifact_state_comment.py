@@ -22,15 +22,11 @@ def upgrade() -> None:
     """将 PostgreSQL/MySQL 字段注释更新为当前状态集合。"""
     if op.get_bind().dialect.name != "sqlite":
         op.alter_column(
-            "yp_artifact", "state", existing_type=sa.String(16), existing_nullable=False,
-            comment="文件状态：pending、ready 或 deleted",
+            "yp_artifact", "state", existing_type=sa.String(16), existing_nullable=False, comment="文件状态：pending、ready 或 deleted"
         )
 
 
 def downgrade() -> None:
     """恢复原字段注释。"""
     if op.get_bind().dialect.name != "sqlite":
-        op.alter_column(
-            "yp_artifact", "state", existing_type=sa.String(16), existing_nullable=False,
-            comment="文件状态：ready 或 deleted",
-        )
+        op.alter_column("yp_artifact", "state", existing_type=sa.String(16), existing_nullable=False, comment="文件状态：ready 或 deleted")

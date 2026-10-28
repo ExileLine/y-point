@@ -83,9 +83,7 @@ async def refresh(body: RefreshIn, db: AsyncSession = Depends(get_db_session)):
     audit(db, "auth.refresh", actor_id=admin.id, target_id=admin.id)
     await db.commit()
     data = TokenOut(
-        access_token=make_access_token(admin, session_id),
-        refresh_token=f"{session_id}.{new_secret}",
-        expires_in=ACCESS_TOKEN_SECONDS,
+        access_token=make_access_token(admin, session_id), refresh_token=f"{session_id}.{new_secret}", expires_in=ACCESS_TOKEN_SECONDS
     )
     return api_response(data=data.model_dump())
 
@@ -95,10 +93,7 @@ async def logout(request: Request, admin: Admin = Depends(get_current_admin), db
     """撤销当前访问令牌所属的登录会话。"""
     await db.execute(
         update(AuthSession)
-        .where(
-            AuthSession.id == request.state.auth_session_id,
-            AuthSession.admin_id == admin.id,
-        )
+        .where(AuthSession.id == request.state.auth_session_id, AuthSession.admin_id == admin.id)
         .values(revoked_at=utc_now())
     )
     audit(db, "auth.logout", actor_id=admin.id, target_id=admin.id)

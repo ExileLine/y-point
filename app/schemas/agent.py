@@ -32,8 +32,12 @@ class AgentCreateIn(BaseModel):
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限", examples=[5])
     max_total_tokens: int | None = Field(default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限", examples=[10000])
     max_estimated_cost: Decimal | None = Field(
-        default=None, ge=Decimal("0.000001"), max_digits=18, decimal_places=6,
-        description="每轮按模型价格估算的成本上限", examples=["0.010000"],
+        default=None,
+        ge=Decimal("0.000001"),
+        max_digits=18,
+        decimal_places=6,
+        description="每轮按模型价格估算的成本上限",
+        examples=["0.010000"],
     )
     enabled: bool = Field(default=True, description="是否启用", examples=[True])
 
@@ -55,11 +59,15 @@ class AgentUpdateIn(BaseModel):
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限；null 清除上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限；null 清除上限", examples=[5])
     max_total_tokens: int | None = Field(
-        default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限；null 清除上限", examples=[10000],
+        default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限；null 清除上限", examples=[10000]
     )
     max_estimated_cost: Decimal | None = Field(
-        default=None, ge=Decimal("0.000001"), max_digits=18, decimal_places=6,
-        description="每轮估算成本上限；null 清除上限", examples=["0.010000"],
+        default=None,
+        ge=Decimal("0.000001"),
+        max_digits=18,
+        decimal_places=6,
+        description="每轮估算成本上限；null 清除上限",
+        examples=["0.010000"],
     )
     enabled: bool | None = Field(default=None, description="是否启用", examples=[False])
 
@@ -110,7 +118,7 @@ class SharedAgentOut(BaseModel):
     id: int = Field(description="智能体 ID", examples=[1])
     owner_id: int = Field(description="智能体所有者 ID", examples=[1])
     name: str = Field(description="智能体名称", examples=["需求分析助手"])
-    description: str | None = Field(description="智能体描述")
-    icon: str | None = Field(description="图标标识")
-    welcome_message: str | None = Field(description="欢迎语")
-    enabled: bool = Field(description="是否启用")
+    description: str | None = Field(description="智能体描述", examples=["分析业务需求"])
+    icon: str | None = Field(description="图标标识", examples=["bot"])
+    welcome_message: str | None = Field(description="欢迎语", examples=["你好，请描述需求"])
+    enabled: bool = Field(description="是否启用", examples=[True])

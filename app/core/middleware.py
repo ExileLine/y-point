@@ -16,10 +16,25 @@ from app.core.response import api_response
 
 
 SENSITIVE_FIELDS = {
-    "password", "passwd", "pwd", "secret", "secretkey", "clientsecret",
-    "token", "accesstoken", "refreshtoken", "apikey", "authorization",
-    "cookie", "sessionid", "credential", "customheaders",
-    "currentpassword", "newpassword", "oldpassword", "passwordconfirmation",
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "secretkey",
+    "clientsecret",
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "apikey",
+    "authorization",
+    "cookie",
+    "sessionid",
+    "credential",
+    "customheaders",
+    "currentpassword",
+    "newpassword",
+    "oldpassword",
+    "passwordconfirmation",
 }
 
 
@@ -64,6 +79,7 @@ class ArtifactUploadLimitMiddleware:
 
 
 def _is_sensitive_field(key: str, sensitive_headers: set) -> bool:
+    """根据字段名判断是否需要隐藏密码或凭据信息。"""
     normalized = "".join(char for char in key.lower() if char.isalnum())
     return normalized in SENSITIVE_FIELDS or normalized in {
         "".join(char for char in header if char.isalnum()) for header in sensitive_headers
@@ -71,10 +87,10 @@ def _is_sensitive_field(key: str, sensitive_headers: set) -> bool:
 
 
 def _mask_fields(value, sensitive_headers: set):
+    """递归屏蔽字典和列表中的敏感字段值。"""
     if isinstance(value, dict):
         return {
-            key: "***" if _is_sensitive_field(str(key), sensitive_headers)
-            else _mask_fields(item, sensitive_headers)
+            key: "***" if _is_sensitive_field(str(key), sensitive_headers) else _mask_fields(item, sensitive_headers)
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -83,16 +99,19 @@ def _mask_fields(value, sensitive_headers: set):
 
 
 def _decode_headers(raw_headers) -> dict:
+    """将 ASGI 字节请求头转换为字符串字典。"""
     return {k.decode().lower(): v.decode() for k, v in raw_headers}
 
 
 def _mask_headers(headers: dict, sensitive_headers: set, mask: bool) -> dict:
+    """按敏感请求头名单隐藏日志中的凭据。"""
     if not mask:
         return headers
     return {k: ("***" if k in sensitive_headers else v) for k, v in headers.items()}
 
 
 def _parse_header_list(value: Union[str, Iterable[str], None]) -> set:
+    """将逗号分隔的请求头名单解析为小写集合。"""
     if not value:
         return set()
     if isinstance(value, str):
@@ -101,6 +120,7 @@ def _parse_header_list(value: Union[str, Iterable[str], None]) -> set:
 
 
 def _get_client_ip(headers: dict, client) -> str:
+    """从代理请求头或连接信息提取客户端地址。"""
     xff = headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
@@ -111,16 +131,17 @@ def _get_client_ip(headers: dict, client) -> str:
 
 class RequestLoggingMiddleware:
     def __init__(
-            self,
-            app: ASGIApp,
-            *,
-            log_headers: bool = False,
-            log_body: bool = False,
-            max_body_size: int = 1024 * 1024,
-            exclude_paths: Optional[Iterable[str]] = None,
-            sensitive_headers: Union[str, Iterable[str], None] = None,
-            mask_sensitive_headers: bool = True,
+        self,
+        app: ASGIApp,
+        *,
+        log_headers: bool = False,
+        log_body: bool = False,
+        max_body_size: int = 1024 * 1024,
+        exclude_paths: Optional[Iterable[str]] = None,
+        sensitive_headers: Union[str, Iterable[str], None] = None,
+        mask_sensitive_headers: bool = True,
     ):
+        """加载日志排除规则、请求体限制和敏感信息屏蔽配置。"""
         self.app = app
         self.log_headers = log_headers
         self.log_body = log_body
@@ -130,6 +151,7 @@ class RequestLoggingMiddleware:
         self.mask_sensitive_headers = mask_sensitive_headers
 
     def _is_excluded(self, path: str) -> bool:
+        """判断请求路径是否命中日志排除路径或前缀。"""
         for p in self.exclude_paths:
             if p.endswith("*") and path.startswith(p[:-1]):
                 return True
@@ -138,6 +160,7 @@ class RequestLoggingMiddleware:
         return False
 
     def _should_read_body(self, method: str, headers: dict) -> bool:
+        """按方法、媒体类型和长度判断是否读取请求体用于日志。"""
         if not self.log_body:
             return False
         if method in {"GET", "HEAD", "OPTIONS"}:
@@ -154,6 +177,7 @@ class RequestLoggingMiddleware:
         return True
 
     async def _receive_body(self, receive: Receive) -> tuple[bytes, bool]:
+        """收集 ASGI 请求体消息并返回可供后续回放的数据。"""
         body = b""
         disconnected = False
 
@@ -171,9 +195,11 @@ class RequestLoggingMiddleware:
         return body, disconnected
 
     def _build_receive(self, body: bytes, original_receive: Receive, disconnected: bool) -> Receive:
+        """构建先回放已读请求体、再读取原通道的接收函数。"""
         sent = False
 
         async def receive() -> dict:
+            """回放缓存的请求体消息，耗尽后继续读取原接收通道。"""
             nonlocal sent
             if not sent:
                 sent = True
@@ -185,6 +211,7 @@ class RequestLoggingMiddleware:
         return receive
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        """记录请求与响应信息，并按配置截断和脱敏日志内容。"""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -211,6 +238,7 @@ class RequestLoggingMiddleware:
         response_headers = []
 
         async def send_wrapper(message):
+            """截获响应状态供日志使用，并继续发送原始响应消息。"""
             nonlocal status_code, response_headers
             if message["type"] == "http.response.start":
                 status_code = message.get("status")
@@ -230,16 +258,12 @@ class RequestLoggingMiddleware:
         finally:
             elapsed_ms = (time.perf_counter() - start) * 1000
             query_params = parse_qsl(query_string, keep_blank_values=True)
-            masked_query = urlencode([
-                (key, "***" if _is_sensitive_field(key, self.sensitive_headers) else value)
-                for key, value in query_params
-            ])
+            masked_query = urlencode(
+                [(key, "***" if _is_sensitive_field(key, self.sensitive_headers) else value) for key, value in query_params]
+            )
             full_path = f"{path}?{masked_query}" if query_string else path
             ip = _get_client_ip(headers, client)
-            logger.info(
-                f"{method} {full_path} {status_code} {elapsed_ms:.2f}ms "
-                f"ip={ip} rid={request_id}"
-            )
+            logger.info(f"{method} {full_path} {status_code} {elapsed_ms:.2f}ms ip={ip} rid={request_id}")
             if self.log_headers:
                 logger.info("headers: {}", _mask_headers(headers, self.sensitive_headers, self.mask_sensitive_headers))
             if self.log_body and body:
@@ -251,8 +275,7 @@ class RequestLoggingMiddleware:
                         body_data = "[invalid JSON omitted]"
                 elif content_type == "application/x-www-form-urlencoded":
                     body_data = _mask_fields(
-                        parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True),
-                        self.sensitive_headers,
+                        parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True), self.sensitive_headers
                     )
                 else:
                     body_data = "[body omitted]"

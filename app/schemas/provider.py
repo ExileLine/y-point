@@ -22,7 +22,9 @@ DisplayName = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 class ProviderCreateIn(BaseModel):
     name: ConnectionName = Field(description="供应商连接名称", examples=["生产环境 OpenAI"])
     kind: ProviderKind = Field(description="供应商类型", examples=["openai_compatible"])
-    base_url: BaseUrl | None = Field(default=None, description="供应商接口基础地址；Gemini 和 Bedrock 可省略", examples=["https://api.example.com/v1"])
+    base_url: BaseUrl | None = Field(
+        default=None, description="供应商接口基础地址；Gemini 和 Bedrock 可省略", examples=["https://api.example.com/v1"]
+    )
     api_key: SecretStr | None = Field(default=None, description="接口密钥", examples=["sk-example-key"])
     custom_headers: dict[str, SecretStr] | None = Field(default=None, description="自定义请求头", examples=[{"X-Tenant": "example-tenant"}])
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
@@ -154,11 +156,9 @@ class ModelDiscoveryOut(BaseModel):
     upstream_status_code: int | None = Field(default=None, description="上游 HTTP 状态码", examples=[200])
     model_count: int | None = Field(default=None, description="供应商返回的模型数量", examples=[2])
     models: list[DiscoveredModelOut] = Field(default_factory=list, description="可选择的模型列表", examples=[[]])
-    failure: Literal[
-        "authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"
-    ] | None = Field(
-        default=None, description="模型列表获取失败的原因", examples=["timeout"]
-    )
+    failure: (
+        Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None
+    ) = Field(default=None, description="模型列表获取失败的原因", examples=["timeout"])
 
 
 class ConnectionTestOut(BaseModel):
@@ -170,11 +170,9 @@ class ConnectionTestOut(BaseModel):
     model_names: dict[str, str] = Field(
         default_factory=dict, description="上游提供的模型显示名称", examples=[{"gpt-4o-mini": "GPT-4o mini"}]
     )
-    failure: Literal[
-        "authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"
-    ] | None = Field(
-        default=None, description="连接失败原因", examples=["timeout"]
-    )
+    failure: (
+        Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None
+    ) = Field(default=None, description="连接失败原因", examples=["timeout"])
 
 
 class ModelTestOut(BaseModel):
@@ -188,10 +186,20 @@ class ModelTestOut(BaseModel):
     output_tokens: int | None = Field(default=None, description="上游报告的输出 Token 数", examples=[8])
     estimated_cost: Decimal | None = Field(default=None, description="依据模型单价估算的调用成本", examples=["0.000004"])
     price_currency: str | None = Field(default=None, description="估算成本的币种", examples=["USD"])
-    failure: Literal[
-        "authentication", "model_not_found", "invalid_request", "rate_limit", "timeout", "network", "upstream", "invalid_response",
-        "unsupported_capability",
-    ] | None = Field(default=None, description="测试失败原因", examples=["rate_limit"])
+    failure: (
+        Literal[
+            "authentication",
+            "model_not_found",
+            "invalid_request",
+            "rate_limit",
+            "timeout",
+            "network",
+            "upstream",
+            "invalid_response",
+            "unsupported_capability",
+        ]
+        | None
+    ) = Field(default=None, description="测试失败原因", examples=["rate_limit"])
 
 
 class CapabilityTestIn(BaseModel):
@@ -201,8 +209,7 @@ class CapabilityTestIn(BaseModel):
 class CapabilityTestOut(BaseModel):
     capability: ProbeCapability = Field(description="本次验证的能力", examples=["streaming"])
     result: ModelTestOut = Field(
-        description="脱敏后的调用结果",
-        examples=[{"model_id": 1, "external_id": "gpt-4o-mini", "available": True, "latency_ms": 300}],
+        description="脱敏后的调用结果", examples=[{"model_id": 1, "external_id": "gpt-4o-mini", "available": True, "latency_ms": 300}]
     )
     verified_capabilities: list[Capability] = Field(description="当前已通过探测的能力", examples=[["text", "streaming"]])
 

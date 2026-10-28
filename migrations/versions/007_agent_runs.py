@@ -56,7 +56,7 @@ def upgrade() -> None:
     op.create_index("ix_yp_agent_run_owner_id", "yp_agent_run", ["owner_id"])
     op.create_table(
         "yp_agent_run_event",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("run_id", sa.String(36), nullable=False, comment="所属运行 ID"),
         sa.Column("sequence", sa.Integer(), nullable=False, comment="运行内单调事件序号"),
         sa.Column("protocol_version", sa.Integer(), nullable=False, comment="事件协议版本"),

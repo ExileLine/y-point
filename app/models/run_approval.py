@@ -26,9 +26,7 @@ class RunApproval(CustomBaseModel):
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="审批所属用户 ID")
     checkpoint_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="审批中断对应的检查点 ID")
     actions: Mapped[list[dict]] = mapped_column(JSON, nullable=False, comment="待审批工具名与参数摘要列表")
-    state: Mapped[str] = mapped_column(
-        String(16), nullable=False, comment="审批状态：pending、approved、rejected、expired 或 cancelled"
-    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False, comment="审批状态：pending、approved、rejected、expired 或 cancelled")
     expires_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="审批到期时间")
     decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="作出审批决定的用户 ID")
     decided_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="审批决定时间")

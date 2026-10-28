@@ -73,9 +73,14 @@ def make_stream_ticket(admin: Admin, session_id: str, run_id: str) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "sub": str(admin.id), "sid": session_id, "ver": admin.token_version,
-            "type": "stream", "rid": run_id, "iat": now,
-            "exp": now + timedelta(seconds=STREAM_TICKET_SECONDS), "jti": str(uuid4()),
+            "sub": str(admin.id),
+            "sid": session_id,
+            "ver": admin.token_version,
+            "type": "stream",
+            "rid": run_id,
+            "iat": now,
+            "exp": now + timedelta(seconds=STREAM_TICKET_SECONDS),
+            "jti": str(uuid4()),
         },
         get_config().SECRET_KEY,
         algorithm="HS256",
@@ -88,9 +93,7 @@ def unauthorized() -> CustomException:
 
 
 async def get_current_admin(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db_session),
+    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme), db: AsyncSession = Depends(get_db_session)
 ) -> Admin:
     """校验 Bearer 令牌、用户状态及数据库会话，并返回当前用户。"""
     if credentials is None:
@@ -114,9 +117,7 @@ async def get_current_admin(
     return await _verified_admin(request, db, admin_id, session_id, payload["ver"], payload["exp"])
 
 
-async def _verified_admin(
-    request: Request, db: AsyncSession, admin_id: int, session_id: str, token_version: int, expires_at: int,
-) -> Admin:
+async def _verified_admin(request: Request, db: AsyncSession, admin_id: int, session_id: str, token_version: int, expires_at: int) -> Admin:
     """核对用户、登录会话和令牌版本，并保存 SSE 续流所需状态。"""
     admin = await db.get(Admin, admin_id)
     auth_session = await db.get(AuthSession, session_id)
@@ -138,7 +139,8 @@ async def _verified_admin(
 
 
 async def get_stream_admin(
-    request: Request, run_id: str,
+    request: Request,
+    run_id: str,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db_session),
 ) -> Admin:
@@ -150,13 +152,9 @@ async def get_stream_admin(
         raise unauthorized()
     try:
         payload = jwt.decode(
-            ticket, get_config().SECRET_KEY, algorithms=["HS256"],
-            options={"require": ["sub", "sid", "ver", "type", "rid", "iat", "exp"]},
+            ticket, get_config().SECRET_KEY, algorithms=["HS256"], options={"require": ["sub", "sid", "ver", "type", "rid", "iat", "exp"]}
         )
-        if (
-            payload["type"] != "stream" or payload["rid"] != run_id
-            or type(payload["ver"]) is not int or type(payload["exp"]) is not int
-        ):
+        if payload["type"] != "stream" or payload["rid"] != run_id or type(payload["ver"]) is not int or (type(payload["exp"]) is not int):
             raise unauthorized()
         admin_id = int(payload["sub"])
         session_id = payload["sid"]

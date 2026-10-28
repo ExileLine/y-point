@@ -20,20 +20,16 @@ depends_on = None
 
 def upgrade() -> None:
     """新增可选成本上限、累计成本和创建时的模型计价信息。"""
-    op.add_column(
-        "yp_agent_run", sa.Column("max_estimated_cost", sa.Numeric(18, 6), nullable=True, comment="本次运行估算成本上限"),
-    )
+    op.add_column("yp_agent_run", sa.Column("max_estimated_cost", sa.Numeric(18, 6), nullable=True, comment="本次运行估算成本上限"))
     op.add_column(
         "yp_agent_run",
         sa.Column("estimated_cost", sa.Numeric(24, 12), nullable=False, server_default="0", comment="启用预算时的累计估算成本"),
     )
     op.add_column(
-        "yp_agent_run",
-        sa.Column("cost_input_price", sa.Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格"),
+        "yp_agent_run", sa.Column("cost_input_price", sa.Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格")
     )
     op.add_column(
-        "yp_agent_run",
-        sa.Column("cost_output_price", sa.Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格"),
+        "yp_agent_run", sa.Column("cost_output_price", sa.Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格")
     )
     op.add_column("yp_agent_run", sa.Column("cost_currency", sa.String(3), nullable=True, comment="创建运行时价格币种"))
 

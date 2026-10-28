@@ -54,9 +54,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """移除会话索引、快照字段和会话表。"""
     op.drop_index("ix_yp_agent_run_session_id", table_name="yp_agent_run")
-    for name in (
-        "agent_max_output_tokens", "agent_temperature", "agent_system_prompt", "agent_config_version", "session_id",
-    ):
+    for name in ("agent_max_output_tokens", "agent_temperature", "agent_system_prompt", "agent_config_version", "session_id"):
         op.drop_column("yp_agent_run", name)
     op.drop_index("ix_yp_agent_session_agent_id", table_name="yp_agent_session")
     op.drop_index("ix_yp_agent_session_owner_id", table_name="yp_agent_session")

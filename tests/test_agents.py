@@ -46,6 +46,7 @@ def test_agent_config_migration(tmp_path: Path) -> None:
         engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         try:
             async with engine.connect() as connection:
+
                 def inspect_schema(sync_connection) -> None:
                     """读取同步 SQLAlchemy Inspector 的表结构。"""
                     schema = inspect(sync_connection)
@@ -71,10 +72,7 @@ def test_agent_limits_backfill(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
     root = Path(__file__).resolve().parents[1]
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "032"],
-        cwd=root, env=env, check=True, capture_output=True, text=True,
-    )
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "032"], cwd=root, env=env, check=True, capture_output=True, text=True)
     with sqlite3.connect(database) as connection:
         connection.execute(
             """INSERT INTO yp_agent_config (
@@ -83,15 +81,12 @@ def test_agent_limits_backfill(tmp_path: Path) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (1, 9, "旧配置", "保留系统指令", 3, 0.7, 1024, 1, 4, "2026-10-26 12:00:00", "2026-10-26 12:00:00", 1, 1, 0, 1),
         )
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=root, env=env, check=True, capture_output=True, text=True,
-    )
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=root, env=env, check=True, capture_output=True, text=True)
     with sqlite3.connect(database) as connection:
         row = connection.execute(
             """SELECT name, version, model_timeout_seconds, tool_timeout_seconds,
                 max_model_calls, max_tool_calls, max_total_tokens, max_estimated_cost
-                FROM yp_agent_config WHERE id = 1""",
+                FROM yp_agent_config WHERE id = 1"""
         ).fetchone()
     assert row == ("旧配置", 4, 120, 120, None, None, None, None)
 
@@ -107,25 +102,52 @@ def test_private_agent_crud(tmp_path: Path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add_all([
-                    Admin(id=1, username="agent-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    Admin(id=2, username="agent-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    Admin(id=3, username="agent-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
-                    ProviderConnection(
-                        id=1, name="agent-provider", name_key="agent-provider", kind="ollama",
-                        base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
-                    ),
-                    ModelCatalog(
-                        id=1, provider_id=1, external_id="verified", display_name="Verified",
-                        capabilities=["text"], verified_capabilities=["text"], capabilities_verified=True, context_window=8192,
-                        creator_id=1, status=1, is_deleted=0,
-                    ),
-                    ModelCatalog(
-                        id=2, provider_id=1, external_id="unverified", display_name="Unverified",
-                        capabilities=["text"], verified_capabilities=[], capabilities_verified=False,
-                        creator_id=1, status=1, is_deleted=0,
-                    ),
-                ])
+                db.add_all(
+                    [
+                        Admin(
+                            id=1, username="agent-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
+                        ),
+                        Admin(id=2, username="agent-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                        Admin(
+                            id=3, username="agent-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0
+                        ),
+                        ProviderConnection(
+                            id=1,
+                            name="agent-provider",
+                            name_key="agent-provider",
+                            kind="ollama",
+                            base_url="http://localhost:11434/v1",
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        ModelCatalog(
+                            id=1,
+                            provider_id=1,
+                            external_id="verified",
+                            display_name="Verified",
+                            capabilities=["text"],
+                            verified_capabilities=["text"],
+                            capabilities_verified=True,
+                            context_window=8192,
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        ModelCatalog(
+                            id=2,
+                            provider_id=1,
+                            external_id="unverified",
+                            display_name="Unverified",
+                            capabilities=["text"],
+                            verified_capabilities=[],
+                            capabilities_verified=False,
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                    ]
+                )
 
             async def test_session():
                 """将接口会话切换到隔离数据库。"""
@@ -135,21 +157,25 @@ def test_private_agent_crud(tmp_path: Path) -> None:
             app.dependency_overrides[get_db_session] = test_session
             try:
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
                     async def login(username: str) -> dict[str, str]:
                         """取得测试用户的 Bearer 请求头。"""
-                        response = await client.post("/api/v1/auth/login", json={
-                            "identifier": username, "password": "StrongPassword123",
-                        })
+                        response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
                         assert response.status_code == 200, response.text
                         return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
 
                     alice, bob = await login("agent-alice"), await login("agent-bob")
                     admin = await login("agent-admin")
                     payload = {
-                        "name": " 需求助手 ", "default_model_id": 1,
-                        "system_prompt": "只回答需求问题", "temperature": "0.70",
-                        "model_timeout_seconds": 60, "tool_timeout_seconds": 30,
-                        "max_model_calls": 3, "max_tool_calls": 5, "max_total_tokens": 10000,
+                        "name": " 需求助手 ",
+                        "default_model_id": 1,
+                        "system_prompt": "只回答需求问题",
+                        "temperature": "0.70",
+                        "model_timeout_seconds": 60,
+                        "tool_timeout_seconds": 30,
+                        "max_model_calls": 3,
+                        "max_tool_calls": 5,
+                        "max_total_tokens": 10000,
                     }
                     assert (await client.post("/api/v1/agents", json=payload)).status_code == 401
                     invalid = await client.post("/api/v1/agents", headers=alice, json={**payload, "default_model_id": 2})
@@ -158,18 +184,17 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert too_large.status_code == 409
                     crowded = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_output_tokens": 7500})
                     assert crowded.status_code == 409
-                    unpriced = await client.post("/api/v1/agents", headers=alice, json={
-                        **payload, "max_estimated_cost": "0.010000",
-                    })
+                    unpriced = await client.post("/api/v1/agents", headers=alice, json={**payload, "max_estimated_cost": "0.010000"})
                     assert unpriced.status_code == 409
                     for field, invalid_value in (
-                        ("model_timeout_seconds", 121), ("tool_timeout_seconds", 0),
-                        ("max_model_calls", 101), ("max_tool_calls", 0), ("max_total_tokens", 0),
+                        ("model_timeout_seconds", 121),
+                        ("tool_timeout_seconds", 0),
+                        ("max_model_calls", 101),
+                        ("max_tool_calls", 0),
+                        ("max_total_tokens", 0),
                         ("max_estimated_cost", "0.0000001"),
                     ):
-                        rejected = await client.post("/api/v1/agents", headers=alice, json={
-                            **payload, field: invalid_value,
-                        })
+                        rejected = await client.post("/api/v1/agents", headers=alice, json={**payload, field: invalid_value})
                         assert rejected.status_code == 400, rejected.text
                     created = await client.post("/api/v1/agents", headers=alice, json=payload)
                     assert created.status_code == 201, created.text
@@ -184,41 +209,54 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 409
                     assert (await client.put("/api/v1/providers/1", headers=admin, json={"status": 0})).status_code == 409
                     assert (await client.put("/api/v1/models/1", headers=admin, json={"external_id": "replacement"})).status_code == 409
-                    assert (await client.put("/api/v1/providers/1", headers=admin, json={
-                        "base_url": "http://localhost:11435/v1",
-                    })).status_code == 409
+                    assert (
+                        await client.put("/api/v1/providers/1", headers=admin, json={"base_url": "http://localhost:11435/v1"})
+                    ).status_code == 409
                     assert (await client.put("/api/v1/models/1", headers=admin, json={"display_name": "Renamed"})).status_code == 200
                     assert (await client.get(f"/api/v1/agents/{agent_id}", headers=bob)).status_code == 404
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=bob, json={
-                        "expected_version": 1, "name": "steal",
-                    })).status_code == 404
+                    assert (
+                        await client.put(f"/api/v1/agents/{agent_id}", headers=bob, json={"expected_version": 1, "name": "steal"})
+                    ).status_code == 404
                     assert (await client.delete(f"/api/v1/agents/{agent_id}", headers=bob)).status_code == 404
                     assert (await client.get("/api/v1/agents", headers=bob)).json()["data"]["total"] == 0
                     listed = (await client.get("/api/v1/agents?page=1&page_size=1", headers=alice)).json()["data"]
                     assert listed["total"] == 1 and listed["items"][0]["id"] == agent_id
-                    updated = await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 1, "description": "新版描述", "enabled": False,
-                        "max_model_calls": None, "max_total_tokens": None,
-                    })
+                    updated = await client.put(
+                        f"/api/v1/agents/{agent_id}",
+                        headers=alice,
+                        json={
+                            "expected_version": 1,
+                            "description": "新版描述",
+                            "enabled": False,
+                            "max_model_calls": None,
+                            "max_total_tokens": None,
+                        },
+                    )
                     assert updated.status_code == 200, updated.text
                     assert updated.json()["data"]["version"] == 2
                     assert updated.json()["data"]["max_model_calls"] is None
                     assert updated.json()["data"]["max_total_tokens"] is None
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 2, "tool_timeout_seconds": None,
-                    })).status_code == 400
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 2, "max_estimated_cost": "0.020000",
-                    })).status_code == 409
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 1, "name": "覆盖新版",
-                    })).status_code == 409
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 2, "default_model_id": 2,
-                    })).status_code == 409
-                    assert (await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={
-                        "expected_version": 2, "max_output_tokens": 9000,
-                    })).status_code == 409
+                    assert (
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "tool_timeout_seconds": None}
+                        )
+                    ).status_code == 400
+                    assert (
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "max_estimated_cost": "0.020000"}
+                        )
+                    ).status_code == 409
+                    assert (
+                        await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 1, "name": "覆盖新版"})
+                    ).status_code == 409
+                    assert (
+                        await client.put(f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "default_model_id": 2})
+                    ).status_code == 409
+                    assert (
+                        await client.put(
+                            f"/api/v1/agents/{agent_id}", headers=alice, json={"expected_version": 2, "max_output_tokens": 9000}
+                        )
+                    ).status_code == 409
                     assert (await client.delete(f"/api/v1/agents/{agent_id}", headers=alice)).status_code == 200
                     assert (await client.put("/api/v1/models/1", headers=admin, json={"status": 0})).status_code == 200
                     assert (await client.delete("/api/v1/models/1", headers=admin)).status_code == 200
@@ -241,10 +279,12 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
     """指定用户能创建自己的会话；撤权后历史入口关闭且排队运行取消。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：指定用户能创建自己的会话；撤权后历史入口关闭且排队运行取消。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'named-share.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def test_session():
+            """为 HTTP 测试注入隔离数据库会话。"""
             async with sessions() as db:
                 yield db
 
@@ -253,33 +293,54 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add_all([
-                    Admin(id=user_id, username=name, password=hash_password("StrongPassword123"),
-                          role="user", status=1, is_deleted=0)
-                    for user_id, name in ((1, "share-owner"), (2, "share-recipient"), (3, "share-stranger"))
-                ])
-                db.add(ProviderConnection(
-                    id=1, name="share-provider", name_key="share-provider", kind="ollama",
-                    base_url="http://localhost:11434/v1", creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="verified", display_name="Verified",
-                    capabilities=["text"], verified_capabilities=["text"], capabilities_verified=True,
-                    context_window=8192, creator_id=1, status=1, is_deleted=0,
-                ))
+                db.add_all(
+                    [
+                        Admin(id=user_id, username=name, password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0)
+                        for user_id, name in ((1, "share-owner"), (2, "share-recipient"), (3, "share-stranger"))
+                    ]
+                )
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="share-provider",
+                        name_key="share-provider",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="verified",
+                        display_name="Verified",
+                        capabilities=["text"],
+                        verified_capabilities=["text"],
+                        capabilities_verified=True,
+                        context_window=8192,
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
                 async def login(name: str) -> dict[str, str]:
-                    response = await client.post("/api/v1/auth/login", json={
-                        "identifier": name, "password": "StrongPassword123",
-                    })
+                    """通过正式登录接口获取测试用户的访问令牌。"""
+                    response = await client.post("/api/v1/auth/login", json={"identifier": name, "password": "StrongPassword123"})
                     assert response.status_code == 200, response.text
                     return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
 
                 owner, recipient, stranger = await login("share-owner"), await login("share-recipient"), await login("share-stranger")
-                created = await client.post("/api/v1/agents", headers=owner, json={
-                    "name": "Private prompt", "default_model_id": 1, "system_prompt": "owner-only-secret",
-                })
+                created = await client.post(
+                    "/api/v1/agents",
+                    headers=owner,
+                    json={"name": "Private prompt", "default_model_id": 1, "system_prompt": "owner-only-secret"},
+                )
                 assert created.status_code == 201, created.text
                 agent_id = created.json()["data"]["id"]
                 base = f"/api/v1/agents/{agent_id}"
@@ -290,9 +351,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 granted = await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})
                 assert granted.status_code == 200, granted.text
                 assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
-                assert (await client.get(f"{base}/shares", headers=owner)).json()["data"] == [
-                    {"user_id": 2, "username": "share-recipient"},
-                ]
+                assert (await client.get(f"{base}/shares", headers=owner)).json()["data"] == [{"user_id": 2, "username": "share-recipient"}]
                 shared = (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"]
                 assert len(shared) == 1 and shared[0]["id"] == agent_id
                 assert "system_prompt" not in shared[0]
@@ -315,23 +374,45 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 foreign_artifact_id = str(uuid4())
                 recipient_artifact_id = str(uuid4())
                 async with sessions.begin() as db:
-                    db.add_all([
-                        Artifact(
-                            id=artifact_id, owner_id=owner_id, filename=filename, media_type="text/plain",
-                            byte_size=4, sha256="a" * 64, storage_key=uuid4().hex, source="upload", state="ready",
-                            expires_at=shanghai_now(naive=True) + timedelta(days=1), status=1, is_deleted=0,
-                        )
-                        for artifact_id, owner_id, filename in (
-                            (foreign_artifact_id, 1, "owner.txt"), (recipient_artifact_id, 2, "recipient.txt"),
-                        )
-                    ])
-                assert (await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
-                    "input_text": "read owner file", "request_key": "share-foreign-file",
-                    "artifact_ids": [foreign_artifact_id], "context_artifact_ids": [foreign_artifact_id],
-                })).status_code == 404
-                submitted = await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
-                    "input_text": "hello", "request_key": "share-queued",
-                })
+                    db.add_all(
+                        [
+                            Artifact(
+                                id=artifact_id,
+                                owner_id=owner_id,
+                                filename=filename,
+                                media_type="text/plain",
+                                byte_size=4,
+                                sha256="a" * 64,
+                                storage_key=uuid4().hex,
+                                source="upload",
+                                state="ready",
+                                expires_at=shanghai_now(naive=True) + timedelta(days=1),
+                                status=1,
+                                is_deleted=0,
+                            )
+                            for artifact_id, owner_id, filename in (
+                                (foreign_artifact_id, 1, "owner.txt"),
+                                (recipient_artifact_id, 2, "recipient.txt"),
+                            )
+                        ]
+                    )
+                assert (
+                    await client.post(
+                        f"{base}/sessions/{recipient_session_id}/runs",
+                        headers=recipient,
+                        json={
+                            "input_text": "read owner file",
+                            "request_key": "share-foreign-file",
+                            "artifact_ids": [foreign_artifact_id],
+                            "context_artifact_ids": [foreign_artifact_id],
+                        },
+                    )
+                ).status_code == 404
+                submitted = await client.post(
+                    f"{base}/sessions/{recipient_session_id}/runs",
+                    headers=recipient,
+                    json={"input_text": "hello", "request_key": "share-queued"},
+                )
                 assert submitted.status_code == 201, submitted.text
                 run_id = submitted.json()["data"]["id"]
                 assert (await client.get(f"/api/v1/runs/{run_id}", headers=owner)).status_code == 404
@@ -343,18 +424,20 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 assert (await client.get(f"{base}/sessions/{recipient_session_id}/messages", headers=recipient)).status_code == 404
                 assert (await client.get(f"/api/v1/runs/{run_id}", headers=recipient)).status_code == 404
                 assert (await client.get(f"/api/v1/artifacts/{recipient_artifact_id}", headers=recipient)).status_code == 200
-                assert (await client.post(f"{base}/sessions/{recipient_session_id}/runs", headers=recipient, json={
-                    "input_text": "again", "request_key": "share-revoked",
-                })).status_code == 404
+                assert (
+                    await client.post(
+                        f"{base}/sessions/{recipient_session_id}/runs",
+                        headers=recipient,
+                        json={"input_text": "again", "request_key": "share-revoked"},
+                    )
+                ).status_code == 404
                 assert (await client.delete(f"{base}/shares/2", headers=owner)).status_code == 404
                 async with sessions() as db:
                     from app.models.agent_run import AgentRun
 
                     assert (await db.get(AgentRun, run_id)).state == "cancelled"
                     assert (await db.scalars(select(AgentShare))).all() == []
-                    actions = (await db.scalars(select(AuditEvent.action).where(
-                        AuditEvent.target_id == 2,
-                    ))).all()
+                    actions = (await db.scalars(select(AuditEvent.action).where(AuditEvent.target_id == 2))).all()
                     assert {"agent.shared", "agent.share_revoked"} <= set(actions)
                 assert (await client.post(f"{base}/shares", headers=owner, json={"user_id": 2})).status_code == 200
                 assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=recipient)).status_code == 200

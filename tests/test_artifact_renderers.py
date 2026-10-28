@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-27 15:55:36
+# @Author  : yangyuexiong
+# @File    : test_artifact_renderers.py
+
 """验证生成文件是真实格式，且 HTML 和表格内容不会变成可执行代码。"""
 
 from io import BytesIO
@@ -7,15 +12,11 @@ from docx import Document
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from app.services.artifact_renderers import (
-    ArtifactSheet,
-    render_document_artifact,
-    render_spreadsheet_artifact,
-    render_text_artifact,
-)
+from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact, render_text_artifact
 
 
 def test_document_formats_can_be_reopened() -> None:
+    """验证生成的文档可重新打开且包含预期正文。"""
     content = "# 夷陵之战\n\n蜀汉与东吴交战。\n\n- 时间：222年"
     document = Document(BytesIO(render_document_artifact("summary.docx", content)))
     assert any("夷陵之战" in paragraph.text for paragraph in document.paragraphs)
@@ -26,8 +27,9 @@ def test_document_formats_can_be_reopened() -> None:
 
 
 def test_spreadsheet_preserves_text_and_multiple_sheets() -> None:
+    """验证工作簿保留文本值且支持多个工作表。"""
     sheets = [
-        ArtifactSheet(name="概览", rows=[["项目", "数值"], ["结果", 42], ["用户输入", "=HYPERLINK(\"bad\")"]]),
+        ArtifactSheet(name="概览", rows=[["项目", "数值"], ["结果", 42], ["用户输入", '=HYPERLINK("bad")']]),
         ArtifactSheet(name="明细", rows=[["项目", "状态"], ["A", True]]),
     ]
     workbook = load_workbook(BytesIO(render_spreadsheet_artifact(sheets)), read_only=True, data_only=False)
@@ -39,12 +41,11 @@ def test_spreadsheet_preserves_text_and_multiple_sheets() -> None:
     finally:
         workbook.close()
     with pytest.raises(ValueError, match="重复"):
-        render_spreadsheet_artifact([
-            ArtifactSheet(name="Same", rows=[["a"]]), ArtifactSheet(name="same", rows=[["b"]]),
-        ])
+        render_spreadsheet_artifact([ArtifactSheet(name="Same", rows=[["a"]]), ArtifactSheet(name="same", rows=[["b"]])])
 
 
 def test_markdown_and_html_are_utf8_and_html_is_sanitized() -> None:
+    """验证文本使用 UTF-8 编码且 HTML 危险内容被清洗。"""
     assert render_text_artifact("summary.md", "# 标题").decode() == "# 标题"
     content = render_text_artifact("summary.html", "# 标题\n<script>alert(1)</script>\n[link](javascript:alert(1))")
     assert "<h1>标题</h1>" in content.decode()

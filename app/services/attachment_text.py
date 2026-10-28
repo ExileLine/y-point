@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-27 16:48:10
+# @Author  : yangyuexiong
+# @File    : attachment_text.py
+
 """从已授权的上传文件中提取有界的模型参考文本。"""
 
 import io
@@ -11,40 +16,46 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 MAX_CONTEXT_ATTACHMENT_BYTES = 16 * 1024
-CONTEXT_MEDIA_TYPES = frozenset({
-    "text/plain", "application/pdf",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-})
-GENERATED_CONTEXT_MEDIA_TYPES = CONTEXT_MEDIA_TYPES | frozenset({
-    "text/markdown", "text/html", "text/csv", "application/json",
-})
+CONTEXT_MEDIA_TYPES = frozenset(
+    {
+        "text/plain",
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+)
+GENERATED_CONTEXT_MEDIA_TYPES = CONTEXT_MEDIA_TYPES | frozenset({"text/markdown", "text/html", "text/csv", "application/json"})
 
 
 class _HTMLText(HTMLParser):
     def __init__(self) -> None:
+        """初始化 HTML 文本收集器和脚本样式跳过计数。"""
         super().__init__(convert_charrefs=True)
         self.lines: list[str] = []
         self.skip = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
+        """跳过脚本与样式内容，并为块级 HTML 标签追加换行。"""
         if tag in {"script", "style"}:
             self.skip += 1
         elif tag in {"p", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
             self.lines.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        """结束脚本或样式跳过区间，并保留块级标签换行。"""
         if tag in {"script", "style"} and self.skip:
             self.skip -= 1
         elif tag in {"p", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
             self.lines.append("\n")
 
     def handle_data(self, data: str) -> None:
+        """收集脚本和样式区间之外的 HTML 文本。"""
         if not self.skip:
             self.lines.append(data)
 
 
 def _bounded_text(lines) -> str:
+    """收集文档非空行，拒绝空文本、过多行或超过字节上限的内容。"""
     collected = []
     size = 0
     for index, line in enumerate(lines):
@@ -85,6 +96,7 @@ def extract_context_text(content: bytes, media_type: str) -> str:
         document = Document(io.BytesIO(content))
 
         def document_lines():
+            """按 DOCX 段落和表格顺序产出可供模型读取的文本行。"""
             for block in document.iter_inner_content():
                 if isinstance(block, Paragraph):
                     yield block.text
@@ -100,6 +112,7 @@ def extract_context_text(content: bytes, media_type: str) -> str:
                 raise ValueError("工作表数量超过限制")
 
             def workbook_lines():
+                """按工作表和行遍历 XLSX 内容并产出带表名的文本行。"""
                 for sheet in workbook.worksheets:
                     if sheet.max_row > 1000 or sheet.max_column > 100:
                         raise ValueError("工作表行列数超过限制")

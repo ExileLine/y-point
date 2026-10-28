@@ -73,10 +73,13 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                 elif provider.kind == "anthropic" and not isinstance(data[key][0], dict):
                     failure = "invalid_response"
                 elif provider.kind == "gemini" and (
-                    not isinstance(data[key][0], dict) or not isinstance(data[key][0].get("content"), dict)
+                    not isinstance(data[key][0], dict)
+                    or not isinstance(data[key][0].get("content"), dict)
                     or not isinstance(data[key][0]["content"].get("parts"), list)
-                    or not any(isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip()
-                               for part in data[key][0]["content"]["parts"])
+                    or not any(
+                        isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip()
+                        for part in data[key][0]["content"]["parts"]
+                    )
                 ):
                     failure = "invalid_response"
                 elif provider.kind not in {"anthropic", "gemini"} and (
@@ -101,26 +104,36 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                         and model.input_price is not None
                         and model.output_price is not None
                     ):
-                        estimated_cost = (
-                            Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price
-                        ) / 1_000_000
+                        estimated_cost = (Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price) / 1000000
             except (ValueError, TypeError):
                 failure = "invalid_response"
         return ModelTestOut(
-            model_id=model.id, external_id=model.external_id, available=failure is None, latency_ms=latency_ms,
-            upstream_status_code=status, input_tokens=input_tokens, output_tokens=output_tokens,
-            estimated_cost=estimated_cost, price_currency=model.price_currency if estimated_cost is not None else None,
+            model_id=model.id,
+            external_id=model.external_id,
+            available=failure is None,
+            latency_ms=latency_ms,
+            upstream_status_code=status,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated_cost=estimated_cost,
+            price_currency=model.price_currency if estimated_cost is not None else None,
             failure=failure,
         )
     except httpx.TimeoutException:
         return ModelTestOut(
-            model_id=model.id, external_id=model.external_id, available=False,
-            latency_ms=round((time.perf_counter() - started) * 1000), failure="timeout",
+            model_id=model.id,
+            external_id=model.external_id,
+            available=False,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            failure="timeout",
         )
     except httpx.RequestError:
         return ModelTestOut(
-            model_id=model.id, external_id=model.external_id, available=False,
-            latency_ms=round((time.perf_counter() - started) * 1000), failure="network",
+            model_id=model.id,
+            external_id=model.external_id,
+            available=False,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            failure="network",
         )
     finally:
         if own_client:

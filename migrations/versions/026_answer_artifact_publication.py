@@ -20,9 +20,10 @@ depends_on = None
 
 def upgrade() -> None:
     """旧运行不自动发布文件。"""
-    op.add_column("yp_agent_run", sa.Column(
-        "publish_answer_artifact", sa.Boolean(), nullable=False, server_default="0", comment="是否将最终回答发布为文本产物",
-    ))
+    op.add_column(
+        "yp_agent_run",
+        sa.Column("publish_answer_artifact", sa.Boolean(), nullable=False, server_default="0", comment="是否将最终回答发布为文本产物"),
+    )
 
 
 def downgrade() -> None:

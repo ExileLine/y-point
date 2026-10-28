@@ -7,12 +7,14 @@ import bcrypt
 
 
 def hash_password(password: str) -> str:
+    """为明文密码生成随机盐并返回 bcrypt 密码哈希。"""
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(password.encode(), salt)
     return hashed.decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
+    """验证明文密码是否与已存储的 bcrypt 哈希匹配。"""
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 

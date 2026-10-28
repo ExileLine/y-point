@@ -9,12 +9,7 @@ from app.core.config import get_config
 
 project_config = get_config()
 
-celery_app = Celery(
-    "y-point-service",
-    broker=project_config.celery_broker_url,
-    backend=project_config.celery_result_backend,
-    include=[],
-)
+celery_app = Celery("y-point-service", broker=project_config.celery_broker_url, backend=project_config.celery_result_backend, include=[])
 
 celery_app.conf.update(
     task_default_queue=project_config.CELERY_TASK_QUEUE,

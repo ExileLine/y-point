@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-21 08:52:04
+# @Author  : yangyuexiong
+# @File    : test_m0.py
+
 import os
 import sqlite3
 import subprocess
@@ -19,7 +24,7 @@ def test_health() -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"code": 200, "message": "操作成功", "data": {"status": "ok"}}
 
 
 def test_initial_migration(tmp_path: Path) -> None:
@@ -28,21 +33,9 @@ def test_initial_migration(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.update({"DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database)})
     subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=PROJECT_ROOT,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
+        [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True
     )
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "check"],
-        cwd=PROJECT_ROOT,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    subprocess.run([sys.executable, "-m", "alembic", "check"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True)
     with sqlite3.connect(database) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"alembic_version", *Base.metadata.tables} <= tables
@@ -56,9 +49,7 @@ def test_initial_migration(tmp_path: Path) -> None:
 def test_development_local_secret_overrides_example(tmp_path: Path, monkeypatch) -> None:
     """验证未跟踪的开发配置可覆盖仓库内的占位密钥。"""
     (tmp_path / ".env.development").write_text("SECRET_KEY=your-secret-key\n", encoding="utf-8")
-    (tmp_path / ".env.development.local").write_text(
-        "SECRET_KEY=local-testing-secret-with-more-than-32-bytes\n", encoding="utf-8"
-    )
+    (tmp_path / ".env.development.local").write_text("SECRET_KEY=local-testing-secret-with-more-than-32-bytes\n", encoding="utf-8")
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
     monkeypatch.delenv("ENV_FILE", raising=False)
     files = config.resolve_env_files("development")

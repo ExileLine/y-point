@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 09:08:24
+# @Author  : yangyuexiong
+# @File    : artifact_source.py
+
 """保存生成产物与生成前成功读取的旧产物关系。"""
 
 from sqlalchemy import Integer, String, UniqueConstraint

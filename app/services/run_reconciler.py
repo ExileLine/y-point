@@ -40,16 +40,17 @@ class CheckpointReadModel(BaseChatModel):
         return self
 
 
-async def reconcile_expired_runs(
-    sessions: async_sessionmaker[AsyncSession], checkpoint_path: Path, *, limit: int = 100,
-) -> int:
+async def reconcile_expired_runs(sessions: async_sessionmaker[AsyncSession], checkpoint_path: Path, *, limit: int = 100) -> int:
     """只补写能由当前 Run 的最终检查点证明已完成的过期运行。"""
     if not 1 <= limit <= 1000:
         raise ValueError("无效的检查点补偿数量")
     async with sessions() as db:
-        statement = select(AgentRun.id, AgentRun.owner_id, AgentRun.thread_id).where(
-            AgentRun.state == "running", AgentRun.lease_expires_at <= shanghai_now(naive=True),
-        ).order_by(AgentRun.lease_expires_at, AgentRun.id).limit(limit)
+        statement = (
+            select(AgentRun.id, AgentRun.owner_id, AgentRun.thread_id)
+            .where(AgentRun.state == "running", AgentRun.lease_expires_at <= shanghai_now(naive=True))
+            .order_by(AgentRun.lease_expires_at, AgentRun.id)
+            .limit(limit)
+        )
         candidates = (await db.execute(statement)).all()
     if not candidates:
         return 0
@@ -67,9 +68,14 @@ async def reconcile_expired_runs(
             messages = snapshot.values.get("messages", [])
             metadata = snapshot.metadata or {}
             if (
-                not checkpoint_id or metadata.get("run_id") != run_id or metadata.get("tool_count") != 0 or snapshot.next
-                or not messages or not isinstance(messages[-1], AIMessage)
-                or messages[-1].tool_calls or messages[-1].invalid_tool_calls
+                not checkpoint_id
+                or metadata.get("run_id") != run_id
+                or metadata.get("tool_count") != 0
+                or snapshot.next
+                or not messages
+                or not isinstance(messages[-1], AIMessage)
+                or messages[-1].tool_calls
+                or messages[-1].invalid_tool_calls
             ):
                 continue
             final_text = str(messages[-1].text)
@@ -80,9 +86,9 @@ async def reconcile_expired_runs(
                     user = await db.get(Admin, owner_id)
                     if user is None or user.status != 1 or user.is_deleted != 0:
                         continue
-                    existing = await db.scalar(select(AgentRunMessage.id).where(
-                        AgentRunMessage.run_id == run_id, AgentRunMessage.role == "assistant",
-                    ).limit(1))
+                    existing = await db.scalar(
+                        select(AgentRunMessage.id).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == "assistant").limit(1)
+                    )
                     if existing is not None:
                         continue
                     await complete_expired_run(db, run_id, checkpoint_id=checkpoint_id, final_text=final_text)

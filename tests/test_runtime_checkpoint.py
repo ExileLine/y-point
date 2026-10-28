@@ -25,11 +25,7 @@ from langgraph.types import Command
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.model_adapter import build_chat_model
-from app.services.runtime_checkpoint import (
-    open_async_checkpointer,
-    open_async_sqlite_checkpointer,
-    open_sqlite_checkpointer,
-)
+from app.services.runtime_checkpoint import open_async_checkpointer, open_async_sqlite_checkpointer, open_sqlite_checkpointer
 from app.services import runtime_checkpoint
 
 
@@ -83,7 +79,10 @@ def worker(phase: str, database_path: Path) -> dict:
     """在全新 Python 进程中执行一个检查点阶段。"""
     result = subprocess.run(
         [sys.executable, "-m", "tests.test_runtime_checkpoint", phase, str(database_path)],
-        check=True, capture_output=True, text=True, timeout=30,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     return json.loads(result.stdout.strip().splitlines()[-1])
 
@@ -123,14 +122,16 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
         tool_call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-async"}])
         async with open_async_sqlite_checkpointer(database_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer
             )
             paused = await agent.ainvoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
             assert paused["__interrupt__"]
         async with open_async_sqlite_checkpointer(database_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="finished")]), tools=[echo],
-                interrupt_on={"echo": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="finished")]),
+                tools=[echo],
+                interrupt_on={"echo": True},
+                checkpointer=checkpointer,
             )
             resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
             assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
@@ -141,11 +142,12 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
 
 def test_postgres_checkpoint_requires_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """配置错误必须在 worker 领取运行前暴露。"""
-    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
-        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN="",
-    ))
+    monkeypatch.setattr(
+        runtime_checkpoint, "get_config", lambda: SimpleNamespace(CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN="")
+    )
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：配置错误必须在 worker 领取运行前暴露。"""
         with pytest.raises(ValueError, match="独立连接地址"):
             async with open_async_checkpointer(tmp_path / "unused.sqlite"):
                 pass
@@ -153,30 +155,33 @@ def test_postgres_checkpoint_requires_connection(tmp_path: Path, monkeypatch: py
     asyncio.run(exercise())
 
 
-@pytest.mark.skipif(
-    not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库",
-)
+@pytest.mark.skipif(not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库")
 def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """真实 PostgreSQL 检查点在断开连接后恢复同一审批和工具结果。"""
-    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
-        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"],
-    ))
+    monkeypatch.setattr(
+        runtime_checkpoint,
+        "get_config",
+        lambda: SimpleNamespace(CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"]),
+    )
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：真实 PostgreSQL 检查点在断开连接后恢复同一审批和工具结果。"""
         config = {"configurable": {"thread_id": f"checkpoint-{uuid4()}"}}
         tool_call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {"text": "hello"}, "id": "call-postgres"}])
         async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
             await checkpointer.setup()
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[tool_call]), tools=[echo], interrupt_on={"echo": True}, checkpointer=checkpointer
             )
             paused = await agent.ainvoke({"messages": [{"role": "user", "content": "say hello"}]}, config)
             assert paused["__interrupt__"]
             paused_id = (await agent.aget_state(config)).config["configurable"]["checkpoint_id"]
         async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="finished")]), tools=[echo],
-                interrupt_on={"echo": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="finished")]),
+                tools=[echo],
+                interrupt_on={"echo": True},
+                checkpointer=checkpointer,
             )
             resumed = await agent.ainvoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
             assert any(isinstance(message, ToolMessage) and message.content == "hello" for message in resumed["messages"])
@@ -190,12 +195,19 @@ def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pyte
 def test_live_ollama_deep_agent_tool_stream_and_usage() -> None:
     """使用本机真实模型验证 DeepAgents 工具编排、流式事件和 Token 用量。"""
     provider = ProviderConnection(
-        id=999003, kind="ollama", base_url="http://127.0.0.1:11434/v1", encrypted_credentials=None,
-        timeout_seconds=60, status=1, is_deleted=0,
+        id=999003,
+        kind="ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        encrypted_credentials=None,
+        timeout_seconds=60,
+        status=1,
+        is_deleted=0,
     )
     model = ModelCatalog(id=999003, provider_id=provider.id, external_id="gemma4:31b-cloud", status=1, is_deleted=0)
     agent = create_deep_agent(
-        model=build_chat_model(model, provider), tools=[echo], checkpointer=InMemorySaver(),
+        model=build_chat_model(model, provider),
+        tools=[echo],
+        checkpointer=InMemorySaver(),
         system_prompt="Call the echo tool exactly once with text 'hello'. After the tool result, give a short final answer.",
     )
     config = {"configurable": {"thread_id": "live-ollama-m3"}}

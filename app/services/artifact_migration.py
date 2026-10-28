@@ -19,10 +19,12 @@ from app.services.private_blob_store import delete_blob, read_blob, store_blob, 
 
 
 def _matches(content: bytes, artifact: Artifact) -> bool:
+    """核对文件正文的字节数和 SHA-256 是否与元数据一致。"""
     return len(content) == artifact.byte_size and hashlib.sha256(content).hexdigest() == artifact.sha256
 
 
 async def _read_remote(root: Path, artifact: Artifact) -> bytes | None:
+    """有界读取待核验的远端文件，不存在时返回空值。"""
     try:
         return await read_blob(root, artifact.storage_key, max_bytes=MAX_FILE_BYTES)
     except ClientError as exc:
@@ -32,7 +34,7 @@ async def _read_remote(root: Path, artifact: Artifact) -> bytes | None:
 
 
 async def migrate_local_artifacts_to_s3(
-    sessions: async_sessionmaker[AsyncSession], root: Path, *, batch_size: int = 100,
+    sessions: async_sessionmaker[AsyncSession], root: Path, *, batch_size: int = 100
 ) -> tuple[int, int]:
     """保留本地正文，远端已存在时只验证；首次上传后再次读取核对。"""
     if not using_s3():
@@ -43,10 +45,19 @@ async def migrate_local_artifacts_to_s3(
     last_id = ""
     while True:
         async with sessions() as db:
-            rows = (await db.scalars(select(Artifact).where(
-                Artifact.id > last_id, Artifact.state == "ready", Artifact.is_deleted == 0,
-                or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
-            ).order_by(Artifact.id).limit(batch_size))).all()
+            rows = (
+                await db.scalars(
+                    select(Artifact)
+                    .where(
+                        Artifact.id > last_id,
+                        Artifact.state == "ready",
+                        Artifact.is_deleted == 0,
+                        or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
+                    )
+                    .order_by(Artifact.id)
+                    .limit(batch_size)
+                )
+            ).all()
         if not rows:
             return uploaded, verified
         for artifact in rows:

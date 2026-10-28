@@ -15,6 +15,7 @@ from app.utils.time_tools import TimeTools
 
 class JsonFieldHandle:
     def __init__(self):
+        """初始化 JSON 字段处理占位对象。"""
         pass
 
 
@@ -35,6 +36,7 @@ class CommonPaginateQuery:
         exclude_field: set = None,
         skip_list: List = None,
     ):
+        """保存分页请求、模型、会话及筛选排序配置。"""
         self.request_data = request_data
         self.orm_model = orm_model
         self.db_session = db_session
@@ -61,12 +63,14 @@ class CommonPaginateQuery:
 
     @staticmethod
     def _parse_filter_key(key: str) -> tuple[str, str]:
+        """将筛选键拆分为字段名和操作符，缺省使用等值比较。"""
         if "__" in key:
             field, op = key.split("__", 1)
             return field, op
         return key, "eq"
 
     def _build_expr(self, key: str, value):
+        """将筛选字段和值转换为 SQL 表达式，不支持的字段或操作返回空值。"""
         field, op = self._parse_filter_key(key)
         column = getattr(self.orm_model, field, None)
         if column is None:
@@ -93,6 +97,7 @@ class CommonPaginateQuery:
         return None
 
     async def build_filter_conditions(self):
+        """从请求字段收集模糊查询和等值查询条件。"""
         for k, v in self.request_data.model_dump().items():
             if v is None or (bool(v) is False and k not in self.skip_list):
                 continue
@@ -102,14 +107,17 @@ class CommonPaginateQuery:
                 self.where_conditions.append(getattr(self.orm_model, k) == v)
 
     async def build_like(self):
+        """将缺省的模糊查询字段初始化为空列表。"""
         if not self.like_list:
             self.like_list = []
 
     async def build_where(self):
+        """将缺省的等值查询字段初始化为空列表。"""
         if not self.where_list:
             self.where_list = []
 
     async def build_range(self):
+        """将范围筛选配置转换为有效的 SQL 查询条件。"""
         if not self.filter_range:
             return
         for k, v in self.filter_range.items():
@@ -120,10 +128,12 @@ class CommonPaginateQuery:
                 self.range_conditions.append(expr)
 
     async def build_order_by(self):
+        """将缺省的排序字段初始化为空列表。"""
         if not self.order_by_list:
             self.order_by_list = []
 
     def _build_order_clauses(self):
+        """解析排序字段和降序前缀，返回有效的排序表达式。"""
         clauses = []
         for field in self.order_by_list:
             if field.startswith("-"):
@@ -138,6 +148,7 @@ class CommonPaginateQuery:
         return clauses
 
     async def _handle_json_field_keys_to_obj(self, model_data: dict):
+        """按配置将记录中的 JSON 关联键转换为关联对象。"""
         if not self.json_field_keys_to_obj:
             return
         for d in self.json_field_keys_to_obj:
@@ -160,6 +171,7 @@ class CommonPaginateQuery:
             model_data[d_field] = [m.to_dict(exclude=d_exclude_field) for m in d_model_list]
 
     async def build_query(self):
+        """执行筛选、排序和分页查询，并返回记录与总数。"""
         await self.build_like()
         await self.build_where()
         await self.build_filter_conditions()

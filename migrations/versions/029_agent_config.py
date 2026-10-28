@@ -22,7 +22,7 @@ def upgrade() -> None:
     """创建无外键的 Agent 配置表及所有者索引。"""
     op.create_table(
         "yp_agent_config",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("owner_id", sa.Integer(), nullable=False, comment="智能体所属用户 ID"),
         sa.Column("name", sa.String(128), nullable=False, comment="智能体名称"),
         sa.Column("description", sa.String(1024), comment="智能体描述"),

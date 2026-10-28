@@ -21,20 +21,22 @@ depends_on = None
 def upgrade() -> None:
     """检查旧数据冲突，为活动运行回填并约束线程占用标记。"""
     connection = op.get_bind()
-    duplicate = connection.execute(sa.text(
-        "SELECT thread_id FROM yp_agent_run WHERE state IN "
-        "('queued', 'running', 'waiting_for_approval', 'cancel_requested') "
-        "GROUP BY thread_id HAVING COUNT(*) > 1 LIMIT 1"
-    )).first()
+    duplicate = connection.execute(
+        sa.text(
+            "SELECT thread_id FROM yp_agent_run WHERE state IN "
+            "('queued', 'running', 'waiting_for_approval', 'cancel_requested') "
+            "GROUP BY thread_id HAVING COUNT(*) > 1 LIMIT 1"
+        )
+    ).first()
     if duplicate is not None:
         raise RuntimeError("存在同一检查点线程的多个未结束运行，请先处理冲突再升级")
-    op.add_column("yp_agent_run", sa.Column(
-        "active_thread_id", sa.String(36), nullable=True, comment="未结束运行占用的检查点线程 ID",
-    ))
-    connection.execute(sa.text(
-        "UPDATE yp_agent_run SET active_thread_id = thread_id WHERE state IN "
-        "('queued', 'running', 'waiting_for_approval', 'cancel_requested')"
-    ))
+    op.add_column("yp_agent_run", sa.Column("active_thread_id", sa.String(36), nullable=True, comment="未结束运行占用的检查点线程 ID"))
+    connection.execute(
+        sa.text(
+            "UPDATE yp_agent_run SET active_thread_id = thread_id WHERE state IN "
+            "('queued', 'running', 'waiting_for_approval', 'cancel_requested')"
+        )
+    )
     with op.batch_alter_table("yp_agent_run") as batch_op:
         batch_op.create_unique_constraint("uq_yp_agent_run_active_thread_id", ["active_thread_id"])
 

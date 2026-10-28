@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-25 13:36:58
+# @Author  : yangyuexiong
+# @File    : test_db_schema.py
+
 """验证数据库迁移结构与启动时的缺失迁移检查。"""
 
 import asyncio
@@ -30,13 +35,14 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.run_dispatcher import dispatch_next_run
 from app.services.runtime_checkpoint import open_async_checkpointer
-from app.services.run_manager import (
-    RunConflictError, claim_run, complete_run, create_run, get_owned_messages, replay_events,
-)
+from app.services.run_manager import RunConflictError, claim_run, complete_run, create_run, get_owned_messages, replay_events
 
 
 def test_startup_rejects_missing_artifact_column(tmp_path) -> None:
+    """验证启动结构检查拒绝缺少产物字段的旧数据库。"""
+
     async def exercise() -> None:
+        """在隔离环境执行异步场景：验证启动结构检查拒绝缺少产物字段的旧数据库。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'old-schema.db'}")
         try:
             async with engine.begin() as connection:
@@ -58,18 +64,15 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
     root = Path(__file__).resolve().parents[1]
 
     def migrate(*args: str) -> None:
-        subprocess.run(
-            [sys.executable, "-m", "alembic", *args], cwd=root, env=env,
-            check=True, capture_output=True, text=True,
-        )
+        """在隔离测试环境执行指定 Alembic 迁移命令。"""
+        subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, check=True, capture_output=True, text=True)
 
     async def inspect_rows() -> None:
+        """检查迁移后的活动线程占用记录与模型结构。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         try:
             async with engine.connect() as connection:
-                rows = (await connection.execute(text(
-                    "SELECT state, active_thread_id FROM yp_agent_run ORDER BY id"
-                ))).all()
+                rows = (await connection.execute(text("SELECT state, active_thread_id FROM yp_agent_run ORDER BY id"))).all()
                 assert rows == [("queued", "shared-thread"), ("completed", None)]
                 await connection.run_sync(check_mapped_schema)
         finally:
@@ -78,17 +81,21 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
     migrate("upgrade", "027")
 
     async def seed() -> None:
+        """准备隔离测试数据：旧数据升级后只占用未终态线程，降级重升也保留这一规则。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         try:
             async with engine.begin() as connection:
                 for run_id, state in (("a", "queued"), ("b", "completed")):
-                    await connection.execute(text(
-                        "INSERT INTO yp_agent_run "
-                        "(id, owner_id, thread_id, state, version, event_seq, "
-                        "create_time, update_time, create_timestamp, update_timestamp) "
-                        "VALUES (:id, 1, 'shared-thread', :state, 0, 1, "
-                        "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)"
-                    ), {"id": run_id, "state": state})
+                    await connection.execute(
+                        text(
+                            "INSERT INTO yp_agent_run "
+                            "(id, owner_id, thread_id, state, version, event_seq, "
+                            "create_time, update_time, create_timestamp, update_timestamp) "
+                            "VALUES (:id, 1, 'shared-thread', :state, 0, 1, "
+                            "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)"
+                        ),
+                        {"id": run_id, "state": state},
+                    )
         finally:
             await engine.dispose()
 
@@ -102,9 +109,9 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
 
 
 async def _exercise_isolated_migrations(
-    backend: str, base_url: URL, admin_database: str | None, database_env_key: str,
-    private_root: Path, monkeypatch: pytest.MonkeyPatch,
+    backend: str, base_url: URL, admin_database: str | None, database_env_key: str, private_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """在隔离数据库验证迁移往返、运行争抢及 HTTP 与 worker 基础流程。"""
     name = f"yp_m3_schema_{uuid4().hex[:12]}"
     quote = "`" if backend == "mysql" else '"'
     identifier = f"{quote}{name}{quote}"
@@ -121,15 +128,14 @@ async def _exercise_isolated_migrations(
         env.update({"DB_BACKEND": backend, database_env_key: name})
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
-            result = subprocess.run(
-                [sys.executable, "-m", "alembic", *args], cwd=root, env=env,
-                capture_output=True, text=True,
-            )
+            result = subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
         engine = create_async_engine(base_url.set(database=name))
         try:
             async with engine.connect() as connection:
+
                 def verify(sync_connection) -> None:
+                    """核对持久化结果：在隔离数据库验证迁移往返、运行争抢及 HTTP 与 worker 基础流程。"""
                     schema = inspect(sync_connection)
                     assert {"alembic_version", *Base.metadata.tables} <= set(schema.get_table_names())
                     for table in Base.metadata.sorted_tables:
@@ -142,32 +148,51 @@ async def _exercise_isolated_migrations(
             sessions = async_sessionmaker(engine, expire_on_commit=False)
             artifact_id = str(uuid4())
             async with sessions.begin() as db:
-                owner = Admin(
-                    username=f"m3-{uuid4().hex}", password=hash_password("StrongPassword123"), role="user",
-                )
-                other = Admin(
-                    username=f"m3-{uuid4().hex}", password=hash_password("StrongPassword123"), role="user",
-                )
+                owner = Admin(username=f"m3-{uuid4().hex}", password=hash_password("StrongPassword123"), role="user")
+                other = Admin(username=f"m3-{uuid4().hex}", password=hash_password("StrongPassword123"), role="user")
                 db.add_all([owner, other])
                 await db.flush()
                 provider = ProviderConnection(
-                    name="m3-test", name_key="m3-test", kind="ollama", base_url="http://localhost:11434/v1",
-                    timeout_seconds=15, creator_id=owner.id, status=1, is_deleted=0,
+                    name="m3-test",
+                    name_key="m3-test",
+                    kind="ollama",
+                    base_url="http://localhost:11434/v1",
+                    timeout_seconds=15,
+                    creator_id=owner.id,
+                    status=1,
+                    is_deleted=0,
                 )
                 db.add(provider)
                 await db.flush()
                 model = ModelCatalog(
-                    provider_id=provider.id, external_id="m3-test", display_name="M3 test",
-                    capabilities=["text"], verified_capabilities=[], capabilities_verified=False,
-                    is_default=False, creator_id=owner.id, status=1, is_deleted=0,
+                    provider_id=provider.id,
+                    external_id="m3-test",
+                    display_name="M3 test",
+                    capabilities=["text"],
+                    verified_capabilities=[],
+                    capabilities_verified=False,
+                    is_default=False,
+                    creator_id=owner.id,
+                    status=1,
+                    is_deleted=0,
                 )
                 db.add(model)
                 await db.flush()
-                db.add(Artifact(
-                    id=artifact_id, owner_id=owner.id, filename="sample.txt", media_type="text/plain",
-                    byte_size=3, sha256="0" * 64, storage_key=uuid4().hex,
-                    source="upload", state="ready", status=1, is_deleted=0,
-                ))
+                db.add(
+                    Artifact(
+                        id=artifact_id,
+                        owner_id=owner.id,
+                        filename="sample.txt",
+                        media_type="text/plain",
+                        byte_size=3,
+                        sha256="0" * 64,
+                        storage_key=uuid4().hex,
+                        source="upload",
+                        state="ready",
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
             async with sessions() as db:
                 artifact = await db.scalar(select(Artifact).where(Artifact.id == artifact_id))
                 assert artifact is not None and artifact.owner_id == owner.id
@@ -176,6 +201,7 @@ async def _exercise_isolated_migrations(
                 run = await create_run(db, owner.id, request_key="m3-db-claim", input_text="test")
 
             async def try_claim() -> str:
+                """在独立数据库事务中尝试领取同一运行。"""
                 async with sessions.begin() as db:
                     try:
                         await claim_run(db, run.id)
@@ -194,19 +220,20 @@ async def _exercise_isolated_migrations(
                 assert completed.state == "completed"
             async with sessions() as db:
                 assert [event.sequence for event in await replay_events(db, run.id, owner.id)] == [1, 2, 3]
-                assert [message.content for message in await get_owned_messages(db, run.id, owner.id)] == [
-                    "test", "done",
-                ]
+                assert [message.content for message in await get_owned_messages(db, run.id, owner.id)] == ["test", "done"]
 
             async def test_session():
+                """为 HTTP 测试注入隔离数据库会话。"""
                 async with sessions() as db:
                     yield db
 
             class StaticModel(FakeMessagesListChatModel):
                 def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+                    """兼容运行时工具绑定接口，并返回当前假模型。"""
                     return self
 
             async def resolve_model(db, run):
+                """返回隔离测试使用的假模型，避免调用真实供应商。"""
                 return StaticModel(responses=[AIMessage(content="database reply")])
 
             artifact_root = private_root / "artifacts"
@@ -215,13 +242,12 @@ async def _exercise_isolated_migrations(
                 patcher.setattr(artifact_api, "artifact_root", lambda: artifact_root)
                 app.dependency_overrides[get_db_session] = test_session
                 try:
-                    async with httpx.AsyncClient(
-                        transport=httpx.ASGITransport(app=app), base_url="http://test",
-                    ) as client:
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
                         async def login(username: str) -> dict[str, str]:
+                            """通过正式登录接口获取测试用户的访问令牌。"""
                             response = await client.post(
-                                "/api/v1/auth/login",
-                                json={"identifier": username, "password": "StrongPassword123"},
+                                "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"}
                             )
                             assert response.status_code == 200, response.text
                             return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
@@ -229,8 +255,7 @@ async def _exercise_isolated_migrations(
                         owned = await login(owner.username)
                         outsider = await login(other.username)
                         uploaded = await client.post(
-                            "/api/v1/artifacts/uploads", headers=owned,
-                            files={"files": ("sample.txt", b"isolated database", "text/plain")},
+                            "/api/v1/artifacts/uploads", headers=owned, files={"files": ("sample.txt", b"isolated database", "text/plain")}
                         )
                         assert uploaded.status_code == 201, uploaded.text
                         file_id = uploaded.json()["data"][0]["id"]
@@ -238,13 +263,15 @@ async def _exercise_isolated_migrations(
                         downloaded = await client.get(f"/api/v1/artifacts/{file_id}/download", headers=owned)
                         assert downloaded.status_code == 200 and downloaded.content == b"isolated database"
                         created = await client.post(
-                            "/api/v1/runs", headers=owned,
+                            "/api/v1/runs",
+                            headers=owned,
                             json={"model_id": model.id, "input_text": "database question", "request_key": "http-run"},
                         )
                         assert created.status_code == 201, created.text
                         run_id = created.json()["data"]["id"]
                         duplicate = await client.post(
-                            "/api/v1/runs", headers=owned,
+                            "/api/v1/runs",
+                            headers=owned,
                             json={"model_id": model.id, "input_text": "database question", "request_key": "http-run"},
                         )
                         assert duplicate.status_code == 201 and duplicate.json()["data"]["id"] == run_id
@@ -253,28 +280,23 @@ async def _exercise_isolated_migrations(
                         async with open_async_checkpointer(checkpoint_path) as checkpointer:
                             await checkpointer.setup()
                         result = await dispatch_next_run(
-                            sessions, checkpoint_path, resolve_model=resolve_model,
-                            lease_seconds=2, poll_seconds=0.1,
+                            sessions, checkpoint_path, resolve_model=resolve_model, lease_seconds=2, poll_seconds=0.1
                         )
                         assert result is not None and result.id == run_id and result.state == "completed"
                         messages = await client.get(f"/api/v1/runs/{run_id}/messages", headers=owned)
                         assert messages.status_code == 200, messages.text
-                        assert [item["content"] for item in messages.json()["data"]] == [
-                            "database question", "database reply",
-                        ]
+                        assert [item["content"] for item in messages.json()["data"]] == ["database question", "database reply"]
                         events = await client.get(f"/api/v1/runs/{run_id}/events?after=0", headers=owned)
                         assert events.status_code == 200, events.text
                         assert [item["state"] for item in events.json()["data"] if item["event_type"] == "state"] == [
-                            "queued", "running", "completed",
+                            "queued",
+                            "running",
+                            "completed",
                         ]
-                        assert (await client.get(
-                            f"/api/v1/runs/{run_id}/events?after=0", headers=outsider,
-                        )).status_code == 404
+                        assert (await client.get(f"/api/v1/runs/{run_id}/events?after=0", headers=outsider)).status_code == 404
                         removed = await client.delete(f"/api/v1/artifacts/{file_id}", headers=owned)
                         assert removed.status_code == 200, removed.text
-                        assert (await client.get(
-                            f"/api/v1/artifacts/{file_id}/download", headers=owned,
-                        )).status_code == 404
+                        assert (await client.get(f"/api/v1/artifacts/{file_id}/download", headers=owned)).status_code == 404
                 finally:
                     app.dependency_overrides.pop(get_db_session, None)
         finally:
@@ -289,16 +311,16 @@ async def _exercise_isolated_migrations(
 @pytest.mark.skipif(os.environ.get("YPOINT_TEST_MYSQL_M3") != "1", reason="需显式启用隔离 MySQL 迁移验收")
 def test_mysql_m3_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """在独立 MySQL 库验证迁移、并发领取及基础 HTTP/worker 链路。"""
-    asyncio.run(_exercise_isolated_migrations(
-        "mysql", make_url(get_config().mysql_async_url), None, "MYSQL_DATABASE", tmp_path, monkeypatch,
-    ))
+    asyncio.run(
+        _exercise_isolated_migrations("mysql", make_url(get_config().mysql_async_url), None, "MYSQL_DATABASE", tmp_path, monkeypatch)
+    )
 
 
-@pytest.mark.skipif(
-    os.environ.get("YPOINT_TEST_POSTGRES_M3") != "1", reason="需显式启用隔离 PostgreSQL 迁移验收",
-)
+@pytest.mark.skipif(os.environ.get("YPOINT_TEST_POSTGRES_M3") != "1", reason="需显式启用隔离 PostgreSQL 迁移验收")
 def test_postgres_m3_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """在独立 PostgreSQL 库验证迁移、并发领取及基础 HTTP/worker 链路。"""
-    asyncio.run(_exercise_isolated_migrations(
-        "postgres", make_url(get_config().pg_async_url), "postgres", "POSTGRESQL_DATABASE", tmp_path, monkeypatch,
-    ))
+    asyncio.run(
+        _exercise_isolated_migrations(
+            "postgres", make_url(get_config().pg_async_url), "postgres", "POSTGRESQL_DATABASE", tmp_path, monkeypatch
+        )
+    )

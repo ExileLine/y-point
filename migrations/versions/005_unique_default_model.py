@@ -28,9 +28,11 @@ def upgrade() -> None:
         "yp_model_catalog", sa.column("id", sa.Integer), sa.column("is_default", sa.Boolean), sa.column("default_slot", sa.String)
     )
     connection = op.get_bind()
-    default_ids = connection.execute(
-        sa.select(model_table.c.id).where(model_table.c.is_default.is_(True)).order_by(model_table.c.id.desc())
-    ).scalars().all()
+    default_ids = (
+        connection.execute(sa.select(model_table.c.id).where(model_table.c.is_default.is_(True)).order_by(model_table.c.id.desc()))
+        .scalars()
+        .all()
+    )
     if default_ids:
         connection.execute(sa.update(model_table).where(model_table.c.id == default_ids[0]).values(default_slot="global"))
         for model_id in default_ids[1:]:

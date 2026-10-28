@@ -35,7 +35,7 @@ def upgrade() -> None:
     """创建无数据库外键的供应商连接与模型表。"""
     op.create_table(
         "yp_provider_connection",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("name", sa.String(128), nullable=False, comment="连接名称"),
         sa.Column("name_key", sa.String(128), nullable=False, comment="小写连接名称唯一键"),
         sa.Column("kind", sa.String(32), nullable=False, comment="供应商类型"),
@@ -54,7 +54,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "yp_model_catalog",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("provider_id", sa.Integer(), nullable=False, comment="所属供应商连接 ID"),
         sa.Column("external_id", sa.String(255), nullable=False, comment="供应商模型 ID"),
         sa.Column("display_name", sa.String(128), nullable=False, comment="模型显示名称"),

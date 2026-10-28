@@ -45,7 +45,8 @@ class FakeChatModel:
         assert kwargs["max_tokens"] == 128
         tool_calls = [{"name": "verify_capability", "args": {"value": "ping"}, "id": "call-1"}] if self.bound and self.tool_calls else []
         return AIMessage(
-            content="OK" if not self.bound else "", tool_calls=tool_calls,
+            content="OK" if not self.bound else "",
+            tool_calls=tool_calls,
             usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
         )
 
@@ -54,8 +55,7 @@ class FakeChatModel:
         assert kwargs["max_tokens"] == 128
         yield AIMessageChunk(content="O" if self.stream_text else "")
         yield AIMessageChunk(
-            content="K" if self.stream_text else "",
-            usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            content="K" if self.stream_text else "", usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16}
         )
 
 
@@ -161,10 +161,13 @@ class VisionChatModel(FakeChatModel):
         assert struct.unpack(">II", image_bytes[16:24]) == (64, 64)
         compressed_size = struct.unpack(">I", image_bytes[33:37])[0]
         assert image_bytes[37:41] == b"IDAT"
-        pixels = zlib.decompress(image_bytes[41:41 + compressed_size])
+        pixels = zlib.decompress(image_bytes[41 : 41 + compressed_size])
         stride = 1 + 64 * 3
-        assert [pixels[index:index + 3] for index in (1, 97, 32 * stride + 1, 32 * stride + 97)] == [
-            b"\xff\x00\x00", b"\x00\xff\x00", b"\x00\x00\xff", b"\xff\xff\x00",
+        assert [pixels[index : index + 3] for index in (1, 97, 32 * stride + 1, 32 * stride + 97)] == [
+            b"\xff\x00\x00",
+            b"\x00\xff\x00",
+            b"\x00\x00\xff",
+            b"\xff\xff\x00",
         ]
         return AIMessage(content=self.answer, usage_metadata={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16})
 
@@ -172,8 +175,13 @@ class VisionChatModel(FakeChatModel):
 async def exercise_capabilities() -> None:
     """验证逐项探测的成功、失败、用量与成本。"""
     model = ModelCatalog(
-        id=1, provider_id=1, external_id="chat-1", display_name="Chat 1",
-        input_price=Decimal("2.000000"), output_price=Decimal("4.000000"), price_currency="USD",
+        id=1,
+        provider_id=1,
+        external_id="chat-1",
+        display_name="Chat 1",
+        input_price=Decimal("2.000000"),
+        output_price=Decimal("4.000000"),
+        price_currency="USD",
     )
     provider = ProviderConnection(id=1, timeout_seconds=5)
     for capability in ("text", "streaming", "tools"):
@@ -221,10 +229,17 @@ async def exercise_capabilities() -> None:
 
     bedrock_auth = BackendFailureChatModel([NoCredentialsError()])
     assert (await probe_capability(model, provider, "text", bedrock_auth)).failure == "authentication"
-    bedrock_gateway = BackendFailureChatModel([ClientError(
-        {"Error": {"Code": "ServiceUnavailableException", "Message": "secret-response"}, "ResponseMetadata": {"HTTPStatusCode": 503}},
-        "Converse",
-    )])
+    bedrock_gateway = BackendFailureChatModel(
+        [
+            ClientError(
+                {
+                    "Error": {"Code": "ServiceUnavailableException", "Message": "secret-response"},
+                    "ResponseMetadata": {"HTTPStatusCode": 503},
+                },
+                "Converse",
+            )
+        ]
+    )
     assert (await probe_capability(model, provider, "text", bedrock_gateway)).available is True
     assert bedrock_gateway.calls == 2
 
@@ -238,11 +253,13 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
 
     monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     model = ModelCatalog(
-        id=1, provider_id=1, external_id="reasoning-model", input_price=Decimal("2"),
-        output_price=Decimal("4"), price_currency="USD",
+        id=1, provider_id=1, external_id="reasoning-model", input_price=Decimal("2"), output_price=Decimal("4"), price_currency="USD"
     )
     provider = ProviderConnection(
-        id=1, kind="openai", base_url="https://api.openai.com/v1", timeout_seconds=5,
+        id=1,
+        kind="openai",
+        base_url="https://api.openai.com/v1",
+        timeout_seconds=5,
         encrypted_credentials=encrypt_credentials("probe-secret", {}),
     )
     requests: list[httpx.Request] = []
@@ -250,13 +267,20 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
     def successful(request: httpx.Request) -> httpx.Response:
         """模拟 Responses API 返回公开摘要且保留请求供协议断言。"""
         requests.append(request)
-        return httpx.Response(200, json={
-            "status": "completed", "output": [
-                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "public summary"}],
-                 "content": [{"type": "reasoning_text", "text": "hidden reasoning"}]},
-            ],
-            "usage": {"input_tokens": 10, "output_tokens": 5},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "public summary"}],
+                        "content": [{"type": "reasoning_text", "text": "hidden reasoning"}],
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(successful)) as client:
         result = await probe_capability(model, provider, "reasoning_summary", response_client=client)
@@ -269,12 +293,16 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
 
     def without_summary(request: httpx.Request) -> httpx.Response:
         """模拟只有隐藏推理内容或普通回答的响应。"""
-        return httpx.Response(200, json={
-            "status": "completed", "output": [
-                {"type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": "hidden reasoning"}]},
-                {"type": "message", "content": [{"type": "output_text", "text": "normal answer"}]},
-            ],
-        })
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [
+                    {"type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": "hidden reasoning"}]},
+                    {"type": "message", "content": [{"type": "output_text", "text": "normal answer"}]},
+                ],
+            },
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(without_summary)) as client:
         result = await probe_capability(model, provider, "reasoning_summary", response_client=client)
@@ -321,12 +349,15 @@ def test_live_ollama_gemma4() -> None:
     async def exercise_live_model() -> None:
         """运行不写入业务数据库的真实 Ollama 调用。"""
         provider = ProviderConnection(
-            id=999001, kind="ollama", base_url="http://127.0.0.1:11434/v1", encrypted_credentials=None,
-            timeout_seconds=45, status=1, is_deleted=0,
+            id=999001,
+            kind="ollama",
+            base_url="http://127.0.0.1:11434/v1",
+            encrypted_credentials=None,
+            timeout_seconds=45,
+            status=1,
+            is_deleted=0,
         )
-        model = ModelCatalog(
-            id=999001, provider_id=provider.id, external_id="gemma4:31b-cloud", status=1, is_deleted=0,
-        )
+        model = ModelCatalog(id=999001, provider_id=provider.id, external_id="gemma4:31b-cloud", status=1, is_deleted=0)
         discovered = await probe_provider(provider)
         assert discovered.available is True and model.external_id in discovered.models
         tested = await probe_model(model, provider)
@@ -334,9 +365,7 @@ def test_live_ollama_gemma4() -> None:
         for capability in ("text", "streaming", "tools", "structured_output", "vision"):
             result = await probe_capability(model, provider, capability)
             assert result.available is True and result.input_tokens is not None and result.output_tokens is not None, capability
-        missing = ModelCatalog(
-            id=999002, provider_id=provider.id, external_id="missing-model-for-m2-probe", status=1, is_deleted=0,
-        )
+        missing = ModelCatalog(id=999002, provider_id=provider.id, external_id="missing-model-for-m2-probe", status=1, is_deleted=0)
         unavailable = await probe_model(missing, provider)
         assert unavailable.upstream_status_code == 404 and unavailable.failure == "model_not_found"
         summary = await probe_capability(model, provider, "reasoning_summary")

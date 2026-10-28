@@ -38,11 +38,7 @@ VERIFY_TOOL = {
     "function": {
         "name": "verify_capability",
         "description": "验证模型是否可以调用工具",
-        "parameters": {
-            "type": "object",
-            "properties": {"value": {"type": "string", "description": "固定验证值"}},
-            "required": ["value"],
-        },
+        "parameters": {"type": "object", "properties": {"value": {"type": "string", "description": "固定验证值"}}, "required": ["value"]},
     },
 }
 
@@ -77,14 +73,13 @@ def _failure_for_status(status: int) -> str:
 
 
 async def _probe_reasoning_summary(
-    model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None,
+    model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None
 ) -> ModelTestOut:
     """请求 Responses API 的公开摘要字段，只记录存在性、用量与脱敏故障。"""
     started = time.perf_counter()
     if provider.kind != "openai":
         return ModelTestOut(
-            model_id=model.id, external_id=model.external_id, available=False, latency_ms=0,
-            failure="unsupported_capability",
+            model_id=model.id, external_id=model.external_id, available=False, latency_ms=0, failure="unsupported_capability"
         )
     headers = provider_request_headers(provider)
     base_url = httpx.URL(provider.base_url)
@@ -114,9 +109,16 @@ async def _probe_reasoning_summary(
                 failure = "invalid_response"
             else:
                 has_summary = any(
-                    isinstance(item, dict) and item.get("type") == "reasoning" and isinstance(item.get("summary"), list)
-                    and any(isinstance(part, dict) and part.get("type") == "summary_text" and isinstance(part.get("text"), str)
-                            and bool(part["text"].strip()) for part in item["summary"])
+                    isinstance(item, dict)
+                    and item.get("type") == "reasoning"
+                    and isinstance(item.get("summary"), list)
+                    and any(
+                        isinstance(part, dict)
+                        and part.get("type") == "summary_text"
+                        and isinstance(part.get("text"), str)
+                        and bool(part["text"].strip())
+                        for part in item["summary"]
+                    )
                     for item in data["output"]
                 )
                 if not has_summary:
@@ -140,15 +142,23 @@ async def _probe_reasoning_summary(
     if input_tokens is not None and output_tokens is not None and model.input_price is not None and model.output_price is not None:
         cost = (Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price) / 1_000_000
     return ModelTestOut(
-        model_id=model.id, external_id=model.external_id, available=failure is None,
-        latency_ms=round((time.perf_counter() - started) * 1000), upstream_status_code=status,
-        input_tokens=input_tokens, output_tokens=output_tokens, estimated_cost=cost,
-        price_currency=model.price_currency if cost is not None else None, failure=failure,
+        model_id=model.id,
+        external_id=model.external_id,
+        available=failure is None,
+        latency_ms=round((time.perf_counter() - started) * 1000),
+        upstream_status_code=status,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost=cost,
+        price_currency=model.price_currency if cost is not None else None,
+        failure=failure,
     )
 
 
 async def probe_capability(
-    model: ModelCatalog, provider: ProviderConnection, capability: ProbeCapability,
+    model: ModelCatalog,
+    provider: ProviderConnection,
+    capability: ProbeCapability,
     chat_model: BaseChatModel | None = None,
     response_client: httpx.AsyncClient | None = None,
 ) -> ModelTestOut:
@@ -175,8 +185,7 @@ async def probe_capability(
                 elif capability == "tools":
                     bound = chat_model.bind_tools([VERIFY_TOOL])
                     message = await bound.ainvoke(
-                        [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")],
-                        max_tokens=128,
+                        [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")], max_tokens=128
                     )
                     usage = message.usage_metadata
                     if not any(call["name"] == "verify_capability" and call["args"].get("value") == "ping" for call in message.tool_calls):
@@ -184,7 +193,7 @@ async def probe_capability(
                 elif capability == "structured_output":
                     structured = chat_model.with_structured_output(STRUCTURED_SCHEMA, method="function_calling", include_raw=True)
                     response = await structured.ainvoke(
-                        [HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128,
+                        [HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128
                     )
                     raw = response.get("raw") if isinstance(response, dict) else None
                     usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
@@ -194,10 +203,11 @@ async def probe_capability(
                 elif capability == "vision":
                     prompt = "Name the colors in the image from top-left to bottom-right. Reply with English color names only."
                     message = await chat_model.ainvoke(
-                        [HumanMessage(content=[
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": VISION_IMAGE_URL}},
-                        ])],
+                        [
+                            HumanMessage(
+                                content=[{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": VISION_IMAGE_URL}}]
+                            )
+                        ],
                         max_tokens=512,
                     )
                     usage = message.usage_metadata
@@ -249,8 +259,14 @@ async def probe_capability(
     if input_tokens is not None and output_tokens is not None and model.input_price is not None and model.output_price is not None:
         cost = (Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price) / 1_000_000
     return ModelTestOut(
-        model_id=model.id, external_id=model.external_id, available=failure is None,
-        latency_ms=round((time.perf_counter() - started) * 1000), upstream_status_code=status,
-        input_tokens=input_tokens, output_tokens=output_tokens, estimated_cost=cost,
-        price_currency=model.price_currency if cost is not None else None, failure=failure,
+        model_id=model.id,
+        external_id=model.external_id,
+        available=failure is None,
+        latency_ms=round((time.perf_counter() - started) * 1000),
+        upstream_status_code=status,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost=cost,
+        price_currency=model.price_currency if cost is not None else None,
+        failure=failure,
     )

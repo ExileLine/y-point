@@ -41,8 +41,14 @@ def normalize_base_url(value: str | None, *, kind: str | None = None, region: st
 def validate_custom_headers(headers: dict[str, str]) -> None:
     """拒绝可覆盖认证、主机或传输行为的自定义请求头。"""
     forbidden = {
-        "authorization", "x-api-key", "api-key", "x-goog-api-key", "host",
-        "content-length", "transfer-encoding", "anthropic-version",
+        "authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "anthropic-version",
     }
     allowed_name_symbols = "!#$%&'*+-.^_`|~"
     if len(headers) > 32:
@@ -115,9 +121,7 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
         elif response.status_code != 200:
             failure = "invalid_response"
         if failure is not None:
-            return ConnectionTestOut(
-                available=False, latency_ms=latency_ms, upstream_status_code=upstream_status_code, failure=failure
-            )
+            return ConnectionTestOut(available=False, latency_ms=latency_ms, upstream_status_code=upstream_status_code, failure=failure)
         try:
             model_ids = []
             model_names = {}
@@ -155,11 +159,16 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
                 response = await request_with_probe_retry(client, "GET", url.copy_add_param("pageToken", token), headers=headers)
                 if response.status_code != 200:
                     return ConnectionTestOut(
-                        available=False, latency_ms=round((time.perf_counter() - started) * 1000),
+                        available=False,
+                        latency_ms=round((time.perf_counter() - started) * 1000),
                         upstream_status_code=response.status_code,
-                        failure="authentication" if response.status_code in {401, 403} else
-                        "rate_limit" if response.status_code == 429 else
-                        "upstream" if response.status_code >= 500 else "invalid_response",
+                        failure="authentication"
+                        if response.status_code in {401, 403}
+                        else "rate_limit"
+                        if response.status_code == 429
+                        else "upstream"
+                        if response.status_code >= 500
+                        else "invalid_response",
                     )
             else:
                 raise ValueError("too many model pages")
@@ -168,8 +177,12 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
                 available=False, latency_ms=latency_ms, upstream_status_code=upstream_status_code, failure="invalid_response"
             )
         return ConnectionTestOut(
-            available=True, latency_ms=round((time.perf_counter() - started) * 1000), upstream_status_code=upstream_status_code,
-            model_count=len(model_ids), models=model_ids, model_names=model_names,
+            available=True,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            upstream_status_code=upstream_status_code,
+            model_count=len(model_ids),
+            models=model_ids,
+            model_names=model_names,
         )
     except httpx.TimeoutException:
         return ConnectionTestOut(available=False, latency_ms=round((time.perf_counter() - started) * 1000), failure="timeout")

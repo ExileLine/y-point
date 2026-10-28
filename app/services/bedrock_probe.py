@@ -89,8 +89,12 @@ async def probe_bedrock_provider(provider: ProviderConnection) -> ConnectionTest
     if failure:
         return ConnectionTestOut(available=False, latency_ms=latency_ms, upstream_status_code=status, failure=failure)
     return ConnectionTestOut(
-        available=True, latency_ms=latency_ms, upstream_status_code=status,
-        model_count=len(model_ids), models=model_ids, model_names=model_names,
+        available=True,
+        latency_ms=latency_ms,
+        upstream_status_code=status,
+        model_count=len(model_ids),
+        models=model_ids,
+        model_names=model_names,
     )
 
 
@@ -106,7 +110,8 @@ async def probe_bedrock_model(model: ModelCatalog, provider: ProviderConnection)
         for attempt in range(2):
             try:
                 response = await asyncio.to_thread(
-                    client.converse, modelId=model.external_id,
+                    client.converse,
+                    modelId=model.external_id,
                     messages=[{"role": "user", "content": [{"text": "Hi"}]}],
                     inferenceConfig={"maxTokens": 64},
                 )
@@ -140,8 +145,14 @@ async def probe_bedrock_model(model: ModelCatalog, provider: ProviderConnection)
     if input_tokens is not None and output_tokens is not None and model.input_price is not None and model.output_price is not None:
         cost = (Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price) / 1_000_000
     return ModelTestOut(
-        model_id=model.id, external_id=model.external_id, available=failure is None,
-        latency_ms=round((time.perf_counter() - started) * 1000), upstream_status_code=status,
-        input_tokens=input_tokens, output_tokens=output_tokens, estimated_cost=cost,
-        price_currency=model.price_currency if cost is not None else None, failure=failure,
+        model_id=model.id,
+        external_id=model.external_id,
+        available=failure is None,
+        latency_ms=round((time.perf_counter() - started) * 1000),
+        upstream_status_code=status,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated_cost=cost,
+        price_currency=model.price_currency if cost is not None else None,
+        failure=failure,
     )

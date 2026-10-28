@@ -21,9 +21,9 @@ depends_on = None
 def upgrade() -> None:
     """历史运行保持不注册业务工具。"""
     op.add_column(
-        "yp_agent_run", sa.Column(
-            "enable_text_artifact_tool", sa.Boolean(), nullable=False, server_default="0",
-            comment="是否启用需审批的文本文件读取工具",
+        "yp_agent_run",
+        sa.Column(
+            "enable_text_artifact_tool", sa.Boolean(), nullable=False, server_default="0", comment="是否启用需审批的文本文件读取工具"
         ),
     )
 

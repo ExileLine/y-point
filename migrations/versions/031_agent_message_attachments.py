@@ -21,7 +21,7 @@ def upgrade() -> None:
     """新增无外键的消息附件关系表。"""
     op.create_table(
         "yp_agent_message_attachment",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("message_id", sa.Integer(), nullable=False, comment="所属消息 ID"),
         sa.Column("artifact_id", sa.String(36), nullable=False, comment="上传文件 ID"),
         sa.Column("position", sa.Integer(), nullable=False, comment="消息内展示顺序"),

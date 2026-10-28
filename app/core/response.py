@@ -11,6 +11,7 @@ from app.utils.time_tools import TimeTools
 
 
 def custom_http_dict(custom_code):
+    """根据业务码查找默认中文响应消息，未知编码返回空值。"""
     code_dict = {
         200: "操作成功",
         201: "创建成功",
@@ -35,13 +36,9 @@ def custom_http_dict(custom_code):
 
 
 def api_response(
-    http_code: int = 200,
-    code: int = 200,
-    message: str = None,
-    data: Any = None,
-    datetime_format: bool = True,
-    is_pop: bool = True,
+    http_code: int = 200, code: int = 200, message: str = None, data: Any = None, datetime_format: bool = True, is_pop: bool = True
 ) -> JSONResponse:
+    """构建统一 JSON 响应，并按选项格式化时间或省略空数据。"""
     if not message:
         message = custom_http_dict(code)
 
@@ -52,11 +49,7 @@ def api_response(
         if data.get("update_time"):
             data["update_time"] = TimeTools.convert_to_standard_format(data["update_time"])
 
-    content = {
-        "code": code,
-        "message": message,
-        "data": data,
-    }
+    content = {"code": code, "message": message, "data": data}
 
     if not content.get("data") and is_pop:
         content.pop("data")

@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-27 15:54:35
+# @Author  : yangyuexiong
+# @File    : artifact_renderers.py
+
 """将模型提供的结构化内容转换为可校验的办公文件。"""
 
 import csv
@@ -31,11 +36,14 @@ MAX_CELLS = 10_000
 class ArtifactSheet(BaseModel):
     """一个工作表的名称和按行排列的单元格。"""
 
-    name: str = Field(min_length=1, max_length=31)
-    rows: list[list[str | int | float | bool | None]]
+    name: str = Field(min_length=1, max_length=31, description="工作表名称", examples=["销售统计"])
+    rows: list[list[str | int | float | bool | None]] = Field(
+        description="按行排列的单元格数据", examples=[[["月份", "金额"], ["十月", 100]]]
+    )
 
 
 def _lines(content: str):
+    """将轻量标记文本解析为标题、列表、段落和空行标记。"""
     for line in content.splitlines():
         if heading := re.match(r"^(#{1,6})\s+(.+)$", line):
             yield "heading", len(heading.group(1)), heading.group(2)
@@ -81,15 +89,38 @@ def render_text_artifact(filename: str, content: str) -> bytes:
     body = markdown.markdown(content, extensions=["tables", "fenced_code"])
     body = bleach.clean(
         body,
-        tags={"p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "em", "blockquote",
-              "ul", "ol", "li", "pre", "code", "table", "thead", "tbody", "tr", "th", "td", "a", "hr"},
-        attributes={"a": ["href", "title"]}, protocols={"http", "https", "mailto"}, strip=True,
+        tags={
+            "p",
+            "br",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "strong",
+            "em",
+            "blockquote",
+            "ul",
+            "ol",
+            "li",
+            "pre",
+            "code",
+            "table",
+            "thead",
+            "tbody",
+            "tr",
+            "th",
+            "td",
+            "a",
+            "hr",
+        },
+        attributes={"a": ["href", "title"]},
+        protocols={"http", "https", "mailto"},
+        strip=True,
     )
     title = html.escape(Path(filename).stem, quote=True)
-    return (
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        f"<title>{title}</title></head><body>{body}</body></html>"
-    ).encode()
+    return f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>{title}</title></head><body>{body}</body></html>'.encode()
 
 
 def render_document_artifact(filename: str, content: str) -> bytes:
@@ -128,8 +159,9 @@ def render_document_artifact(filename: str, content: str) -> bytes:
             style = styles["heading" if kind == "heading" else "list" if kind in {"bullet", "number"} else "paragraph"]
             story.append(Paragraph(prefix + html.escape(value), style))
     output = io.BytesIO()
-    SimpleDocTemplate(output, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=48,
-                      title=Path(filename).stem).build(story)
+    SimpleDocTemplate(output, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=48, title=Path(filename).stem).build(
+        story
+    )
     data = output.getvalue()
     reader = PdfReader(io.BytesIO(data))
     if reader.is_encrypted or not reader.pages:
@@ -148,7 +180,8 @@ def render_spreadsheet_artifact(sheets: list[ArtifactSheet]) -> bytes:
     try:
         for sheet in sheets:
             if (
-                not sheet.name.strip() or sheet.name.casefold() in names
+                not sheet.name.strip()
+                or sheet.name.casefold() in names
                 or any(char in sheet.name for char in "[]:*?/\\")
                 or not 1 <= len(sheet.rows) <= MAX_ROWS_PER_SHEET
             ):

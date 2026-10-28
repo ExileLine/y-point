@@ -80,8 +80,7 @@ async def exercise_auth(database: Path | URL) -> None:
             assert response_data(await client.get("/api/v1/auth/me", headers=root_headers))["role"] == "admin"
 
             created = await client.post(
-                "/api/v1/users", headers=root_headers,
-                json={"username": "Alice", "mail": "alice@example.com", "password": PASSWORD},
+                "/api/v1/users", headers=root_headers, json={"username": "Alice", "mail": "alice@example.com", "password": PASSWORD}
             )
             assert created.status_code == 201, created.text
             alice_id = response_data(created)["id"]
@@ -111,10 +110,11 @@ async def exercise_auth(database: Path | URL) -> None:
             assert rotated_payload["exp"] - rotated_payload["iat"] == ACCESS_TOKEN_SECONDS
             assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": alice_tokens["refresh_token"]})).status_code == 401
 
-            assert (await client.post(
-                "/api/v1/auth/password", headers=alice_headers,
-                json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
-            )).status_code == 200
+            assert (
+                await client.post(
+                    "/api/v1/auth/password", headers=alice_headers, json={"current_password": PASSWORD, "new_password": NEW_PASSWORD}
+                )
+            ).status_code == 200
             assert (await client.get("/api/v1/auth/me", headers=alice_headers)).status_code == 401
             rotated_token = response_data(rotated)["refresh_token"]
             assert (await client.post("/api/v1/auth/refresh", json={"refresh_token": rotated_token})).status_code == 401
@@ -195,6 +195,7 @@ async def exercise_concurrent_login_limit(database: URL) -> None:
     app.dependency_overrides[get_db_session] = test_session
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
             async def failed_login() -> httpx.Response:
                 """以相同账号和来源地址提交错误凭据。"""
                 return await client.post("/api/v1/auth/login", json={"identifier": "parallel-unknown", "password": "wrong"})
@@ -312,8 +313,17 @@ def test_docs_expose_bearer_authorization() -> None:
 def test_auth_schema_documentation() -> None:
     """确认认证字段的中文说明和示例出现在模型及接口文档中。"""
     models = (
-        LoginIn, RefreshIn, PasswordChangeIn, PasswordResetIn, TokenOut, UserCreateIn,
-        UserUpdateIn, ProfileUpdateIn, UserOut, UserPage, AuditOut,
+        LoginIn,
+        RefreshIn,
+        PasswordChangeIn,
+        PasswordResetIn,
+        TokenOut,
+        UserCreateIn,
+        UserUpdateIn,
+        ProfileUpdateIn,
+        UserOut,
+        UserPage,
+        AuditOut,
     )
     for model in models:
         properties = model.model_json_schema()["properties"]

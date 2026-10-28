@@ -76,9 +76,7 @@ async def exercise_run_manager(database_path: Path) -> None:
                 await append_text_delta(db, run_id, "wrong-token", "private")
             heartbeat = await heartbeat_run(db, run_id, token)
             assert heartbeat.version == 2
-            await create_approval_request(
-                db, run_id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}],
-            )
+            await create_approval_request(db, run_id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}])
             paused = await get_owned_run(db, run_id, 1)
             assert paused.state == "waiting_for_approval" and paused.lease_token is None
             with pytest.raises(RunConflictError):
@@ -112,6 +110,7 @@ def test_heartbeat_survives_concurrent_text_event(tmp_path: Path) -> None:
     """文本事件推进版本后，有效租约仍应能够续期。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：文本事件推进版本后，有效租约仍应能够续期。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'heartbeat-race.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -155,9 +154,9 @@ async def exercise_cancel_and_recovery(database_path: Path) -> None:
             assert (await request_cancel(db, active.id, 1)).state == "cancel_requested"
             assert (await acknowledge_cancel(db, active.id, active_token)).state == "cancelled"
         async with sessions.begin() as db:
-            await db.execute(update(AgentRun).where(AgentRun.id == lost.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == lost.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
             assert (await get_owned_run(db, lost.id, 1)).failure_code == "lease_expired"
@@ -242,6 +241,7 @@ def test_active_thread_unique_constraint(tmp_path: Path) -> None:
     """并发请求越过预检查后，数据库仍只允许一个活动运行占用线程。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：并发请求越过预检查后，数据库仍只允许一个活动运行占用线程。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'active-thread.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -252,10 +252,11 @@ def test_active_thread_unique_constraint(tmp_path: Path) -> None:
                 thread_id = first.thread_id
                 first_id = first.id
             async with sessions() as db:
-                db.add(AgentRun(
-                    id=str(uuid4()), owner_id=1, thread_id=thread_id,
-                    active_thread_id=thread_id, state="queued", version=0, event_seq=1,
-                ))
+                db.add(
+                    AgentRun(
+                        id=str(uuid4()), owner_id=1, thread_id=thread_id, active_thread_id=thread_id, state="queued", version=0, event_seq=1
+                    )
+                )
                 with pytest.raises(IntegrityError):
                     await db.commit()
                 await db.rollback()
@@ -290,9 +291,12 @@ def test_cancel_retries_heartbeat_version(tmp_path: Path, monkeypatch: pytest.Mo
             nonlocal attempts
             if state == "cancel_requested" and attempts == 0:
                 attempts += 1
-                await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
-                    version=AgentRun.version + 1,
-                ).execution_options(synchronize_session=False))
+                await db.execute(
+                    update(AgentRun)
+                    .where(AgentRun.id == run.id)
+                    .values(version=AgentRun.version + 1)
+                    .execution_options(synchronize_session=False)
+                )
             return await original_change_state(db, run, state, **kwargs)
 
         try:
@@ -334,16 +338,14 @@ async def exercise_approval_expiry(database_path: Path) -> None:
         async with sessions.begin() as db:
             run = await create_run(db, 1)
             token = (await claim_run(db, run.id)).lease_token
-            approval = await create_approval_request(
-                db, run.id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}],
-            )
+            approval = await create_approval_request(db, run.id, token, "checkpoint-1", [{"name": "search", "arguments_hash": "a" * 64}])
             approval_id = approval.id
             with pytest.raises(RunConflictError):
                 await resume_approved_run(db, run.id)
         async with sessions.begin() as db:
-            await db.execute(update(RunApproval).where(RunApproval.id == approval_id).values(
-                expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(RunApproval).where(RunApproval.id == approval_id).values(expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
             assert await expire_approvals(db) == 1
         async with sessions.begin() as db:
             assert (await db.get(RunApproval, approval_id)).state == "expired"
@@ -363,6 +365,7 @@ def test_queue_wait_timeout(tmp_path: Path) -> None:
     """排队期限只约束尚未领取的运行，并生成可回放的单一终态。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：排队期限只约束尚未领取的运行，并生成可回放的单一终态。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue-timeout.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -384,9 +387,9 @@ def test_queue_wait_timeout(tmp_path: Path) -> None:
                 await request_cancel(db, cancelled.id, 1)
                 ids = (due.id, active.id, cancelled.id)
             async with sessions.begin() as db:
-                await db.execute(update(AgentRun).where(AgentRun.id.in_(ids)).values(
-                    queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-                ))
+                await db.execute(
+                    update(AgentRun).where(AgentRun.id.in_(ids)).values(queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+                )
             async with sessions.begin() as db:
                 with pytest.raises(RunConflictError):
                     await claim_run(db, due.id)
@@ -396,7 +399,8 @@ def test_queue_wait_timeout(tmp_path: Path) -> None:
                 expired = await get_owned_run(db, due.id, 1)
                 assert expired.state == "timed_out" and expired.failure_code == "queue_timeout"
                 assert [(event.state, event.failure_code) for event in await replay_events(db, due.id, 1)] == [
-                    ("queued", None), ("timed_out", "queue_timeout"),
+                    ("queued", None),
+                    ("timed_out", "queue_timeout"),
                 ]
                 assert (await get_owned_run(db, active.id, 1)).state == "running"
                 assert (await get_owned_run(db, cancelled.id, 1)).state == "cancelled"

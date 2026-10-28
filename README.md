@@ -2,6 +2,20 @@
 
 Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、验收结果和待办事项统一记录在 `y-point-server-todo.md`，前端任务见 `y-point-web-todo.md`。本文件说明当前代码的运行方式、模块职责和业务接口。
 
+## 核心业务概览
+
+当前代码覆盖 M0a～M4 的本地主要链路：用户登录后配置供应商和模型，创建 Agent 与独立会话；每轮消息提交为持久化 Run，由独立 worker 调用 DeepAgents，保存检查点、最终消息和可重放事件。Agent 可显式共享给指定用户，但会话、附件、产物和运行仍按实际使用者隔离。浏览器通过快照与 SSE 游标恢复运行进度，最终回答以消息接口为准。
+
+| 业务环节 | 当前能力 |
+| --- | --- |
+| 身份与模型 | 用户、会话和资源授权；供应商凭据加密；模型接入、能力探测、用量及估算成本记录。 |
+| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、指定用户共享与撤权；长会话摘要和窗口预算。 |
+| Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、模型及工具预算；worker 故障后按条件恢复已完成的无工具运行。 |
+| 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系。 |
+| 实时与恢复 | 持久化事件、SSE、快照和游标补发；助手消息关联产物，上传附件保留在用户消息中。 |
+
+M0a～M4 的已实现能力与整体验收状态不同：本机 Ollama 已覆盖部分真实模型链路，更多供应商、目标业务数据库、对象存储、浏览器断网恢复、部署故障及复杂文件场景仍有待验证；M5 的完整 Tool Registry、Skill 和 MCP 尚未交付。逐项结果和限制见 `y-point-server-todo.md`。
+
 ## 本地运行
 
 使用 Python 3.12。`uv` 从锁文件安装依赖；默认读取 `.env.development`，可用不提交到 Git 的 `.env.development.local` 覆盖本机配置。`.env.example` 是配置项说明，不是可直接启动的环境文件。开发环境默认使用项目根目录的 SQLite `y_point.db`，也可通过 `DB_BACKEND` 选择 MySQL 或 PostgreSQL。
@@ -20,7 +34,7 @@ uv run pytest -q
 uv run alembic check
 ```
 
-`GET /api/v1/health` 只检查 API；`GET /api/v1/health/worker` 在有有效 worker 心跳时返回 HTTP 200，否则返回 503。Worker 停止时新 Run 仍可进入队列，但不会执行。管理员可从 `GET /api/v1/runs/workers/status` 查看心跳、排队量和过期租约。开发接口文档位于 `/docs`。Redis 由 `REDIS_ENABLED` 控制，本地启动不依赖 Redis。
+`GET /api/v1/health` 只检查 API；根入口与该接口统一返回 `{"code":200,"message":"操作成功","data":{"status":"ok"}}`，原来读取顶层 `status` 的探针须改读 `data.status`。`GET /api/v1/health/worker` 在有有效 worker 心跳时返回 HTTP 200，否则返回 503。Worker 停止时新 Run 仍可进入队列，但不会执行。管理员可从 `GET /api/v1/runs/workers/status` 查看心跳、排队量和过期租约。开发接口文档位于 `/docs`。Redis 由 `REDIS_ENABLED` 控制，本地启动不依赖 Redis。
 
 开发环境的 `SECRET_KEY` 应通过私有配置覆盖占位值，至少使用 32 字节随机值；修改后重启服务，旧访问令牌会失效。供应商凭据使用独立的 Fernet `CREDENTIAL_ENCRYPTION_KEY` 加密，丢失或更换该密钥后已有凭据无法解密。生成密钥可运行：
 
@@ -155,6 +169,8 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 SQLAlchemy 模型在 `app/models` 注册，Alembic 以其元数据管理业务表。修改模型后新增迁移，并用 `uv run alembic upgrade head` 升级目标库、`uv run alembic check` 检查模型与迁移是否一致。应用启动时会检查业务模型需要的表和列；缺少迁移会在启动阶段报错。业务数据可选择 SQLite、MySQL 或 PostgreSQL；Checkpointer 独立配置。跨数据库验证范围、迁移记录和目标环境验收状态见 `y-point-server-todo.md`。
 
+`037_primary_key_comments.py` 将已有 PostgreSQL/MySQL 业务表的整数自增主键列注释更新为中文；新建数据库从历史迁移获得相同注释，SQLite 不执行列注释 DDL。`036→037` 及回退 SQL 已分别在 PostgreSQL/MySQL 方言下离线编译，尚未在目标业务库执行；升级前应按实际环境备份并检查迁移版本。
+
 常用验证命令：
 
 ```bash
@@ -162,4 +178,8 @@ uv run pytest -q
 uv run pytest -q tests/test_run_manager.py tests/test_run_executor.py tests/test_agent_sessions.py
 YPOINT_TEST_OLLAMA_M4=1 uv run pytest -q tests/test_m4_live_acceptance.py
 uv run alembic check
+uvx ruff check app migrations tests local_run.py
+uvx ruff format --check app migrations tests local_run.py
 ```
+
+服务端编码规范以 `y-point-server-todo.md` 为准。Ruff 的行宽为 140，并忽略仅因末尾逗号而强制拆行的格式策略；Python 文件头与中文函数说明覆盖应用、迁移、命令和测试（包括嵌套函数）。Schema 字段的中文说明和有效示例也包含工具输入模型。SSE、文件下载和 Swagger 分别保留事件流、文件和 HTML 媒体协议，其余成功 JSON 响应使用 `api_response`。

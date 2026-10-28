@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 09:16:54
+# @Author  : yangyuexiong
+# @File    : test_worker_artifact_restart.py
+
 """验证独立 worker 重启后的回答产物补发与去重。"""
 
 import asyncio
@@ -17,12 +22,14 @@ from app.services.run_manager import claim_run, complete_run, create_run, get_ow
 
 
 def test_worker_restart_publishes_pending_answer_once(tmp_path: Path) -> None:
+    """验证两次独立 worker 启动仅补发一次待发布回答产物。"""
     database = tmp_path / "worker-restart.db"
     checkpoint = tmp_path / "checkpoint.db"
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir(mode=0o700)
 
     async def seed() -> str:
+        """准备隔离测试数据：验证两次独立 worker 启动仅补发一次待发布回答产物。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -39,19 +46,28 @@ def test_worker_restart_publishes_pending_answer_once(tmp_path: Path) -> None:
 
     run_id = asyncio.run(seed())
     env = os.environ.copy()
-    env.update({
-        "DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database),
-        "ARTIFACT_STORAGE_DIR": str(artifact_root), "CHECKPOINT_BACKEND": "sqlite",
-    })
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+            "ARTIFACT_STORAGE_DIR": str(artifact_root),
+            "CHECKPOINT_BACKEND": "sqlite",
+        }
+    )
     root = Path(__file__).resolve().parents[1]
     for _ in range(2):
         result = subprocess.run(
             [sys.executable, "-m", "app.cli.run_worker", "--once", "--checkpoint-db", str(checkpoint)],
-            cwd=root, env=env, capture_output=True, text=True, timeout=30,
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode == 0, result.stderr
 
     async def verify() -> None:
+        """核对持久化结果：验证两次独立 worker 启动仅补发一次待发布回答产物。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:

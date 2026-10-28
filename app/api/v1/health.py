@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-20 16:53:12
+# @Author  : yangyuexiong
+# @File    : health.py
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,9 +14,9 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health", summary="检查 API 存活状态")
-def health_check() -> dict[str, str]:
+def health_check():
     """返回 API 进程的基础存活状态。"""
-    return {"status": "ok"}
+    return api_response(data={"status": "ok"})
 
 
 @router.get("/health/worker", summary="检查运行执行器存活状态")

@@ -24,7 +24,4 @@ class AgentMessageAttachment(CustomBaseModel):
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="提交时文件名快照")
     media_type: Mapped[str] = mapped_column(String(128), nullable=False, comment="提交时文件类型快照")
     byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="提交时文件大小快照")
-    included_in_context: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, comment="是否将文本内容送入本轮模型上下文",
-    )
-
+    included_in_context: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否将文本内容送入本轮模型上下文")

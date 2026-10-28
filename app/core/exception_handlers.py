@@ -17,21 +17,12 @@ def register_exception_handlers(app: FastAPI, debug: bool):
     """注册全局异常处理"""
 
     def _get_request_id(request: Request) -> Optional[str]:
+        """从请求状态或请求头提取关联请求标识。"""
         return getattr(request.state, "request_id", None) or request.headers.get("x-request-id")
 
-    def _build_response(
-        *,
-        code: int,
-        message: str,
-        http_status: int,
-        data: Any = None,
-        request_id: Optional[str] = None,
-    ) -> JSONResponse:
-        content = {
-            "code": code,
-            "message": message,
-            "data": data,
-        }
+    def _build_response(*, code: int, message: str, http_status: int, data: Any = None, request_id: Optional[str] = None) -> JSONResponse:
+        """构建携带业务码和可选请求标识的异常响应。"""
+        content = {"code": code, "message": message, "data": data}
         if data is None:
             content.pop("data")
         if request_id:
@@ -40,56 +31,38 @@ def register_exception_handlers(app: FastAPI, debug: bool):
 
     @app.exception_handler(CustomException)
     async def custom_exception_handler(request: Request, exc: CustomException):
+        """将业务异常转换为统一响应并保留其 HTTP 状态。"""
         request_id = _get_request_id(request)
         logger.bind(request_id=request_id).warning(f"CustomException: {exc.detail}")
         return _build_response(
-            code=exc.custom_code,
-            message=str(exc.detail),
-            http_status=exc.status_code,
-            data=exc.data,
-            request_id=request_id,
+            code=exc.custom_code, message=str(exc.detail), http_status=exc.status_code, data=exc.data, request_id=request_id
         )
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
+        """将 HTTP 异常转换为统一错误响应。"""
         request_id = _get_request_id(request)
         logger.bind(request_id=request_id).info(f"HTTPException: {exc.detail}")
-        return _build_response(
-            code=exc.status_code,
-            message=str(exc.detail),
-            http_status=exc.status_code,
-            request_id=request_id,
-        )
+        return _build_response(code=exc.status_code, message=str(exc.detail), http_status=exc.status_code, request_id=request_id)
 
     @app.exception_handler(Exception)
     async def base_exception_handler(request: Request, exc: Exception):
+        """记录未处理异常，并按调试配置决定是否返回详情。"""
         request_id = _get_request_id(request)
         logger.bind(request_id=request_id).exception("Unhandled exception")
         data = [str(exc)] if debug else None
-        return _build_response(
-            code=500,
-            message="Internal server error",
-            http_status=500,
-            data=data,
-            request_id=request_id,
-        )
+        return _build_response(code=500, message="Internal server error", http_status=500, data=data, request_id=request_id)
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        """将请求参数校验失败转换为统一错误响应。"""
         request_id = _get_request_id(request)
         error_messages = []
         if debug:
             for error in exc.errors():
-                error_messages.append({
-                    "type": "validation_error",
-                    "msg": error.get("msg"),
-                    "loc": list(error.get("loc")),
-                    "input": error.get("type"),
-                })
+                error_messages.append(
+                    {"type": "validation_error", "msg": error.get("msg"), "loc": list(error.get("loc")), "input": error.get("type")}
+                )
         return _build_response(
-            code=400,
-            message="缺少必要的参数，参数类型错误",
-            http_status=400,
-            data=error_messages if debug else None,
-            request_id=request_id,
+            code=400, message="缺少必要的参数，参数类型错误", http_status=400, data=error_messages if debug else None, request_id=request_id
         )

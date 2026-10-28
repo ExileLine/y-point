@@ -19,8 +19,13 @@ from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.config import get_config
 from app.core.security import (
-    STREAM_COOKIE_NAME, STREAM_TICKET_SECONDS, get_current_admin, get_stream_admin,
-    make_stream_ticket, require_admin, utc_now,
+    STREAM_COOKIE_NAME,
+    STREAM_TICKET_SECONDS,
+    get_current_admin,
+    get_stream_admin,
+    make_stream_ticket,
+    require_admin,
+    utc_now,
 )
 from app.db.session import get_db_session
 from app.models.admin import Admin
@@ -32,12 +37,27 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.agent_access import can_access_run_agent
 from app.schemas.run import (
-    ApprovalDecisionIn, ApprovalOut, RunCreateIn, RunEventOut, RunMessageOut, RunOut, RunSnapshotOut, WorkerStatusOut,
+    ApprovalDecisionIn,
+    ApprovalOut,
+    RunCreateIn,
+    RunEventOut,
+    RunMessageOut,
+    RunOut,
+    RunSnapshotOut,
+    WorkerStatusOut,
 )
 from app.services.message_attachments import load_message_artifacts, load_message_attachments
 from app.services.run_manager import (
-    TERMINAL_STATES, RunConflictError, RunNotFoundError, create_run, decide_approval, get_owned_approval,
-    get_owned_messages, get_owned_run, replay_events, request_cancel,
+    TERMINAL_STATES,
+    RunConflictError,
+    RunNotFoundError,
+    create_run,
+    decide_approval,
+    get_owned_approval,
+    get_owned_messages,
+    get_owned_run,
+    replay_events,
+    request_cancel,
 )
 from app.services.worker_monitor import inspect_worker_status
 
@@ -58,8 +78,11 @@ async def _approval_data(db: AsyncSession, approval: object, owner_id: int) -> d
             continue
         artifact = await db.get(Artifact, resource_id)
         if (
-            artifact is not None and artifact.owner_id == owner_id and artifact.state == "ready"
-            and artifact.status == 1 and artifact.is_deleted == 0
+            artifact is not None
+            and artifact.owner_id == owner_id
+            and artifact.state == "ready"
+            and artifact.status == 1
+            and artifact.is_deleted == 0
             and (artifact.expires_at is None or artifact.expires_at > shanghai_now(naive=True))
         ):
             action["resource_name"] = artifact.filename
@@ -94,15 +117,22 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
     if body.enable_text_artifact_tool and "tools" not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="模型尚未通过工具调用能力验证")
     options = dict(
-        model_id=body.model_id, input_text=body.input_text,
-        request_key=body.request_key, thread_id=body.thread_id, model_timeout_seconds=body.model_timeout_seconds,
-        tool_timeout_seconds=body.tool_timeout_seconds, max_queue_wait_seconds=body.max_queue_wait_seconds,
-        enable_text_artifact_tool=body.enable_text_artifact_tool, max_model_calls=body.max_model_calls,
+        model_id=body.model_id,
+        input_text=body.input_text,
+        request_key=body.request_key,
+        thread_id=body.thread_id,
+        model_timeout_seconds=body.model_timeout_seconds,
+        tool_timeout_seconds=body.tool_timeout_seconds,
+        max_queue_wait_seconds=body.max_queue_wait_seconds,
+        enable_text_artifact_tool=body.enable_text_artifact_tool,
+        max_model_calls=body.max_model_calls,
         publish_answer_artifact=body.publish_answer_artifact,
-        max_total_tokens=body.max_total_tokens, max_tool_calls=body.max_tool_calls,
+        max_total_tokens=body.max_total_tokens,
+        max_tool_calls=body.max_tool_calls,
         max_estimated_cost=body.max_estimated_cost,
         cost_pricing=(model.input_price, model.output_price, model.price_currency)
-        if body.max_estimated_cost is not None and model.input_price is not None and model.output_price is not None else None,
+        if body.max_estimated_cost is not None and model.input_price is not None and model.output_price is not None
+        else None,
     )
     try:
         run = await create_run(db, actor.id, **options)
@@ -111,9 +141,7 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
         await db.rollback()
         if body.request_key is None:
             raise CustomException(status_code=409, custom_code=10005, detail="运行创建冲突") from None
-        existing = await db.scalar(select(AgentRun.id).where(
-            AgentRun.owner_id == actor.id, AgentRun.request_key == body.request_key,
-        ))
+        existing = await db.scalar(select(AgentRun.id).where(AgentRun.owner_id == actor.id, AgentRun.request_key == body.request_key))
         if existing is None:
             await db.rollback()
             raise CustomException(status_code=409, custom_code=10005, detail="运行创建冲突") from None
@@ -180,7 +208,7 @@ async def read_approval(run_id: str, actor: Admin = Depends(get_current_admin), 
 
 @router.post("/{run_id}/approval/decision", summary="决定运行审批请求")
 async def submit_approval_decision(
-    run_id: str, body: ApprovalDecisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+    run_id: str, body: ApprovalDecisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """只允许所有者对未过期的待处理请求提交一次同意或拒绝。"""
     await _owned_run(db, run_id, actor.id)
@@ -197,9 +225,11 @@ async def submit_approval_decision(
 
 @router.get("/{run_id}/events", summary="回放文本运行事件")
 async def read_events(
-    run_id: str, after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
+    run_id: str,
+    after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
     limit: int = Query(default=100, ge=1, le=200, description="本次最多返回事件数"),
-    actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """按运行内游标补发已持久化的状态事件。"""
     await _owned_run(db, run_id, actor.id)
@@ -209,9 +239,11 @@ async def read_events(
 
 @router.get("/{run_id}/snapshot", summary="读取运行状态与有界事件快照")
 async def read_run_snapshot(
-    run_id: str, after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
+    run_id: str,
+    after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
     limit: int = Query(default=100, ge=1, le=200, description="本次最多返回事件数"),
-    actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """固定本次读取的事件上界，供刷新和断线后逐页追平。"""
     run = await _owned_run(db, run_id, actor.id)
@@ -221,8 +253,11 @@ async def read_run_snapshot(
     events = await replay_events(db, run_id, actor.id, after=after, limit=limit, through=latest)
     next_after = events[-1].sequence if events else after
     snapshot = RunSnapshotOut(
-        run=RunOut.model_validate(run), events=[RunEventOut.model_validate(item) for item in events],
-        latest_sequence=latest, next_after=next_after, has_more=next_after < latest,
+        run=RunOut.model_validate(run),
+        events=[RunEventOut.model_validate(item) for item in events],
+        latest_sequence=latest,
+        next_after=next_after,
+        has_more=next_after < latest,
     )
     response = api_response(data=snapshot.model_dump(mode="json"), datetime_format=False)
     response.headers["Cache-Control"] = "no-store"
@@ -231,27 +266,34 @@ async def read_run_snapshot(
 
 @router.post("/{run_id}/stream-ticket", summary="签发浏览器 SSE 订阅凭证")
 async def issue_stream_ticket(
-    run_id: str, request: Request, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session),
+    run_id: str, request: Request, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """用 Bearer 换取仅限当前 Run 的短期 HttpOnly Cookie。"""
     await _owned_run(db, run_id, actor.id)
     response = api_response(data={"expires_in": STREAM_TICKET_SECONDS})
     response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
-        key=STREAM_COOKIE_NAME, value=make_stream_ticket(actor, request.state.auth_session_id, run_id),
-        max_age=STREAM_TICKET_SECONDS, path=f"/api/v1/runs/{run_id}/stream",
-        secure=get_config().ENV_NAME not in {"development", "test"}, httponly=True, samesite="strict",
+        key=STREAM_COOKIE_NAME,
+        value=make_stream_ticket(actor, request.state.auth_session_id, run_id),
+        max_age=STREAM_TICKET_SECONDS,
+        path=f"/api/v1/runs/{run_id}/stream",
+        secure=get_config().ENV_NAME not in {"development", "test"},
+        httponly=True,
+        samesite="strict",
     )
     return response
 
 
 @router.get("/{run_id}/stream", summary="订阅文本运行状态事件")
 async def stream_events(
-    run_id: str, request: Request, after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
+    run_id: str,
+    request: Request,
+    after: int = Query(default=0, ge=0, description="已收到的最后事件序号"),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID", description="上次收到的运行 ID 与事件序号"),
-    actor: Admin = Depends(get_stream_admin), db: AsyncSession = Depends(get_db_session),
+    actor: Admin = Depends(get_stream_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
-    """从持久化游标补发状态事件，运行终止后关闭流。"""
+    """从持久化游标补发事件，保留 SSE 媒体协议并在运行终止后关闭流。"""
     run = await _owned_run(db, run_id, actor.id)
     if last_event_id is not None:
         prefix, separator, value = last_event_id.rpartition(":")
@@ -274,9 +316,15 @@ async def stream_events(
             user = await db.get(Admin, owner_id)
             session = await db.get(AuthSession, session_id)
             if (
-                user is None or user.status != 1 or user.is_deleted != 0 or user.token_version != token_version
-                or time.time() >= token_expires_at or session is None or session.admin_id != owner_id
-                or session.revoked_at is not None or session.expires_at <= utc_now()
+                user is None
+                or user.status != 1
+                or user.is_deleted != 0
+                or user.token_version != token_version
+                or time.time() >= token_expires_at
+                or session is None
+                or session.admin_id != owner_id
+                or session.revoked_at is not None
+                or session.expires_at <= utc_now()
             ):
                 break
             run = await get_owned_run(db, run_id, owner_id)
@@ -290,9 +338,9 @@ async def stream_events(
             if run.state in TERMINAL_STATES and cursor >= run.event_seq:
                 if run.state != "completed" or not run.publish_answer_artifact:
                     break
-                published = await db.scalar(select(Artifact.id).where(
-                    Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1",
-                ).limit(1))
+                published = await db.scalar(
+                    select(Artifact.id).where(Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1").limit(1)
+                )
                 if published is not None:
                     break
             if events:

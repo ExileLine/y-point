@@ -33,47 +33,35 @@ class AgentRun(CustomBaseModel):
     agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
     model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="模型生成超时秒数",
+        Integer, nullable=False, default=120, server_default="120", comment="模型生成超时秒数"
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数",
+        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数"
     )
     max_queue_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="排队等待最长秒数")
-    queue_expires_at: Mapped[datetime | None] = mapped_column(
-        ShanghaiDateTime(), nullable=True, index=True, comment="排队等待截止时间",
-    )
+    queue_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, index=True, comment="排队等待截止时间")
     enable_text_artifact_tool: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0", comment="是否启用需审批的文本文件读取工具",
+        Boolean, nullable=False, default=False, server_default="0", comment="是否启用需审批的文本文件读取工具"
     )
     publish_answer_artifact: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物",
+        Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物"
     )
-    answer_artifact_retry_at: Mapped[datetime | None] = mapped_column(
-        ShanghaiDateTime(), nullable=True, comment="回答产物下次补发时间",
-    )
+    answer_artifact_retry_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="回答产物下次补发时间")
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的模型调用次数上限")
-    model_call_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0", comment="已开始的模型调用次数",
-    )
+    model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", comment="已开始的模型调用次数")
     max_total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的上游总 Token 上限")
     reported_total_tokens: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0", comment="本次运行上游已报告的总 Token 数",
+        Integer, nullable=False, default=0, server_default="0", comment="本次运行上游已报告的总 Token 数"
     )
     max_estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="本次运行估算成本上限")
     estimated_cost: Mapped[Decimal] = mapped_column(
-        Numeric(24, 12), nullable=False, default=Decimal("0"), server_default="0", comment="启用预算时的累计估算成本",
+        Numeric(24, 12), nullable=False, default=Decimal("0"), server_default="0", comment="启用预算时的累计估算成本"
     )
-    cost_input_price: Mapped[Decimal | None] = mapped_column(
-        Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格",
-    )
-    cost_output_price: Mapped[Decimal | None] = mapped_column(
-        Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格",
-    )
+    cost_input_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格")
+    cost_output_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格")
     cost_currency: Mapped[str | None] = mapped_column(String(3), nullable=True, comment="创建运行时价格币种")
     max_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的工具调用次数上限")
-    tool_call_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0", comment="已开始的工具调用次数",
-    )
+    tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", comment="已开始的工具调用次数")
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="检查点线程 ID")
     active_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="未结束运行占用的检查点线程 ID")
     request_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="用户提交幂等键")

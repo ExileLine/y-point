@@ -14,6 +14,7 @@ from app.core.config import get_config
 from app.core.lifespan import lifespan
 from app.core.middleware import ArtifactUploadLimitMiddleware, MyMiddleware
 from app.core.exception_handlers import register_exception_handlers
+from app.core.response import api_response
 from app.api import api
 
 project_config = get_config()
@@ -22,9 +23,7 @@ project_config = get_config()
 def create_app():
     """创建 FastAPI 应用并注册中间件、路由及静态资源。"""
     debug = project_config.DEBUG
-    kw = {
-        "debug": debug
-    }
+    kw = {"debug": debug}
 
     app = FastAPI(
         title=project_config.DOCS_TITLE,
@@ -35,7 +34,7 @@ def create_app():
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,  # 事件注册(应用启动前与关闭后执行的事件处理器)
-        **kw
+        **kw,
     )
 
     app.add_middleware(
@@ -67,23 +66,24 @@ def create_app():
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    @app.get("/", summary="root", tags=["root"])
+    @app.get("/", summary="检查服务根入口", tags=["root"])
     async def root_redirect():
-        """root"""
-        return {
-            "status": "ok",
-        }
+        """使用统一成功响应返回服务的基础存活状态。"""
+        return api_response(data={"status": "ok"})
 
     if project_config.DOCS_ENABLE:
-        @app.get(f"/docs", include_in_schema=False)
+
+        @app.get("/docs", summary="查看接口文档", include_in_schema=False)
         async def custom_swagger_ui_html():
+            """返回供浏览器渲染的 Swagger HTML 页面，保留文档页面的媒体类型。"""
             return get_swagger_ui_html(
                 openapi_url=app.openapi_url,
                 title=f"{app.title} Swagger UI",
-                swagger_js_url=f"/static/swagger-ui-bundle.js",
-                swagger_css_url=f"/static/swagger-ui.css",
-                swagger_favicon_url=f"/static/favicon.png",
+                swagger_js_url="/static/swagger-ui-bundle.js",
+                swagger_css_url="/static/swagger-ui.css",
+                swagger_favicon_url="/static/favicon.png",
             )
+
     return app
 
 

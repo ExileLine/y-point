@@ -5,33 +5,25 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class CommonPydanticCreate(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-        extra="ignore",
-    )
-
     remark: Optional[str] = Field(default=None, description="备注", examples=[""])
-    creator: Optional[str] = Field(default=None, description="创建人(不需要传,从鉴权获取)")
-    creator_id: Optional[int] = Field(default=None, description="创建人ID(不需要传,从鉴权获取)")
+    creator: Optional[str] = Field(default=None, description="创建人(不需要传,从鉴权获取)", examples=["admin"])
+    creator_id: Optional[int] = Field(default=None, description="创建人ID(不需要传,从鉴权获取)", examples=[1])
 
     def dict(self, **kwargs):
+        """导出显式设置的字段，保持现有字典接口的序列化选项。"""
         return super().model_dump(exclude_unset=True, **kwargs)
 
 
 class CommonPydanticUpdate(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-        extra="ignore",
-    )
-
     id: Optional[int] = Field(default=None, description="需要编辑的数据ID", examples=[1])
     remark: Optional[str] = Field(default=None, description="备注", examples=[""])
-    modifier: Optional[str] = Field(default=None, description="更新人(不需要传,从鉴权获取)")
-    modifier_id: Optional[int] = Field(default=None, description="更新人ID(不需要传,从鉴权获取)")
+    modifier: Optional[str] = Field(default=None, description="更新人(不需要传,从鉴权获取)", examples=["admin"])
+    modifier_id: Optional[int] = Field(default=None, description="更新人ID(不需要传,从鉴权获取)", examples=[1])
 
     def dict(self, **kwargs):
+        """导出显式设置的字段，保持现有字典接口的序列化选项。"""
         return super().model_dump(exclude_unset=True, exclude_defaults=True, exclude_none=True, **kwargs)

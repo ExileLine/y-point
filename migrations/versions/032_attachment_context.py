@@ -21,7 +21,9 @@ def upgrade() -> None:
     """为历史附件补充默认为关闭的模型上下文标记。"""
     op.add_column(
         "yp_agent_message_attachment",
-        sa.Column("included_in_context", sa.Boolean(), nullable=False, server_default=sa.false(), comment="是否将文本内容送入本轮模型上下文"),
+        sa.Column(
+            "included_in_context", sa.Boolean(), nullable=False, server_default=sa.false(), comment="是否将文本内容送入本轮模型上下文"
+        ),
     )
 
 

@@ -135,18 +135,18 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
             with pytest.raises(RunConflictError):
                 await create_run(db, 1, request_key="hello", input_text="different")
         completed = await execute_text_run(
-            sessions, run.id, ScriptedModel(responses=[AIMessage(content="hello back")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, run.id, ScriptedModel(responses=[AIMessage(content="hello back")]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
         )
         assert completed.state == "completed" and completed.checkpoint_id
         async with sessions.begin() as db:
             messages = await get_owned_messages(db, run.id, 1)
-            assert [(message.role, message.content) for message in messages] == [
-                ("user", "say hello"), ("assistant", "hello back"),
-            ]
+            assert [(message.role, message.content) for message in messages] == [("user", "say hello"), ("assistant", "hello back")]
             events = await replay_events(db, run.id, 1)
             assert [(event.event_type, event.state) for event in events] == [
-                ("state", "queued"), ("state", "running"), ("text_delta", "running"), ("state", "completed"),
+                ("state", "queued"),
+                ("state", "running"),
+                ("text_delta", "running"),
+                ("state", "completed"),
             ]
             assert "".join(event.content or "" for event in events) == "hello back"
             assert all("say hello" not in str(event.to_dict()) for event in events)
@@ -154,24 +154,29 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
                 await get_owned_messages(db, run.id, 2)
             followup = await create_run(db, 1, thread_id=run.thread_id, input_text="again")
         next_result = await execute_text_run(
-            sessions, followup.id, ScriptedModel(responses=[AIMessage(content="second answer")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            followup.id,
+            ScriptedModel(responses=[AIMessage(content="second answer")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert next_result.state == "completed" and next_result.checkpoint_id != completed.checkpoint_id
     finally:
         await engine.dispose()
 
 
-@pytest.mark.skipif(
-    not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库",
-)
+@pytest.mark.skipif(not os.environ.get("YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"), reason="需显式提供隔离 PostgreSQL 检查点库")
 def test_completed_run_with_postgres_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """业务 Run 在不同检查点连接上完成并继续同一线程。"""
-    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(
-        CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"],
-    ))
+    monkeypatch.setattr(
+        runtime_checkpoint,
+        "get_config",
+        lambda: SimpleNamespace(CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=os.environ["YPOINT_TEST_POSTGRES_CHECKPOINT_DSN"]),
+    )
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：业务 Run 在不同检查点连接上完成并继续同一线程。"""
         checkpoint_path = tmp_path / "unused.sqlite"
         async with open_async_checkpointer(checkpoint_path) as checkpointer:
             await checkpointer.setup()
@@ -196,12 +201,14 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="budget-user", password="not-used", role="user", status=1, is_deleted=0))
             limited = await create_run(db, 1, input_text="调用工具后总结", max_model_calls=1)
-        model = ScriptedModel(responses=[
-            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "budget-call"}]),
-            AIMessage(content="should not be returned"),
-        ])
+        model = ScriptedModel(
+            responses=[
+                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "budget-call"}]),
+                AIMessage(content="should not be returned"),
+            ]
+        )
         result = await execute_text_run(
-            sessions, limited.id, model, checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions, limited.id, model, checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert result.state == "failed" and result.failure_code == "model_call_budget_exceeded"
         assert result.model_call_count == 1 and result.max_model_calls == 1
@@ -214,10 +221,18 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
         async with sessions.begin() as db:
             allowed = await create_run(db, 1, input_text="调用工具后总结", max_model_calls=2)
         completed = await execute_text_run(
-            sessions, allowed.id, ScriptedModel(responses=[
-                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "allowed-call"}]),
-                AIMessage(content="done"),
-            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            allowed.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool result"}, "id": "allowed-call"}]),
+                    AIMessage(content="done"),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.model_call_count == 2
     finally:
@@ -241,21 +256,27 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
             db.add(Admin(id=1, username="token-user", password="not-used", role="user", status=1, is_deleted=0))
             allowed = await create_run(db, 1, input_text="预算内回答", max_total_tokens=15)
         completed = await execute_text_run(
-            sessions, allowed.id, ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            allowed.id,
+            ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.reported_total_tokens == 15
         assert completed.max_total_tokens == 15 and completed.model_call_count == 1
         async with sessions() as db:
-            assert "".join(
-                event.content for event in await replay_events(db, allowed.id, 1) if event.event_type == "text_delta"
-            ) == "done"
+            assert "".join(event.content for event in await replay_events(db, allowed.id, 1) if event.event_type == "text_delta") == "done"
 
         async with sessions.begin() as db:
             exceeded = await create_run(db, 1, input_text="超过预算", max_total_tokens=14)
         rejected = await execute_text_run(
-            sessions, exceeded.id, ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            exceeded.id,
+            ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert rejected.state == "failed" and rejected.failure_code == "token_budget_exceeded"
         assert rejected.reported_total_tokens == 15 and rejected.model_call_count == 1
@@ -268,8 +289,12 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
         async with sessions.begin() as db:
             unknown = await create_run(db, 1, input_text="缺少用量", max_total_tokens=100)
         unavailable = await execute_text_run(
-            sessions, unknown.id, ScriptedModel(responses=[AIMessage(content="answer without usage")]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            unknown.id,
+            ScriptedModel(responses=[AIMessage(content="answer without usage")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert unavailable.state == "failed" and unavailable.failure_code == "token_usage_unavailable"
         assert unavailable.reported_total_tokens == 0 and unavailable.model_call_count == 1
@@ -279,13 +304,22 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
         async with sessions.begin() as db:
             looping = await create_run(db, 1, input_text="工具后继续", max_total_tokens=15)
         stopped = await execute_text_run(
-            sessions, looping.id, ScriptedModel(responses=[
-                AIMessage(
-                    content="", usage_metadata=usage,
-                    tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "token-tool"}],
-                ),
-                AIMessage(content="must not be returned", usage_metadata=usage),
-            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            looping.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        usage_metadata=usage,
+                        tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "token-tool"}],
+                    ),
+                    AIMessage(content="must not be returned", usage_metadata=usage),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert stopped.state == "failed" and stopped.failure_code == "token_budget_exceeded"
         assert stopped.reported_total_tokens == 15 and stopped.model_call_count == 1
@@ -310,25 +344,49 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="cost-user", password="not-used", role="user", status=1, is_deleted=0))
-            db.add(ProviderConnection(
-                id=7, name="cost-provider", name_key="cost-provider", kind="ollama",
-                base_url="http://127.0.0.1:11434/v1", creator_id=1, timeout_seconds=30, status=1, is_deleted=0,
-            ))
-            db.add(ModelCatalog(
-                id=7, provider_id=7, external_id="cost-model", display_name="Cost Model", creator_id=1,
-                capabilities=["text"], verified_capabilities=[], input_price=pricing[0], output_price=pricing[1],
-                price_currency="USD", status=1, is_deleted=0,
-            ))
+            db.add(
+                ProviderConnection(
+                    id=7,
+                    name="cost-provider",
+                    name_key="cost-provider",
+                    kind="ollama",
+                    base_url="http://127.0.0.1:11434/v1",
+                    creator_id=1,
+                    timeout_seconds=30,
+                    status=1,
+                    is_deleted=0,
+                )
+            )
+            db.add(
+                ModelCatalog(
+                    id=7,
+                    provider_id=7,
+                    external_id="cost-model",
+                    display_name="Cost Model",
+                    creator_id=1,
+                    capabilities=["text"],
+                    verified_capabilities=[],
+                    input_price=pricing[0],
+                    output_price=pricing[1],
+                    price_currency="USD",
+                    status=1,
+                    is_deleted=0,
+                )
+            )
             allowed = await create_run(
-                db, 1, model_id=7, input_text="预算内回答", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing,
+                db, 1, model_id=7, input_text="预算内回答", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing
             )
         async with sessions.begin() as db:
             model = await db.get(ModelCatalog, 7)
             model.input_price = Decimal("20")
             model.output_price = Decimal("40")
         completed = await execute_text_run(
-            sessions, allowed.id, ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            allowed.id,
+            ScriptedModel(responses=[AIMessage(content="done", usage_metadata=usage)]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.estimated_cost == Decimal("0.000040000000")
         assert completed.cost_input_price == pricing[0] and completed.cost_output_price == pricing[1]
@@ -341,11 +399,15 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
 
         async with sessions.begin() as db:
             exceeded = await create_run(
-                db, 1, model_id=7, input_text="超过预算", max_estimated_cost=Decimal("0.000039"), cost_pricing=pricing,
+                db, 1, model_id=7, input_text="超过预算", max_estimated_cost=Decimal("0.000039"), cost_pricing=pricing
             )
         rejected = await execute_text_run(
-            sessions, exceeded.id, ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            exceeded.id,
+            ScriptedModel(responses=[AIMessage(content="private-answer", usage_metadata=usage)]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert rejected.state == "failed" and rejected.failure_code == "cost_budget_exceeded"
         assert rejected.estimated_cost == Decimal("0.000040000000") and rejected.model_call_count == 1
@@ -355,11 +417,15 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
 
         async with sessions.begin() as db:
             unknown = await create_run(
-                db, 1, model_id=7, input_text="缺少用量", max_estimated_cost=Decimal("0.000100"), cost_pricing=pricing,
+                db, 1, model_id=7, input_text="缺少用量", max_estimated_cost=Decimal("0.000100"), cost_pricing=pricing
             )
         unavailable = await execute_text_run(
-            sessions, unknown.id, ScriptedModel(responses=[AIMessage(content="answer without usage")]),
-            checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            unknown.id,
+            ScriptedModel(responses=[AIMessage(content="answer without usage")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert unavailable.state == "failed" and unavailable.failure_code == "cost_usage_unavailable"
         assert unavailable.estimated_cost == 0 and unavailable.model_call_count == 1
@@ -368,16 +434,25 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
 
         async with sessions.begin() as db:
             looping = await create_run(
-                db, 1, model_id=7, input_text="工具后继续", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing,
+                db, 1, model_id=7, input_text="工具后继续", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing
             )
         stopped = await execute_text_run(
-            sessions, looping.id, ScriptedModel(responses=[
-                AIMessage(
-                    content="", usage_metadata=usage,
-                    tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "cost-tool"}],
-                ),
-                AIMessage(content="must not be returned", usage_metadata=usage),
-            ]), checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            looping.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        usage_metadata=usage,
+                        tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "cost-tool"}],
+                    ),
+                    AIMessage(content="must not be returned", usage_metadata=usage),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert stopped.state == "failed" and stopped.failure_code == "cost_budget_exceeded"
         assert stopped.estimated_cost == Decimal("0.000040000000")
@@ -407,8 +482,13 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
             AIMessage(content="should not be returned"),
         ]
         rejected = await execute_text_run(
-            sessions, limited.id, ScriptedModel(responses=responses), checkpoint_path,
-            resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            limited.id,
+            ScriptedModel(responses=responses),
+            checkpoint_path,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert rejected.state == "failed" and rejected.failure_code == "tool_call_budget_exceeded"
         assert rejected.tool_call_count == 1 and rejected.max_tool_calls == 1
@@ -427,16 +507,19 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
         async with sessions.begin() as db:
             allowed = await create_run(db, 1, input_text="调用两次工具", max_tool_calls=2)
         completed = await execute_text_run(
-            sessions, allowed.id, ScriptedModel(responses=[*responses[:2], AIMessage(content="done")]), checkpoint_path,
-            resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            allowed.id,
+            ScriptedModel(responses=[*responses[:2], AIMessage(content="done")]),
+            checkpoint_path,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.tool_call_count == 2
         async with sessions() as db:
             events = await replay_events(db, allowed.id, 1)
             tool_events = [event for event in events if event.tool_call_id]
-            assert [event.event_type for event in tool_events] == [
-                "tool_started", "tool_completed", "tool_started", "tool_completed",
-            ]
+            assert [event.event_type for event in tool_events] == ["tool_started", "tool_completed", "tool_started", "tool_completed"]
             assert tool_events[0].tool_call_id == tool_events[1].tool_call_id
             assert tool_events[2].tool_call_id == tool_events[3].tool_call_id
             assert tool_events[0].tool_call_id != tool_events[2].tool_call_id
@@ -449,10 +532,18 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
             return [failing_tool], {}
 
         await execute_text_run(
-            sessions, broken.id, ScriptedModel(responses=[
-                AIMessage(content="", tool_calls=[{"name": "failing_tool", "args": {"secret": "private-input"}, "id": "failure"}]),
-                AIMessage(content="done"),
-            ]), checkpoint_path, resolve_tools=resolve_failing_tool, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            broken.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(content="", tool_calls=[{"name": "failing_tool", "args": {"secret": "private-input"}, "id": "failure"}]),
+                    AIMessage(content="done"),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_failing_tool,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         async with sessions() as db:
             events = await replay_events(db, broken.id, 1)
@@ -493,10 +584,19 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
             db.add(Admin(id=1, username="tool-timeout-user", password="not-used", role="user", status=1, is_deleted=0))
             limited = await create_run(db, 1, input_text="调用慢工具", tool_timeout_seconds=1)
         timed_out = await execute_text_run(
-            sessions, limited.id, ScriptedModel(responses=[
-                AIMessage(content="", tool_calls=[{"name": "slow_tool", "args": {"secret": "private-input"}, "id": "slow-call"}]),
-                AIMessage(content="should not be returned"),
-            ]), checkpoint_path, resolve_tools=resolve_slow_tool, timeout_seconds=10, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            limited.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(content="", tool_calls=[{"name": "slow_tool", "args": {"secret": "private-input"}, "id": "slow-call"}]),
+                    AIMessage(content="should not be returned"),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_slow_tool,
+            timeout_seconds=10,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert timed_out.state == "timed_out" and timed_out.failure_code == "tool_execution_timeout"
         assert timed_out.tool_timeout_seconds == 1 and timed_out.tool_call_count == 1
@@ -513,10 +613,19 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
         async with sessions.begin() as db:
             quick = await create_run(db, 1, input_text="调用快工具", tool_timeout_seconds=1)
         completed = await execute_text_run(
-            sessions, quick.id, ScriptedModel(responses=[
-                AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "quick-call"}]),
-                AIMessage(content="done"),
-            ]), checkpoint_path, resolve_tools=resolve_quick_tool, timeout_seconds=10, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            quick.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "result"}, "id": "quick-call"}]),
+                    AIMessage(content="done"),
+                ]
+            ),
+            checkpoint_path,
+            resolve_tools=resolve_quick_tool,
+            timeout_seconds=10,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.tool_call_count == 1
     finally:
@@ -528,14 +637,18 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     usage = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-    responses = iter([
-        AIMessage(content="", usage_metadata=usage, tool_calls=[
-            {"name": "echo_approved", "args": {"text": "approved result"}, "id": "call-1"},
-        ]),
-        AIMessage(content="tool completed", usage_metadata=usage),
-        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "must not run"}, "id": "call-2"}]),
-        AIMessage(content="must not appear"),
-    ])
+    responses = iter(
+        [
+            AIMessage(
+                content="",
+                usage_metadata=usage,
+                tool_calls=[{"name": "echo_approved", "args": {"text": "approved result"}, "id": "call-1"}],
+            ),
+            AIMessage(content="tool completed", usage_metadata=usage),
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "must not run"}, "id": "call-2"}]),
+            AIMessage(content="must not appear"),
+        ]
+    )
 
     async def resolve_model(db, run):
         """每次独立调度使用一段预置模型响应。"""
@@ -554,13 +667,17 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="approval-user", password="not-used", role="user", status=1, is_deleted=0))
             run = await create_run(
-                db, 1, input_text="请先调用工具", max_model_calls=2, max_tool_calls=1,
-                max_total_tokens=30, max_estimated_cost=Decimal("0.000080"),
+                db,
+                1,
+                input_text="请先调用工具",
+                max_model_calls=2,
+                max_tool_calls=1,
+                max_total_tokens=30,
+                max_estimated_cost=Decimal("0.000080"),
                 cost_pricing=(Decimal("2"), Decimal("4"), "USD"),
             )
         paused = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert paused.id == run.id and paused.state == "waiting_for_approval" and paused.checkpoint_id
         assert paused.model_call_count == 1
@@ -574,8 +691,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             await decide_approval(db, run.id, 1, "approve")
         assert await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model) is None
         completed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert completed.id == run.id and completed.state == "completed"
         assert completed.model_call_count == 2
@@ -583,28 +699,30 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
         assert completed.reported_total_tokens == 30 and completed.estimated_cost == Decimal("0.000080000000")
         async with sessions() as db:
             messages = await get_owned_messages(db, run.id, 1)
-            assert [(message.role, message.content) for message in messages] == [
-                ("user", "请先调用工具"), ("assistant", "tool completed"),
-            ]
+            assert [(message.role, message.content) for message in messages] == [("user", "请先调用工具"), ("assistant", "tool completed")]
             events = await replay_events(db, run.id, 1)
             assert [event.event_type for event in events if event.tool_call_id] == ["tool_started", "tool_completed"]
             assert [event.state for event in events if event.event_type == "state"] == [
-                "queued", "running", "waiting_for_approval", "running", "completed",
+                "queued",
+                "running",
+                "waiting_for_approval",
+                "running",
+                "completed",
             ]
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[echo_approved],
-                interrupt_on={"echo_approved": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="unused")]),
+                tools=[echo_approved],
+                interrupt_on={"echo_approved": True},
+                checkpointer=checkpointer,
             )
             snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
-            assert any(isinstance(message, ToolMessage) and message.content == "approved result"
-                       for message in snapshot.values["messages"])
+            assert any(isinstance(message, ToolMessage) and message.content == "approved result" for message in snapshot.values["messages"])
 
         async with sessions.begin() as db:
             revoked = await create_run(db, 1, input_text="再次调用工具")
         paused_again = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert paused_again.id == revoked.id and paused_again.state == "waiting_for_approval"
         async with sessions.begin() as db:
@@ -615,16 +733,17 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             return [], {}
 
         denied = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=revoked_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=revoked_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert denied.id == revoked.id and denied.state == "failed" and denied.failure_code == "runtime_error"
         async with sessions() as db:
             assert [message.role for message in await get_owned_messages(db, revoked.id, 1)] == ["user"]
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[echo_approved],
-                interrupt_on={"echo_approved": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="unused")]),
+                tools=[echo_approved],
+                interrupt_on={"echo_approved": True},
+                checkpointer=checkpointer,
             )
             snapshot = await agent.aget_state({"configurable": {"thread_id": revoked.thread_id}})
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
@@ -636,11 +755,13 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
     """验证同一运行的两次工具调用分别等待独立审批。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    responses = iter([
-        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "first"}, "id": "call-1"}]),
-        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "second"}, "id": "call-2"}]),
-        AIMessage(content="both completed"),
-    ])
+    responses = iter(
+        [
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "first"}, "id": "call-1"}]),
+            AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "second"}, "id": "call-2"}]),
+            AIMessage(content="both completed"),
+        ]
+    )
 
     async def resolve_model(db, run):
         """每次调度返回下一段预置模型响应。"""
@@ -657,16 +778,14 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
             db.add(Admin(id=1, username="repeat-approval", password="not-used", role="user", status=1, is_deleted=0))
             run = await create_run(db, 1, input_text="连续调用两次工具")
         first = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert first.state == "waiting_for_approval"
         async with sessions.begin() as db:
             first_approval = await get_owned_approval(db, run.id, 1)
             await decide_approval(db, run.id, 1, "approve")
         second = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert second.state == "waiting_for_approval" and second.checkpoint_id != first.checkpoint_id
         async with sessions.begin() as db:
@@ -675,24 +794,29 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
             assert second_approval.state == "pending"
             await decide_approval(db, run.id, 1, "approve")
         completed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert completed.state == "completed"
         async with sessions() as db:
             assert [event.state for event in await replay_events(db, run.id, 1) if event.event_type == "state"] == [
-                "queued", "running", "waiting_for_approval", "running", "waiting_for_approval", "running", "completed",
+                "queued",
+                "running",
+                "waiting_for_approval",
+                "running",
+                "waiting_for_approval",
+                "running",
+                "completed",
             ]
             assert (await get_owned_messages(db, run.id, 1))[-1].content == "both completed"
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[echo_approved],
-                interrupt_on={"echo_approved": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="unused")]),
+                tools=[echo_approved],
+                interrupt_on={"echo_approved": True},
+                checkpointer=checkpointer,
             )
             snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
-            assert [message.content for message in snapshot.values["messages"] if isinstance(message, ToolMessage)] == [
-                "first", "second",
-            ]
+            assert [message.content for message in snapshot.values["messages"] if isinstance(message, ToolMessage)] == ["first", "second"]
     finally:
         await engine.dispose()
 
@@ -704,9 +828,9 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
 
     async def resolve_model(db, run):
         """提供单次需审批的工具调用。"""
-        return ScriptedModel(responses=[AIMessage(
-            content="", tool_calls=[{"name": "echo_approved", "args": {"text": "private"}, "id": "call-1"}],
-        )])
+        return ScriptedModel(
+            responses=[AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "private"}, "id": "call-1"}])]
+        )
 
     async def resolve_tools(db, run):
         """提供恢复前仍可使用的同名工具。"""
@@ -719,22 +843,22 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
             db.add(Admin(id=1, username="changed-approval", password="not-used", role="user", status=1, is_deleted=0))
             run = await create_run(db, 1, input_text="调用工具")
         paused = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert paused.state == "waiting_for_approval"
         async with sessions.begin() as db:
             approval = await decide_approval(db, run.id, 1, "approve")
             approval.actions = [{"name": "echo_approved", "arguments_hash": "0" * 64}]
         failed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
         )
         assert failed.state == "failed" and failed.failure_code == "checkpoint_mismatch"
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[echo_approved],
-                interrupt_on={"echo_approved": True}, checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="unused")]),
+                tools=[echo_approved],
+                interrupt_on={"echo_approved": True},
+                checkpointer=checkpointer,
             )
             snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
@@ -742,9 +866,7 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
         await engine.dispose()
 
 
-async def exercise_checkpoint_reconciliation(
-    database_path: Path, checkpoint_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """验证 worker 只从当前 Run 的完整检查点补写最终回答。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -763,13 +885,15 @@ async def exercise_checkpoint_reconciliation(
             patcher.setattr(run_executor_module, "complete_run", crash_before_commit)
             with pytest.raises(SimulatedProcessCrash):
                 await execute_text_run(
-                    sessions, run.id, ScriptedModel(responses=[AIMessage(content="已完成的回答")]), checkpoint_path,
-                    lease_seconds=2, poll_seconds=0.1,
+                    sessions,
+                    run.id,
+                    ScriptedModel(responses=[AIMessage(content="已完成的回答")]),
+                    checkpoint_path,
+                    lease_seconds=2,
+                    poll_seconds=0.1,
                 )
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
-            agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[], checkpointer=checkpointer,
-            )
+            agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="unused")]), tools=[], checkpointer=checkpointer)
             snapshot = await agent.aget_state({"configurable": {"thread_id": run.thread_id}})
             assert snapshot.metadata.get("tool_count") == 0, snapshot.metadata
         async with sessions.begin() as db:
@@ -777,9 +901,9 @@ async def exercise_checkpoint_reconciliation(
             assert interrupted.state == "running" and interrupted.checkpoint_id is None
             with pytest.raises(RunConflictError):
                 await complete_expired_run(db, run.id, checkpoint_id="untrusted", final_text="untrusted")
-            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         await run_worker_module.run_worker(checkpoint_path, once=True)
         async with sessions() as db:
@@ -787,15 +911,21 @@ async def exercise_checkpoint_reconciliation(
             assert completed.state == "completed" and completed.checkpoint_id
             assert [message.content for message in await get_owned_messages(db, run.id, 1)] == ["请回答", "已完成的回答"]
             assert [event.state for event in await replay_events(db, run.id, 1) if event.event_type == "state"] == [
-                "queued", "running", "completed",
+                "queued",
+                "running",
+                "completed",
             ]
             followup = completed.thread_id
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             next_run = await create_run(db, 1, thread_id=followup, input_text="继续")
         next_result = await execute_text_run(
-            sessions, next_run.id, ScriptedModel(responses=[AIMessage(content="第二轮回答")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            next_run.id,
+            ScriptedModel(responses=[AIMessage(content="第二轮回答")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert next_result.state == "completed"
 
@@ -804,16 +934,16 @@ async def exercise_checkpoint_reconciliation(
             await claim_run(db, foreign.id)
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="不属于该运行")]), tools=[], checkpointer=checkpointer,
+                model=ScriptedModel(responses=[AIMessage(content="不属于该运行")]), tools=[], checkpointer=checkpointer
             )
             await agent.ainvoke(
                 {"messages": [{"role": "user", "content": "检查归属"}]},
                 {"configurable": {"thread_id": foreign.thread_id}, "metadata": {"run_id": "another-run"}},
             )
         async with sessions.begin() as db:
-            await db.execute(update(AgentRun).where(AgentRun.id == foreign.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == foreign.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -826,17 +956,15 @@ async def exercise_checkpoint_reconciliation(
             legacy = await create_run(db, 1, input_text="旧版检查点")
             await claim_run(db, legacy.id)
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
-            agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="旧版回答")]), tools=[], checkpointer=checkpointer,
-            )
+            agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="旧版回答")]), tools=[], checkpointer=checkpointer)
             await agent.ainvoke(
                 {"messages": [{"role": "user", "content": "旧版检查点"}]},
                 {"configurable": {"thread_id": legacy.thread_id}, "metadata": {"run_id": legacy.id}},
             )
         async with sessions.begin() as db:
-            await db.execute(update(AgentRun).where(AgentRun.id == legacy.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == legacy.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -849,18 +977,23 @@ async def exercise_checkpoint_reconciliation(
             await claim_run(db, pending.id)
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(
-                    content="", tool_calls=[{"name": "echo_approved", "args": {"text": "pending"}, "id": "call-pending"}],
-                )]), tools=[echo_approved], interrupt_on={"echo_approved": True}, checkpointer=checkpointer,
+                model=ScriptedModel(
+                    responses=[
+                        AIMessage(content="", tool_calls=[{"name": "echo_approved", "args": {"text": "pending"}, "id": "call-pending"}])
+                    ]
+                ),
+                tools=[echo_approved],
+                interrupt_on={"echo_approved": True},
+                checkpointer=checkpointer,
             )
             await agent.ainvoke(
                 {"messages": [{"role": "user", "content": "审批工具"}]},
                 {"configurable": {"thread_id": pending.thread_id}, "metadata": {"run_id": pending.id, "tool_count": 0}},
             )
         async with sessions.begin() as db:
-            await db.execute(update(AgentRun).where(AgentRun.id == pending.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == pending.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -873,22 +1006,25 @@ async def exercise_checkpoint_reconciliation(
             await claim_run(db, tool_run.id)
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
-                model=ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[
-                        {"name": "echo_approved", "args": {"text": "tool-result"}, "id": "call-complete"},
-                    ]),
-                    AIMessage(content="工具执行完成"),
-                ]), tools=[echo_approved], checkpointer=checkpointer,
+                model=ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="", tool_calls=[{"name": "echo_approved", "args": {"text": "tool-result"}, "id": "call-complete"}]
+                        ),
+                        AIMessage(content="工具执行完成"),
+                    ]
+                ),
+                tools=[echo_approved],
+                checkpointer=checkpointer,
             )
             await agent.ainvoke(
                 {"messages": [{"role": "user", "content": "调用工具后回答"}]},
-                {"configurable": {"thread_id": tool_run.thread_id},
-                 "metadata": {"run_id": tool_run.id, "tool_count": 1}},
+                {"configurable": {"thread_id": tool_run.thread_id}, "metadata": {"run_id": tool_run.id, "tool_count": 1}},
             )
         async with sessions.begin() as db:
-            await db.execute(update(AgentRun).where(AgentRun.id == tool_run.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == tool_run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -912,16 +1048,25 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
             normal = await create_run(db, 1, input_text="回答即可")
         CapturingModel.offered_tools = []
         completed = await execute_text_run(
-            sessions, normal.id, CapturingModel(responses=[AIMessage(content="ok")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions, normal.id, CapturingModel(responses=[AIMessage(content="ok")]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
         )
         assert completed.state == "completed" and CapturingModel.offered_tools == []
         async with sessions.begin() as db:
             unauthorized = await create_run(db, 1, input_text="调用内置文件工具")
         denied = await execute_text_run(
-            sessions, unauthorized.id, ScriptedModel(responses=[AIMessage(
-                content="", tool_calls=[{"name": "write_file", "args": {"file_path": "/private", "content": "secret"}, "id": "call-1"}],
-            )]), checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            unauthorized.id,
+            ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "write_file", "args": {"file_path": "/private", "content": "secret"}, "id": "call-1"}],
+                    )
+                ]
+            ),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert denied.state == "failed" and denied.failure_code == "model_error"
         async with sessions() as db:
@@ -934,8 +1079,13 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
             return [echo_approved.model_copy(update={"name": "write_file"})], {}
 
         rejected = await execute_text_run(
-            sessions, collision.id, ScriptedModel(responses=[AIMessage(content="must not run")]), checkpoint_path,
-            resolve_tools=colliding_tools, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            collision.id,
+            ScriptedModel(responses=[AIMessage(content="must not run")]),
+            checkpoint_path,
+            resolve_tools=colliding_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert rejected.state == "failed" and rejected.failure_code == "runtime_error"
     finally:
@@ -956,10 +1106,17 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
             SlowModel.stopped = asyncio.Event()
             async with sessions.begin() as db:
                 run = await create_run(db, 1, input_text="wait", model_timeout_seconds=1 if action == "timeout" else 120)
-            task = asyncio.create_task(execute_text_run(
-                sessions, run.id, SlowModel(responses=[AIMessage(content="unused")]), checkpoint_path,
-                timeout_seconds=5, lease_seconds=2, poll_seconds=0.05,
-            ))
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    SlowModel(responses=[AIMessage(content="unused")]),
+                    checkpoint_path,
+                    timeout_seconds=5,
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                )
+            )
             await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
             if action == "cancel":
                 async with sessions.begin() as db:
@@ -983,10 +1140,12 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：管理员停用账号后，运行中的模型和已建立的事件流都失去授权。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'disable-active-run.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def test_session():
+            """为 HTTP 测试注入隔离数据库会话。"""
             async with sessions() as db:
                 yield db
 
@@ -995,17 +1154,19 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add_all([
-                    Admin(id=1, username="root", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
-                    Admin(id=2, username="runner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                ])
+                db.add_all(
+                    [
+                        Admin(id=1, username="root", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
+                        Admin(id=2, username="runner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                    ]
+                )
                 run = await create_run(db, 2, input_text="wait")
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
                 async def login(username: str) -> str:
-                    response = await client.post(
-                        "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"},
-                    )
+                    """通过正式登录接口获取测试用户的访问令牌。"""
+                    response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
                     assert response.status_code == 200, response.text
                     return response.json()["data"]["access_token"]
 
@@ -1014,34 +1175,33 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
                 claims = jwt.decode(runner_token, options={"verify_signature": False})
                 request = SimpleNamespace(
                     state=SimpleNamespace(
-                        auth_session_id=claims["sid"], auth_token_version=claims["ver"],
-                        auth_token_expires_at=claims["exp"],
+                        auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
                     ),
                     is_disconnected=AsyncMock(return_value=False),
                 )
                 async with sessions() as stream_db:
-                    stream = await stream_events(
-                        run.id, request, after=0, last_event_id=None,
-                        actor=SimpleNamespace(id=2), db=stream_db,
-                    )
+                    stream = await stream_events(run.id, request, after=0, last_event_id=None, actor=SimpleNamespace(id=2), db=stream_db)
                     assert f"id: {run.id}:1" in await anext(stream.body_iterator)
 
                     SlowModel.started = asyncio.Event()
                     SlowModel.stopped = asyncio.Event()
-                    task = asyncio.create_task(execute_text_run(
-                        sessions, run.id, SlowModel(responses=[AIMessage(content="unused")]),
-                        tmp_path / "disable-active-run-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
-                    ))
+                    task = asyncio.create_task(
+                        execute_text_run(
+                            sessions,
+                            run.id,
+                            SlowModel(responses=[AIMessage(content="unused")]),
+                            tmp_path / "disable-active-run-checkpoint.db",
+                            lease_seconds=2,
+                            poll_seconds=0.05,
+                        )
+                    )
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
                         disabled = await client.put(
-                            "/api/v1/users/2", headers={"Authorization": f"Bearer {root_token}"},
-                            json={"status": 0},
+                            "/api/v1/users/2", headers={"Authorization": f"Bearer {root_token}"}, json={"status": 0}
                         )
                         assert disabled.status_code == 200, disabled.text
-                        assert (await client.get(
-                            "/api/v1/auth/me", headers={"Authorization": f"Bearer {runner_token}"},
-                        )).status_code == 401
+                        assert (await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {runner_token}"})).status_code == 401
                         with pytest.raises(StopAsyncIteration):
                             await anext(stream.body_iterator)
                         result = await asyncio.wait_for(task, timeout=4)
@@ -1064,10 +1224,12 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
     monkeypatch.setattr(get_config(), "SECRET_KEY", "test-only-jwt-signing-key-32-bytes-long")
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：撤销指定用户授权会停止模型、关闭 SSE，并拒绝继续访问原 Run。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'revoke-active-share.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
         async def test_session():
+            """为 HTTP 测试注入隔离数据库会话。"""
             async with sessions() as db:
                 yield db
 
@@ -1076,21 +1238,43 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add_all([
-                    Admin(id=1, username="agent-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    Admin(id=2, username="agent-recipient", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    AgentConfig(id=1, owner_id=1, name="Shared", system_prompt="", default_model_id=1,
-                                temperature=1, max_output_tokens=512, enabled=True, version=1, is_deleted=0, status=1),
-                    AgentShare(agent_id=1, user_id=2, is_deleted=0, status=1),
-                ])
+                db.add_all(
+                    [
+                        Admin(
+                            id=1, username="agent-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
+                        ),
+                        Admin(
+                            id=2,
+                            username="agent-recipient",
+                            password=hash_password("StrongPassword123"),
+                            role="user",
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        AgentConfig(
+                            id=1,
+                            owner_id=1,
+                            name="Shared",
+                            system_prompt="",
+                            default_model_id=1,
+                            temperature=1,
+                            max_output_tokens=512,
+                            enabled=True,
+                            version=1,
+                            is_deleted=0,
+                            status=1,
+                        ),
+                        AgentShare(agent_id=1, user_id=2, is_deleted=0, status=1),
+                    ]
+                )
                 run = await create_run(db, 2, agent_id=1, input_text="wait")
                 run_id = run.id
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+
                 async def login(username: str) -> str:
-                    response = await client.post(
-                        "/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"},
-                    )
+                    """通过正式登录接口获取测试用户的访问令牌。"""
+                    response = await client.post("/api/v1/auth/login", json={"identifier": username, "password": "StrongPassword123"})
                     assert response.status_code == 200, response.text
                     return response.json()["data"]["access_token"]
 
@@ -1099,43 +1283,47 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
                 claims = jwt.decode(recipient_token, options={"verify_signature": False})
                 request = SimpleNamespace(
                     state=SimpleNamespace(
-                        auth_session_id=claims["sid"], auth_token_version=claims["ver"],
-                        auth_token_expires_at=claims["exp"],
+                        auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
                     ),
                     is_disconnected=AsyncMock(return_value=False),
                 )
                 async with sessions() as stream_db:
-                    stream = await stream_events(
-                        run_id, request, after=0, last_event_id=None,
-                        actor=SimpleNamespace(id=2), db=stream_db,
-                    )
+                    stream = await stream_events(run_id, request, after=0, last_event_id=None, actor=SimpleNamespace(id=2), db=stream_db)
                     assert f"id: {run_id}:1" in await anext(stream.body_iterator)
                     SlowModel.started = asyncio.Event()
                     SlowModel.stopped = asyncio.Event()
-                    task = asyncio.create_task(execute_text_run(
-                        sessions, run_id, SlowModel(responses=[AIMessage(content="unreachable")]),
-                        tmp_path / "revoke-active-share-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
-                    ))
+                    task = asyncio.create_task(
+                        execute_text_run(
+                            sessions,
+                            run_id,
+                            SlowModel(responses=[AIMessage(content="unreachable")]),
+                            tmp_path / "revoke-active-share-checkpoint.db",
+                            lease_seconds=2,
+                            poll_seconds=0.05,
+                        )
+                    )
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
-                        revoked = await client.delete(
-                            "/api/v1/agents/1/shares/2", headers={"Authorization": f"Bearer {owner_token}"},
-                        )
+                        revoked = await client.delete("/api/v1/agents/1/shares/2", headers={"Authorization": f"Bearer {owner_token}"})
                         assert revoked.status_code == 200, revoked.text
                         with pytest.raises(StopAsyncIteration):
                             await anext(stream.body_iterator)
                         result = await asyncio.wait_for(task, timeout=4)
                         assert result.state == "cancelled" and SlowModel.stopped.is_set()
-                        assert (await client.get(
-                            f"/api/v1/runs/{run_id}", headers={"Authorization": f"Bearer {recipient_token}"},
-                        )).status_code == 404
+                        assert (
+                            await client.get(f"/api/v1/runs/{run_id}", headers={"Authorization": f"Bearer {recipient_token}"})
+                        ).status_code == 404
                         async with sessions() as db:
                             assert [message.role for message in await get_owned_messages(db, run_id, 2)] == ["user"]
                         async with sessions.begin() as db:
                             stale_run = await create_run(db, 2, agent_id=1, input_text="must not execute")
                         denied = await execute_text_run(
-                            sessions, stale_run.id, ScriptedModel(responses=[AIMessage(content="unreachable")]),
-                            tmp_path / "revoke-active-share-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
+                            sessions,
+                            stale_run.id,
+                            ScriptedModel(responses=[AIMessage(content="unreachable")]),
+                            tmp_path / "revoke-active-share-checkpoint.db",
+                            lease_seconds=2,
+                            poll_seconds=0.05,
                         )
                         assert denied.state == "failed" and denied.failure_code == "agent_access_revoked"
                         assert denied.model_call_count == 0
@@ -1151,21 +1339,22 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, RunConflictError])
-def test_heartbeat_failure_stops_running_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception],
-) -> None:
+def test_heartbeat_failure_stops_running_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[Exception]) -> None:
     """续租失败时立即中止模型任务，不能让它脱离租约继续执行。"""
 
     async def failed_heartbeat(*args, **kwargs) -> None:
+        """模拟续租时发生数据库故障。"""
         raise failure("private-database-error")
 
     original_watch = run_executor_module._watch_run
 
     async def watch_after_model_starts(*args, **kwargs) -> None:
+        """等待模型开始执行后启动故障续租监视器。"""
         await SlowModel.started.wait()
         await original_watch(*args, **kwargs)
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：续租失败时立即中止模型任务，不能让它脱离租约继续执行。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'heartbeat-failure.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         SlowModel.started = asyncio.Event()
@@ -1178,10 +1367,17 @@ def test_heartbeat_failure_stops_running_model(
                 run = await create_run(db, 1, input_text="wait")
             monkeypatch.setattr(run_executor_module, "heartbeat_run", failed_heartbeat)
             monkeypatch.setattr(run_executor_module, "_watch_run", watch_after_model_starts)
-            result = await asyncio.wait_for(execute_text_run(
-                sessions, run.id, SlowModel(responses=[AIMessage(content="unreachable")]),
-                tmp_path / "heartbeat-failure-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
-            ), timeout=4)
+            result = await asyncio.wait_for(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    SlowModel(responses=[AIMessage(content="unreachable")]),
+                    tmp_path / "heartbeat-failure-checkpoint.db",
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                ),
+                timeout=4,
+            )
             assert SlowModel.started.is_set() and SlowModel.stopped.is_set()
             assert result.state == "failed" and result.failure_code == "lease_monitor_error"
             async with sessions() as db:
@@ -1199,6 +1395,7 @@ def test_lease_transfer_stops_previous_model(tmp_path: Path) -> None:
     """租约变化后旧执行器停止模型，不用旧租约覆盖新的运行状态。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：租约变化后旧执行器停止模型，不用旧租约覆盖新的运行状态。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'lease-transfer.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         SlowModel.started = asyncio.Event()
@@ -1209,10 +1406,16 @@ def test_lease_transfer_stops_previous_model(tmp_path: Path) -> None:
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="lease-transfer", password="not-used", role="user"))
                 run = await create_run(db, 1, input_text="wait")
-            task = asyncio.create_task(execute_text_run(
-                sessions, run.id, SlowModel(responses=[AIMessage(content="unreachable")]),
-                tmp_path / "lease-transfer-checkpoint.db", lease_seconds=2, poll_seconds=0.05,
-            ))
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    SlowModel(responses=[AIMessage(content="unreachable")]),
+                    tmp_path / "lease-transfer-checkpoint.db",
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                )
+            )
             await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
             async with sessions.begin() as db:
                 await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(lease_token="new-owner"))
@@ -1231,6 +1434,7 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
     """取消请求中断工具协程，执行器确认后保留可追溯的开始事件。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：取消请求中断工具协程，执行器确认后保留可追溯的开始事件。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-tool.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         started = asyncio.Event()
@@ -1247,6 +1451,7 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
             return "unreachable"
 
         async def resolve_tool(db, run):
+            """返回用于验证执行与取消边界的测试工具。"""
             return [slow_read], {}
 
         try:
@@ -1255,22 +1460,29 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="cancel-tool", password="not-used", role="user", status=1, is_deleted=0))
                 run = await create_run(db, 1, input_text="取消读取")
-            task = asyncio.create_task(execute_text_run(
-                sessions, run.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{"name": "slow_read", "args": {}, "id": "slow-read-call"}]),
-                    AIMessage(content="unreachable"),
-                ]), tmp_path / "cancel-tool-checkpoint.db", resolve_tools=resolve_tool,
-                lease_seconds=2, poll_seconds=0.05,
-            ))
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    ScriptedModel(
+                        responses=[
+                            AIMessage(content="", tool_calls=[{"name": "slow_read", "args": {}, "id": "slow-read-call"}]),
+                            AIMessage(content="unreachable"),
+                        ]
+                    ),
+                    tmp_path / "cancel-tool-checkpoint.db",
+                    resolve_tools=resolve_tool,
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                )
+            )
             await asyncio.wait_for(started.wait(), timeout=3)
             async with sessions.begin() as db:
                 assert (await request_cancel(db, run.id, 1)).state == "cancel_requested"
             result = await asyncio.wait_for(task, timeout=4)
             assert result.state == "cancelled" and stopped.is_set()
             async with sessions() as db:
-                assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == [
-                    "tool_started",
-                ]
+                assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == ["tool_started"]
                 assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
         finally:
             await engine.dispose()
@@ -1282,6 +1494,7 @@ def test_cancel_arriving_during_timeout_finalization(tmp_path: Path, monkeypatch
     """超时终态写入前出现取消请求时，执行器须确认取消并保持事件连续。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：超时终态写入前出现取消请求时，执行器须确认取消并保持事件连续。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-timeout.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -1295,15 +1508,14 @@ def test_cancel_arriving_during_timeout_finalization(tmp_path: Path, monkeypatch
             calls = 0
 
             async def raced_timeout(db, run_id, lease_token, failure_code):
+                """在超时终态写入前提交取消请求以模拟竞态。"""
                 nonlocal calls
                 calls += 1
                 await request_cancel(db, run_id, 1)
                 raise RunConflictError("取消请求赢得版本竞争")
 
             monkeypatch.setattr(run_executor_module, "timeout_run", raced_timeout)
-            result = await run_executor_module._finish_interrupted(
-                sessions, run.id, claimed.lease_token, "execution_timeout",
-            )
+            result = await run_executor_module._finish_interrupted(sessions, run.id, claimed.lease_token, "execution_timeout")
             assert calls == 1
             assert result.state == "cancelled" and result.failure_code is None
             async with sessions() as db:
@@ -1311,9 +1523,7 @@ def test_cancel_arriving_during_timeout_finalization(tmp_path: Path, monkeypatch
                 assert stored.state == "cancelled" and stored.lease_token is None
                 events = await replay_events(db, run.id, 1)
                 assert [event.sequence for event in events] == [1, 2, 3, 4]
-                assert [event.state for event in events] == [
-                    "queued", "running", "cancel_requested", "cancelled",
-                ]
+                assert [event.state for event in events] == ["queued", "running", "cancel_requested", "cancelled"]
 
             async with sessions.begin() as db:
                 later_cancel = await create_run(db, 1, input_text="timeout first")
@@ -1358,34 +1568,64 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="metered-user", password="not-used", role="user", status=1, is_deleted=0))
-            db.add(ProviderConnection(
-                id=7, name="metered-provider", name_key="metered-provider", kind="ollama",
-                base_url="http://127.0.0.1:11434/v1", creator_id=1, timeout_seconds=30, status=1, is_deleted=0,
-            ))
-            db.add(ModelCatalog(
-                id=7, provider_id=7, external_id="metered-model", display_name="Metered Model", creator_id=1,
-                capabilities=["text"], verified_capabilities=[], input_price=Decimal("2"), output_price=Decimal("4"),
-                price_currency="USD", status=1, is_deleted=0,
-            ))
+            db.add(
+                ProviderConnection(
+                    id=7,
+                    name="metered-provider",
+                    name_key="metered-provider",
+                    kind="ollama",
+                    base_url="http://127.0.0.1:11434/v1",
+                    creator_id=1,
+                    timeout_seconds=30,
+                    status=1,
+                    is_deleted=0,
+                )
+            )
+            db.add(
+                ModelCatalog(
+                    id=7,
+                    provider_id=7,
+                    external_id="metered-model",
+                    display_name="Metered Model",
+                    creator_id=1,
+                    capabilities=["text"],
+                    verified_capabilities=[],
+                    input_price=Decimal("2"),
+                    output_price=Decimal("4"),
+                    price_currency="USD",
+                    status=1,
+                    is_deleted=0,
+                )
+            )
             first = await create_run(db, 1, model_id=7, input_text="first")
         first_result = await execute_text_run(
-            sessions, first.id, ScriptedModel(responses=[AIMessage(
-                content="first answer", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-            )]), checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            first.id,
+            ScriptedModel(
+                responses=[AIMessage(content="first answer", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})]
+            ),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert first_result.state == "completed"
         async with sessions.begin() as db:
             second = await create_run(db, 1, model_id=7, thread_id=first.thread_id, input_text="second")
         second_result = await execute_text_run(
-            sessions, second.id, ScriptedModel(responses=[AIMessage(
-                content="second answer", usage_metadata={"input_tokens": 20, "output_tokens": 8, "total_tokens": 28},
-            )]), checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            second.id,
+            ScriptedModel(
+                responses=[AIMessage(content="second answer", usage_metadata={"input_tokens": 20, "output_tokens": 8, "total_tokens": 28})]
+            ),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert second_result.state == "completed"
         async with sessions.begin() as db:
             failed = await create_run(db, 1, model_id=7, input_text="fail")
         failed_result = await execute_text_run(
-            sessions, failed.id, FailingModel(responses=[]), checkpoint_path, lease_seconds=2, poll_seconds=0.1,
+            sessions, failed.id, FailingModel(responses=[]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
         )
         assert failed_result.state == "failed"
         async with sessions() as db:
@@ -1412,8 +1652,12 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
             db.add(Admin(id=1, username="checkpoint-user", password="not-used", role="user", status=1, is_deleted=0))
             first = await create_run(db, 1, input_text="first")
         completed = await execute_text_run(
-            sessions, first.id, ScriptedModel(responses=[AIMessage(content="first answer")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            first.id,
+            ScriptedModel(responses=[AIMessage(content="first answer")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.checkpoint_id
         if remove_file:
@@ -1421,7 +1665,7 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
         else:
             async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
                 agent = create_deep_agent(
-                    model=ScriptedModel(responses=[AIMessage(content="unrecorded answer")]), tools=[], checkpointer=checkpointer,
+                    model=ScriptedModel(responses=[AIMessage(content="unrecorded answer")]), tools=[], checkpointer=checkpointer
                 )
                 config = {"configurable": {"thread_id": first.thread_id}}
                 await agent.ainvoke({"messages": [{"role": "user", "content": "unrecorded input"}]}, config)
@@ -1429,14 +1673,20 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
         async with sessions.begin() as db:
             followup = await create_run(db, 1, thread_id=first.thread_id, input_text="second")
         result = await execute_text_run(
-            sessions, followup.id, ScriptedModel(responses=[AIMessage(content="should not appear")]), checkpoint_path,
-            lease_seconds=2, poll_seconds=0.1,
+            sessions,
+            followup.id,
+            ScriptedModel(responses=[AIMessage(content="should not appear")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert result.state == "failed" and result.failure_code == "checkpoint_mismatch"
         async with sessions.begin() as db:
             assert [message.role for message in await get_owned_messages(db, followup.id, 1)] == ["user"]
             assert [(event.event_type, event.state) for event in await replay_events(db, followup.id, 1)] == [
-                ("state", "queued"), ("state", "running"), ("state", "failed"),
+                ("state", "queued"),
+                ("state", "running"),
+                ("state", "failed"),
             ]
     finally:
         await engine.dispose()
@@ -1540,9 +1790,19 @@ def test_worker_rejects_unusable_checkpoint_before_claim(tmp_path: Path, monkeyp
 
 def test_approval_actions_hide_arguments() -> None:
     """验证审批事件只提取工具名和参数摘要，不保存原始秘密。"""
-    snapshot = SimpleNamespace(tasks=[SimpleNamespace(interrupts=[SimpleNamespace(value={
-        "action_requests": [{"name": "search", "args": {"token": "private-secret"}, "description": "private-secret"}],
-    })])])
+    snapshot = SimpleNamespace(
+        tasks=[
+            SimpleNamespace(
+                interrupts=[
+                    SimpleNamespace(
+                        value={
+                            "action_requests": [{"name": "search", "args": {"token": "private-secret"}, "description": "private-secret"}]
+                        }
+                    )
+                ]
+            )
+        ]
+    )
     actions = _approval_actions(snapshot)
     assert len(actions) == 1 and actions[0]["name"] == "search"
     assert len(actions[0]["arguments_hash"]) == 64
@@ -1574,6 +1834,7 @@ def test_worker_expires_queued_run_before_dispatch(tmp_path: Path, monkeypatch: 
     """独立 worker 启动后先关闭过期队列任务，不触发模型调用。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：独立 worker 启动后先关闭过期队列任务，不触发模型调用。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue-worker.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         try:
@@ -1582,9 +1843,9 @@ def test_worker_expires_queued_run_before_dispatch(tmp_path: Path, monkeypatch: 
             async with sessions.begin() as db:
                 run = await create_run(db, 1, input_text="已过期", max_queue_wait_seconds=1)
             async with sessions.begin() as db:
-                await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
-                    queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-                ))
+                await db.execute(
+                    update(AgentRun).where(AgentRun.id == run.id).values(queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+                )
             monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
             await run_worker_module.run_worker(tmp_path / "queue-checkpoint.db", once=True)
             async with sessions() as db:
@@ -1602,6 +1863,7 @@ def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytes
     """正式 worker 按运行开关注册文件工具，并在审批恢复后执行。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：正式 worker 按运行开关注册文件工具，并在审批恢复后执行。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'artifact-worker.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         storage = tmp_path / "private-artifacts"
@@ -1623,18 +1885,18 @@ def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytes
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="artifact-worker", password="not-used", role="user", status=1, is_deleted=0))
-                artifact, _ = await save_upload(
-                    UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, storage,
-                )
+                artifact, _ = await save_upload(UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, storage)
                 db.add(artifact)
                 run = await create_run(db, 1, input_text="读取我的文件", enable_text_artifact_tool=True)
                 artifact_id = artifact.id
-            responses = iter([
-                AIMessage(content="", tool_calls=[{
-                    "name": "read_text_artifact", "args": {"artifact_id": artifact_id}, "id": "read-call",
-                }]),
-                AIMessage(content="文件已读取"),
-            ])
+            responses = iter(
+                [
+                    AIMessage(
+                        content="", tool_calls=[{"name": "read_text_artifact", "args": {"artifact_id": artifact_id}, "id": "read-call"}]
+                    ),
+                    AIMessage(content="文件已读取"),
+                ]
+            )
             monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
             monkeypatch.setattr(run_worker_module, "dispatch_next_run", dispatch)
             monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: storage)
@@ -1652,11 +1914,10 @@ def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytes
                 completed = await db.get(AgentRun, run.id)
                 assert completed.state == "completed" and completed.tool_call_count == 1
                 assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == [
-                    "tool_started", "tool_completed",
+                    "tool_started",
+                    "tool_completed",
                 ]
-                assert [message.content for message in await get_owned_messages(db, run.id, 1)] == [
-                    "读取我的文件", "文件已读取",
-                ]
+                assert [message.content for message in await get_owned_messages(db, run.id, 1)] == ["读取我的文件", "文件已读取"]
         finally:
             await engine.dispose()
 
@@ -1667,6 +1928,7 @@ def test_worker_lists_owned_text_artifacts_without_approval(tmp_path: Path, monk
     """文件列表只提供元数据，仍计入工具预算并记录脱敏事件。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：文件列表只提供元数据，仍计入工具预算并记录脱敏事件。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'artifact-list.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         root = tmp_path / "private-artifacts"
@@ -1677,28 +1939,29 @@ def test_worker_lists_owned_text_artifacts_without_approval(tmp_path: Path, monk
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="artifact-list", password="not-used", role="user", status=1, is_deleted=0))
-                artifact, _ = await save_upload(
-                    UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, root,
-                )
+                artifact, _ = await save_upload(UploadFile(file=io.BytesIO(b"private note"), filename="note.txt"), 1, root)
                 db.add(artifact)
-                run = await create_run(
-                    db, 1, input_text="列出我的文本文件", enable_text_artifact_tool=True, max_tool_calls=1,
-                )
+                run = await create_run(db, 1, input_text="列出我的文本文件", enable_text_artifact_tool=True, max_tool_calls=1)
             result = await execute_text_run(
-                sessions, run.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{
-                        "name": "list_text_artifacts", "args": {}, "id": "list-call",
-                    }]),
-                    AIMessage(content="已找到文件"),
-                ]), tmp_path / "artifact-list-checkpoint.db",
+                sessions,
+                run.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(content="", tool_calls=[{"name": "list_text_artifacts", "args": {}, "id": "list-call"}]),
+                        AIMessage(content="已找到文件"),
+                    ]
+                ),
+                tmp_path / "artifact-list-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert result.state == "completed" and result.tool_call_count == 1
             async with sessions() as db:
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.tool_name) for event in events if event.tool_call_id] == [
-                    ("tool_started", "list_text_artifacts"), ("tool_completed", "list_text_artifacts"),
+                    ("tool_started", "list_text_artifacts"),
+                    ("tool_completed", "list_text_artifacts"),
                 ]
                 assert all("private note" not in str(event.content) for event in events)
                 assert (await db.get(AgentRun, run.id)).state == "completed"
@@ -1712,6 +1975,7 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
     """worker 补发已完成回答的 TXT 产物，重复扫描只产生一个引用事件。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：worker 补发已完成回答的 TXT 产物，重复扫描只产生一个引用事件。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'answer-worker.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         root = tmp_path / "answer-artifacts"
@@ -1723,8 +1987,12 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
                 db.add(Admin(id=1, username="answer-owner", password="not-used", role="user", status=1, is_deleted=0))
                 run = await create_run(db, 1, input_text="生成回答文件", publish_answer_artifact=True)
             completed = await execute_text_run(
-                sessions, run.id, ScriptedModel(responses=[AIMessage(content="最终回答")]),
-                tmp_path / "answer-checkpoint.db", lease_seconds=2, poll_seconds=0.1,
+                sessions,
+                run.id,
+                ScriptedModel(responses=[AIMessage(content="最终回答")]),
+                tmp_path / "answer-checkpoint.db",
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert completed.state == "completed"
             monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
@@ -1736,7 +2004,7 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
                 assert (root / artifacts[0].storage_key).read_text() == "最终回答"
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
-                    ("artifact_published", artifacts[0].id),
+                    ("artifact_published", artifacts[0].id)
                 ]
 
         finally:
@@ -1745,12 +2013,11 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
     asyncio.run(exercise())
 
 
-def test_model_created_text_file_is_published_with_assistant_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_model_created_text_file_is_published_with_assistant_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """模型选用文件工具时，完成的消息携带真正可下载的 TXT 产物。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：模型选用文件工具时，完成的消息携带真正可下载的 TXT 产物。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'generated-run.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         root = tmp_path / "private-artifacts"
@@ -1761,30 +2028,68 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="generated-owner", password="not-used", role="user", status=1, is_deleted=0))
-                db.add(AgentConfig(
-                    id=1, owner_id=1, name="Generated", system_prompt="", default_model_id=1,
-                    temperature=1, max_output_tokens=512, enabled=True, version=1, is_deleted=0, status=1,
-                ))
-                db.add(ProviderConnection(
-                    id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
-                    creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="tool-model", display_name="tool-model", creator_id=1,
-                    verified_capabilities=["text", "tools"], status=1, is_deleted=0,
-                ))
+                db.add(
+                    AgentConfig(
+                        id=1,
+                        owner_id=1,
+                        name="Generated",
+                        system_prompt="",
+                        default_model_id=1,
+                        temperature=1,
+                        max_output_tokens=512,
+                        enabled=True,
+                        version=1,
+                        is_deleted=0,
+                        status=1,
+                    )
+                )
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="test",
+                        name_key="test",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="tool-model",
+                        display_name="tool-model",
+                        creator_id=1,
+                        verified_capabilities=["text", "tools"],
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
                 run = await create_run(db, 1, model_id=1, input_text="总结文档并生成一个 .txt 文件", max_model_calls=2)
             result = await execute_text_run(
-                sessions, run.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{
-                        "name": "create_text_artifact",
-                        "args": {"filename": "夷陵之战摘要.txt", "content": "夷陵之战摘要\n蜀汉战败。"},
-                        "id": "create-call",
-                    }]),
-                    AIMessage(content="已生成摘要文件。"),
-                ]), tmp_path / "generated-checkpoint.db",
+                sessions,
+                run.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "create_text_artifact",
+                                    "args": {"filename": "夷陵之战摘要.txt", "content": "夷陵之战摘要\n蜀汉战败。"},
+                                    "id": "create-call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="已生成摘要文件。"),
+                    ]
+                ),
+                tmp_path / "generated-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert result.state == "completed" and result.tool_call_count == 1
             async with sessions() as db:
@@ -1792,26 +2097,46 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert len(artifacts) == 1 and artifacts[0].state == "ready"
                 assert (root / artifacts[0].storage_key).read_text() == "夷陵之战摘要\n蜀汉战败。"
                 messages = await get_owned_messages(db, run.id, 1)
-                assert await load_message_artifacts(db, 1, [messages[-1]]) == {messages[-1].id: [{
-                    "artifact_id": artifacts[0].id, "filename": "夷陵之战摘要.txt",
-                    "media_type": "text/plain", "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
-                    "available": True, "context_artifact_ids": [], "read_source_artifact_ids": [],
-                }]}
+                assert await load_message_artifacts(db, 1, [messages[-1]]) == {
+                    messages[-1].id: [
+                        {
+                            "artifact_id": artifacts[0].id,
+                            "filename": "夷陵之战摘要.txt",
+                            "media_type": "text/plain",
+                            "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
+                            "available": True,
+                            "context_artifact_ids": [],
+                            "read_source_artifact_ids": [],
+                        }
+                    ]
+                }
                 events = await replay_events(db, run.id, 1)
                 assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
-                    ("artifact_published", artifacts[0].id),
+                    ("artifact_published", artifacts[0].id)
                 ]
             async with sessions.begin() as db:
-                limited = await create_run(
-                    db, 1, model_id=1, input_text="再生成一个 TXT", max_model_calls=1,
-                )
+                limited = await create_run(db, 1, model_id=1, input_text="再生成一个 TXT", max_model_calls=1)
             stopped = await execute_text_run(
-                sessions, limited.id, ScriptedModel(responses=[AIMessage(content="", tool_calls=[{
-                    "name": "create_text_artifact",
-                    "args": {"filename": "limited.txt", "content": "partial"}, "id": "limited-call",
-                }])]), tmp_path / "limited-checkpoint.db",
+                sessions,
+                limited.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "create_text_artifact",
+                                    "args": {"filename": "limited.txt", "content": "partial"},
+                                    "id": "limited-call",
+                                }
+                            ],
+                        )
+                    ]
+                ),
+                tmp_path / "limited-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert stopped.state == "failed" and stopped.failure_code == "model_call_budget_exceeded"
             async with sessions.begin() as db:
@@ -1825,22 +2150,38 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert (await db.get(Artifact, staged.id)).state == "deleted"
             assert not (root / staged_key).exists()
             async with sessions.begin() as db:
-                db.add(AgentSession(
-                    id="10000000-0000-0000-0000-000000000001", owner_id=1, agent_id=1,
-                    thread_id="20000000-0000-0000-0000-000000000001", title="文件交付检查",
-                ))
+                db.add(
+                    AgentSession(
+                        id="10000000-0000-0000-0000-000000000001",
+                        owner_id=1,
+                        agent_id=1,
+                        thread_id="20000000-0000-0000-0000-000000000001",
+                        title="文件交付检查",
+                    )
+                )
                 await db.flush()
                 missing = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id="10000000-0000-0000-0000-000000000001",
-                    thread_id="20000000-0000-0000-0000-000000000001", agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
-                    input_text="总结文档并生成一个 .txt 文件", max_model_calls=2,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id="10000000-0000-0000-0000-000000000001",
+                    thread_id="20000000-0000-0000-0000-000000000001",
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
+                    input_text="总结文档并生成一个 .txt 文件",
+                    max_model_calls=2,
                 )
             missing_result = await execute_text_run(
-                sessions, missing.id, ScriptedModel(responses=[AIMessage(content="这是文字总结。")]),
+                sessions,
+                missing.id,
+                ScriptedModel(responses=[AIMessage(content="这是文字总结。")]),
                 tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert missing_result.state == "failed" and missing_result.failure_code == "artifact_required"
             assert missing_result.checkpoint_id is not None
@@ -1849,35 +2190,65 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert not any(event.event_type == "text_delta" for event in await replay_events(db, missing.id, 1))
             async with sessions.begin() as db:
                 continued = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
-                    thread_id=missing.thread_id, agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=missing.session_id,
+                    thread_id=missing.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
                     input_text="继续正常回答",
                 )
             continued_result = await execute_text_run(
-                sessions, continued.id, ScriptedModel(responses=[AIMessage(content="可以继续。")]),
+                sessions,
+                continued.id,
+                ScriptedModel(responses=[AIMessage(content="可以继续。")]),
                 tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert continued_result.state == "completed"
             async with sessions.begin() as db:
                 delivered = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
-                    thread_id=missing.thread_id, agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
-                    input_text="请生成一个 .txt 文件", max_model_calls=2,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=missing.session_id,
+                    thread_id=missing.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
+                    input_text="请生成一个 .txt 文件",
+                    max_model_calls=2,
                 )
             delivered_result = await execute_text_run(
-                sessions, delivered.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{
-                        "name": "create_text_artifact",
-                        "args": {"filename": "delivered.txt", "content": "交付内容"}, "id": "delivered-call",
-                    }]),
-                    AIMessage(content="文件已交付。"),
-                ]), tmp_path / "required-checkpoint.db",
+                sessions,
+                delivered.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "create_text_artifact",
+                                    "args": {"filename": "delivered.txt", "content": "交付内容"},
+                                    "id": "delivered-call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="文件已交付。"),
+                    ]
+                ),
+                tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert delivered_result.state == "completed"
             async with sessions() as db:
@@ -1886,25 +2257,47 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert any(event.event_type == "artifact_published" for event in delivered_events)
             async with sessions.begin() as db:
                 retried = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
-                    thread_id=missing.thread_id, agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
-                    input_text="请再生成一个 .txt 文件", max_model_calls=3,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=missing.session_id,
+                    thread_id=missing.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
+                    input_text="请再生成一个 .txt 文件",
+                    max_model_calls=3,
                 )
             retried_result = await execute_text_run(
-                sessions, retried.id, ScriptedModel(responses=[
-                    AIMessage(content="已生成文件，但尚未调用工具。"),
-                    AIMessage(content="", tool_calls=[{
-                        "name": "create_text_artifact",
-                        "args": {"filename": "recovered.txt", "content": "纠正后交付"}, "id": "retry-call",
-                    }]),
-                    AIMessage(content="文件已交付。"),
-                ]), tmp_path / "required-checkpoint.db",
+                sessions,
+                retried.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(content="已生成文件，但尚未调用工具。"),
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "create_text_artifact",
+                                    "args": {"filename": "recovered.txt", "content": "纠正后交付"},
+                                    "id": "retry-call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="文件已交付。"),
+                    ]
+                ),
+                tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert retried_result.state == "completed", (
-                retried_result.failure_code, retried_result.model_call_count, retried_result.tool_call_count,
+                retried_result.failure_code,
+                retried_result.model_call_count,
+                retried_result.tool_call_count,
             )
             assert retried_result.model_call_count == 3 and retried_result.tool_call_count == 1
             async with sessions() as db:
@@ -1913,48 +2306,83 @@ def test_model_created_text_file_is_published_with_assistant_message(
                 assert retried_messages[-1].content == "文件已交付。"
                 retried_events = await replay_events(db, retried.id, 1)
                 assert "已生成文件，但尚未调用工具" not in "".join(
-                    event.content or "" for event in retried_events if event.event_type == "text_delta"
+                    (event.content or "" for event in retried_events if event.event_type == "text_delta")
                 )
             async with sessions.begin() as db:
                 exhausted = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id=missing.session_id,
-                    thread_id=missing.thread_id, agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
-                    input_text="请生成一个 .txt 文件", max_model_calls=3,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id=missing.session_id,
+                    thread_id=missing.thread_id,
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
+                    input_text="请生成一个 .txt 文件",
+                    max_model_calls=3,
                 )
             exhausted_result = await execute_text_run(
-                sessions, exhausted.id, ScriptedModel(responses=[
-                    AIMessage(content="第一次只有文字。"), AIMessage(content="第二次仍只有文字。"),
-                ]), tmp_path / "required-checkpoint.db",
+                sessions,
+                exhausted.id,
+                ScriptedModel(responses=[AIMessage(content="第一次只有文字。"), AIMessage(content="第二次仍只有文字。")]),
+                tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert exhausted_result.state == "failed" and exhausted_result.failure_code == "artifact_required"
             assert exhausted_result.model_call_count == 2
             async with sessions() as db:
                 assert [item.role for item in await get_owned_messages(db, exhausted.id, 1)] == ["user"]
             async with sessions.begin() as db:
-                db.add(AgentSession(
-                    id="10000000-0000-0000-0000-000000000002", owner_id=1, agent_id=1,
-                    thread_id="20000000-0000-0000-0000-000000000002", title="格式检查",
-                ))
+                db.add(
+                    AgentSession(
+                        id="10000000-0000-0000-0000-000000000002",
+                        owner_id=1,
+                        agent_id=1,
+                        thread_id="20000000-0000-0000-0000-000000000002",
+                        title="格式检查",
+                    )
+                )
                 await db.flush()
                 wrong_format = await create_run(
-                    db, 1, agent_id=1, model_id=1, session_id="10000000-0000-0000-0000-000000000002",
-                    thread_id="20000000-0000-0000-0000-000000000002", agent_config_version=1,
-                    agent_system_prompt="", agent_temperature=Decimal("1"), agent_max_output_tokens=512,
-                    input_text="请生成一个 .docx 文件", max_model_calls=2,
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id="10000000-0000-0000-0000-000000000002",
+                    thread_id="20000000-0000-0000-0000-000000000002",
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=512,
+                    input_text="请生成一个 .docx 文件",
+                    max_model_calls=2,
                 )
             wrong_result = await execute_text_run(
-                sessions, wrong_format.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{
-                        "name": "create_text_artifact",
-                        "args": {"filename": "wrong.txt", "content": "正文"}, "id": "wrong-format-call",
-                    }]),
-                    AIMessage(content="文件已生成。"),
-                ]), tmp_path / "wrong-format-checkpoint.db",
+                sessions,
+                wrong_format.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "create_text_artifact",
+                                    "args": {"filename": "wrong.txt", "content": "正文"},
+                                    "id": "wrong-format-call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="文件已生成。"),
+                    ]
+                ),
+                tmp_path / "wrong-format-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert wrong_result.state == "failed" and wrong_result.failure_code == "artifact_required"
             async with sessions() as db:
@@ -1967,28 +2395,31 @@ def test_model_created_text_file_is_published_with_assistant_message(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize(("tool_name", "filename", "arguments", "media_type"), [
-    (
-        "create_document_artifact", "总结.docx", {"content": "# 总结\n\n夷陵之战。"},
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ),
-    (
-        "create_document_artifact", "总结.pdf", {"content": "# 总结\n\n夷陵之战。"},
-        "application/pdf",
-    ),
-    (
-        "create_spreadsheet_artifact", "统计.xlsx",
-        {"sheets": [{"name": "汇总", "rows": [["事件", "年份"], ["夷陵之战", 222]]}]},
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ),
-])
+@pytest.mark.parametrize(
+    ("tool_name", "filename", "arguments", "media_type"),
+    [
+        (
+            "create_document_artifact",
+            "总结.docx",
+            {"content": "# 总结\n\n夷陵之战。"},
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        ("create_document_artifact", "总结.pdf", {"content": "# 总结\n\n夷陵之战。"}, "application/pdf"),
+        (
+            "create_spreadsheet_artifact",
+            "统计.xlsx",
+            {"sheets": [{"name": "汇总", "rows": [["事件", "年份"], ["夷陵之战", 222]]}]},
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    ],
+)
 def test_model_created_office_file_is_published_with_assistant_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, filename: str,
-    arguments: dict, media_type: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, filename: str, arguments: dict, media_type: str
 ) -> None:
     """办公文件生成后经过相同的事务发布、事件和消息引用链路。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：办公文件生成后经过相同的事务发布、事件和消息引用链路。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'office-run.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         root = tmp_path / "private-artifacts"
@@ -1999,24 +2430,46 @@ def test_model_created_office_file_is_published_with_assistant_message(
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="office-owner", password="not-used", role="user", status=1, is_deleted=0))
-                db.add(ProviderConnection(
-                    id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
-                    creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="tool-model", display_name="tool-model", creator_id=1,
-                    verified_capabilities=["text", "tools"], status=1, is_deleted=0,
-                ))
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="test",
+                        name_key="test",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="tool-model",
+                        display_name="tool-model",
+                        creator_id=1,
+                        verified_capabilities=["text", "tools"],
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
                 run = await create_run(db, 1, model_id=1, input_text=f"生成{filename}", max_model_calls=2)
             completed = await execute_text_run(
-                sessions, run.id, ScriptedModel(responses=[
-                    AIMessage(content="", tool_calls=[{
-                        "name": tool_name, "args": {"filename": filename, **arguments}, "id": "office-call",
-                    }]),
-                    AIMessage(content="文件已生成。"),
-                ]), tmp_path / "office-checkpoint.db",
+                sessions,
+                run.id,
+                ScriptedModel(
+                    responses=[
+                        AIMessage(
+                            content="", tool_calls=[{"name": tool_name, "args": {"filename": filename, **arguments}, "id": "office-call"}]
+                        ),
+                        AIMessage(content="文件已生成。"),
+                    ]
+                ),
+                tmp_path / "office-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
-                lease_seconds=2, poll_seconds=0.1,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert completed.state == "completed" and completed.tool_call_count == 1
             async with sessions() as db:
@@ -2048,19 +2501,35 @@ def test_live_ollama_persisted_run(tmp_path: Path) -> None:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="m3-live", password="not-used", role="user", status=1, is_deleted=0))
-                db.add(ProviderConnection(
-                    id=999004, name="m3-ollama", name_key="m3-ollama", kind="ollama",
-                    base_url="http://127.0.0.1:11434/v1", creator_id=1, encrypted_credentials=None,
-                    timeout_seconds=60, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=999004, provider_id=999004, external_id="gemma4:31b-cloud", display_name="Gemma4",
-                    creator_id=1, capabilities=["text"], verified_capabilities=[], status=1, is_deleted=0,
-                ))
+                db.add(
+                    ProviderConnection(
+                        id=999004,
+                        name="m3-ollama",
+                        name_key="m3-ollama",
+                        kind="ollama",
+                        base_url="http://127.0.0.1:11434/v1",
+                        creator_id=1,
+                        encrypted_credentials=None,
+                        timeout_seconds=60,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=999004,
+                        provider_id=999004,
+                        external_id="gemma4:31b-cloud",
+                        display_name="Gemma4",
+                        creator_id=1,
+                        capabilities=["text"],
+                        verified_capabilities=[],
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
                 run = await create_run(db, 1, input_text="请用一句中文回复：你好。", model_id=999004)
-            completed = await dispatch_next_run(
-                sessions, tmp_path / "checkpoints.db", timeout_seconds=60, lease_seconds=30, poll_seconds=2,
-            )
+            completed = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", timeout_seconds=60, lease_seconds=30, poll_seconds=2)
             assert completed.state == "completed" and completed.checkpoint_id
             async with sessions.begin() as db:
                 messages = await get_owned_messages(db, run.id, 1)

@@ -33,6 +33,7 @@ ENV_FILE_MAP = {
 
 
 def normalize_env(env: Optional[str]) -> str:
+    """将环境名称或别名规范化为受支持的配置环境。"""
     value = (env or "").strip().lower()
     mapping = {
         "dev": Environment.DEVELOPMENT.value,
@@ -80,16 +81,10 @@ def resolve_env_files(env_name: str) -> List[Path]:
     if paths:
         return paths
 
-    raise FileNotFoundError(
-        f"未找到配置文件，请创建 {ENV_FILE_MAP.get(env_name)} 或设置 {ENV_FILE_ENV_VAR}"
-    )
+    raise FileNotFoundError(f"未找到配置文件，请创建 {ENV_FILE_MAP.get(env_name)} 或设置 {ENV_FILE_ENV_VAR}")
 
 
-BASE_SETTINGS_CONFIG = SettingsConfigDict(
-    env_file_encoding="utf-8",
-    case_sensitive=False,
-    extra="ignore",
-)
+BASE_SETTINGS_CONFIG = SettingsConfigDict(env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 
 
 class BaseConfig(BaseSettings):
@@ -159,44 +154,54 @@ class BaseConfig(BaseSettings):
 
     @property
     def ENV_NAME(self) -> str:
+        """返回当前环境的规范名称。"""
         return normalize_env(self.ENV)
 
     @property
     def IS_DEV(self) -> bool:
+        """判断当前是否为开发环境。"""
         return self.ENV_NAME == "development"
 
     @property
     def IS_TEST(self) -> bool:
+        """判断当前是否为测试环境。"""
         return self.ENV_NAME == "test"
 
     @property
     def IS_PROD(self) -> bool:
+        """判断当前是否为生产环境。"""
         return self.ENV_NAME == "production"
 
     @property
     def IS_STAGING(self) -> bool:
+        """判断当前是否为预发布环境。"""
         return self.ENV_NAME == "staging"
 
     @property
     def MASK_SENSITIVE_HEADERS(self) -> bool:
+        """判断当前环境是否需要屏蔽敏感请求头。"""
         return self.IS_PROD or self.IS_STAGING
 
     @property
     def redis_url(self) -> str:
+        """构建包含解码选项的 Redis 连接地址。"""
         auth = f":{self.REDIS_PWD}@" if self.REDIS_PWD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}?decode_responses={self.DECODE_RESPONSES}"
 
     @property
     def redis_transport_url(self) -> str:
+        """构建供任务传输层使用的 Redis 连接地址。"""
         auth = f":{self.REDIS_PWD}@" if self.REDIS_PWD else ""
         return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     @property
     def celery_broker_url(self) -> str:
+        """返回显式配置或基于 Redis 的任务代理地址。"""
         return self.CELERY_BROKER_URL or self.redis_transport_url
 
     @property
     def celery_result_backend(self) -> str:
+        """返回显式配置或基于 Redis 的任务结果存储地址。"""
         return self.CELERY_RESULT_BACKEND or self.redis_transport_url
 
     @property
@@ -206,11 +211,7 @@ class BaseConfig(BaseSettings):
         :return:
         """
         return "mysql://{}:{}@{}:{}/{}".format(
-            self.MYSQL_USERNAME,
-            quote_plus(self.MYSQL_PASSWORD),
-            self.MYSQL_HOSTNAME,
-            self.MYSQL_PORT,
-            self.MYSQL_DATABASE
+            self.MYSQL_USERNAME, quote_plus(self.MYSQL_PASSWORD), self.MYSQL_HOSTNAME, self.MYSQL_PORT, self.MYSQL_DATABASE
         )
 
     @property
@@ -220,11 +221,7 @@ class BaseConfig(BaseSettings):
         :return:
         """
         return "mysql+asyncmy://{}:{}@{}:{}/{}".format(
-            self.MYSQL_USERNAME,
-            quote_plus(self.MYSQL_PASSWORD),
-            self.MYSQL_HOSTNAME,
-            self.MYSQL_PORT,
-            self.MYSQL_DATABASE
+            self.MYSQL_USERNAME, quote_plus(self.MYSQL_PASSWORD), self.MYSQL_HOSTNAME, self.MYSQL_PORT, self.MYSQL_DATABASE
         )
 
     @property
@@ -238,7 +235,7 @@ class BaseConfig(BaseSettings):
             quote_plus(self.POSTGRESQL_PASSWORD),
             self.POSTGRESQL_HOSTNAME,
             self.POSTGRESQL_PORT,
-            self.POSTGRESQL_DATABASE
+            self.POSTGRESQL_DATABASE,
         )
 
     @property
@@ -252,7 +249,7 @@ class BaseConfig(BaseSettings):
             quote_plus(self.POSTGRESQL_PASSWORD),
             self.POSTGRESQL_HOSTNAME,
             self.POSTGRESQL_PORT,
-            self.POSTGRESQL_DATABASE
+            self.POSTGRESQL_DATABASE,
         )
 
     @property
@@ -284,6 +281,7 @@ class BaseConfig(BaseSettings):
 
 @lru_cache
 def get_config(env: Optional[str] = None) -> BaseConfig:
+    """按环境和本地覆盖文件加载并缓存应用配置。"""
     fast_api_env = normalize_env(env or os.getenv("FAST_API_ENV", DEFAULT_ENV))
     env_files = resolve_env_files(fast_api_env)
     logger.info(f"加载配置: env={fast_api_env}, files={[str(p) for p in env_files]}")

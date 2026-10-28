@@ -15,22 +15,19 @@ from app.models.base import Base
 
 project_config = get_config()
 
-engine = create_async_engine(
-    project_config.database_url,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    echo=project_config.DEBUG,
-)
+engine = create_async_engine(project_config.database_url, pool_pre_ping=True, pool_recycle=3600, echo=project_config.DEBUG)
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """提供请求级异步数据库会话并在结束时关闭。"""
     async with AsyncSessionLocal() as session:
         yield session
 
 
 async def init_db():
+    """创建 SQLite 所需目录并验证数据库连接与映射结构。"""
     async with engine.begin() as conn:
         result = await conn.execute(text("SELECT 1"))
         await conn.run_sync(check_mapped_schema)
@@ -53,5 +50,6 @@ def check_mapped_schema(connection) -> None:
 
 
 async def close_db():
+    """释放异步数据库引擎的连接池。"""
     await engine.dispose()
     logger.info(">>> 数据库连接池已关闭")

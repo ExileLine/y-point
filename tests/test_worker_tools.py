@@ -31,6 +31,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
     """工具只读取当前有效用户的小型文本文件。"""
 
     async def exercise() -> None:
+        """在隔离环境执行异步场景：工具只读取当前有效用户的小型文本文件。"""
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'worker-tools.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         root = tmp_path / "private-artifacts"
@@ -42,14 +43,30 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="tool-owner", password="not-used", role="user", status=1, is_deleted=0))
                 db.add(Admin(id=2, username="other-owner", password="not-used", role="user", status=1, is_deleted=0))
-                db.add(ProviderConnection(
-                    id=1, name="test", name_key="test", kind="ollama", base_url="http://localhost:11434/v1",
-                    creator_id=1, status=1, is_deleted=0,
-                ))
-                db.add(ModelCatalog(
-                    id=1, provider_id=1, external_id="tool-model", display_name="tool-model", creator_id=1,
-                    verified_capabilities=["tools"], status=1, is_deleted=0,
-                ))
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="test",
+                        name_key="test",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="tool-model",
+                        display_name="tool-model",
+                        creator_id=1,
+                        verified_capabilities=["tools"],
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
                 owned, _ = await save_upload(UploadFile(file=io.BytesIO(b"owned text"), filename="owned.txt"), 1, root)
                 foreign, _ = await save_upload(UploadFile(file=io.BytesIO(b"foreign text"), filename="foreign.txt"), 2, root)
                 large, _ = await save_upload(UploadFile(file=io.BytesIO(b"x" * 65537), filename="large.txt"), 1, root)
@@ -64,24 +81,21 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 tools, interrupt_on = await resolver(db, enabled)
             assert interrupt_on == {"read_text_artifact": True}
             assert {item.name for item in tools} == {
-                "list_text_artifacts", "read_text_artifact", "create_text_artifact",
-                "create_document_artifact", "create_spreadsheet_artifact",
+                "list_text_artifacts",
+                "read_text_artifact",
+                "create_text_artifact",
+                "create_document_artifact",
+                "create_spreadsheet_artifact",
             }
-            list_tool, read_tool = (next(item for item in tools if item.name == name) for name in (
-                "list_text_artifacts", "read_text_artifact",
-            ))
-            assert json.loads(await list_tool.ainvoke({})) == [{
-                "artifact_id": owned.id, "filename": "owned.txt", "byte_size": 10,
-            }]
+            list_tool, read_tool = (
+                next(item for item in tools if item.name == name) for name in ("list_text_artifacts", "read_text_artifact")
+            )
+            assert json.loads(await list_tool.ainvoke({})) == [{"artifact_id": owned.id, "filename": "owned.txt", "byte_size": 10}]
             result = json.loads(await read_tool.ainvoke({"artifact_id": owned.id}))
             assert result == {"filename": "owned.txt", "content": "owned text"}
             create_tool = next(item for item in tools if item.name == "create_text_artifact")
-            created = json.loads(await create_tool.ainvoke({
-                "filename": "summary.txt", "content": "generated summary",
-            }))
-            assert json.loads(await create_tool.ainvoke({
-                "filename": "summary.txt", "content": "generated summary",
-            })) == created
+            created = json.loads(await create_tool.ainvoke({"filename": "summary.txt", "content": "generated summary"}))
+            assert json.loads(await create_tool.ainvoke({"filename": "summary.txt", "content": "generated summary"})) == created
             with pytest.raises(ValueError, match="冲突"):
                 await create_tool.ainvoke({"filename": "summary.txt", "content": "different"})
             async with sessions() as db:
@@ -89,14 +103,13 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 assert staged.state == "pending" and staged.run_id == enabled.id
                 assert (root / staged.storage_key).read_text() == "generated summary"
             doc_tool = next(item for item in tools if item.name == "create_document_artifact")
-            pdf = json.loads(await doc_tool.ainvoke({
-                "filename": "summary.pdf", "content": "# Summary\n\nGenerated summary",
-            }))
+            pdf = json.loads(await doc_tool.ainvoke({"filename": "summary.pdf", "content": "# Summary\n\nGenerated summary"}))
             sheet_tool = next(item for item in tools if item.name == "create_spreadsheet_artifact")
-            xlsx = json.loads(await sheet_tool.ainvoke({
-                "filename": "summary.xlsx",
-                "sheets": [{"name": "Summary", "rows": [["Item", "Value"], ["Result", "generated"]]}],
-            }))
+            xlsx = json.loads(
+                await sheet_tool.ainvoke(
+                    {"filename": "summary.xlsx", "sheets": [{"name": "Summary", "rows": [["Item", "Value"], ["Result", "generated"]]}]}
+                )
+            )
             async with sessions() as db:
                 assert (await db.get(Artifact, pdf["artifact_id"])).media_type == "application/pdf"
                 assert (await db.get(Artifact, xlsx["artifact_id"])).media_type == (
@@ -149,9 +162,11 @@ def test_tool_registry_rejects_unsafe_declarations() -> None:
     registry = ToolRegistry()
 
     def factory(context):
+        """实例化测试工具，并复用统一执行上下文。"""
         return None
 
     def enabled(run):
+        """按测试状态判断当前运行是否允许启用工具。"""
         return True
 
     registry.register(ToolSpec("owned_read", factory, enabled, False, "read", "safe"))

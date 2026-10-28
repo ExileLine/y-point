@@ -16,8 +16,15 @@ from app.models.agent_config import AgentConfig
 from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
 from app.schemas.provider import (
-    CapabilityTestIn, CapabilityTestOut, ModelCallOut, ModelCallPageOut, ModelCreateIn,
-    ModelImportIn, ModelImportOut, ModelOut, ModelUpdateIn,
+    CapabilityTestIn,
+    CapabilityTestOut,
+    ModelCallOut,
+    ModelCallPageOut,
+    ModelCreateIn,
+    ModelImportIn,
+    ModelImportOut,
+    ModelOut,
+    ModelUpdateIn,
 )
 from app.services.catalog import commit_catalog, flush_catalog, get_model_or_404, get_provider_or_404
 from app.services.capability_probe import probe_capability
@@ -33,11 +40,19 @@ async def create_model(body: ModelCreateIn, actor: Admin = Depends(require_admin
     """在指定供应商连接下登记模型及可选的能力信息。"""
     await get_provider_or_404(db, body.provider_id)
     model = ModelCatalog(
-        provider_id=body.provider_id, external_id=body.external_id.strip(), display_name=body.display_name.strip(),
-        capabilities=list(dict.fromkeys(body.capabilities)), capabilities_verified=False,
-        context_window=body.context_window, input_price=body.input_price, output_price=body.output_price,
+        provider_id=body.provider_id,
+        external_id=body.external_id.strip(),
+        display_name=body.display_name.strip(),
+        capabilities=list(dict.fromkeys(body.capabilities)),
+        capabilities_verified=False,
+        context_window=body.context_window,
+        input_price=body.input_price,
+        output_price=body.output_price,
         price_currency=body.price_currency,
-        is_default=False, status=body.status, is_deleted=0, creator_id=actor.id,
+        is_default=False,
+        status=body.status,
+        is_deleted=0,
+        creator_id=actor.id,
     )
     db.add(model)
     await flush_catalog(db)
@@ -54,9 +69,11 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
     external_ids = [item.external_id for item in body.models]
     if len(external_ids) != len(set(external_ids)):
         raise CustomException(status_code=400, custom_code=10005, detail="请求中包含重复模型 ID")
-    existing = (await db.scalars(
-        select(ModelCatalog).where(ModelCatalog.provider_id == body.provider_id, ModelCatalog.external_id.in_(external_ids))
-    )).all()
+    existing = (
+        await db.scalars(
+            select(ModelCatalog).where(ModelCatalog.provider_id == body.provider_id, ModelCatalog.external_id.in_(external_ids))
+        )
+    ).all()
     existing_by_id = {model.external_id: model for model in existing}
     created: list[ModelCatalog] = []
     skipped_existing: list[str] = []
@@ -121,11 +138,19 @@ async def test_model(model_id: int, actor: Admin = Depends(require_admin), db: A
         raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能测试")
     result = await probe_model(model, provider)
     record = ModelCallRecord(
-        actor_id=actor.id, provider_id=provider.id, model_id=model.id, external_id=model.external_id,
-        call_type="text_probe", available=result.available, latency_ms=result.latency_ms,
-        upstream_status_code=result.upstream_status_code, failure=result.failure,
-        input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-        estimated_cost=result.estimated_cost, price_currency=result.price_currency,
+        actor_id=actor.id,
+        provider_id=provider.id,
+        model_id=model.id,
+        external_id=model.external_id,
+        call_type="text_probe",
+        available=result.available,
+        latency_ms=result.latency_ms,
+        upstream_status_code=result.upstream_status_code,
+        failure=result.failure,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost,
+        price_currency=result.price_currency,
     )
     db.add(record)
     await db.flush()
@@ -137,7 +162,7 @@ async def test_model(model_id: int, actor: Admin = Depends(require_admin), db: A
 
 @router.post("/{model_id}/capabilities/test", summary="验证模型的指定能力")
 async def test_model_capability(
-    model_id: int, body: CapabilityTestIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session),
+    model_id: int, body: CapabilityTestIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """执行一次指定能力的实际调用，记录安全结果并维护逐项验证状态。"""
     model = await get_model_or_404(db, model_id)
@@ -148,11 +173,19 @@ async def test_model_capability(
     provider_config = (provider.base_url, provider.encrypted_credentials, provider.api_version)
     result = await probe_capability(model, provider, body.capability)
     record = ModelCallRecord(
-        actor_id=actor.id, provider_id=provider.id, model_id=model.id, external_id=external_id,
-        call_type=f"{body.capability}_probe", available=result.available, latency_ms=result.latency_ms,
-        upstream_status_code=result.upstream_status_code, failure=result.failure,
-        input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-        estimated_cost=result.estimated_cost, price_currency=result.price_currency,
+        actor_id=actor.id,
+        provider_id=provider.id,
+        model_id=model.id,
+        external_id=external_id,
+        call_type=f"{body.capability}_probe",
+        available=result.available,
+        latency_ms=result.latency_ms,
+        upstream_status_code=result.upstream_status_code,
+        failure=result.failure,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        estimated_cost=result.estimated_cost,
+        price_currency=result.price_currency,
     )
     db.add(record)
     await db.flush()
@@ -160,7 +193,10 @@ async def test_model_capability(
     await db.refresh(model)
     await db.refresh(provider)
     if (
-        model.status == 1 and provider.status == 1 and model.is_deleted == 0 and provider.is_deleted == 0
+        model.status == 1
+        and provider.status == 1
+        and model.is_deleted == 0
+        and provider.is_deleted == 0
         and model.external_id == external_id
         and (provider.base_url, provider.encrypted_credentials, provider.api_version) == provider_config
     ):
@@ -180,9 +216,11 @@ async def test_model_capability(
 
 @router.get("/{model_id}/calls", summary="查询模型调用记录")
 async def list_model_calls(
-    model_id: int, page: int = Query(default=1, ge=1, description="页码"),
+    model_id: int,
+    page: int = Query(default=1, ge=1, description="页码"),
     size: int = Query(default=20, ge=1, le=200, description="每页数量"),
-    actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session),
+    actor: Admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """按时间倒序查询指定模型的脱敏调用记录，保留已删除模型的历史。"""
     model = await db.get(ModelCatalog, model_id)
@@ -190,9 +228,9 @@ async def list_model_calls(
         raise CustomException(status_code=404, custom_code=10002, detail="模型不存在")
     condition = ModelCallRecord.model_id == model_id
     total = await db.scalar(select(func.count()).select_from(ModelCallRecord).where(condition))
-    records = (await db.scalars(
-        select(ModelCallRecord).where(condition).order_by(ModelCallRecord.id.desc()).offset((page - 1) * size).limit(size)
-    )).all()
+    records = (
+        await db.scalars(select(ModelCallRecord).where(condition).order_by(ModelCallRecord.id.desc()).offset((page - 1) * size).limit(size))
+    ).all()
     result = ModelCallPageOut(records=[ModelCallOut.model_validate(record) for record in records], page=page, size=size, total=total or 0)
     return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
@@ -206,9 +244,9 @@ async def update_model(
     model = await get_model_or_404(db, model_id)
     fields = body.model_fields_set
     if ("status" in fields and body.status == 0) or fields & {"external_id", "capabilities", "context_window"}:
-        linked = await db.scalar(select(AgentConfig.id).where(
-            AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0,
-        ).limit(1))
+        linked = await db.scalar(
+            select(AgentConfig.id).where(AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0).limit(1)
+        )
         if linked is not None:
             raise CustomException(status_code=409, custom_code=10005, detail="模型仍被 Agent 引用，请先更换其默认模型")
     for name in ("external_id", "display_name", "context_window", "input_price", "output_price", "price_currency", "status"):
@@ -240,9 +278,7 @@ async def delete_model(model_id: int, actor: Admin = Depends(require_admin), db:
     """逻辑删除模型并清除默认标记。"""
     await db.scalar(select(ModelCatalog.id).where(ModelCatalog.id == model_id).with_for_update())
     model = await get_model_or_404(db, model_id)
-    linked = await db.scalar(select(AgentConfig.id).where(
-        AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0,
-    ).limit(1))
+    linked = await db.scalar(select(AgentConfig.id).where(AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0).limit(1))
     if linked is not None:
         raise CustomException(status_code=409, custom_code=10005, detail="模型仍被 Agent 引用，请先更换其默认模型")
     model.is_deleted = 1

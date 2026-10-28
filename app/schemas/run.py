@@ -20,32 +20,31 @@ class RunCreateIn(BaseModel):
     model_id: int = Field(gt=0, description="本次运行使用的可选模型 ID", examples=[1])
     model_timeout_seconds: int = Field(default=120, ge=1, le=120, description="本轮模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(default=120, ge=1, le=120, description="单次工具执行最长秒数", examples=[30])
-    max_queue_wait_seconds: int | None = Field(
-        default=None, ge=1, le=86400, description="排队等待最长秒数；为空时不限制", examples=[300],
-    )
+    max_queue_wait_seconds: int | None = Field(default=None, ge=1, le=86400, description="排队等待最长秒数；为空时不限制", examples=[300])
     enable_text_artifact_tool: bool = Field(
-        default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False],
+        default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False]
     )
     publish_answer_artifact: bool = Field(default=False, description="是否将最终回答另存为 TXT 产物", examples=[False])
-    max_model_calls: int | None = Field(
-        default=None, ge=1, le=100, description="本次运行最多可开始的模型调用次数", examples=[3],
-    )
-    max_total_tokens: int | None = Field(
-        default=None, ge=1, le=10000000, description="本次运行上游报告的总 Token 上限", examples=[10000],
-    )
+    max_model_calls: int | None = Field(default=None, ge=1, le=100, description="本次运行最多可开始的模型调用次数", examples=[3])
+    max_total_tokens: int | None = Field(default=None, ge=1, le=10000000, description="本次运行上游报告的总 Token 上限", examples=[10000])
     max_estimated_cost: Decimal | None = Field(
-        default=None, ge=Decimal("0.000001"), max_digits=18, decimal_places=6,
-        description="本次运行按模型配置单价估算的成本上限，币种由模型决定", examples=["0.010000"],
+        default=None,
+        ge=Decimal("0.000001"),
+        max_digits=18,
+        decimal_places=6,
+        description="本次运行按模型配置单价估算的成本上限，币种由模型决定",
+        examples=["0.010000"],
     )
-    max_tool_calls: int | None = Field(
-        default=None, ge=1, le=100, description="本次运行最多可开始的工具调用次数", examples=[5],
-    )
+    max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="本次运行最多可开始的工具调用次数", examples=[5])
     input_text: str = Field(min_length=1, max_length=32768, description="用户输入的文本", examples=["请介绍一下你自己"])
     request_key: str | None = Field(
         default=None, min_length=1, max_length=128, description="重复提交时复用运行的幂等键", examples=["chat-001"]
     )
     thread_id: str | None = Field(
-        default=None, min_length=1, max_length=36, description="续接已有运行的检查点线程 ID",
+        default=None,
+        min_length=1,
+        max_length=36,
+        description="续接已有运行的检查点线程 ID",
         examples=["550e8400-e29b-41d4-a716-446655440000"],
     )
 
@@ -90,22 +89,50 @@ class RunEventOut(BaseModel):
     state: str = Field(description="事件发生后的运行状态", examples=["running"])
     failure_code: str | None = Field(description="脱敏故障类别", examples=["model_error"])
     content: str | None = Field(description="可公开的模型文本增量", examples=["你好"])
-    tool_call_id: str | None = Field(
-        description="服务端生成的工具调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
-    )
+    tool_call_id: str | None = Field(description="服务端生成的工具调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     tool_name: str | None = Field(description="已授权工具名称，不含参数和结果", examples=["web_search"])
-    artifact_id: str | None = Field(
-        description="已发布生成产物的授权引用 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
-    )
+    artifact_id: str | None = Field(description="已发布生成产物的授权引用 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     create_time: datetime = Field(description="事件创建时间", examples=["2026-10-22T22:00:00"])
 
 
 class RunSnapshotOut(BaseModel):
-    run: RunOut = Field(description="读取快照时的运行状态")
-    events: list[RunEventOut] = Field(description="本页持久化事件")
-    latest_sequence: int = Field(description="快照固定的最后事件序号")
-    next_after: int = Field(description="下一页或 SSE 续传使用的游标")
-    has_more: bool = Field(description="快照上界内是否还有未读取事件")
+    run: RunOut = Field(
+        description="读取快照时的运行状态",
+        examples=[
+            {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "model_id": 1,
+                "agent_id": 1,
+                "session_id": "550e8400-e29b-41d4-a716-446655440001",
+                "agent_config_version": 1,
+                "model_timeout_seconds": 60,
+                "tool_timeout_seconds": 30,
+                "max_queue_wait_seconds": 300,
+                "queue_expires_at": "2026-10-22T22:05:00",
+                "enable_text_artifact_tool": False,
+                "publish_answer_artifact": False,
+                "max_model_calls": 3,
+                "model_call_count": 1,
+                "max_total_tokens": 10000,
+                "reported_total_tokens": 1250,
+                "max_estimated_cost": "0.010000",
+                "estimated_cost": "0.000250000000",
+                "cost_currency": "USD",
+                "max_tool_calls": 5,
+                "tool_call_count": 0,
+                "thread_id": "550e8400-e29b-41d4-a716-446655440002",
+                "state": "running",
+                "event_seq": 1,
+                "failure_code": None,
+                "create_time": "2026-10-22T22:00:00",
+                "update_time": "2026-10-22T22:01:00",
+            }
+        ],
+    )
+    events: list[RunEventOut] = Field(description="本页持久化事件", examples=[[]])
+    latest_sequence: int = Field(description="快照固定的最后事件序号", examples=[3])
+    next_after: int = Field(description="下一页或 SSE 续传使用的游标", examples=[3])
+    has_more: bool = Field(description="快照上界内是否还有未读取事件", examples=[False])
 
 
 class RunMessageOut(BaseModel):
@@ -114,8 +141,8 @@ class RunMessageOut(BaseModel):
     role: Literal["user", "assistant"] = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="用户输入或最终可见回答", examples=["你好，我可以帮助你。"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-22T22:00:00"])
-    attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件")
-    artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物")
+    attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])
+    artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物", examples=[[]])
 
 
 class ApprovalDecisionIn(BaseModel):
@@ -127,9 +154,7 @@ class ApprovalDecisionIn(BaseModel):
 class ApprovalActionOut(BaseModel):
     name: str = Field(description="待审批工具名称", examples=["web_search"])
     arguments_hash: str = Field(description="工具参数的服务端 HMAC-SHA256 摘要", examples=["a" * 64])
-    resource_id: str | None = Field(
-        default=None, description="可安全展示的目标文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"],
-    )
+    resource_id: str | None = Field(default=None, description="可安全展示的目标文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     resource_name: str | None = Field(default=None, description="当前仍归属审批人的目标文件名", examples=["notes.txt"])
 
 

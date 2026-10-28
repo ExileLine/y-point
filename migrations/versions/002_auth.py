@@ -64,7 +64,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "yp_audit_event",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("actor_id", sa.Integer(), comment="操作用户 ID"),
         sa.Column("target_id", sa.Integer(), comment="目标用户 ID"),
         sa.Column("action", sa.String(64), nullable=False, comment="操作类型"),

@@ -22,7 +22,7 @@ def upgrade() -> None:
     """新增不使用外键的可见消息表。"""
     op.create_table(
         "yp_agent_run_message",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("run_id", sa.String(36), nullable=False, comment="所属运行 ID"),
         sa.Column("owner_id", sa.Integer(), nullable=False, comment="消息所属用户 ID"),
         sa.Column("role", sa.String(16), nullable=False, comment="消息角色：user 或 assistant"),

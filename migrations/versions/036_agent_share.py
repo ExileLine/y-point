@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 14:25:00
+# @Author  : yangyuexiong
+# @File    : 036_agent_share.py
+
 """新增 Agent 指定用户授权。
 
 Revision ID: 036
@@ -14,9 +19,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    """应用本版迁移：新增 Agent 指定用户授权。"""
     op.create_table(
         "yp_agent_share",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("agent_id", sa.Integer(), nullable=False, comment="被共享智能体 ID"),
         sa.Column("user_id", sa.Integer(), nullable=False, comment="获授权用户 ID"),
         sa.Column("create_time", sa.DateTime(timezone=True), nullable=False, comment="创建时间"),
@@ -33,6 +39,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """回退本版迁移：新增 Agent 指定用户授权。"""
     op.drop_index("ix_yp_agent_share_user_id", table_name="yp_agent_share")
     op.drop_index("ix_yp_agent_share_agent_id", table_name="yp_agent_share")
     op.drop_table("yp_agent_share")

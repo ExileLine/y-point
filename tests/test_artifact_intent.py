@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 08:49:41
+# @Author  : yangyuexiong
+# @File    : test_artifact_intent.py
+
 """明确文件交付请求的判定边界。"""
 
 import pytest
@@ -5,23 +10,27 @@ import pytest
 from app.services.artifact_intent import requested_artifact_suffixes
 
 
-@pytest.mark.parametrize(("text", "expected"), [
-    ("帮我总结这个文档然后生成一个.txt文档", frozenset({".txt"})),
-    ("请生成一份 Word 文档和 PDF 文件", frozenset({".docx", ".pdf"})),
-    ("将结果导出为 Excel 表格", frozenset({".xlsx"})),
-    ("根据材料生成一个可下载的报告", frozenset()),
-    ("Create a report from the attached notes", frozenset()),
-    ("请总结这个 PDF 文件", None),
-    ("读取刚才生成的文件，再告诉我标题", None),
-    ("根据刚才生成的文件，再生成一份 PDF", frozenset({".pdf"})),
-    ("请告诉我如何生成一个 docx 文件", None),
-    ("不要生成 txt 文件，只回答问题", None),
-    ("请整理成一份 PDF 报告", frozenset({".pdf"})),
-    ("输出一份可下载的报告", frozenset()),
-    ("帮我做一份 Excel 表格", frozenset({".xlsx"})),
-    ("请给我一份 DOCX 文件", frozenset({".docx"})),
-    ("把这份 PDF 转换为 Word 文档", frozenset({".docx"})),
-    ("不要输出为 PDF，只给文字", None),
-])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("帮我总结这个文档然后生成一个.txt文档", frozenset({".txt"})),
+        ("请生成一份 Word 文档和 PDF 文件", frozenset({".docx", ".pdf"})),
+        ("将结果导出为 Excel 表格", frozenset({".xlsx"})),
+        ("根据材料生成一个可下载的报告", frozenset()),
+        ("Create a report from the attached notes", frozenset()),
+        ("请总结这个 PDF 文件", None),
+        ("读取刚才生成的文件，再告诉我标题", None),
+        ("根据刚才生成的文件，再生成一份 PDF", frozenset({".pdf"})),
+        ("请告诉我如何生成一个 docx 文件", None),
+        ("不要生成 txt 文件，只回答问题", None),
+        ("请整理成一份 PDF 报告", frozenset({".pdf"})),
+        ("输出一份可下载的报告", frozenset()),
+        ("帮我做一份 Excel 表格", frozenset({".xlsx"})),
+        ("请给我一份 DOCX 文件", frozenset({".docx"})),
+        ("把这份 PDF 转换为 Word 文档", frozenset({".docx"})),
+        ("不要输出为 PDF，只给文字", None),
+    ],
+)
 def test_requested_artifact_suffixes(text: str, expected: frozenset[str] | None) -> None:
+    """验证自然语言文件请求的格式识别与否定语句排除。"""
     assert requested_artifact_suffixes(text) == expected

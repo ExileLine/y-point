@@ -23,6 +23,7 @@ project_config = get_config()
 
 
 def _log_startup_info() -> None:
+    """记录应用启动时的环境、进程和线程信息。"""
     fast_api_env = os.getenv("FAST_API_ENV", "development")
     logger.info(">>> startup")
     logger.info("<" + "-" * 66 + ">")
@@ -37,11 +38,13 @@ def _log_startup_info() -> None:
 
 
 async def _init_db() -> None:
+    """初始化数据库连接池并检查迁移结构。"""
     logger.info(">>> 数据库连接池初始化")
     await init_db()
 
 
 async def _init_redis() -> None:
+    """初始化 Redis 连接池并记录连接状态。"""
     logger.info(">>> Redis连接池初始化")
     await create_redis_connection_pool()
     logger.debug(f"redis_pool: {redis_module.redis_pool!r}")
@@ -49,11 +52,13 @@ async def _init_redis() -> None:
 
 
 async def _init_scheduler() -> None:
+    """加载并启动定时任务调度器。"""
     await scheduler_init()
     logger.info(">>> 定时任务初始化")
 
 
 async def _shutdown_scheduler() -> None:
+    """关闭已启动的调度器并记录关闭异常。"""
     if getattr(scheduler, "running", False):
         try:
             with suppress(SchedulerNotRunningError):
@@ -66,6 +71,7 @@ async def _shutdown_scheduler() -> None:
 
 
 async def _shutdown_redis() -> None:
+    """关闭 Redis 连接池并记录关闭异常。"""
     try:
         await close_redis_connection_pool()
         logger.info(">>> Redis 连接池已关闭")
@@ -74,6 +80,7 @@ async def _shutdown_redis() -> None:
 
 
 async def _shutdown_db() -> None:
+    """关闭数据库连接池并记录关闭异常。"""
     try:
         await close_db()
         logger.info(">>> 数据库连接已关闭")

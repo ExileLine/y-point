@@ -39,8 +39,7 @@ async def _heartbeat_loop(worker_id: str, heartbeat_seconds: float) -> None:
 
 
 async def run_worker(
-    checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5,
-    artifact_path: Path | None = None,
+    checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5, artifact_path: Path | None = None
 ) -> None:
     """循环回收遗留租约并执行最早的排队任务。"""
     if idle_seconds <= 0 or not 0 < heartbeat_seconds < WORKER_STALE_SECONDS / 2:
@@ -86,7 +85,7 @@ async def run_worker(
                     except Exception as exc:
                         logger.error("文件清理失败：{}", type(exc).__name__)
                 run = await dispatch_next_run(
-                    AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal),
+                    AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal)
                 )
                 if run is not None:
                     logger.info("运行 {} 结束，状态 {}", run.id, run.state)
@@ -130,7 +129,9 @@ def main() -> None:
     """解析检查点文件位置并启动独立执行进程。"""
     parser = argparse.ArgumentParser(description="运行 M3 持久化文本任务执行器")
     parser.add_argument(
-        "--checkpoint-db", type=Path, default=DEFAULT_CHECKPOINT_PATH,
+        "--checkpoint-db",
+        type=Path,
+        default=DEFAULT_CHECKPOINT_PATH,
         help=f"SQLite 后端使用的私有检查点文件（默认：{DEFAULT_CHECKPOINT_PATH}）",
     )
     parser.add_argument("--once", action="store_true", help="只扫描并处理一轮")

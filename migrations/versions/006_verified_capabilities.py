@@ -25,10 +25,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("verified_capabilities", sa.JSON(), nullable=True, comment="实际探测通过的模型能力"))
     op.execute(sa.text("UPDATE yp_model_catalog SET verified_capabilities = '[]' WHERE verified_capabilities IS NULL"))
     with op.batch_alter_table("yp_model_catalog") as batch_op:
-        batch_op.alter_column(
-            "verified_capabilities", existing_type=sa.JSON(), nullable=False,
-            existing_comment="实际探测通过的模型能力",
-        )
+        batch_op.alter_column("verified_capabilities", existing_type=sa.JSON(), nullable=False, existing_comment="实际探测通过的模型能力")
 
 
 def downgrade() -> None:

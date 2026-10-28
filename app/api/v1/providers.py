@@ -25,35 +25,49 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 
 PROVIDER_KINDS = [
     ProviderKindOut(
-        kind="openai_compatible", display_name="OpenAI 兼容接口", required_fields=["name", "kind", "base_url"],
+        kind="openai_compatible",
+        display_name="OpenAI 兼容接口",
+        required_fields=["name", "kind", "base_url"],
         optional_fields=["api_key", "custom_headers", "timeout_seconds", "remark", "status"],
     ),
     ProviderKindOut(
-        kind="openai", display_name="OpenAI", required_fields=["name", "kind", "base_url", "api_key"],
+        kind="openai",
+        display_name="OpenAI",
+        required_fields=["name", "kind", "base_url", "api_key"],
         optional_fields=["custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://api.openai.com/v1",
     ),
     ProviderKindOut(
-        kind="anthropic", display_name="Anthropic", required_fields=["name", "kind", "base_url", "api_key"],
+        kind="anthropic",
+        display_name="Anthropic",
+        required_fields=["name", "kind", "base_url", "api_key"],
         optional_fields=["api_version", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://api.anthropic.com/v1",
     ),
     ProviderKindOut(
-        kind="ollama", display_name="Ollama", required_fields=["name", "kind", "base_url"],
+        kind="ollama",
+        display_name="Ollama",
+        required_fields=["name", "kind", "base_url"],
         optional_fields=["api_key", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="http://127.0.0.1:11434/v1",
     ),
     ProviderKindOut(
-        kind="azure_openai", display_name="Azure OpenAI", required_fields=["name", "kind", "base_url", "api_key", "api_version"],
+        kind="azure_openai",
+        display_name="Azure OpenAI",
+        required_fields=["name", "kind", "base_url", "api_key", "api_version"],
         optional_fields=["custom_headers", "timeout_seconds", "remark", "status"],
     ),
     ProviderKindOut(
-        kind="gemini", display_name="Gemini Developer API", required_fields=["name", "kind", "api_key"],
+        kind="gemini",
+        display_name="Gemini Developer API",
+        required_fields=["name", "kind", "api_key"],
         optional_fields=["base_url", "api_version", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://generativelanguage.googleapis.com",
     ),
     ProviderKindOut(
-        kind="bedrock", display_name="AWS Bedrock", required_fields=["name", "kind", "region"],
+        kind="bedrock",
+        display_name="AWS Bedrock",
+        required_fields=["name", "kind", "region"],
         optional_fields=["timeout_seconds", "remark", "status"],
     ),
 ]
@@ -76,10 +90,17 @@ async def create_provider(body: ProviderCreateIn, actor: Admin = Depends(require
     if body.kind == "gemini" and body.api_version not in {None, "v1", "v1beta"}:
         raise CustomException(status_code=400, custom_code=10005, detail="Gemini 接口版本只支持 v1 或 v1beta")
     provider = ProviderConnection(
-        name=name, name_key=name.lower(), kind=body.kind,
+        name=name,
+        name_key=name.lower(),
+        kind=body.kind,
         base_url=normalize_base_url(body.base_url, kind=body.kind, region=body.region),
-        api_version=body.api_version, region=body.region, timeout_seconds=body.timeout_seconds,
-        remark=body.remark, status=body.status, is_deleted=0, creator_id=actor.id,
+        api_version=body.api_version,
+        region=body.region,
+        timeout_seconds=body.timeout_seconds,
+        remark=body.remark,
+        status=body.status,
+        is_deleted=0,
+        creator_id=actor.id,
     )
     set_provider_credentials(provider, body)
     if body.kind in {"azure_openai", "gemini"} and not provider.has_api_key:
@@ -116,17 +137,19 @@ async def update_provider(
     """更新连接配置，未传入的凭据保持原值。"""
     provider = await get_provider_or_404(db, provider_id)
     fields = body.model_fields_set
-    if ("status" in fields and body.status == 0) or fields & {
-        "base_url", "api_key", "custom_headers", "api_version", "region",
-    }:
-        await db.scalars(select(ModelCatalog.id).where(
-            ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0,
-        ).order_by(ModelCatalog.id).with_for_update())
-        linked = await db.scalar(select(AgentConfig.id).join(
-            ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id,
-        ).where(
-            ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0,
-        ).limit(1))
+    if "status" in fields and body.status == 0 or fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
+        await db.scalars(
+            select(ModelCatalog.id)
+            .where(ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0)
+            .order_by(ModelCatalog.id)
+            .with_for_update()
+        )
+        linked = await db.scalar(
+            select(AgentConfig.id)
+            .join(ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id)
+            .where(ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0)
+            .limit(1)
+        )
         if linked is not None:
             raise CustomException(status_code=409, custom_code=10005, detail="连接仍被 Agent 引用，请先更换其默认模型")
     for name in ("name", "api_version", "region", "timeout_seconds", "remark", "status"):
@@ -155,7 +178,8 @@ async def update_provider(
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
         await db.execute(
-            update(ModelCatalog).where(ModelCatalog.provider_id == provider.id)
+            update(ModelCatalog)
+            .where(ModelCatalog.provider_id == provider.id)
             .values(verified_capabilities=[], capabilities_verified=False)
         )
     if provider.status == 0:
@@ -197,13 +221,13 @@ async def discover_provider_models(provider_id: int, actor: Admin = Depends(requ
     probe = await probe_provider(provider)
     existing_ids: set[str] = set()
     if probe.models:
-        existing_ids = set(await db.scalars(
-            select(ModelCatalog.external_id).where(
-                ModelCatalog.provider_id == provider_id,
-                ModelCatalog.external_id.in_(probe.models),
-                ModelCatalog.is_deleted == 0,
+        existing_ids = set(
+            await db.scalars(
+                select(ModelCatalog.external_id).where(
+                    ModelCatalog.provider_id == provider_id, ModelCatalog.external_id.in_(probe.models), ModelCatalog.is_deleted == 0
+                )
             )
-        ))
+        )
     result = ModelDiscoveryOut(
         available=probe.available,
         latency_ms=probe.latency_ms,
@@ -212,9 +236,7 @@ async def discover_provider_models(provider_id: int, actor: Admin = Depends(requ
         failure=probe.failure,
         models=[
             DiscoveredModelOut(
-                external_id=model_id,
-                display_name=probe.model_names.get(model_id, model_id)[:128],
-                already_added=model_id in existing_ids,
+                external_id=model_id, display_name=probe.model_names.get(model_id, model_id)[:128], already_added=model_id in existing_ids
             )
             for model_id in probe.models
         ],

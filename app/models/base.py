@@ -24,11 +24,13 @@ TZ = pytz.timezone("Asia/Shanghai")
 
 
 def camel_to_snake(name: str) -> str:
+    """将驼峰名称转换为下划线分隔的小写名称。"""
     s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 def shanghai_now(*, naive: bool = False) -> datetime:
+    """返回上海当前时间，可按需去除时区信息。"""
     dt = datetime.now(TZ)
     if naive:
         return dt.replace(tzinfo=None)
@@ -36,6 +38,7 @@ def shanghai_now(*, naive: bool = False) -> datetime:
 
 
 def shanghai_datetime(value: Optional[datetime], *, naive: bool = False) -> Optional[datetime]:
+    """将时间统一到上海时区，可按需去除时区信息并保留空值。"""
     if value is None:
         return None
     if value.tzinfo is None:
@@ -54,12 +57,16 @@ class ShanghaiDateTime(TypeDecorator[datetime]):
     cache_ok = True
 
     def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        """按数据库方言转换上海时间，PostgreSQL 保留时区信息。"""
         return shanghai_datetime(value, naive=dialect.name != "postgresql")
 
     def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        """将数据库时间转换为无时区的上海本地时间。"""
         return shanghai_datetime(value, naive=True)
 
+
 TABLE_PREFIX = "yp_"  # 表名称前缀
+
 
 class CustomBaseModel(Base):
     __abstract__ = True
@@ -71,6 +78,7 @@ class CustomBaseModel(Base):
 
     @declared_attr.directive
     def __tablename__(cls) -> str:
+        """根据显式表名或类名生成带项目统一前缀的表名。"""
         suffix = cls.__dict__.get("__table_name__") or camel_to_snake(cls.__name__)
         prefix = getattr(cls, "__table_prefix__", TABLE_PREFIX)
         if suffix.startswith(prefix):
@@ -79,24 +87,23 @@ class CustomBaseModel(Base):
 
     @declared_attr
     def id(cls) -> Mapped[int]:
+        """在启用自动主键时声明带注释的自增 ID 字段。"""
         if not getattr(cls, "__enable_auto_id__", True):
             return None
-        return mapped_column(Integer, primary_key=True, autoincrement=True, comment="ID", sort_order=-1000)
+        return mapped_column(Integer, primary_key=True, autoincrement=True, comment="主键 ID", sort_order=-1000)
 
     @declared_attr
     def create_time(cls) -> Mapped[datetime]:
+        """在启用审计字段时声明上海本地创建时间。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
-            ShanghaiDateTime(),
-            nullable=False,
-            default=lambda: shanghai_now(naive=True),
-            comment="创建时间",
-            sort_order=1000,
+            ShanghaiDateTime(), nullable=False, default=lambda: shanghai_now(naive=True), comment="创建时间", sort_order=1000
         )
 
     @declared_attr
     def update_time(cls) -> Mapped[datetime]:
+        """在启用审计字段时声明自动更新的上海本地时间。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
@@ -110,12 +117,14 @@ class CustomBaseModel(Base):
 
     @declared_attr
     def create_timestamp(cls) -> Mapped[int]:
+        """在启用审计字段时声明秒级创建时间戳。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(BigInteger, nullable=False, default=lambda: int(time.time()), comment="创建时间戳", sort_order=1002)
 
     @declared_attr
     def update_timestamp(cls) -> Mapped[int]:
+        """在启用审计字段时声明自动更新的秒级时间戳。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(
@@ -129,17 +138,20 @@ class CustomBaseModel(Base):
 
     @declared_attr
     def is_deleted(cls) -> Mapped[int]:
+        """在启用审计字段时声明逻辑删除标识。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(BigInteger, nullable=True, default=0, comment="逻辑删除标识", sort_order=1004)
 
     @declared_attr
     def status(cls) -> Mapped[int]:
+        """在启用审计字段时声明通用状态标识。"""
         if not getattr(cls, "__enable_audit_columns__", True):
             return None
         return mapped_column(BigInteger, nullable=True, default=1, comment="状态(通用字段)", sort_order=1005)
 
     def touch(self):
+        """刷新当前记录存在的更新时间和更新时间戳。"""
         mapper_columns = self.__mapper__.columns
         now = shanghai_now(naive=True)
         if "update_time" in mapper_columns:
@@ -148,6 +160,7 @@ class CustomBaseModel(Base):
             setattr(self, "update_timestamp", int(time.time()))
 
     def _serialize_value(self, key: str, value: Any) -> Any:
+        """将日期、金额和指定 JSON 字段转换为接口可用值。"""
         if isinstance(value, date) and not isinstance(value, datetime):
             return value.isoformat()
         if isinstance(value, datetime):
@@ -167,6 +180,7 @@ class CustomBaseModel(Base):
         return value
 
     def to_dict(self, exclude: Optional[set[str]] = None, include: Optional[set[str]] = None) -> dict[str, Any]:
+        """按包含或排除字段集合序列化当前模型的映射列。"""
         exclude = exclude or set()
         data = {}
         for column in self.__mapper__.columns:
@@ -181,6 +195,7 @@ class CustomBaseModel(Base):
 
 @event.listens_for(CustomBaseModel, "before_insert", propagate=True)
 def _before_insert_set_audit_timezone(_mapper, _connection, target: CustomBaseModel) -> None:
+    """插入前统一审计时间到上海本地时间并补齐时间戳。"""
     mapper_columns = target.__mapper__.columns
     now = shanghai_now(naive=True)
     now_ts = int(time.time())
@@ -198,6 +213,7 @@ def _before_insert_set_audit_timezone(_mapper, _connection, target: CustomBaseMo
 
 @event.listens_for(CustomBaseModel, "before_update", propagate=True)
 def _before_update_set_audit_timezone(_mapper, _connection, target: CustomBaseModel) -> None:
+    """更新前统一更新时间到上海本地时间并刷新时间戳。"""
     mapper_columns = target.__mapper__.columns
     if "update_time" in mapper_columns:
         update_time = shanghai_datetime(getattr(target, "update_time", None), naive=True) or shanghai_now(naive=True)

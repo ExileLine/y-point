@@ -39,28 +39,18 @@ async def find_login_user(db: AsyncSession, identifier: str) -> Admin | None:
     value = identifier.strip().lower()
     return (
         await db.scalars(
-            select(Admin).where(
-                or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value),
-                Admin.is_deleted == 0,
-            )
+            select(Admin).where(or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value), Admin.is_deleted == 0)
         )
     ).first()
 
 
 async def ensure_unique_identity(
-    db: AsyncSession,
-    *,
-    username: str | None = None,
-    mail: str | None = None,
-    exclude_id: int | None = None,
+    db: AsyncSession, *, username: str | None = None, mail: str | None = None, exclude_id: int | None = None
 ) -> None:
     """检查用户名和邮箱未被其他有效用户使用。"""
     values = [value.lower() for value in (username, mail) if value]
     for value in values:
-        query = select(Admin.id).where(
-            or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value),
-            Admin.is_deleted == 0,
-        )
+        query = select(Admin.id).where(or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value), Admin.is_deleted == 0)
         if exclude_id is not None:
             query = query.where(Admin.id != exclude_id)
         if (await db.scalar(query)) is not None:
@@ -121,12 +111,7 @@ async def revoke_sessions(db: AsyncSession, admin: Admin) -> None:
     """递增令牌版本并撤销用户的所有活动会话。"""
     admin.token_version += 1
     await db.execute(
-        update(AuthSession)
-        .where(
-            AuthSession.admin_id == admin.id,
-            AuthSession.revoked_at.is_(None),
-        )
-        .values(revoked_at=utc_now())
+        update(AuthSession).where(AuthSession.admin_id == admin.id, AuthSession.revoked_at.is_(None)).values(revoked_at=utc_now())
     )
 
 

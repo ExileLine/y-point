@@ -63,8 +63,7 @@ async def store_blob(root: Path, key: str, path: Path) -> None:
         return
     config = get_config()
     await asyncio.to_thread(
-        _client().upload_file, str(path), config.ARTIFACT_S3_BUCKET, _object_key(key),
-        ExtraArgs={"ServerSideEncryption": "AES256"},
+        _client().upload_file, str(path), config.ARTIFACT_S3_BUCKET, _object_key(key), ExtraArgs={"ServerSideEncryption": "AES256"}
     )
 
 
@@ -81,6 +80,7 @@ async def read_blob(root: Path, key: str, *, max_bytes: int) -> bytes:
         config = get_config()
 
         def fetch() -> bytes:
+            """有界读取 S3 对象正文，并确保关闭远端响应流。"""
             response = _client().get_object(Bucket=config.ARTIFACT_S3_BUCKET, Key=_object_key(key))
             body = response["Body"]
             try:
@@ -120,7 +120,7 @@ async def old_blob_batches(*, before: datetime, batch_size: int) -> AsyncIterato
         for item in response.get("Contents", []):
             if not item["Key"].startswith(prefix) or item["LastModified"].timestamp() >= before.timestamp():
                 continue
-            key = item["Key"][len(prefix):]
+            key = item["Key"][len(prefix) :]
             if len(key) == 32 and all(char in "0123456789abcdef" for char in key):
                 keys.append(key)
         yield keys

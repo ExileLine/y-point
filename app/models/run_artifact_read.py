@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 09:08:24
+# @Author  : yangyuexiong
+# @File    : run_artifact_read.py
+
 """记录运行中成功读取过的同会话生成文件。"""
 
 from sqlalchemy import Integer, String

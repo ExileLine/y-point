@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2026-10-28 09:08:24
+# @Author  : yangyuexiong
+# @File    : 034_artifact_read_sources.py
+
 """记录运行成功读取的旧产物及生成产物来源关系。
 
 Revision ID: 034
@@ -14,9 +19,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    """应用本版迁移：记录运行成功读取的旧产物及生成产物来源关系。"""
     op.create_table(
         "yp_run_artifact_read",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("run_id", sa.String(36), nullable=False, comment="读取发生的运行 ID"),
         sa.Column("owner_id", sa.Integer(), nullable=False, comment="运行所有者 ID"),
         sa.Column("source_artifact_id", sa.String(36), nullable=False, comment="已读取的旧产物 ID"),
@@ -31,7 +37,7 @@ def upgrade() -> None:
     op.create_index("ix_yp_run_artifact_read_run_id", "yp_run_artifact_read", ["run_id"])
     op.create_table(
         "yp_artifact_source",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("target_artifact_id", sa.String(36), nullable=False, comment="新产物 ID"),
         sa.Column("source_artifact_id", sa.String(36), nullable=False, comment="旧产物 ID"),
         sa.Column("run_id", sa.String(36), nullable=False, comment="生成运行 ID"),
@@ -52,6 +58,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """回退本版迁移：记录运行成功读取的旧产物及生成产物来源关系。"""
     op.drop_index("ix_yp_artifact_source_run_id", table_name="yp_artifact_source")
     op.drop_index("ix_yp_artifact_source_target_artifact_id", table_name="yp_artifact_source")
     op.drop_table("yp_artifact_source")

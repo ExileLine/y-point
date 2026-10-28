@@ -27,10 +27,10 @@ class AgentConfig(CustomBaseModel):
     temperature: Mapped[Decimal] = mapped_column(Numeric(3, 2), nullable=False, default=Decimal("1"), comment="生成温度")
     max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096, comment="单次最大输出 Token 数")
     model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次模型生成超时秒数",
+        Integer, nullable=False, default=120, server_default="120", comment="单次模型生成超时秒数"
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数",
+        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数"
     )
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="每轮模型调用次数上限")
     max_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="每轮工具调用次数上限")

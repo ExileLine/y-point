@@ -31,9 +31,7 @@ async def get_user_or_404(db: AsyncSession, user_id: int) -> Admin:
 
 @router.get("/audit/events", summary="查询用户操作审计")
 async def list_audit_events(
-    limit: int = Query(50, ge=1, le=200),
-    actor: Admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db_session),
+    limit: int = Query(50, ge=1, le=200), actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """按时间倒序返回管理员可见的审计记录。"""
     events = (await db.scalars(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(limit))).all()
@@ -137,10 +135,7 @@ async def update_user(user_id: int, body: UserUpdateIn, actor: Admin = Depends(r
 
 @router.post("/{user_id}/reset-password", summary="重置用户密码")
 async def reset_password(
-    user_id: int,
-    body: PasswordResetIn,
-    actor: Admin = Depends(require_admin),
-    db: AsyncSession = Depends(get_db_session),
+    user_id: int, body: PasswordResetIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
 ):
     """由管理员重置目标用户密码并撤销其全部会话。"""
     user = await get_user_or_404(db, user_id)

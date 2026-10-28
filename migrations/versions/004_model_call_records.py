@@ -23,7 +23,7 @@ def upgrade() -> None:
     """创建不含外键、凭据和对话正文的模型调用记录表。"""
     op.create_table(
         "yp_model_call_record",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="ID"),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True, comment="主键 ID"),
         sa.Column("actor_id", sa.Integer(), nullable=False, comment="发起调用的用户 ID"),
         sa.Column("provider_id", sa.Integer(), nullable=False, comment="调用时的供应商连接 ID"),
         sa.Column("model_id", sa.Integer(), nullable=False, comment="调用时的模型 ID"),

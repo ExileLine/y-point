@@ -35,17 +35,17 @@ from app.services.run_manager import claim_run, create_run, replay_events
 from app.services.worker_monitor import inspect_worker_status, prune_worker_heartbeats, register_worker, stop_worker, touch_worker
 
 
-def test_worker_does_not_recover_leases_when_checkpoint_store_is_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_worker_does_not_recover_leases_when_checkpoint_store_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """检查点全局故障时，过期 Run 等恢复读取成功后再判定终态。"""
 
     class Checkpointer:
         async def setup(self) -> None:
+            """模拟检查点初始化，避免测试依赖实际后端。"""
             pass
 
     @asynccontextmanager
     async def open_checkpointer(_path: Path):
+        """提供监视器测试所需的受控检查点上下文。"""
         yield Checkpointer()
 
     recover = AsyncMock()
@@ -65,12 +65,12 @@ async def exercise_worker_status(database_path: Path) -> None:
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
-            queued = await create_run(db, 1, input_text="queued")
+            await create_run(db, 1, input_text="queued")
             running = await create_run(db, 1, input_text="running")
             await claim_run(db, running.id)
-            await db.execute(update(AgentRun).where(AgentRun.id == running.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == running.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         async with sessions() as db:
             status = await inspect_worker_status(db)
             assert status["worker_available"] is False and status["queued_runs"] == 1
@@ -81,9 +81,11 @@ async def exercise_worker_status(database_path: Path) -> None:
             status = await inspect_worker_status(db)
             assert status["worker_available"] is True and status["active_workers"] == 1
         async with sessions.begin() as db:
-            await db.execute(update(RunWorkerHeartbeat).where(RunWorkerHeartbeat.id == "worker-1").values(
-                last_seen_at=shanghai_now(naive=True) - timedelta(seconds=30),
-            ))
+            await db.execute(
+                update(RunWorkerHeartbeat)
+                .where(RunWorkerHeartbeat.id == "worker-1")
+                .values(last_seen_at=shanghai_now(naive=True) - timedelta(seconds=30))
+            )
         async with sessions() as db:
             assert (await inspect_worker_status(db))["worker_available"] is False
         async with sessions.begin() as db:
@@ -115,9 +117,11 @@ async def exercise_busy_worker_heartbeat(database_path: Path, checkpoint_path: P
             await connection.run_sync(Base.metadata.create_all)
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         monkeypatch.setattr(run_worker_module, "dispatch_next_run", blocked_dispatch)
-        task = asyncio.create_task(run_worker_module.run_worker(
-            checkpoint_path, idle_seconds=0.01, heartbeat_seconds=0.05, artifact_path=checkpoint_path.parent / "artifacts",
-        ))
+        task = asyncio.create_task(
+            run_worker_module.run_worker(
+                checkpoint_path, idle_seconds=0.01, heartbeat_seconds=0.05, artifact_path=checkpoint_path.parent / "artifacts"
+            )
+        )
         try:
             await asyncio.wait_for(entered.wait(), timeout=2)
             async with sessions() as db:
@@ -147,10 +151,12 @@ async def exercise_worker_health_api(database_path: Path) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with sessions.begin() as db:
-        db.add_all([
-            Admin(id=1, username="worker-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
-            Admin(id=2, username="worker-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-        ])
+        db.add_all(
+            [
+                Admin(id=1, username="worker-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
+                Admin(id=2, username="worker-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+            ]
+        )
         await create_run(db, 2, input_text="waiting")
 
     async def test_session():
@@ -164,12 +170,8 @@ async def exercise_worker_health_api(database_path: Path) -> None:
             unavailable = await client.get("/api/v1/health/worker")
             assert unavailable.status_code == 503 and unavailable.json()["data"] == {"worker_available": False}
             assert (await client.get("/api/v1/runs/workers/status")).status_code == 401
-            admin_login = await client.post(
-                "/api/v1/auth/login", json={"identifier": "worker-admin", "password": "StrongPassword123"},
-            )
-            user_login = await client.post(
-                "/api/v1/auth/login", json={"identifier": "worker-user", "password": "StrongPassword123"},
-            )
+            admin_login = await client.post("/api/v1/auth/login", json={"identifier": "worker-admin", "password": "StrongPassword123"})
+            user_login = await client.post("/api/v1/auth/login", json={"identifier": "worker-user", "password": "StrongPassword123"})
             admin = {"Authorization": f"Bearer {admin_login.json()['data']['access_token']}"}
             user = {"Authorization": f"Bearer {user_login.json()['data']['access_token']}"}
             assert (await client.get("/api/v1/runs/workers/status", headers=user)).status_code == 403
@@ -196,9 +198,9 @@ async def exercise_worker_restart_recovery(database_path: Path, checkpoint_path:
         async with sessions.begin() as db:
             run = await create_run(db, 1, input_text="可能已经调用过模型")
             old_token = (await claim_run(db, run.id)).lease_token
-            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         await run_worker_module.run_worker(checkpoint_path, once=True)
         async with sessions() as db:
@@ -224,15 +226,26 @@ async def exercise_heartbeat_pruning(database_path: Path, checkpoint_path: Path,
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
-            db.add_all([
-                RunWorkerHeartbeat(id="old-stopped", started_at=now - timedelta(days=32),
-                                   last_seen_at=now - timedelta(days=31), stopped_at=now - timedelta(days=31)),
-                RunWorkerHeartbeat(id="old-crashed", started_at=now - timedelta(days=32),
-                                   last_seen_at=now - timedelta(days=31), stopped_at=None),
-                RunWorkerHeartbeat(id="recent-stopped", started_at=now - timedelta(days=2),
-                                   last_seen_at=now - timedelta(days=1), stopped_at=now - timedelta(days=1)),
-                RunWorkerHeartbeat(id="active", started_at=now, last_seen_at=now, stopped_at=None),
-            ])
+            db.add_all(
+                [
+                    RunWorkerHeartbeat(
+                        id="old-stopped",
+                        started_at=now - timedelta(days=32),
+                        last_seen_at=now - timedelta(days=31),
+                        stopped_at=now - timedelta(days=31),
+                    ),
+                    RunWorkerHeartbeat(
+                        id="old-crashed", started_at=now - timedelta(days=32), last_seen_at=now - timedelta(days=31), stopped_at=None
+                    ),
+                    RunWorkerHeartbeat(
+                        id="recent-stopped",
+                        started_at=now - timedelta(days=2),
+                        last_seen_at=now - timedelta(days=1),
+                        stopped_at=now - timedelta(days=1),
+                    ),
+                    RunWorkerHeartbeat(id="active", started_at=now, last_seen_at=now, stopped_at=None),
+                ]
+            )
         async with sessions.begin() as db:
             assert await prune_worker_heartbeats(db, limit=1, now=now) == 1
         async with sessions() as db:
@@ -284,20 +297,37 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
             await connection.run_sync(Base.metadata.create_all)
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="crash-user", password="not-used", role="user", status=1, is_deleted=0))
-            db.add(ProviderConnection(
-                id=1, name="crash-provider", name_key="crash-provider", kind="ollama",
-                base_url=f"http://127.0.0.1:{server.server_port}/v1", creator_id=1,
-                timeout_seconds=15, status=1, is_deleted=0,
-            ))
-            db.add(ModelCatalog(
-                id=1, provider_id=1, external_id="blocked-model", display_name="Blocked Model",
-                creator_id=1, capabilities=["text"], verified_capabilities=[], status=1, is_deleted=0,
-            ))
+            db.add(
+                ProviderConnection(
+                    id=1,
+                    name="crash-provider",
+                    name_key="crash-provider",
+                    kind="ollama",
+                    base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                    creator_id=1,
+                    timeout_seconds=15,
+                    status=1,
+                    is_deleted=0,
+                )
+            )
+            db.add(
+                ModelCatalog(
+                    id=1,
+                    provider_id=1,
+                    external_id="blocked-model",
+                    display_name="Blocked Model",
+                    creator_id=1,
+                    capabilities=["text"],
+                    verified_capabilities=[],
+                    status=1,
+                    is_deleted=0,
+                )
+            )
             run = await create_run(db, 1, model_id=1, input_text="阻塞模型调用")
         child_env = {**os.environ, "DB_BACKEND": "sqlite", "SQLITE_DATABASE": str(database_path), "DEBUG": "false"}
         command = (sys.executable, "-m", "app.cli.run_worker", "--checkpoint-db", str(checkpoint_path), "--once")
         first_worker = await asyncio.create_subprocess_exec(
-            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
         )
         for _ in range(200):
             if requested.is_set() or first_worker.returncode is not None:
@@ -314,12 +344,12 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
         async with sessions.begin() as db:
             active = await db.get(AgentRun, run.id)
             assert active.state == "running"
-            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(
-                lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1),
-            ))
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+            )
         release_response.set()
         second_worker = await asyncio.create_subprocess_exec(
-            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
         )
         _, error_output = await asyncio.wait_for(second_worker.communicate(), timeout=15)
         assert second_worker.returncode == 0, error_output.decode()
@@ -328,9 +358,9 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
             assert recovered.state == "failed" and recovered.failure_code == "lease_expired"
             assert recovered.event_seq == 3 and recovered.lease_token is None
             assert [event.state for event in await replay_events(db, run.id, 1)] == ["queued", "running", "failed"]
-            assert [message.role for message in (await db.scalars(select(AgentRunMessage).where(
-                AgentRunMessage.run_id == run.id,
-            ))).all()] == ["user"]
+            assert [
+                message.role for message in (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id))).all()
+            ] == ["user"]
         assert requests_seen == ["/v1/chat/completions"]
     finally:
         release_response.set()

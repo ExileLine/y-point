@@ -35,23 +35,30 @@ async def resolve_stored_model(db: AsyncSession, run: AgentRun) -> BaseChatModel
     provider = await db.get(ProviderConnection, model.provider_id)
     if provider is None or provider.status != 1 or provider.is_deleted != 0:
         raise RunConflictError("供应商连接不可用")
-    return build_chat_model(
-        model, provider, temperature=run.agent_temperature, max_output_tokens=run.agent_max_output_tokens,
-    )
+    return build_chat_model(model, provider, temperature=run.agent_temperature, max_output_tokens=run.agent_max_output_tokens)
 
 
 async def dispatch_next_run(
-    sessions: async_sessionmaker[AsyncSession], checkpoint_path: Path, *, resolve_model: ModelResolver = resolve_stored_model,
-    resolve_tools: ToolResolver | None = None, timeout_seconds: float = 120, lease_seconds: int = 30, poll_seconds: float = 5,
+    sessions: async_sessionmaker[AsyncSession],
+    checkpoint_path: Path,
+    *,
+    resolve_model: ModelResolver = resolve_stored_model,
+    resolve_tools: ToolResolver | None = None,
+    timeout_seconds: float = 120,
+    lease_seconds: int = 30,
+    poll_seconds: float = 5,
 ) -> AgentRun | None:
     """读取最早排队或可安全恢复的运行；竞争失败由下一轮处理。"""
     async with sessions() as db:
         eligible = AgentRun.state == "queued"
         if resolve_tools is not None:
-            approved = select(RunApproval.id).where(
-                RunApproval.run_id == AgentRun.id, RunApproval.checkpoint_id == AgentRun.checkpoint_id,
-                RunApproval.state == "approved",
-            ).exists()
+            approved = (
+                select(RunApproval.id)
+                .where(
+                    RunApproval.run_id == AgentRun.id, RunApproval.checkpoint_id == AgentRun.checkpoint_id, RunApproval.state == "approved"
+                )
+                .exists()
+            )
             eligible = or_(eligible, and_(AgentRun.state == "waiting_for_approval", approved))
         statement = select(AgentRun.id, AgentRun.state).where(eligible).order_by(AgentRun.create_time, AgentRun.id).limit(1)
         candidate = (await db.execute(statement)).first()
@@ -59,9 +66,16 @@ async def dispatch_next_run(
         return None
     try:
         return await execute_text_run(
-            sessions, candidate.id, None, checkpoint_path, resolve_model=resolve_model,
-            resolve_tools=resolve_tools, resume=candidate.state == "waiting_for_approval",
-            timeout_seconds=timeout_seconds, lease_seconds=lease_seconds, poll_seconds=poll_seconds,
+            sessions,
+            candidate.id,
+            None,
+            checkpoint_path,
+            resolve_model=resolve_model,
+            resolve_tools=resolve_tools,
+            resume=candidate.state == "waiting_for_approval",
+            timeout_seconds=timeout_seconds,
+            lease_seconds=lease_seconds,
+            poll_seconds=poll_seconds,
         )
     except RunConflictError:
         return None
