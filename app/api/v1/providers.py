@@ -176,6 +176,7 @@ async def update_provider(
     set_provider_credentials(provider, body)
     if provider.kind in {"azure_openai", "gemini"} and not provider.has_api_key:
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
+    await flush_catalog(db)
     if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
         await db.execute(
             update(ModelCatalog)

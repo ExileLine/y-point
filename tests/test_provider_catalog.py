@@ -374,6 +374,34 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 },
             )
             assert duplicate.status_code == 409
+            second_provider = await client.post(
+                "/api/v1/providers",
+                headers=root_headers,
+                json={
+                    "name": "Secondary Provider",
+                    "kind": "openai_compatible",
+                    "base_url": "https://secondary.example/v1",
+                },
+            )
+            assert second_provider.status_code == 201
+            second_provider_id = second_provider.json()["data"]["id"]
+            conflicting_update = await client.put(
+                f"/api/v1/providers/{second_provider_id}",
+                headers=root_headers,
+                json={
+                    "name": " TEST PROVIDER ",
+                    "base_url": "https://changed.example/v1",
+                    "api_key": "replacement-secret",
+                },
+            )
+            assert conflicting_update.status_code == 409
+            assert conflicting_update.json()["code"] == 10003
+            assert "replacement-secret" not in conflicting_update.text
+            async with sessions() as db:
+                unchanged = await db.get(ProviderConnection, second_provider_id)
+                assert unchanged.name == "Secondary Provider"
+                assert unchanged.base_url == "https://secondary.example/v1"
+                assert unchanged.has_api_key is False
             assert (
                 await client.post(
                     "/api/v1/providers",

@@ -234,3 +234,8 @@ __marimo__/
 /y-point-server-todo.md
 /y-point-web-todo.md
 /.env.development.local
+/y-point-web-reference-standards.md
+/web/node_modules/
+/web/dist/
+/web/tsconfig.tsbuildinfo
+/web/.env.local
