@@ -35,7 +35,17 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.run_dispatcher import dispatch_next_run
 from app.services.runtime_checkpoint import open_async_checkpointer
-from app.services.run_manager import RunConflictError, claim_run, complete_run, create_run, get_owned_messages, replay_events
+from app.services.run_manager import (
+    RunConflictError,
+    acknowledge_cancel,
+    claim_run,
+    complete_run,
+    create_run,
+    get_owned_messages,
+    heartbeat_run,
+    replay_events,
+    request_cancel,
+)
 
 
 def test_startup_rejects_missing_artifact_column(tmp_path) -> None:
@@ -152,11 +162,17 @@ async def _exercise_isolated_migrations(
                     schema = inspect(sync_connection)
                     assert {"alembic_version", *Base.metadata.tables} <= set(schema.get_table_names())
                     for table in Base.metadata.sorted_tables:
-                        columns = {column["name"] for column in schema.get_columns(table.name)}
-                        assert {column.name for column in table.columns} == columns
+                        columns = {column["name"]: column for column in schema.get_columns(table.name)}
+                        assert {column.name for column in table.columns} == set(columns)
+                        for column in table.columns:
+                            if column.comment == "主键 ID":
+                                assert columns[column.name]["comment"] == "主键 ID"
+                                if backend == "mysql":
+                                    assert columns[column.name]["autoincrement"] is True
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "037"
                 await connection.run_sync(check_mapped_schema)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
             artifact_id = str(uuid4())
@@ -229,11 +245,29 @@ async def _exercise_isolated_migrations(
                 assert claimed.lease_expires_at is not None and claimed.lease_expires_at.tzinfo is None
                 remaining = claimed.lease_expires_at - shanghai_now(naive=True)
                 assert timedelta(seconds=0) < remaining <= timedelta(seconds=32)
-                completed = await complete_run(db, run.id, claimed.lease_token, final_text="done")
+                lease_token = claimed.lease_token
+            async with sessions.begin() as db:
+                renewed = await heartbeat_run(db, run.id, lease_token)
+                assert renewed.state == "running" and renewed.lease_expires_at > shanghai_now(naive=True)
+            async with sessions.begin() as db:
+                completed = await complete_run(db, run.id, lease_token, final_text="done")
                 assert completed.state == "completed"
             async with sessions() as db:
                 assert [event.sequence for event in await replay_events(db, run.id, owner.id)] == [1, 2, 3]
                 assert [message.content for message in await get_owned_messages(db, run.id, owner.id)] == ["test", "done"]
+            async with sessions.begin() as db:
+                queued_cancel = await create_run(db, owner.id, request_key="m3-db-queued-cancel", input_text="cancel queued")
+            async with sessions.begin() as db:
+                assert (await request_cancel(db, queued_cancel.id, owner.id)).state == "cancelled"
+            async with sessions.begin() as db:
+                running_cancel = await create_run(db, owner.id, request_key="m3-db-running-cancel", input_text="cancel running")
+            async with sessions.begin() as db:
+                active = await claim_run(db, running_cancel.id)
+                cancel_lease = active.lease_token
+            async with sessions.begin() as db:
+                assert (await request_cancel(db, running_cancel.id, owner.id)).state == "cancel_requested"
+            async with sessions.begin() as db:
+                assert (await acknowledge_cancel(db, running_cancel.id, cancel_lease)).state == "cancelled"
 
             async def test_session():
                 """为 HTTP 测试注入隔离数据库会话。"""

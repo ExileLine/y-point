@@ -119,7 +119,11 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                     "/api/v1/artifacts/uploads",
                     headers=headers,
                     files={
-                        "files": ("facts.txt", "Project ALPHA-42. Budget 17. Owner Alice.".encode(), "text/plain"),
+                        "files": (
+                            "采购简报.txt",
+                            "Procurement project XINGHE-27. Budget CNY 180000. Delivery deadline 2026-12-15. Owner Lin Qing.".encode(),
+                            "text/plain",
+                        ),
                     },
                 )
                 assert upload.status_code == 201, upload.text
@@ -128,9 +132,9 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 first_document_id = None
                 first_pdf_id = None
                 for suffix, instruction in (
-                    ("docx", "Create a DOCX document summarizing the attached facts."),
-                    ("pdf", "Create a PDF document summarizing the attached facts."),
-                    ("xlsx", "Create an XLSX spreadsheet with the attached facts as rows."),
+                    ("docx", "Create a DOCX document listing the project code, budget and delivery deadline exactly as attached."),
+                    ("pdf", "Create a PDF document listing the project code, budget and delivery deadline exactly as attached."),
+                    ("xlsx", "Create an XLSX spreadsheet listing the project code, budget and delivery deadline as rows."),
                 ):
                     submitted = await client.post(
                         f"{session_base}/runs",
@@ -169,16 +173,17 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                     assert download.status_code == 200
                     if suffix == "docx":
                         content = "\n".join(paragraph.text for paragraph in Document(BytesIO(download.content)).paragraphs)
-                        assert "ALPHA-42" in content
+                        assert "XINGHE-27" in content and "2026-12-15" in content
                     elif suffix == "pdf":
                         pages = PdfReader(BytesIO(download.content)).pages
-                        assert pages and "ALPHA-42" in "\n".join(page.extract_text() for page in pages)
+                        pdf_text = "\n".join(page.extract_text() for page in pages)
+                        assert pages and all(term in pdf_text for term in ("XINGHE-27", "2026-12-15"))
                     else:
                         workbook = load_workbook(BytesIO(download.content), read_only=True)
                         try:
                             assert workbook.sheetnames
                             values = [str(value) for sheet in workbook for row in sheet.values for value in row if value is not None]
-                            assert "ALPHA-42" in " ".join(values)
+                            assert all(term in " ".join(values) for term in ("XINGHE-27", "2026-12-15"))
                         finally:
                             workbook.close()
 
@@ -213,7 +218,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 assert download.status_code == 200
                 document = Document(BytesIO(download.content))
                 content = "\n".join(paragraph.text for paragraph in document.paragraphs)
-                assert "ALPHA-42" in content and "Approved on Tuesday" in content
+                assert "XINGHE-27" in content and "Approved on Tuesday" in content
 
                 assert first_pdf_id is not None
                 revised_pdf = await client.post(
@@ -245,13 +250,17 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 download = await client.get(f"/api/v1/artifacts/{pdf_files[0]['artifact_id']}/download", headers=headers)
                 assert download.status_code == 200
                 pdf_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(download.content)).pages)
-                assert "ALPHA-42" in pdf_text and "Reviewed on Friday" in pdf_text
+                assert "XINGHE-27" in pdf_text and "Reviewed on Friday" in pdf_text
 
                 second_upload = await client.post(
                     "/api/v1/artifacts/uploads",
                     headers=headers,
                     files={
-                        "files": ("second.txt", b"Project BETA-73. Budget 29. Owner Bob.", "text/plain"),
+                        "files": (
+                            "第二份简报.txt",
+                            b"Procurement project BEIDOU-73. Budget CNY 290000. Delivery deadline 2027-01-30. Owner Chen Min.",
+                            "text/plain",
+                        ),
                     },
                 )
                 assert second_upload.status_code == 201, second_upload.text
@@ -285,7 +294,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 assert text_files[0]["context_artifact_ids"] == [source_id, second_id]
                 download = await client.get(f"/api/v1/artifacts/{text_files[0]['artifact_id']}/download", headers=headers)
                 assert download.status_code == 200
-                assert "ALPHA-42" in download.text and "BETA-73" in download.text
+                assert "XINGHE-27" in download.text and "BEIDOU-73" in download.text
         finally:
             app.dependency_overrides.pop(get_db_session, None)
             await engine.dispose()

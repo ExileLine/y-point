@@ -16,6 +16,8 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 
 核心业务闭环：认证与资源授权后，用户通过 Agent 会话或独立文本入口提交 Run；业务事务保存输入、排队状态和首个事件，worker 领取后按模型配置执行并持续写入事件。完成时保存最终消息和检查点引用，生成文件与助手消息关联；前端按事件游标追平过程，再从消息接口读取最终结果。文件正文留在私有存储，下载时重新校验所有权和有效期。
 
+本轮 M3/M4 本机验收沿这条业务链核对了关键边界：PostgreSQL/MySQL 隔离库完成 `037` 迁移和回退重升，并验证 Run 领取、续租、排队及运行中取消；真实 Ollama 在采购简报会话中读取附件，生成并下载 DOCX/PDF/XLSX，再读取旧产物生成修订版，最后联合两份附件生成 TXT。小窗口摘要后，模型仍可回答此前工具读取的项目编号，业务消息保留原文。若工具执行后摘要失败，Run 以 `summary_error` 结束；后续检查点无法证明安全时以 `checkpoint_mismatch` 停止，不重放工具。生成文件暂存后取消 Run，不发布助手消息或产物事件。这些是现有链路的验收结果，不代表目标环境的 M3/M4 总验收已完成。
+
 M0a～M4 的已实现能力与整体验收状态不同：本机 Ollama 已覆盖部分真实模型链路，更多供应商、目标业务数据库、对象存储、浏览器断网恢复、部署故障及复杂文件场景仍有待验证；M5 的完整 Tool Registry、Skill 和 MCP 尚未交付。逐项结果和限制见 `y-point-server-todo.md`。
 
 ## 本地运行
@@ -172,7 +174,7 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 SQLAlchemy 模型在 `app/models` 注册，Alembic 以其元数据管理业务表。修改模型后新增迁移，并用 `uv run alembic upgrade head` 升级目标库、`uv run alembic check` 检查模型与迁移是否一致。应用启动时会检查业务模型需要的表和列；缺少迁移会在启动阶段报错。业务数据可选择 SQLite、MySQL 或 PostgreSQL；Checkpointer 独立配置。跨数据库验证范围、迁移记录和目标环境验收状态见 `y-point-server-todo.md`。
 
-`037_primary_key_comments.py` 将已有 PostgreSQL/MySQL 业务表的整数自增主键列注释更新为中文；新建数据库从历史迁移获得相同注释，SQLite 不执行列注释 DDL。`036→037` 及回退 SQL 已分别在 PostgreSQL/MySQL 方言下离线编译，尚未在目标业务库执行；升级前应按实际环境备份并检查迁移版本。
+`037_primary_key_comments.py` 将已有 PostgreSQL/MySQL 业务表的整数自增主键列注释更新为中文；新建数据库从历史迁移获得相同注释，SQLite 不执行列注释 DDL。本地 PostgreSQL/MySQL 随机隔离库已验证升级、回退重升、中文列注释和 MySQL 自增属性；开发 SQLite 已升级到 `037`。已有 PostgreSQL/MySQL 业务库尚未执行该迁移，升级前应按实际环境备份并检查迁移版本。
 
 常用验证命令：
 
@@ -180,6 +182,7 @@ SQLAlchemy 模型在 `app/models` 注册，Alembic 以其元数据管理业务�
 uv run pytest -q
 uv run pytest -q tests/test_run_manager.py tests/test_run_executor.py tests/test_agent_sessions.py
 YPOINT_TEST_OLLAMA_M4=1 uv run pytest -q tests/test_m4_live_acceptance.py
+YPOINT_TEST_OLLAMA_M4_LONG=1 uv run pytest -q tests/test_long_context.py::test_live_ollama_tool_history_survives_summary
 uv run alembic check
 uvx ruff check app migrations tests local_run.py
 uvx ruff format --check app migrations tests local_run.py

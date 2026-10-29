@@ -23,6 +23,7 @@ from deepagents import create_deep_agent
 from fastapi import UploadFile
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -1841,6 +1842,137 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
             async with sessions() as db:
                 assert [event.event_type for event in await replay_events(db, run.id, 1) if event.tool_call_id] == ["tool_started"]
                 assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_cancel_after_generated_artifact_is_staged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """模型生成文件暂存后取消运行，不发布文件或助手消息。"""
+
+    async def exercise() -> None:
+        """在模型第二次调用阻塞时核对取消与暂存产物状态。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-generated.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        root = tmp_path / "artifacts"
+        root.mkdir(mode=0o700)
+        monkeypatch.setattr(worker_tools_module, "artifact_root", lambda: root)
+        second_call_started = asyncio.Event()
+        model_stopped = asyncio.Event()
+
+        class PausedAfterArtifactModel(FakeMessagesListChatModel):
+            """先生成文件，再阻塞最终回答以便取消运行。"""
+
+            calls: ClassVar[int] = 0
+
+            def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+                """兼容 DeepAgents 的工具绑定接口。"""
+                return self
+
+            async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                """首次要求生成文件，后续调用等待取消信号。"""
+                type(self).calls += 1
+                if type(self).calls == 1:
+                    message = AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "create_text_artifact",
+                                "args": {"filename": "采购简报.txt", "content": "项目星河-27，预算18万元。"},
+                                "id": "create-before-cancel",
+                            }
+                        ],
+                    )
+                else:
+                    second_call_started.set()
+                    try:
+                        await asyncio.sleep(30)
+                    finally:
+                        model_stopped.set()
+                    message = AIMessage(content="不应保存的回答")
+                return ChatResult(generations=[ChatGeneration(message=message)])
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all(
+                    [
+                        Admin(id=1, username="cancel-generated", password="unused", role="user", status=1, is_deleted=0),
+                        AgentConfig(
+                            id=1,
+                            owner_id=1,
+                            name="采购助手",
+                            default_model_id=1,
+                            temperature=Decimal("0"),
+                            max_output_tokens=512,
+                            enabled=True,
+                            version=1,
+                            is_deleted=0,
+                            status=1,
+                        ),
+                        ProviderConnection(
+                            id=1,
+                            name="cancel-generated-provider",
+                            name_key="cancel-generated-provider",
+                            kind="ollama",
+                            base_url="http://localhost:11434/v1",
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        ModelCatalog(
+                            id=1,
+                            provider_id=1,
+                            external_id="tool-model",
+                            display_name="Tool model",
+                            verified_capabilities=["text", "tools"],
+                            creator_id=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        AgentSession(id="a" * 36, owner_id=1, agent_id=1, thread_id="b" * 36, title="取消文件生成"),
+                    ]
+                )
+                run = await create_run(
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id="a" * 36,
+                    thread_id="b" * 36,
+                    agent_config_version=1,
+                    agent_system_prompt="生成文件后简短回答。",
+                    agent_temperature=Decimal("0"),
+                    agent_max_output_tokens=512,
+                    input_text="请生成一个采购简报 TXT 文件",
+                )
+            PausedAfterArtifactModel.calls = 0
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    PausedAfterArtifactModel(responses=[AIMessage(content="fallback")]),
+                    tmp_path / "cancel-generated-checkpoint.db",
+                    resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                )
+            )
+            await asyncio.wait_for(second_call_started.wait(), timeout=5)
+            async with sessions() as db:
+                staged = await db.scalar(select(Artifact).where(Artifact.run_id == run.id))
+                assert staged is not None and staged.state == "pending"
+                assert (root / staged.storage_key).exists()
+            async with sessions.begin() as db:
+                assert (await request_cancel(db, run.id, 1)).state == "cancel_requested"
+            result = await asyncio.wait_for(task, timeout=5)
+            assert result.state == "cancelled" and model_stopped.is_set()
+            async with sessions() as db:
+                assert (await db.get(Artifact, staged.id)).state == "pending"
+                assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+                assert not any(event.event_type == "artifact_published" for event in await replay_events(db, run.id, 1))
         finally:
             await engine.dispose()
 
