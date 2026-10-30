@@ -479,6 +479,12 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     }
 
                 owner, recipient, stranger = await login("share-owner"), await login("share-recipient"), await login("share-stranger")
+                assert (await client.get("/api/v1/agents/share-targets", params={"query": "sh"})).status_code == 401
+                targets = await client.get("/api/v1/agents/share-targets", headers=owner, params={"query": "share-rec"})
+                assert targets.status_code == 200
+                assert targets.json()["data"] == [{"user_id": 2, "username": "share-recipient"}]
+                recipient_targets = await client.get("/api/v1/agents/share-targets", headers=recipient, params={"query": "share-rec"})
+                assert recipient_targets.json()["data"] == []
                 created = await client.post(
                     "/api/v1/agents",
                     headers=owner,

@@ -135,6 +135,12 @@ class ModelOut(BaseModel):
     creator_id: int = Field(description="创建人 ID", examples=[1])
 
 
+class AgentModelOptionOut(BaseModel):
+    id: int = Field(description="可选模型 ID", examples=[1])
+    display_name: str = Field(description="模型显示名称", examples=["GPT-4o mini"])
+    context_window: int | None = Field(description="上下文窗口大小（令牌数）", examples=[8192])
+
+
 class ModelImportItem(BaseModel):
     external_id: ExternalModelId = Field(description="从供应商列表选中的模型 ID", examples=["gpt-4o-mini"])
     display_name: DisplayName | None = Field(default=None, description="模型显示名称；省略时使用模型 ID", examples=["GPT-4o mini"])

@@ -9,15 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
-from app.core.security import require_admin
+from app.core.security import get_current_admin, require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
 from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
+from app.models.provider_connection import ProviderConnection
+from app.schemas.agent import AgentCreateIn
 from app.schemas.provider import (
     CapabilityTestIn,
     CapabilityTestOut,
+    AgentModelOptionOut,
     ModelCallOut,
     ModelCallPageOut,
     ModelCreateIn,
@@ -30,6 +33,7 @@ from app.services.catalog import commit_catalog, flush_catalog, get_model_or_404
 from app.services.capability_probe import probe_capability
 from app.services.identity import audit
 from app.services.model_probe import probe_model
+from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -120,6 +124,30 @@ async def list_models(
         query = query.where(ModelCatalog.provider_id == provider_id)
     models = (await db.scalars(query.order_by(ModelCatalog.id))).all()
     return api_response(data=[ModelOut.model_validate(model).model_dump(mode="json") for model in models], is_pop=False)
+
+
+@router.get("/available", summary="查询可用于创建 Agent 的模型")
+async def list_available_models(actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """向登录用户提供已验证文本能力的最小模型目录。"""
+    minimum_context_window = AgentCreateIn.model_fields["max_output_tokens"].default + CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
+    rows = await db.execute(
+        select(ModelCatalog, ProviderConnection)
+        .join(ProviderConnection, ModelCatalog.provider_id == ProviderConnection.id)
+        .where(
+            ModelCatalog.is_deleted == 0,
+            ModelCatalog.status == 1,
+            ProviderConnection.is_deleted == 0,
+            ProviderConnection.status == 1,
+        )
+        .order_by(ModelCatalog.is_default.desc(), ModelCatalog.id)
+    )
+    data = [
+        AgentModelOptionOut(id=model.id, display_name=model.display_name, context_window=model.context_window).model_dump(mode="json")
+        for model, _provider in rows
+        if "text" in (model.verified_capabilities or [])
+        and (model.context_window is None or model.context_window >= minimum_context_window)
+    ]
+    return api_response(data=data, is_pop=False)
 
 
 @router.get("/{model_id}", summary="查询可选模型详情")

@@ -108,6 +108,8 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             assert (await client.get("/api/v1/providers", headers=user_headers)).status_code == 403
             assert (await client.get("/api/v1/providers/kinds", headers=user_headers)).status_code == 403
             assert (await client.get("/api/v1/models", headers=user_headers)).status_code == 403
+            assert (await client.get("/api/v1/models/available")).status_code == 401
+            assert (await client.get("/api/v1/models/available", headers=user_headers)).json()["data"] == []
             assert (await client.post("/api/v1/providers", headers=user_headers, json={})).status_code == 403
             kinds = await client.get("/api/v1/providers/kinds", headers=root_headers)
             assert kinds.status_code == 200
@@ -452,6 +454,7 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             model_id = created_model.json()["data"]["id"]
             assert created_model.json()["data"]["capabilities_verified"] is False
             assert created_model.json()["data"]["price_currency"] == "USD"
+            assert (await client.get("/api/v1/models/available", headers=user_headers)).json()["data"] == []
             assert (
                 await client.post(
                     "/api/v1/models",
@@ -582,6 +585,10 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                 },
             )
             assert text_probe.status_code == 200 and text_probe.json()["data"]["verified_capabilities"] == ["text"]
+            available = await client.get("/api/v1/models/available", headers=user_headers)
+            assert available.status_code == 200
+            assert available.json()["data"] == [{"id": model_id, "display_name": "Chat 1", "context_window": 8192}]
+            assert "external_id" not in available.text and "api_key" not in available.text
             stream_probe = await client.post(
                 capability_path,
                 headers=root_headers,
@@ -670,6 +677,7 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             invalidated = await client.get(f"/api/v1/models/{model_id}", headers=root_headers)
             assert invalidated.json()["data"]["verified_capabilities"] == []
             assert invalidated.json()["data"]["capabilities_verified"] is False
+            assert (await client.get("/api/v1/models/available", headers=user_headers)).json()["data"] == []
 
             default = await client.post(f"/api/v1/models/{model_id}/default", headers=root_headers)
             assert default.status_code == 200 and default.json()["data"]["is_default"] is True

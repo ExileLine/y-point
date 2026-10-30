@@ -132,6 +132,33 @@ async def get_shared_agent(agent_id: int, actor: Admin = Depends(get_current_adm
     return api_response(data=_shared_data(agent), datetime_format=False)
 
 
+@router.get("/share-targets", summary="搜索可共享的用户")
+async def search_share_targets(
+    query: str = Query(min_length=2, max_length=64),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """仅按用户名搜索有效用户，不公开个人资料。"""
+    term = query.strip().lower()
+    if len(term) < 2:
+        return api_response(data=[], is_pop=False)
+    users = (
+        await db.scalars(
+            select(Admin)
+            .where(
+                Admin.id != actor.id,
+                Admin.status == 1,
+                Admin.is_deleted == 0,
+                Admin.username.is_not(None),
+                func.lower(Admin.username).startswith(term, autoescape=True),
+            )
+            .order_by(Admin.username)
+            .limit(20)
+        )
+    ).all()
+    return api_response(data=[AgentShareOut(user_id=user.id, username=user.username).model_dump() for user in users], is_pop=False)
+
+
 @router.get("/{agent_id}", summary="查询我的智能体详情")
 async def get_agent(agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """读取当前用户的指定 Agent 配置。"""

@@ -238,4 +238,5 @@ __marimo__/
 /web/node_modules/
 /web/dist/
 /web/tsconfig.tsbuildinfo
+/web/*.tsbuildinfo
 /web/.env.local
