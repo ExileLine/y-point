@@ -105,6 +105,7 @@ class BaseConfig(BaseSettings):
     DEBUG: bool = True
     RUN_HOST: str = "0.0.0.0"
     RUN_PORT: int = 8000
+    WORKER_LOG_FILE: str = ".logs/worker.log"
 
     # 跨域配置：如果 allow_credentials=True，则 allow_origins 不能设置为 ["*"]，必须明确指定允许的域名。
     ALLOW_ORIGINS: list[str] = ["*"]

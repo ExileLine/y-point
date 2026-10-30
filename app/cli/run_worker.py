@@ -5,14 +5,43 @@
 
 """运行独立的 M3 持久化文本任务执行器。"""
 
+# ruff: noqa: E402
+
 import argparse
 import asyncio
+import os
+import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
 from loguru import logger
+
+from app.core.config import BASE_DIR, BaseConfig, normalize_env, resolve_env_files
+
+
+def _redirect_output_to_log() -> None:
+    """在加载业务模块前将执行器输出写入配置的日志文件。"""
+    env_name = normalize_env(os.getenv("FAST_API_ENV"))
+    config = BaseConfig(_env_file=[str(path) for path in resolve_env_files(env_name)])
+    log_path = Path(config.WORKER_LOG_FILE).expanduser()
+    if not log_path.is_absolute():
+        log_path = BASE_DIR / log_path
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.dup2(descriptor, 1)
+        os.dup2(descriptor, 2)
+    finally:
+        os.close(descriptor)
+
+
+# 业务模块导入时会初始化数据库日志，因此先重定向输出。
+if __name__ == "__main__" and not {"-h", "--help"}.intersection(sys.argv[1:]):
+    _redirect_output_to_log()
 
 from app.db.session import AsyncSessionLocal, close_db
 from app.services.artifact_store import artifact_root, prune_artifacts, publish_pending_answers

@@ -22,6 +22,19 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 
 使用 Python 3.12。`uv` 从锁文件安装依赖；默认读取 `.env.development`，可用不提交到 Git 的 `.env.development.local` 覆盖本机配置。`.env.example` 是配置项说明，不是可直接启动的环境文件。开发环境默认使用项目根目录的 SQLite `y_point.db`，也可通过 `DB_BACKEND` 选择 MySQL 或 PostgreSQL。
 
+在项目根目录安装依赖后，运行 `make dev` 即可同时启动 API、worker 和前端：
+
+```bash
+uv sync --group dev
+npm --prefix web install
+uv run alembic upgrade head
+make dev
+```
+
+前端默认地址为 `http://127.0.0.1:5173`；若端口被占用，`make dev` 会选择下一个空闲端口并打印实际地址。API 地址为 `http://127.0.0.1:7769`，前端 `/api/v1` 请求会代理到该 API。按 Ctrl-C 停止三个进程，再运行 `make dev` 即可重启；若 7769 已被其他进程占用，需要先停止该进程。独立运行前端时仍默认代理到 8000，可通过 `API_PROXY_TARGET` 指定其他 API 地址。
+
+只需后端时，可单独启动 API 和 worker：
+
 ```bash
 uv sync --group dev
 uv run alembic upgrade head
@@ -29,6 +42,8 @@ uv run uvicorn app.main:app --reload
 ```
 
 对话运行还需要单独启动 worker；API 进程只接收请求并读取结果。SQLite 检查点默认保存在 `.run-private/checkpoints.sqlite`，重启 worker 时应继续使用原文件，以保留已有会话上下文。
+
+Worker 的标准输出和错误输出默认追加到项目根目录的 `.logs/worker.log`，因此 `make dev` 的终端只显示 API 和前端日志。可用 `tail -f .logs/worker.log` 查看执行日志。生产环境可在 `.env.production` 或进程环境中设置 `WORKER_LOG_FILE=/path/to/worker.log`；相对路径按项目根目录解析，日志目录会自动创建。修改路径后重启 worker 生效。
 
 ```bash
 uv run python -m app.cli.run_worker

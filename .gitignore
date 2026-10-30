@@ -229,6 +229,7 @@ __marimo__/
 .idea
 .DS_Store
 /logs/*.log
+/.logs/
 /y-point-dev.txt
 /y-point-dev-todo.md
 /y-point-server-todo.md
