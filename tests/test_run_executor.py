@@ -2213,6 +2213,53 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
         await engine.dispose()
 
 
+def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
+    """已有成功回答后模型失败，下一轮应从上一个已确认检查点继续。"""
+
+    async def exercise() -> None:
+        """验证失败模型留下的检查点不会导致同线程永久拒绝。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'recovery.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "recovery-checkpoint.db"
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="recovery-user", password="not-used", role="user", status=1, is_deleted=0))
+                first = await create_run(db, 1, input_text="第一轮")
+            completed = await execute_text_run(
+                sessions,
+                first.id,
+                ScriptedModel(responses=[AIMessage(content="已确认的回答")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert completed.state == "completed"
+            async with sessions.begin() as db:
+                failed_run = await create_run(db, 1, thread_id=first.thread_id, input_text="失败轮次")
+            failed = await execute_text_run(
+                sessions,
+                failed_run.id,
+                FailingModel(responses=[AIMessage(content="unused")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 0
+            async with sessions.begin() as db:
+                followup = await create_run(db, 1, thread_id=first.thread_id, input_text="继续")
+            resumed = await execute_text_run(
+                sessions, followup.id, ScriptedModel(responses=[AIMessage(content="已恢复")]), checkpoint, lease_seconds=2, poll_seconds=0.1
+            )
+            assert resumed.state == "completed", resumed.failure_code
+            assert resumed.thread_id == completed.thread_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 def test_completed_run(tmp_path: Path) -> None:
     """运行持久化执行和多轮线程测试。"""
     asyncio.run(exercise_completed_run(tmp_path / "runs.db", tmp_path / "checkpoints.db"))

@@ -649,7 +649,7 @@ async def execute_text_run(
             actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
             async with sessions() as db:
                 statement = (
-                    select(AgentRun.checkpoint_id)
+                    select(AgentRun)
                     .where(
                         AgentRun.thread_id == thread_id,
                         AgentRun.owner_id == run.owner_id,
@@ -659,26 +659,22 @@ async def execute_text_run(
                     .order_by(AgentRun.update_time.desc(), AgentRun.id.desc())
                     .limit(1)
                 )
-                expected_checkpoint_id = await db.scalar(statement)
-                failed_summary = await db.scalar(
-                    select(AgentRun)
-                    .where(
-                        AgentRun.thread_id == thread_id,
-                        AgentRun.owner_id == run.owner_id,
-                        AgentRun.state == "failed",
-                        AgentRun.failure_code == "summary_error",
-                    )
-                    .order_by(AgentRun.create_time.desc(), AgentRun.id.desc())
-                    .limit(1)
-                )
+                expected_run = await db.scalar(statement)
+                expected_checkpoint_id = expected_run.checkpoint_id if expected_run is not None else None
+                checkpoint_run_id = (snapshot.metadata or {}).get("run_id")
+                checkpoint_run = await db.get(AgentRun, checkpoint_run_id) if isinstance(checkpoint_run_id, str) else None
             if (
                 not resume
                 and actual_checkpoint_id != expected_checkpoint_id
-                and expected_checkpoint_id is not None
-                and failed_summary is not None
-                and (snapshot.metadata or {}).get("run_id") == failed_summary.id
-                and failed_summary.tool_call_count == 0
-                and failed_summary.create_time < run.create_time
+                and expected_run is not None
+                and checkpoint_run is not None
+                and checkpoint_run.owner_id == run.owner_id
+                and checkpoint_run.agent_id == run.agent_id
+                and checkpoint_run.session_id == run.session_id
+                and checkpoint_run.thread_id == thread_id
+                and checkpoint_run.state in {"failed", "cancelled", "timed_out"}
+                and checkpoint_run.tool_call_count == 0
+                and expected_run.create_time < checkpoint_run.create_time < run.create_time
             ):
                 runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
                 snapshot = await runtime.state()

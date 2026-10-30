@@ -24,6 +24,7 @@ from app.api.v1 import artifacts as artifact_api
 from app.db.session import get_db_session
 from app.main import app
 from app.models.admin import Admin
+from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_session import AgentSession
@@ -38,6 +39,7 @@ from app.services import runtime_adapter as runtime_adapter_module
 from app.services import run_dispatcher as run_dispatcher_module
 from app.services import message_attachments as message_attachments_module
 from app.services import worker_tools as worker_tools_module
+from app.services.run_executor import execute_text_run
 
 
 class SessionModel(FakeMessagesListChatModel):
@@ -55,6 +57,103 @@ class SessionModel(FakeMessagesListChatModel):
         self.seen_inputs.extend(str(message.content) for message in messages if message.type == "human")
         self.seen_tool_results.extend(str(message.content) for message in messages if message.type == "tool")
         return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class FailingSessionModel(SessionModel):
+    """模拟模型在写入输入检查点后失败。"""
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        """让首轮产生与真实上游错误相同的失败路径。"""
+        raise RuntimeError("model unavailable")
+
+
+def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> None:
+    """首轮模型失败并留下检查点后，同一会话仍可提交下一轮。"""
+
+    async def exercise() -> None:
+        """通过正式提交路由复现失败检查点造成的连续拒绝。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'recovery.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "recovery-checkpoint.db"
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(
+                    Admin(id=1, username="recovery-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0)
+                )
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="recovery",
+                        name_key="recovery",
+                        kind="ollama",
+                        base_url="http://localhost:11434/v1",
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(
+                    ModelCatalog(
+                        id=1,
+                        provider_id=1,
+                        external_id="recovery-model",
+                        display_name="Recovery model",
+                        capabilities=["text"],
+                        verified_capabilities=["text"],
+                        capabilities_verified=True,
+                        context_window=8192,
+                        creator_id=1,
+                        status=1,
+                        is_deleted=0,
+                    )
+                )
+                db.add(AgentConfig(id=1, owner_id=1, name="恢复助手", default_model_id=1, system_prompt=""))
+                db.add(AgentSession(id="recovery-session", owner_id=1, agent_id=1, thread_id="recovery-thread", title="恢复会话"))
+
+            async def test_session():
+                """将正式路由连接到测试数据库。"""
+                async with sessions() as db:
+                    yield db
+
+            app.dependency_overrides[get_db_session] = test_session
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                login = await client.post("/api/v1/auth/login", json={"identifier": "recovery-user", "password": "StrongPassword123"})
+                headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+                path = "/api/v1/agents/1/sessions/recovery-session/runs"
+                first = await client.post(path, headers=headers, json={"request_key": "first", "input_text": "第一轮"})
+                assert first.status_code == 201, first.text
+                first_id = first.json()["data"]["id"]
+                failed = await execute_text_run(
+                    sessions,
+                    first_id,
+                    FailingSessionModel(responses=[AIMessage(content="unused")]),
+                    checkpoint,
+                    lease_seconds=2,
+                    poll_seconds=0.1,
+                )
+                assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 0
+                second = await client.post(path, headers=headers, json={"request_key": "second", "input_text": "第二轮"})
+                assert second.status_code == 201, second.text
+                result = await execute_text_run(
+                    sessions,
+                    second.json()["data"]["id"],
+                    SessionModel(responses=[AIMessage(content="恢复成功")]),
+                    checkpoint,
+                    lease_seconds=2,
+                    poll_seconds=0.1,
+                )
+                assert result.state == "completed", result.failure_code
+                async with sessions() as db:
+                    session = await db.get(AgentSession, "recovery-session")
+                    assert session.thread_id == result.thread_id != failed.thread_id
+                    assert (await db.get(AgentRun, first_id)).state == "failed"
+        finally:
+            app.dependency_overrides.pop(get_db_session, None)
+            await engine.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_session_migration(tmp_path: Path) -> None:

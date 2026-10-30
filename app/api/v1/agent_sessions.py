@@ -313,6 +313,13 @@ async def submit_session_run(
     )
     if previous_model_id is not None and previous_model_id != model.id:
         raise CustomException(status_code=409, custom_code=10005, detail="已有对话的会话不能切换模型，请创建新会话")
+    prior_runs = (
+        (await db.scalars(select(AgentRun).where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id))).all()
+        if previous_model_id is None
+        else []
+    )
+    reset_thread = bool(prior_runs) and all(item.state in TERMINAL_STATES and item.tool_call_count == 0 for item in prior_runs)
+    thread_id = str(uuid4()) if reset_thread else session.thread_id
     artifacts = await _uploaded_artifacts(db, owner_id, body.artifact_ids)
     context_artifacts = [item for item in artifacts if item.id in context_ids]
     image_artifacts = [item for item in context_artifacts if item.media_type in IMAGE_CONTEXT_MEDIA_TYPES]
@@ -327,7 +334,7 @@ async def submit_session_run(
     options = dict(
         agent_id=agent_id,
         session_id=session_id,
-        thread_id=session.thread_id,
+        thread_id=thread_id,
         model_id=agent.default_model_id,
         input_text=body.input_text,
         request_key=body.request_key,
@@ -354,7 +361,7 @@ async def submit_session_run(
                 AgentSession.archived.is_(False),
                 AgentSession.version == session.version,
             )
-            .values(version=AgentSession.version + 1)
+            .values(version=AgentSession.version + 1, thread_id=thread_id)
             .execution_options(synchronize_session=False)
         )
         if claim.rowcount != 1:
