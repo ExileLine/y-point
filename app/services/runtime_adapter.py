@@ -107,6 +107,7 @@ class DeepAgentsRuntimeAdapter:
         interrupt_on: dict[str, bool],
         checkpointer: Any,
         middleware: list[AgentMiddleware],
+        skill_files: dict[str, str] | None = None,
         summarizer: Callable[[list[BaseMessage]], Awaitable[str]] | None = None,
     ) -> None:
         """根据运行配置、模型与检查点构建 DeepAgents 图及摘要策略。"""
@@ -148,6 +149,7 @@ class DeepAgentsRuntimeAdapter:
             checkpointer=checkpointer,
             middleware=middleware,
             backend=backend,
+            skills=["/skills/"] if skill_files else None,
             system_prompt=system_prompt or None,
         )
 

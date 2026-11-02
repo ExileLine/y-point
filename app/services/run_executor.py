@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
+from deepagents.backends.utils import create_file_data
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,6 +35,7 @@ from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
+from app.models.skill import RunSkill, Skill
 from app.services.agent_access import can_access_run_agent
 from app.services.artifact_intent import requested_artifact_suffixes
 from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context, load_model_image_context
@@ -62,6 +64,7 @@ from app.services.run_manager import (
 from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
 from app.services.tool_registry import RESERVED_TOOL_NAMES
+from app.services.skills import load_run_skill_files
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
@@ -205,6 +208,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         max_estimated_cost: Decimal | None,
         cost_input_price: Decimal | None,
         cost_output_price: Decimal | None,
+        skill_paths: frozenset[str] = frozenset(),
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
         self.allowed_names = frozenset(allowed_names)
@@ -216,12 +220,17 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.max_estimated_cost = max_estimated_cost
         self.cost_input_price = cost_input_price
         self.cost_output_price = cost_output_price
+        self.skill_paths = skill_paths
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
         """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
         async with self.sessions.begin() as db:
             await reserve_model_call(db, self.run_id, self.lease_token)
-        visible_tools = [tool for tool in request.tools if getattr(tool, "name", None) in self.allowed_names]
+        visible_tools = [
+            tool
+            for tool in request.tools
+            if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and self.skill_paths)
+        ]
         response = await handler(request.override(tools=visible_tools))
         await _account_model_response(
             response,
@@ -240,26 +249,45 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         """授权后记录工具开始和结束事件，不公开工具参数或结果。"""
         tool_name = request.tool_call["name"]
-        if tool_name not in self.allowed_names:
+        if tool_name not in self.allowed_names and tool_name != "read_file":
             raise PermissionError("运行未授权该工具")
+        if tool_name == "read_file":
+            path = request.tool_call.get("args", {}).get("file_path")
+            if not isinstance(path, str) or path not in self.skill_paths:
+                raise PermissionError("Skill 文件路径未授权")
         tool_call_id = str(uuid4())
+        event_name = tool_name
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
                 raise PermissionError("运行授权已失效")
+            if tool_name == "read_file":
+                try:
+                    current_files = await load_run_skill_files(db, self.run_id, run.owner_id)
+                except Exception as exc:
+                    raise PermissionError("Skill 授权已失效") from exc
+                if path not in current_files:
+                    raise PermissionError("Skill 文件授权已失效")
+                skill_name = path.split("/")[2]
+                skill_version = await db.scalar(
+                    select(RunSkill.skill_version)
+                    .join(Skill, Skill.id == RunSkill.skill_id)
+                    .where(RunSkill.run_id == self.run_id, Skill.name == skill_name)
+                )
+                event_name = f"skill:{skill_name}@v{skill_version}"
             await reserve_tool_call(db, self.run_id, self.lease_token)
-            await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, tool_name)
+            await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, event_name)
         try:
             result = await asyncio.wait_for(handler(request), timeout=self.tool_timeout_seconds)
         except Exception as exc:
             async with self.sessions.begin() as db:
-                await append_tool_event(db, self.run_id, self.lease_token, "tool_failed", tool_call_id, tool_name)
+                await append_tool_event(db, self.run_id, self.lease_token, "tool_failed", tool_call_id, event_name)
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
         event_type = "tool_failed" if isinstance(result, ToolMessage) and result.status == "error" else "tool_completed"
         async with self.sessions.begin() as db:
-            await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, tool_name)
+            await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
         return result
 
 
@@ -522,6 +550,10 @@ async def execute_text_run(
             return await fail_run(db, run_id, lease_token, "runtime_error")
         if not await can_access_run_agent(db, run.agent_id, run.owner_id):
             return await fail_run(db, run_id, lease_token, "agent_access_revoked")
+        try:
+            skill_files = await load_run_skill_files(db, run_id, run.owner_id)
+        except Exception:
+            return await fail_run(db, run_id, lease_token, "skill_access_revoked")
         input_text = await db.scalar(
             select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == "user")
         )
@@ -639,9 +671,11 @@ async def execute_text_run(
                             run.max_estimated_cost,
                             run.cost_input_price,
                             run.cost_output_price,
+                            frozenset(skill_files),
                         )
                     ],
                     summarizer=summarize_history,
+                    skill_files=skill_files,
                 )
 
             runtime = build_runtime()
@@ -719,6 +753,13 @@ async def execute_text_run(
                     ],
                 }
             )
+            if not resume:
+                previous_files = snapshot.values.get("files") or {}
+                invocation["files"] = {
+                    **{path: None for path in previous_files if path.startswith("/skills/")},
+                    **{path: create_file_data(content) for path, content in skill_files.items()},
+                }
+                invocation["skills_metadata"] = None
             started = time.perf_counter()
             deadline = time.monotonic() + min(timeout_seconds, run.model_timeout_seconds)
             for attempt in range(2):

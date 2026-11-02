@@ -41,6 +41,7 @@ dependencies = [
   "bleach>=6.4.0",
   "pypdf>=6.21.2",
   "pillow>=13,<14",
+  "pyyaml>=6,<7",
 ]
 
 [dependency-groups]

@@ -110,6 +110,54 @@ def test_skill_loading() -> None:
     assert any(item["name"] == "example" for item in agent.get_state(config).values["skills_metadata"])
 
 
+def test_skill_reload_removes_previous_files() -> None:
+    """同一检查点线程新一轮替换 Skill 时，旧文件和元数据均不再可见。"""
+    agent = create_deep_agent(
+        model=ScriptedModel(responses=[AIMessage(content="ok"), AIMessage(content="ok")]), skills=["/skills/"], checkpointer=InMemorySaver()
+    )
+    config = {
+        "configurable": {
+            "thread_id": "skill-reload",
+        },
+    }
+    first = "/skills/first/SKILL.md"
+    second = "/skills/second/SKILL.md"
+    agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "one",
+                }
+            ],
+            "files": {
+                first: create_file_data("---\nname: first\ndescription: First\n---\n"),
+            },
+        },
+        config,
+    )
+    agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "two",
+                }
+            ],
+            "files": {
+                first: None,
+                second: create_file_data("---\nname: second\ndescription: Second\n---\n"),
+            },
+            "skills_metadata": None,
+        },
+        config,
+    )
+    state = agent.get_state(config).values
+    assert first not in state["files"]
+    assert second in state["files"]
+    assert [item["name"] for item in state["skills_metadata"]] == ["second"]
+
+
 def test_approval_resume() -> None:
     """验证工具审批中断后可恢复并完成调用。"""
     agent = create_deep_agent(

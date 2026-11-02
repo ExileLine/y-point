@@ -24,6 +24,7 @@ from app.models.run_worker_heartbeat import RunWorkerHeartbeat
 from app.models.artifact import Artifact
 from app.models.artifact_source import ArtifactSource
 from app.models.run_artifact_read import RunArtifactRead
+from app.models.skill import Skill, SkillVersion, AgentSkill, RunSkill
 
 __all__ = [
     "Admin",
@@ -46,4 +47,8 @@ __all__ = [
     "Artifact",
     "ArtifactSource",
     "RunArtifactRead",
+    "Skill",
+    "SkillVersion",
+    "AgentSkill",
+    "RunSkill",
 ]

@@ -35,6 +35,7 @@ SENSITIVE_FIELDS = {
     "newpassword",
     "oldpassword",
     "passwordconfirmation",
+    "files",
 }
 
 

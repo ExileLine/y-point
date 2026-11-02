@@ -45,6 +45,7 @@ from app.services.message_attachments import (
     load_message_attachments,
 )
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
+from app.services.skills import snapshot_run_skills
 
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["agent-sessions"])
@@ -367,6 +368,7 @@ async def submit_session_run(
         if claim.rowcount != 1:
             raise RunConflictError("会话已变化")
         run = await create_run(db, owner_id, **options)
+        await snapshot_run_skills(db, run.id, agent_id, owner_id)
         if artifacts:
             message_id = await db.scalar(select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "user"))
             db.add_all(

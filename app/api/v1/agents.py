@@ -20,6 +20,7 @@ from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_share import AgentShare
+from app.models.skill import AgentSkill
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
@@ -27,9 +28,17 @@ from app.services.agent_access import can_use_agent
 from app.services.identity import audit
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
+from app.services.skills import agent_skill_rows, selected_skills
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+async def _agent_data(db: AsyncSession, agent: AgentConfig) -> dict:
+    """输出配置与明确固定的 Skill 关联。"""
+    data = AgentOut.model_validate(agent).model_dump(mode="json")
+    data["skill_ids"] = [row.skill_id for row in await agent_skill_rows(db, agent.id)]
+    return data
 
 
 def _shared_data(agent: AgentConfig) -> dict:
@@ -81,13 +90,17 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     """验证默认模型后保存当前用户的私有 Agent 配置。"""
     model = await _available_text_model(db, body.default_model_id, body.max_output_tokens)
     _check_cost_pricing(model, body.max_estimated_cost)
-    agent = AgentConfig(owner_id=actor.id, **body.model_dump(), version=1, is_deleted=0, status=1)
+    skills = await selected_skills(db, body.skill_ids, actor.id)
+    agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids"}), version=1, is_deleted=0, status=1)
     db.add(agent)
     await db.flush()
+    db.add_all(
+        [AgentSkill(agent_id=agent.id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in skills]
+    )
     audit(db, "agent.created", actor_id=actor.id, target_id=agent.id)
     await db.commit()
     await db.refresh(agent)
-    return api_response(http_code=201, code=201, data=AgentOut.model_validate(agent).model_dump(mode="json"), datetime_format=False)
+    return api_response(http_code=201, code=201, data=await _agent_data(db, agent), datetime_format=False)
 
 
 @router.get("", summary="分页查询我的智能体")
@@ -106,7 +119,9 @@ async def list_agents(
         )
     ).all()
     result = AgentPageOut(items=[AgentOut.model_validate(item) for item in items], total=total or 0, page=page, page_size=page_size)
-    return api_response(data=result.model_dump(mode="json"), datetime_format=False)
+    data = result.model_dump(mode="json")
+    data["items"] = [await _agent_data(db, item) for item in items]
+    return api_response(data=data, datetime_format=False)
 
 
 @router.get("/shared", summary="查询共享给我的智能体")
@@ -163,7 +178,7 @@ async def search_share_targets(
 async def get_agent(agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """读取当前用户的指定 Agent 配置。"""
     agent = await _owned_agent(db, agent_id, actor.id)
-    return api_response(data=AgentOut.model_validate(agent).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=await _agent_data(db, agent), datetime_format=False)
 
 
 @router.get("/{agent_id}/shares", summary="查询智能体指定用户授权")
@@ -240,6 +255,10 @@ async def update_agent(
     """使用期望版本原子更新配置，避免覆盖其他请求的编辑。"""
     agent = await _owned_agent(db, agent_id, actor.id)
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
+    requested_skill_ids = changes.pop("skill_ids", None)
+    selected = await selected_skills(db, requested_skill_ids, actor.id) if requested_skill_ids is not None else None
+    if requested_skill_ids is None and "skill_ids" in body.model_fields_set:
+        raise CustomException(status_code=400, custom_code=10005, detail="Skill 列表不能为空")
     required = {
         "name",
         "system_prompt",
@@ -257,7 +276,7 @@ async def update_agent(
             db, changes.get("default_model_id", agent.default_model_id), changes.get("max_output_tokens", agent.max_output_tokens)
         )
         _check_cost_pricing(model, changes.get("max_estimated_cost", agent.max_estimated_cost))
-    if changes:
+    if changes or selected is not None:
         result = await db.execute(
             update(AgentConfig)
             .where(
@@ -272,12 +291,20 @@ async def update_agent(
         if result.rowcount != 1:
             await db.rollback()
             raise CustomException(status_code=409, custom_code=10005, detail="智能体配置版本已变化")
+        if selected is not None:
+            await db.execute(delete(AgentSkill).where(AgentSkill.agent_id == agent_id))
+            db.add_all(
+                [
+                    AgentSkill(agent_id=agent_id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1)
+                    for item in selected
+                ]
+            )
         audit(db, "agent.updated", actor_id=actor.id, target_id=agent_id)
         await db.commit()
         await db.refresh(agent)
     elif agent.version != body.expected_version:
         raise CustomException(status_code=409, custom_code=10005, detail="智能体配置版本已变化")
-    return api_response(data=AgentOut.model_validate(agent).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=await _agent_data(db, agent), datetime_format=False)
 
 
 @router.delete("/{agent_id}", summary="删除我的智能体")
