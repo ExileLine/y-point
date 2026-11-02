@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
+from pydantic import Field
 from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -106,6 +107,7 @@ class BaseConfig(BaseSettings):
     RUN_HOST: str = "0.0.0.0"
     RUN_PORT: int = 8000
     WORKER_LOG_FILE: str = ".logs/worker.log"
+    WORKER_LOG_MAX_BYTES: int = Field(default=50 * 1024 * 1024, gt=0, description="worker 日志文件容量上限，单位字节", examples=[52428800])
     SCRIPT_SANDBOX_IMAGE: str = "y-point-script-sandbox:1"
     SCRIPT_DEPENDENCY_ALLOW_NETWORK: bool = True
     SCRIPT_DEPENDENCY_INDEX_URL: str = "https://pypi.org/simple"

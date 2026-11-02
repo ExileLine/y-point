@@ -10,6 +10,7 @@
 import argparse
 import asyncio
 import os
+import signal
 import sys
 import time
 from contextlib import suppress
@@ -19,24 +20,23 @@ from uuid import uuid4
 from loguru import logger
 
 from app.core.config import BASE_DIR, BaseConfig, normalize_env, resolve_env_files
+from app.core.worker_logging import WorkerLogCapture
+
+
+def _exit_on_termination(signum: int, _frame: object) -> None:
+    """将启动器的终止信号转为正常异常展开，执行退出时的日志排空。"""
+    raise SystemExit(128 + signum)
 
 
 def _redirect_output_to_log() -> None:
-    """在加载业务模块前将执行器输出写入配置的日志文件。"""
+    """在加载业务模块前收集执行器输出，按容量循环保留最新日志。"""
     env_name = normalize_env(os.getenv("FAST_API_ENV"))
     config = BaseConfig(_env_file=[str(path) for path in resolve_env_files(env_name)])
     log_path = Path(config.WORKER_LOG_FILE).expanduser()
     if not log_path.is_absolute():
         log_path = BASE_DIR / log_path
-    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.dup2(descriptor, 1)
-        os.dup2(descriptor, 2)
-    finally:
-        os.close(descriptor)
+    WorkerLogCapture(log_path, config.WORKER_LOG_MAX_BYTES)
+    signal.signal(signal.SIGTERM, _exit_on_termination)
 
 
 # 业务模块导入时会初始化数据库日志，因此先重定向输出。
