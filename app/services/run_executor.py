@@ -31,6 +31,7 @@ from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
+from app.models.tool import ToolInvocation
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
@@ -66,6 +67,7 @@ from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
 from app.services.tool_registry import RESERVED_TOOL_NAMES
 from app.services.skills import load_run_skill_files
+from app.services.user_tools import load_run_tools, model_tool_name
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
@@ -255,9 +257,15 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         if tool_name == "read_file":
             path = request.tool_call.get("args", {}).get("file_path")
             if not isinstance(path, str) or path not in self.skill_paths:
-                raise PermissionError("Skill 文件路径未授权")
+                return ToolMessage(
+                    content="Skill 文件未授权或不存在。请只读取已关联 Skill 中实际提供的文件。",
+                    tool_call_id=request.tool_call["id"],
+                    name="read_file",
+                    status="error",
+                )
         tool_call_id = str(uuid4())
         event_name = tool_name
+        invocation_id = None
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
@@ -276,6 +284,31 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     .where(RunSkill.run_id == self.run_id, Skill.name == skill_name)
                 )
                 event_name = f"skill:{skill_name}@v{skill_version}"
+            elif tool_name.startswith("user_tool_"):
+                try:
+                    available = await load_run_tools(db, self.run_id, run.owner_id)
+                except Exception as exc:
+                    raise PermissionError("Tool 授权已失效") from exc
+                matched = next(((item, version) for item, version in available if model_tool_name(item) == tool_name), None)
+                if matched is None:
+                    raise PermissionError("Tool 未在本轮授权")
+                item, version = matched
+                invocation_id = str(uuid4())
+                arguments_hash = hashlib.sha256(
+                    json.dumps(request.tool_call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str).encode()
+                ).hexdigest()
+                db.add(
+                    ToolInvocation(
+                        run_id=self.run_id,
+                        call_id=invocation_id,
+                        tool_id=item.id,
+                        tool_version=version.version,
+                        state="running",
+                        arguments_hash=arguments_hash,
+                        is_deleted=0,
+                        status=1,
+                    )
+                )
             await reserve_tool_call(db, self.run_id, self.lease_token)
             await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, event_name)
         try:
@@ -283,12 +316,20 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         except Exception as exc:
             async with self.sessions.begin() as db:
                 await append_tool_event(db, self.run_id, self.lease_token, "tool_failed", tool_call_id, event_name)
+                if invocation_id is not None:
+                    invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
+                    invocation.state = "failed"
+                    invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_error"
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
         event_type = "tool_failed" if isinstance(result, ToolMessage) and result.status == "error" else "tool_completed"
         async with self.sessions.begin() as db:
             await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
+            if invocation_id is not None:
+                invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
+                invocation.state = "failed" if event_type == "tool_failed" else "completed"
+                invocation.failure_code = "execution_error" if event_type == "tool_failed" else None
         return result
 
 

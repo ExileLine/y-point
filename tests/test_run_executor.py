@@ -123,6 +123,22 @@ class FailingAfterAnyToolCall(ScriptedModel):
         return await super()._agenerate(messages, stop, run_manager, **kwargs)
 
 
+class MissingFileAwareModel(ScriptedModel):
+    """检查模型能收到缺失文件错误及同轮合法工具结果。"""
+
+    saw_file_error: ClassVar[bool] = False
+
+    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+        """校验工具消息后继续生成预设回答。"""
+        results = [message for message in messages if isinstance(message, ToolMessage)]
+        if results:
+            missing = next(message for message in results if message.tool_call_id == "missing-read")
+            assert missing.status == "error" and "未授权或不存在" in str(missing.content)
+            assert any(message.tool_call_id == "valid-tool" and message.content == "approved" for message in results)
+            type(self).saw_file_error = True
+        return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+
 class SimulatedProcessCrash(BaseException):
     """模拟检查点完成后、业务事务提交前进程退出。"""
 
@@ -1897,7 +1913,10 @@ def test_cancel_after_generated_artifact_is_staged(tmp_path: Path, monkeypatch: 
                         tool_calls=[
                             {
                                 "name": "create_text_artifact",
-                                "args": {"filename": "采购简报.txt", "content": "项目星河-27，预算18万元。"},
+                                "args": {
+                                    "filename": "采购简报.txt",
+                                    "content": "项目星河-27，预算18万元。",
+                                },
                                 "id": "create-before-cancel",
                             }
                         ],
@@ -2426,6 +2445,117 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path
                 poll_seconds=0.1,
             )
             assert blocked.state == "failed" and blocked.failure_code == "checkpoint_mismatch"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_missing_skill_file_does_not_abort_tool_calls_or_followup(tmp_path: Path) -> None:
+    """Skill 引用未打包文件时，模型收到错误且合法工具与后续对话继续执行。"""
+
+    async def exercise() -> None:
+        """在隔离数据库中验证缺失文件、并行工具和同线程续聊。"""
+        MissingFileAwareModel.saw_file_error = False
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'missing-skill-file.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "missing-skill-file-checkpoint.db"
+        skill_text = "---\nname: missing-script\ndescription: Test missing script\n---\n\nRead scripts/missing.py.\n"
+        _, _, manifest, digest = validate_package(
+            {
+                "SKILL.md": skill_text,
+            }
+        )
+
+        async def resolve_echo(db: Any, run: AgentRun) -> tuple[list[Any], dict[str, bool]]:
+            """提供用于验证同轮合法调用的只读工具。"""
+            return [echo_approved], {}
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all(
+                    [
+                        Admin(id=1, username="missing-file-user", password="not-used", role="user", status=1, is_deleted=0),
+                        AgentConfig(
+                            id=3, owner_id=1, name="Missing File Agent", default_model_id=1, enabled=True, version=1, status=1, is_deleted=0
+                        ),
+                        Skill(
+                            id=1,
+                            owner_id=1,
+                            name="missing-script",
+                            description="Test missing script",
+                            visibility="private",
+                            enabled=True,
+                            current_version=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        SkillVersion(
+                            skill_id=1,
+                            version=1,
+                            content_hash=digest,
+                            files={
+                                "SKILL.md": skill_text,
+                            },
+                            manifest=manifest,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                    ]
+                )
+                run = await create_run(db, 1, agent_id=3, input_text="run the script")
+                db.add(RunSkill(run_id=run.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
+
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                MissingFileAwareModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {
+                                        "file_path": "/skills/missing-script/scripts/missing.py",
+                                    },
+                                    "id": "missing-read",
+                                },
+                                {
+                                    "name": "echo_approved",
+                                    "args": {
+                                        "text": "approved",
+                                    },
+                                    "id": "valid-tool",
+                                },
+                            ],
+                        ),
+                        AIMessage(content="The script is missing; approved tool succeeded."),
+                    ]
+                ),
+                checkpoint,
+                resolve_tools=resolve_echo,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert result.state == "completed", result.failure_code
+            assert MissingFileAwareModel.saw_file_error
+            async with sessions.begin() as db:
+                events = await replay_events(db, run.id, 1)
+                assert any(event.event_type == "tool_completed" and event.tool_name == "echo_approved" for event in events)
+                followup = await create_run(db, 1, agent_id=3, thread_id=run.thread_id, input_text="continue")
+                db.add(RunSkill(run_id=followup.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
+            resumed = await execute_text_run(
+                sessions,
+                followup.id,
+                ScriptedModel(responses=[AIMessage(content="continued")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert resumed.state == "completed", resumed.failure_code
         finally:
             await engine.dispose()
 

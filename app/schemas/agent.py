@@ -41,6 +41,7 @@ class AgentCreateIn(BaseModel):
     )
     enabled: bool = Field(default=True, description="是否启用", examples=[True])
     skill_ids: list[int] = Field(default_factory=list, max_length=16, description="关联的可见 Skill ID", examples=[[1, 2]])
+    tool_ids: list[int] = Field(default_factory=list, max_length=16, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
 
 
 class AgentUpdateIn(BaseModel):
@@ -72,6 +73,7 @@ class AgentUpdateIn(BaseModel):
     )
     enabled: bool | None = Field(default=None, description="是否启用", examples=[False])
     skill_ids: list[int] | None = Field(default=None, max_length=16, description="替换关联的 Skill ID 列表", examples=[[1, 2]])
+    tool_ids: list[int] | None = Field(default=None, max_length=16, description="替换直接关联的 Tool ID 列表", examples=[[1, 2]])
 
 
 class AgentOut(BaseModel):
@@ -95,6 +97,7 @@ class AgentOut(BaseModel):
     enabled: bool = Field(description="是否启用", examples=[True])
     version: int = Field(description="配置版本号", examples=[1])
     skill_ids: list[int] = Field(default_factory=list, description="关联的 Skill ID", examples=[[1, 2]])
+    tool_ids: list[int] = Field(default_factory=list, description="直接关联的用户 Tool ID", examples=[[1, 2]])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-26T11:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-26T11:00:00"])
 

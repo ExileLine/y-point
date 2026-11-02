@@ -27,6 +27,12 @@ from app.services.artifact_renderers import ArtifactSheet, render_document_artif
 from app.services.artifact_store import MAX_FILE_BYTES, artifact_root, stage_generated_artifact, storage_path
 from app.services.private_blob_store import read_blob, using_s3
 from app.services.tool_registry import ToolContext, ToolRegistry, ToolSpec
+from app.services.user_tools import load_run_tools, model_tool_name
+from app.services.script_sandbox import run_script
+from app.services.mcp_tools import invoke_mcp_tool
+from app.services.provider_credentials import decrypt_credentials
+from jsonschema import Draft202012Validator
+from langchain_core.tools import StructuredTool
 
 MAX_TOOL_TEXT_BYTES = 64 * 1024
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
@@ -360,6 +366,50 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         staged=True,
                     )
                 )
-        return await registry.resolve(db, run, sessions)
+        builtins, approvals = await registry.resolve(db, run, sessions)
+        user_tools = await load_run_tools(db, run.id, run.owner_id)
+        for definition, version in user_tools:
+            tool_name = model_tool_name(definition)
+
+            async def invoke(_tool_id=definition.id, _tool_name=tool_name, **arguments):
+                """执行前复核本轮 Tool 授权与参数结构。"""
+                async with sessions() as current_db:
+                    current = await current_db.get(AgentRun, run.id)
+                    context = ToolContext(sessions, run.id, run.owner_id, run.lease_token)
+                    await context.require_active(current_db, enabled=lambda item: item.id == run.id)
+                    available = await load_run_tools(current_db, run.id, run.owner_id)
+                    match = next((item for item in available if item[0].id == _tool_id), None)
+                    if match is None or current is None:
+                        raise ValueError("Tool 授权已失效")
+                    selected, selected_version = match
+                    Draft202012Validator(selected_version.input_schema).validate(arguments)
+                    timeout = min(current.tool_timeout_seconds, 30)
+                    if selected.kind == "mcp":
+                        token, _ = decrypt_credentials(selected_version.encrypted_credentials)
+                        if (
+                            selected.owner_id != run.owner_id
+                            and selected_version.encrypted_credentials
+                            and not selected_version.share_credentials
+                        ):
+                            raise ValueError("MCP 凭据未授权共享")
+                        url, remote_name = selected_version.mcp_url, selected_version.mcp_tool_name
+                        expected_schema = selected_version.input_schema
+                    else:
+                        language, source = selected_version.script_language, selected_version.source_code
+                if selected.kind == "script":
+                    return await run_script(language, source, arguments, timeout)
+                return await invoke_mcp_tool(url, remote_name, arguments, token, timeout, expected_schema)
+
+            builtins.append(
+                StructuredTool.from_function(
+                    coroutine=invoke,
+                    name=tool_name,
+                    description=definition.description,
+                    args_schema=version.input_schema,
+                )
+            )
+            if version.requires_approval:
+                approvals[tool_name] = True
+        return builtins, approvals
 
     return resolve_tools

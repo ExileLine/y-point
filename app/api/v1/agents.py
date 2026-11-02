@@ -21,6 +21,7 @@ from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_share import AgentShare
 from app.models.skill import AgentSkill
+from app.models.tool import AgentTool
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
@@ -29,6 +30,7 @@ from app.services.identity import audit
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 from app.services.skills import agent_skill_rows, selected_skills
+from app.services.user_tools import agent_tool_rows, selected_tools
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -38,6 +40,7 @@ async def _agent_data(db: AsyncSession, agent: AgentConfig) -> dict:
     """输出配置与明确固定的 Skill 关联。"""
     data = AgentOut.model_validate(agent).model_dump(mode="json")
     data["skill_ids"] = [row.skill_id for row in await agent_skill_rows(db, agent.id)]
+    data["tool_ids"] = [row.tool_id for row in await agent_tool_rows(db, agent.id)]
     return data
 
 
@@ -91,12 +94,16 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     model = await _available_text_model(db, body.default_model_id, body.max_output_tokens)
     _check_cost_pricing(model, body.max_estimated_cost)
     skills = await selected_skills(db, body.skill_ids, actor.id)
-    agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids"}), version=1, is_deleted=0, status=1)
+    tools = await selected_tools(db, body.tool_ids, actor.id)
+    if tools and "tools" not in (model.verified_capabilities or []):
+        raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
+    agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids"}), version=1, is_deleted=0, status=1)
     db.add(agent)
     await db.flush()
     db.add_all(
         [AgentSkill(agent_id=agent.id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in skills]
     )
+    db.add_all([AgentTool(agent_id=agent.id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1) for item in tools])
     audit(db, "agent.created", actor_id=actor.id, target_id=agent.id)
     await db.commit()
     await db.refresh(agent)
@@ -257,8 +264,12 @@ async def update_agent(
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
     requested_skill_ids = changes.pop("skill_ids", None)
     selected = await selected_skills(db, requested_skill_ids, actor.id) if requested_skill_ids is not None else None
+    requested_tool_ids = changes.pop("tool_ids", None)
+    selected_user_tools = await selected_tools(db, requested_tool_ids, actor.id) if requested_tool_ids is not None else None
     if requested_skill_ids is None and "skill_ids" in body.model_fields_set:
         raise CustomException(status_code=400, custom_code=10005, detail="Skill 列表不能为空")
+    if requested_tool_ids is None and "tool_ids" in body.model_fields_set:
+        raise CustomException(status_code=400, custom_code=10005, detail="Tool 列表不能为空")
     required = {
         "name",
         "system_prompt",
@@ -276,7 +287,12 @@ async def update_agent(
             db, changes.get("default_model_id", agent.default_model_id), changes.get("max_output_tokens", agent.max_output_tokens)
         )
         _check_cost_pricing(model, changes.get("max_estimated_cost", agent.max_estimated_cost))
-    if changes or selected is not None:
+    linked_tools = selected_user_tools if selected_user_tools is not None else await agent_tool_rows(db, agent_id)
+    if linked_tools:
+        current_model = await db.get(ModelCatalog, changes.get("default_model_id", agent.default_model_id))
+        if current_model is None or "tools" not in (current_model.verified_capabilities or []):
+            raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
+    if changes or selected is not None or selected_user_tools is not None:
         result = await db.execute(
             update(AgentConfig)
             .where(
@@ -297,6 +313,14 @@ async def update_agent(
                 [
                     AgentSkill(agent_id=agent_id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1)
                     for item in selected
+                ]
+            )
+        if selected_user_tools is not None:
+            await db.execute(delete(AgentTool).where(AgentTool.agent_id == agent_id))
+            db.add_all(
+                [
+                    AgentTool(agent_id=agent_id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1)
+                    for item in selected_user_tools
                 ]
             )
         audit(db, "agent.updated", actor_id=actor.id, target_id=agent_id)

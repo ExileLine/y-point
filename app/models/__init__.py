@@ -25,6 +25,7 @@ from app.models.artifact import Artifact
 from app.models.artifact_source import ArtifactSource
 from app.models.run_artifact_read import RunArtifactRead
 from app.models.skill import Skill, SkillVersion, AgentSkill, RunSkill
+from app.models.tool import UserTool, UserToolVersion, AgentTool, RunTool, ToolInvocation
 
 __all__ = [
     "Admin",
@@ -51,4 +52,9 @@ __all__ = [
     "SkillVersion",
     "AgentSkill",
     "RunSkill",
+    "UserTool",
+    "UserToolVersion",
+    "AgentTool",
+    "RunTool",
+    "ToolInvocation",
 ]

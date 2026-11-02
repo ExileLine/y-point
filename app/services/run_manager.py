@@ -20,6 +20,7 @@ from app.models.agent_run_message import AgentRunMessage
 from app.models.agent_session import AgentSession
 from app.models.artifact import Artifact
 from app.models.run_approval import RunApproval
+from app.models.tool import ToolInvocation
 from app.models.base import shanghai_now
 
 
@@ -431,6 +432,12 @@ async def _change_state(
     result = await db.execute(statement.values(**values).execution_options(synchronize_session=False))
     if result.rowcount != 1:
         raise RunConflictError("运行状态已被其他执行器更新")
+    if state in TERMINAL_STATES:
+        await db.execute(
+            update(ToolInvocation)
+            .where(ToolInvocation.run_id == run.id, ToolInvocation.state == "running")
+            .values(state="unknown", failure_code="run_terminated")
+        )
     db.add(
         AgentRunEvent(
             run_id=run.id, sequence=run.event_seq + 1, protocol_version=1, event_type="state", state=state, failure_code=failure_code
