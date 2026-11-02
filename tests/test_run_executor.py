@@ -43,6 +43,7 @@ from app.models.base import Base, shanghai_now
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.models.skill import RunSkill, Skill, SkillVersion
 from app.cli import run_worker as run_worker_module
 from app.services import run_executor as run_executor_module
 from app.services import worker_tools as worker_tools_module
@@ -68,6 +69,7 @@ from app.services.run_manager import (
 from app.services.run_reconciler import reconcile_expired_runs
 from app.services.runtime_checkpoint import open_async_checkpointer, open_async_sqlite_checkpointer
 from app.services import runtime_checkpoint
+from app.services.skills import validate_package
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -103,6 +105,22 @@ class FailingModel(ScriptedModel):
     async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
         """模拟上游失败且不泄露原始异常正文。"""
         raise RuntimeError("private-upstream-error")
+
+
+class FailingAfterSkillRead(ScriptedModel):
+    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+        """读取 Skill 后模拟下一次上游模型调用失败。"""
+        if any(isinstance(message, ToolMessage) and message.name == "read_file" for message in messages):
+            raise RuntimeError("private-upstream-error")
+        return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+
+class FailingAfterAnyToolCall(ScriptedModel):
+    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+        """任意工具完成后模拟上游模型失败。"""
+        if any(isinstance(message, ToolMessage) for message in messages):
+            raise RuntimeError("private-upstream-error")
+        return await super()._agenerate(messages, stop, run_manager, **kwargs)
 
 
 class SimulatedProcessCrash(BaseException):
@@ -2254,6 +2272,160 @@ def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> 
             )
             assert resumed.state == "completed", resumed.failure_code
             assert resumed.thread_id == completed.thread_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
+    """失败轮次只读 Skill 后，后续轮次仍可从已确认检查点继续。"""
+
+    async def exercise() -> None:
+        """复现真实 Skill 读取计入工具次数后的检查点回退路径。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'skill-recovery.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "skill-recovery-checkpoint.db"
+        skill_text = "---\nname: status\ndescription: Read-only status instructions\n---\n\n# Status\nRead this file only.\n"
+        _, _, manifest, digest = validate_package(
+            {
+                "SKILL.md": skill_text,
+            }
+        )
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all(
+                    [
+                        Admin(id=1, username="skill-recovery-user", password="not-used", role="user", status=1, is_deleted=0),
+                        AgentConfig(
+                            id=3,
+                            owner_id=1,
+                            name="Skill Agent",
+                            default_model_id=1,
+                            enabled=True,
+                            version=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        Skill(
+                            id=1,
+                            owner_id=1,
+                            name="status",
+                            description="Read-only status instructions",
+                            visibility="private",
+                            enabled=True,
+                            current_version=1,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                        SkillVersion(
+                            skill_id=1,
+                            version=1,
+                            content_hash=digest,
+                            files={
+                                "SKILL.md": skill_text,
+                            },
+                            manifest=manifest,
+                            status=1,
+                            is_deleted=0,
+                        ),
+                    ]
+                )
+                first = await create_run(db, 1, agent_id=3, input_text="first")
+            completed = await execute_text_run(
+                sessions,
+                first.id,
+                ScriptedModel(responses=[AIMessage(content="first answer")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert completed.state == "completed" and completed.checkpoint_id
+            async with sessions.begin() as db:
+                failed_run = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="use status")
+                db.add(RunSkill(run_id=failed_run.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
+            failed = await execute_text_run(
+                sessions,
+                failed_run.id,
+                FailingAfterSkillRead(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {
+                                        "file_path": "/skills/status/SKILL.md",
+                                    },
+                                    "id": "skill-read",
+                                }
+                            ],
+                        )
+                    ]
+                ),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 1
+            async with sessions.begin() as db:
+                followup = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="continue")
+                db.add(RunSkill(run_id=followup.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
+            resumed = await execute_text_run(
+                sessions,
+                followup.id,
+                ScriptedModel(responses=[AIMessage(content="second answer")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert resumed.state == "completed", resumed.failure_code
+            assert resumed.checkpoint_id != completed.checkpoint_id
+            async with sessions.begin() as db:
+                other_tool_run = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="call echo")
+
+            async def resolve_echo(db: Any, run: AgentRun) -> tuple[list[Any], dict[str, bool]]:
+                """为保护性断言提供普通工具。"""
+                return [echo_approved], {}
+
+            other_failed = await execute_text_run(
+                sessions,
+                other_tool_run.id,
+                FailingAfterAnyToolCall(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "echo_approved",
+                                    "args": {
+                                        "text": "hello",
+                                    },
+                                    "id": "other-tool",
+                                }
+                            ],
+                        )
+                    ]
+                ),
+                checkpoint,
+                resolve_tools=resolve_echo,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert other_failed.state == "failed" and other_failed.tool_call_count == 1
+            async with sessions.begin() as db:
+                blocked_run = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="continue after other tool")
+            blocked = await execute_text_run(
+                sessions,
+                blocked_run.id,
+                ScriptedModel(responses=[AIMessage(content="must not appear")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert blocked.state == "failed" and blocked.failure_code == "checkpoint_mismatch"
         finally:
             await engine.dispose()
 

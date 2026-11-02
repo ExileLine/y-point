@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
+from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
@@ -519,6 +520,40 @@ async def _finish_interrupted(
         return latest
 
 
+async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
+    """仅在失败轮次没有外部副作用或只完成了 Skill 文件读取时允许回退。"""
+    if failed_run.tool_call_count == 0:
+        return True
+    if not await db.scalar(select(RunSkill.id).where(RunSkill.run_id == failed_run.id).limit(1)):
+        return False
+    events = (
+        await db.scalars(
+            select(AgentRunEvent)
+            .where(
+                AgentRunEvent.run_id == failed_run.id,
+                AgentRunEvent.event_type.in_(("tool_started", "tool_completed", "tool_failed")),
+            )
+            .order_by(AgentRunEvent.sequence)
+        )
+    ).all()
+    if len(events) != failed_run.tool_call_count * 2:
+        return False
+    started: dict[str, str] = {}
+    for event in events:
+        if not event.tool_call_id or not event.tool_name or not event.tool_name.startswith("skill:"):
+            return False
+        if event.event_type == "tool_started":
+            if event.tool_call_id in started:
+                return False
+            started[event.tool_call_id] = event.tool_name
+        elif event.event_type == "tool_completed":
+            if started.pop(event.tool_call_id, None) != event.tool_name:
+                return False
+        else:
+            return False
+    return not started
+
+
 async def execute_text_run(
     sessions: async_sessionmaker[AsyncSession],
     run_id: str,
@@ -697,6 +732,7 @@ async def execute_text_run(
                 expected_checkpoint_id = expected_run.checkpoint_id if expected_run is not None else None
                 checkpoint_run_id = (snapshot.metadata or {}).get("run_id")
                 checkpoint_run = await db.get(AgentRun, checkpoint_run_id) if isinstance(checkpoint_run_id, str) else None
+                safe_rewind = await _can_rewind_failed_run(db, checkpoint_run) if checkpoint_run is not None else False
             if (
                 not resume
                 and actual_checkpoint_id != expected_checkpoint_id
@@ -707,7 +743,7 @@ async def execute_text_run(
                 and checkpoint_run.session_id == run.session_id
                 and checkpoint_run.thread_id == thread_id
                 and checkpoint_run.state in {"failed", "cancelled", "timed_out"}
-                and checkpoint_run.tool_call_count == 0
+                and safe_rewind
                 and expected_run.create_time < checkpoint_run.create_time < run.create_time
             ):
                 runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
