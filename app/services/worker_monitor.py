@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import RunState
 from app.models.agent_run import AgentRun
 from app.models.base import shanghai_datetime, shanghai_now
 from app.models.run_worker_heartbeat import RunWorkerHeartbeat
@@ -86,12 +87,12 @@ async def inspect_worker_status(db: AsyncSession, *, stale_after_seconds: int = 
         .where(RunWorkerHeartbeat.stopped_at.is_(None), RunWorkerHeartbeat.last_seen_at >= cutoff)
     )
     latest_heartbeat_at = await db.scalar(select(func.max(RunWorkerHeartbeat.last_seen_at)))
-    queued_runs = await db.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.state == "queued"))
-    oldest_queued_at = await db.scalar(select(func.min(AgentRun.create_time)).where(AgentRun.state == "queued"))
+    queued_runs = await db.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.state == RunState.QUEUED))
+    oldest_queued_at = await db.scalar(select(func.min(AgentRun.create_time)).where(AgentRun.state == RunState.QUEUED))
     expired_running_runs = await db.scalar(
         select(func.count())
         .select_from(AgentRun)
-        .where(AgentRun.state.in_(("running", "cancel_requested")), AgentRun.lease_expires_at <= now)
+        .where(AgentRun.state.in_((RunState.RUNNING, RunState.CANCEL_REQUESTED)), AgentRun.lease_expires_at <= now)
     )
     oldest_queued_seconds = None
     if oldest_queued_at is not None:

@@ -9,14 +9,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.enums import ScriptLanguage, ToolKind, Visibility
+
 
 class ToolCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=64, description="创建者范围内的工具名称", examples=["disk_report"])
     description: str = Field(min_length=1, max_length=1024, description="模型可见的工具用途", examples=["读取磁盘使用摘要"])
-    kind: str = Field(pattern="^(script|mcp)$", description="脚本或 MCP 工具", examples=["script"])
-    visibility: str = Field(default="private", pattern="^(private|public)$", description="私有或公开", examples=["private"])
+    kind: ToolKind = Field(description="脚本或 MCP 工具", examples=["script"])
+    visibility: Visibility = Field(default=Visibility.PRIVATE, description="私有或公开", examples=["private"])
     input_schema: dict[str, Any] | None = Field(
         default=None,
         description="脚本参数的 JSON Schema 对象；MCP 由远端发现",
@@ -26,7 +28,13 @@ class ToolCreateIn(BaseModel):
             }
         ],
     )
-    script_language: str | None = Field(default=None, description="脚本语言 python 或 bash", examples=["python"])
+    script_language: ScriptLanguage | None = Field(default=None, description="脚本语言 python 或 bash", examples=["python"])
+    requirements: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="Python 依赖清单，支持包名与版本约束，不接受 URL 或 pip 选项",
+        examples=[["httpx>=0.27,<1"]],
+    )
     source_code: str | None = Field(default=None, description="UTF-8 脚本源码", examples=["import json\nprint(json.dumps({'ok': True}))"])
     mcp_url: str | None = Field(
         default=None, max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"]
@@ -41,7 +49,7 @@ class ToolUpdateIn(BaseModel):
 
     expected_version: int = Field(ge=1, description="预期的当前 Tool 版本号", examples=[1])
     description: str | None = Field(default=None, min_length=1, max_length=1024, description="新版工具用途", examples=["读取磁盘摘要"])
-    visibility: str | None = Field(default=None, pattern="^(private|public)$", description="私有或公开", examples=["public"])
+    visibility: Visibility | None = Field(default=None, description="私有或公开", examples=["public"])
     enabled: bool | None = Field(default=None, description="是否启用", examples=[True])
     input_schema: dict[str, Any] | None = Field(
         default=None,
@@ -51,6 +59,9 @@ class ToolUpdateIn(BaseModel):
                 "type": "object",
             }
         ],
+    )
+    requirements: list[str] | None = Field(
+        default=None, max_length=32, description="新版 Python 依赖清单，空列表表示不需要额外依赖", examples=[["httpx==0.28.1"]]
     )
     source_code: str | None = Field(default=None, description="新版脚本源码", examples=["print('{}')"])
     mcp_url: str | None = Field(default=None, max_length=512, description="新版 MCP 地址", examples=["https://mcp.example.com/mcp"])
@@ -77,3 +88,9 @@ class McpDiscoverIn(BaseModel):
 
     url: str = Field(max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"])
     bearer_token: str | None = Field(default=None, description="可选的 MCP Bearer 凭据", examples=["token-value"])
+
+
+class ToolEnvironmentRetryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1, description="待重新准备环境的当前 Tool 版本号", examples=[1])

@@ -7,6 +7,8 @@
 
 from datetime import datetime
 
+from app.core.enums import ArtifactOrigin, ArtifactState
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -20,8 +22,8 @@ class ArtifactOut(BaseModel):
     media_type: str = Field(description="服务端核验后的媒体类型", examples=["application/pdf"])
     byte_size: int = Field(description="文件字节数", examples=[2048])
     sha256: str = Field(description="文件 SHA-256 摘要", examples=["a" * 64])
-    source: str = Field(description="文件来源", examples=["upload"])
-    state: str = Field(description="文件状态", examples=["ready"])
+    source: ArtifactOrigin = Field(description="文件来源", examples=["upload"])
+    state: ArtifactState = Field(description="文件状态", examples=["ready"])
     run_id: str | None = Field(description="关联的运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     source_artifact_id: str | None = Field(description="生成产物的来源文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     context_artifact_ids: list[str] = Field(

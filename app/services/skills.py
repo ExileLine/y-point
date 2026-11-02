@@ -17,6 +17,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import Visibility
 from app.core.custom_exception import CustomException
 from app.models.skill import AgentSkill, RunSkill, Skill, SkillVersion
 
@@ -136,7 +137,7 @@ async def selected_skills(db: AsyncSession, skill_ids: list[int], owner_id: int)
         raise CustomException(status_code=400, custom_code=10005, detail="最多关联 16 个不重复的 Skill")
     skills = (await db.scalars(select(Skill).where(Skill.id.in_(skill_ids)).with_for_update())).all() if skill_ids else []
     if len(skills) != len(skill_ids) or any(
-        item.is_deleted != 0 or not item.enabled or (item.owner_id != owner_id and item.visibility != "public") for item in skills
+        item.is_deleted != 0 or not item.enabled or (item.owner_id != owner_id and item.visibility != Visibility.PUBLIC) for item in skills
     ):
         raise CustomException(status_code=404, custom_code=10002, detail="Skill 不存在或不可用")
     if len({item.name for item in skills}) != len(skills):

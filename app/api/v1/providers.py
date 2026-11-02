@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ProviderKind
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import require_admin
@@ -25,47 +26,47 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 
 PROVIDER_KINDS = [
     ProviderKindOut(
-        kind="openai_compatible",
+        kind=ProviderKind.OPENAI_COMPATIBLE,
         display_name="OpenAI 兼容接口",
         required_fields=["name", "kind", "base_url"],
         optional_fields=["api_key", "custom_headers", "timeout_seconds", "remark", "status"],
     ),
     ProviderKindOut(
-        kind="openai",
+        kind=ProviderKind.OPENAI,
         display_name="OpenAI",
         required_fields=["name", "kind", "base_url", "api_key"],
         optional_fields=["custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://api.openai.com/v1",
     ),
     ProviderKindOut(
-        kind="anthropic",
+        kind=ProviderKind.ANTHROPIC,
         display_name="Anthropic",
         required_fields=["name", "kind", "base_url", "api_key"],
         optional_fields=["api_version", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://api.anthropic.com/v1",
     ),
     ProviderKindOut(
-        kind="ollama",
+        kind=ProviderKind.OLLAMA,
         display_name="Ollama",
         required_fields=["name", "kind", "base_url"],
         optional_fields=["api_key", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="http://127.0.0.1:11434/v1",
     ),
     ProviderKindOut(
-        kind="azure_openai",
+        kind=ProviderKind.AZURE_OPENAI,
         display_name="Azure OpenAI",
         required_fields=["name", "kind", "base_url", "api_key", "api_version"],
         optional_fields=["custom_headers", "timeout_seconds", "remark", "status"],
     ),
     ProviderKindOut(
-        kind="gemini",
+        kind=ProviderKind.GEMINI,
         display_name="Gemini Developer API",
         required_fields=["name", "kind", "api_key"],
         optional_fields=["base_url", "api_version", "custom_headers", "timeout_seconds", "remark", "status"],
         suggested_base_url="https://generativelanguage.googleapis.com",
     ),
     ProviderKindOut(
-        kind="bedrock",
+        kind=ProviderKind.BEDROCK,
         display_name="AWS Bedrock",
         required_fields=["name", "kind", "region"],
         optional_fields=["timeout_seconds", "remark", "status"],
@@ -83,11 +84,11 @@ async def list_provider_kinds(actor: Admin = Depends(require_admin)):
 async def create_provider(body: ProviderCreateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """由管理员创建供应商连接，凭据加密后保存。"""
     name = body.name.strip()
-    if body.kind == "bedrock" and (body.api_key is not None or body.custom_headers):
+    if body.kind == ProviderKind.BEDROCK and (body.api_key is not None or body.custom_headers):
         raise CustomException(status_code=400, custom_code=10005, detail="Bedrock 使用本机 AWS 凭据链，不接受接口密钥或自定义请求头")
-    if body.kind == "azure_openai" and not body.api_version:
+    if body.kind == ProviderKind.AZURE_OPENAI and not body.api_version:
         raise CustomException(status_code=400, custom_code=10005, detail="Azure OpenAI 需要 API 版本")
-    if body.kind == "gemini" and body.api_version not in {None, "v1", "v1beta"}:
+    if body.kind == ProviderKind.GEMINI and body.api_version not in {None, "v1", "v1beta"}:
         raise CustomException(status_code=400, custom_code=10005, detail="Gemini 接口版本只支持 v1 或 v1beta")
     provider = ProviderConnection(
         name=name,
@@ -103,7 +104,7 @@ async def create_provider(body: ProviderCreateIn, actor: Admin = Depends(require
         creator_id=actor.id,
     )
     set_provider_credentials(provider, body)
-    if body.kind in {"azure_openai", "gemini"} and not provider.has_api_key:
+    if body.kind in {ProviderKind.AZURE_OPENAI, ProviderKind.GEMINI} and not provider.has_api_key:
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     db.add(provider)
     await flush_catalog(db)
@@ -162,19 +163,19 @@ async def update_provider(
                 provider.name_key = value.lower()
             setattr(provider, name, value)
     if "base_url" in fields:
-        if body.base_url is None and provider.kind not in {"gemini", "bedrock"}:
+        if body.base_url is None and provider.kind not in {ProviderKind.GEMINI, ProviderKind.BEDROCK}:
             raise CustomException(status_code=400, custom_code=10005, detail="接口地址不能为空")
         provider.base_url = normalize_base_url(body.base_url, kind=provider.kind, region=provider.region)
-    if provider.kind == "bedrock" and "region" in fields:
-        provider.base_url = normalize_base_url(None, kind="bedrock", region=provider.region)
-    if provider.kind == "azure_openai" and not provider.api_version:
+    if provider.kind == ProviderKind.BEDROCK and "region" in fields:
+        provider.base_url = normalize_base_url(None, kind=ProviderKind.BEDROCK, region=provider.region)
+    if provider.kind == ProviderKind.AZURE_OPENAI and not provider.api_version:
         raise CustomException(status_code=400, custom_code=10005, detail="Azure OpenAI 需要 API 版本")
-    if provider.kind == "gemini" and provider.api_version not in {None, "v1", "v1beta"}:
+    if provider.kind == ProviderKind.GEMINI and provider.api_version not in {None, "v1", "v1beta"}:
         raise CustomException(status_code=400, custom_code=10005, detail="Gemini 接口版本只支持 v1 或 v1beta")
-    if provider.kind == "bedrock" and ((body.api_key is not None and "api_key" in fields) or body.custom_headers):
+    if provider.kind == ProviderKind.BEDROCK and ((body.api_key is not None and "api_key" in fields) or body.custom_headers):
         raise CustomException(status_code=400, custom_code=10005, detail="Bedrock 使用本机 AWS 凭据链，不接受接口密钥或自定义请求头")
     set_provider_credentials(provider, body)
-    if provider.kind in {"azure_openai", "gemini"} and not provider.has_api_key:
+    if provider.kind in {ProviderKind.AZURE_OPENAI, ProviderKind.GEMINI} and not provider.has_api_key:
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     await flush_catalog(db)
     if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:

@@ -8,11 +8,11 @@
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
 
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import ModelCapability, RecoveryPolicy, RunState, ToolEffect
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.base import shanghai_now
@@ -21,8 +21,6 @@ from app.models.provider_connection import ProviderConnection
 from app.services.agent_access import can_access_run_agent
 
 RESERVED_TOOL_NAMES = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos"})
-ToolEffect = Literal["read", "write"]
-RecoveryPolicy = Literal["safe", "idempotent", "compensated"]
 
 
 @dataclass(frozen=True)
@@ -40,7 +38,7 @@ class ToolContext:
         if (
             run is None
             or run.owner_id != self.owner_id
-            or run.state != "running"
+            or run.state != RunState.RUNNING
             or not self.lease_token
             or run.lease_token != self.lease_token
             or run.lease_expires_at is None
@@ -55,7 +53,12 @@ class ToolContext:
             raise ValueError("工具授权已失效")
         if run.model_id is not None:
             model = await db.get(ModelCatalog, run.model_id)
-            if model is None or model.status != 1 or model.is_deleted != 0 or "tools" not in (model.verified_capabilities or []):
+            if (
+                model is None
+                or model.status != 1
+                or model.is_deleted != 0
+                or ModelCapability.TOOLS not in (model.verified_capabilities or [])
+            ):
                 raise ValueError("工具授权已失效")
             provider = await db.get(ProviderConnection, model.provider_id)
             if provider is None or provider.status != 1 or provider.is_deleted != 0:
@@ -87,10 +90,11 @@ class ToolRegistry:
             raise ValueError("工具名无效或与运行时内置工具冲突")
         if spec.name in self._specs:
             raise ValueError("工具名重复")
-        if spec.effect not in {"read", "write"} or spec.recovery not in {"safe", "idempotent", "compensated"}:
+        if spec.effect not in ToolEffect or spec.recovery not in RecoveryPolicy:
             raise ValueError("工具副作用或恢复策略无效")
-        if spec.effect == "write" and (
-            spec.recovery == "safe" or (not spec.requires_approval and (not (spec.staged and spec.recovery == "idempotent")))
+        if spec.effect == ToolEffect.WRITE and (
+            spec.recovery == RecoveryPolicy.SAFE
+            or (not spec.requires_approval and (not (spec.staged and spec.recovery == RecoveryPolicy.IDEMPOTENT)))
         ):
             raise ValueError("写工具必须经过审批，或仅暂存并具备幂等策略")
         self._specs[spec.name] = spec

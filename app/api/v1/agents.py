@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ModelCapability
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -65,7 +66,7 @@ async def _available_text_model(db: AsyncSession, model_id: int, max_output_toke
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
-    if "text" not in (model.verified_capabilities or []):
+    if ModelCapability.TEXT not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过文本能力验证")
     if model.context_window is not None and model.context_window - max_output_tokens < CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS:
         raise CustomException(status_code=409, custom_code=10005, detail="模型上下文窗口无法容纳输出上限和最低输入空间")
@@ -95,7 +96,7 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     _check_cost_pricing(model, body.max_estimated_cost)
     skills = await selected_skills(db, body.skill_ids, actor.id)
     tools = await selected_tools(db, body.tool_ids, actor.id)
-    if tools and "tools" not in (model.verified_capabilities or []):
+    if tools and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
     agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids"}), version=1, is_deleted=0, status=1)
     db.add(agent)
@@ -290,7 +291,7 @@ async def update_agent(
     linked_tools = selected_user_tools if selected_user_tools is not None else await agent_tool_rows(db, agent_id)
     if linked_tools:
         current_model = await db.get(ModelCatalog, changes.get("default_model_id", agent.default_model_id))
-        if current_model is None or "tools" not in (current_model.verified_capabilities or []):
+        if current_model is None or ModelCapability.TOOLS not in (current_model.verified_capabilities or []):
             raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
     if changes or selected is not None or selected_user_tools is not None:
         result = await db.execute(

@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.core.enums import ProviderKind
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import ModelTestOut
@@ -18,13 +19,13 @@ from app.services.provider_probe import provider_request_headers
 
 async def probe_model(model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None) -> ModelTestOut:
     """发送最小文本生成请求，诊断指定模型是否可以实际调用。"""
-    if provider.kind == "bedrock":
+    if provider.kind == ProviderKind.BEDROCK:
         from app.services.bedrock_probe import probe_bedrock_model
 
         return await probe_bedrock_model(model, provider)
     headers = provider_request_headers(provider)
     base_url = httpx.URL(provider.base_url)
-    if provider.kind == "anthropic":
+    if provider.kind == ProviderKind.ANTHROPIC:
         endpoint = "messages"
         payload = {
             "model": model.external_id,
@@ -36,7 +37,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                 }
             ],
         }
-    elif provider.kind == "azure_openai":
+    elif provider.kind == ProviderKind.AZURE_OPENAI:
         endpoint = f"openai/deployments/{quote(model.external_id, safe='')}/chat/completions"
         payload = {
             "messages": [
@@ -48,7 +49,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
             "max_tokens": 16,
             "stream": False,
         }
-    elif provider.kind == "gemini":
+    elif provider.kind == ProviderKind.GEMINI:
         endpoint = f"{provider.api_version or 'v1beta'}/models/{quote(model.external_id, safe='')}:generateContent"
         payload = {
             "contents": [
@@ -67,7 +68,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
         }
     else:
         endpoint = "chat/completions"
-        token_field = "max_completion_tokens" if provider.kind == "openai" else "max_tokens"
+        token_field = "max_completion_tokens" if provider.kind == ProviderKind.OPENAI else "max_tokens"
         payload = {
             "model": model.external_id,
             token_field: 1,
@@ -80,7 +81,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
             "stream": False,
         }
     url = base_url.copy_with(path=f"{base_url.path.rstrip('/')}/{endpoint}")
-    if provider.kind == "azure_openai":
+    if provider.kind == ProviderKind.AZURE_OPENAI:
         url = url.copy_add_param("api-version", provider.api_version)
     started = time.perf_counter()
     own_client = client is None
@@ -109,12 +110,18 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
         if failure is None:
             try:
                 data = response.json()
-                key = "content" if provider.kind == "anthropic" else "candidates" if provider.kind == "gemini" else "choices"
+                key = (
+                    "content"
+                    if provider.kind == ProviderKind.ANTHROPIC
+                    else "candidates"
+                    if provider.kind == ProviderKind.GEMINI
+                    else "choices"
+                )
                 if not isinstance(data, dict) or not isinstance(data.get(key), list) or not data[key]:
                     failure = "invalid_response"
-                elif provider.kind == "anthropic" and not isinstance(data[key][0], dict):
+                elif provider.kind == ProviderKind.ANTHROPIC and not isinstance(data[key][0], dict):
                     failure = "invalid_response"
-                elif provider.kind == "gemini" and (
+                elif provider.kind == ProviderKind.GEMINI and (
                     not isinstance(data[key][0], dict)
                     or not isinstance(data[key][0].get("content"), dict)
                     or not isinstance(data[key][0]["content"].get("parts"), list)
@@ -124,11 +131,11 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                     )
                 ):
                     failure = "invalid_response"
-                elif provider.kind not in {"anthropic", "gemini"} and (
+                elif provider.kind not in {ProviderKind.ANTHROPIC, ProviderKind.GEMINI} and (
                     not isinstance(data[key][0], dict) or not isinstance(data[key][0].get("message"), dict)
                 ):
                     failure = "invalid_response"
-                usage = data.get("usageMetadata") if provider.kind == "gemini" else data.get("usage")
+                usage = data.get("usageMetadata") if provider.kind == ProviderKind.GEMINI else data.get("usage")
                 if failure is None and isinstance(usage, dict):
                     input_key, output_key = {
                         "gemini": ("promptTokenCount", "candidatesTokenCount"),

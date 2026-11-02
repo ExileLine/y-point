@@ -13,6 +13,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import UserRole
 from app.core.config import get_config
 from app.core.custom_exception import CustomException
 from app.db.session import get_db_session
@@ -174,14 +175,14 @@ async def get_stream_admin(
 
 async def require_admin(admin: Admin = Depends(get_current_admin)) -> Admin:
     """检查当前用户是否具有管理员角色。"""
-    if admin.role != "admin":
+    if admin.role != UserRole.ADMIN:
         raise CustomException(status_code=403, custom_code=403, detail="需要管理员权限")
     return admin
 
 
 def authorize_owner(admin: Admin, owner_id: int) -> None:
     """仅允许资源所有者或管理员访问指定资源。"""
-    if admin.role != "admin" and admin.id != owner_id:
+    if admin.role != UserRole.ADMIN and admin.id != owner_id:
         raise CustomException(status_code=404, custom_code=10002, detail="资源不存在")
 
 

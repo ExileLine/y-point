@@ -6,12 +6,13 @@
 """通过 MCP Streamable HTTP 发现和调用远端工具。"""
 
 import json
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from urllib.parse import urlsplit
 
 import httpx
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from app.services.user_tools import validate_mcp_url
 
@@ -43,32 +44,20 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
                 "sni_hostname": self.host,
             },
         )
-        return await self.transport.handle_async_request(rewritten)
+        response = await self.transport.handle_async_request(rewritten)
+        if 300 <= response.status_code < 400:
+            await response.aclose()
+            raise ValueError("MCP 不允许重定向")
+        return response
 
     async def aclose(self) -> None:
         """关闭底层 HTTP 连接池。"""
         await self.transport.aclose()
 
 
-def _client_factory(host: str, address: str):
-    """创建不读取环境代理且固定公网目标的 MCP 客户端。"""
-
-    def create(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
-        """满足 MCP SDK 的客户端工厂接口。"""
-        return httpx.AsyncClient(
-            headers=headers,
-            timeout=timeout,
-            auth=auth,
-            transport=_PinnedPublicTransport(host, address),
-            trust_env=False,
-            follow_redirects=False,
-        )
-
-    return create
-
-
-async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[dict]:
-    """建立连接并返回远端可发布工具的名称、说明和输入结构。"""
+@asynccontextmanager
+async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int):
+    """管理固定公网 IP 的 HTTP 客户端及 MCP 连接生命周期。"""
     address = validate_mcp_url(url)
     headers = (
         {
@@ -77,13 +66,20 @@ async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[
         if bearer_token
         else None
     )
-    async with streamablehttp_client(
-        url,
+    async with httpx.AsyncClient(
         headers=headers,
-        timeout=10,
-        sse_read_timeout=10,
-        httpx_client_factory=_client_factory(urlsplit(url).hostname, address),
-    ) as (read, write, _):
+        timeout=httpx.Timeout(10, read=read_timeout),
+        transport=_PinnedPublicTransport(urlsplit(url).hostname, address),
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
+        async with streamable_http_client(url, http_client=client) as streams:
+            yield streams
+
+
+async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[dict]:
+    """建立连接并返回远端可发布工具的名称、说明和输入结构。"""
+    async with _mcp_connection(url, bearer_token, 10) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             response = await session.list_tools()
@@ -101,21 +97,7 @@ async def invoke_mcp_tool(
     url: str, name: str, arguments: dict, bearer_token: str | None, timeout_seconds: int, expected_schema: dict
 ) -> str:
     """核对远端工具结构后调用，并仅返回有界的文本或结构化内容。"""
-    address = validate_mcp_url(url)
-    headers = (
-        {
-            "Authorization": f"Bearer {bearer_token}",
-        }
-        if bearer_token
-        else None
-    )
-    async with streamablehttp_client(
-        url,
-        headers=headers,
-        timeout=10,
-        sse_read_timeout=timeout_seconds,
-        httpx_client_factory=_client_factory(urlsplit(url).hostname, address),
-    ) as (read, write, _):
+    async with _mcp_connection(url, bearer_token, timeout_seconds) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             discovered = await session.list_tools()

@@ -16,6 +16,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole
 from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
@@ -42,7 +43,7 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
             .where(
                 AgentRunMessage.run_id == run_id,
                 AgentRunMessage.owner_id == owner_id,
-                AgentRunMessage.role == "user",
+                AgentRunMessage.role == MessageRole.USER,
                 AgentMessageAttachment.included_in_context.is_(True),
                 AgentMessageAttachment.media_type.in_(CONTEXT_MEDIA_TYPES),
             )
@@ -58,9 +59,9 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
             select(Artifact).where(
                 Artifact.id.in_([item.artifact_id for item in references]),
                 Artifact.owner_id == owner_id,
-                Artifact.source == "upload",
+                Artifact.source == ArtifactOrigin.UPLOAD,
                 Artifact.run_id.is_(None),
-                Artifact.state == "ready",
+                Artifact.state == ArtifactState.READY,
                 Artifact.status == 1,
                 Artifact.is_deleted == 0,
                 Artifact.media_type.in_(CONTEXT_MEDIA_TYPES),
@@ -110,7 +111,7 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
             .where(
                 AgentRunMessage.run_id == run_id,
                 AgentRunMessage.owner_id == owner_id,
-                AgentRunMessage.role == "user",
+                AgentRunMessage.role == MessageRole.USER,
                 AgentMessageAttachment.included_in_context.is_(True),
                 AgentMessageAttachment.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
             )
@@ -126,9 +127,9 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
             select(Artifact).where(
                 Artifact.id.in_([item.artifact_id for item in references]),
                 Artifact.owner_id == owner_id,
-                Artifact.source == "upload",
+                Artifact.source == ArtifactOrigin.UPLOAD,
                 Artifact.run_id.is_(None),
-                Artifact.state == "ready",
+                Artifact.state == ArtifactState.READY,
                 Artifact.status == 1,
                 Artifact.is_deleted == 0,
                 Artifact.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
@@ -187,7 +188,7 @@ async def load_run_context_artifact_ids(db: AsyncSession, owner_id: int, run_ids
             .where(
                 AgentRunMessage.run_id.in_(run_ids),
                 AgentRunMessage.owner_id == owner_id,
-                AgentRunMessage.role == "user",
+                AgentRunMessage.role == MessageRole.USER,
                 AgentMessageAttachment.included_in_context.is_(True),
             )
             .order_by(AgentRunMessage.id, AgentMessageAttachment.position)
@@ -218,8 +219,8 @@ async def load_message_attachments(db: AsyncSession, owner_id: int, message_ids:
                 select(Artifact.id).where(
                     Artifact.id.in_([item.artifact_id for item in references]),
                     Artifact.owner_id == owner_id,
-                    Artifact.source == "upload",
-                    Artifact.state == "ready",
+                    Artifact.source == ArtifactOrigin.UPLOAD,
+                    Artifact.state == ArtifactState.READY,
                     Artifact.is_deleted == 0,
                     (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
                 )
@@ -245,7 +246,7 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
     """按 Run 批量关联生成产物，保留已删除产物的历史位置。"""
     if not assistant_messages:
         return {}
-    message_by_run = {message.run_id: message.id for message in assistant_messages if message.role == "assistant"}
+    message_by_run = {message.run_id: message.id for message in assistant_messages if message.role == MessageRole.ASSISTANT}
     if not message_by_run:
         return {}
     items = (
@@ -254,8 +255,8 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
             .where(
                 Artifact.run_id.in_(message_by_run),
                 Artifact.owner_id == owner_id,
-                Artifact.source == "generated",
-                Artifact.state != "pending",
+                Artifact.source == ArtifactOrigin.GENERATED,
+                Artifact.state != ArtifactState.PENDING,
             )
             .order_by(Artifact.create_time, Artifact.id)
         )
@@ -273,7 +274,7 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
                 "byte_size": item.byte_size,
                 "context_artifact_ids": context_by_run.get(item.run_id, []),
                 "read_source_artifact_ids": read_sources.get(item.id, []),
-                "available": item.state == "ready"
+                "available": item.state == ArtifactState.READY
                 and item.is_deleted == 0
                 and item.status == 1
                 and (item.expires_at is None or item.expires_at > now),

@@ -9,6 +9,7 @@ from getpass import getpass
 
 from sqlalchemy import func, select
 
+from app.core.enums import UserRole
 from app.db.session import AsyncSessionLocal, close_db
 from app.models.admin import Admin
 from app.services.identity import audit, ensure_unique_identity, set_user_password
@@ -17,10 +18,12 @@ from app.services.identity import audit, ensure_unique_identity, set_user_passwo
 async def create_first_admin(username: str, mail: str | None, password: str) -> None:
     """仅在没有有效管理员时创建首位管理员。"""
     async with AsyncSessionLocal() as db:
-        if await db.scalar(select(func.count()).select_from(Admin).where(Admin.role == "admin", Admin.status == 1, Admin.is_deleted == 0)):
+        if await db.scalar(
+            select(func.count()).select_from(Admin).where(Admin.role == UserRole.ADMIN, Admin.status == 1, Admin.is_deleted == 0)
+        ):
             raise SystemExit("已有有效管理员；请通过管理员 API 创建后续账户")
         await ensure_unique_identity(db, username=username, mail=mail)
-        admin = Admin(username=username, mail=mail, role="admin", status=1, is_deleted=0)
+        admin = Admin(username=username, mail=mail, role=UserRole.ADMIN, status=1, is_deleted=0)
         set_user_password(admin, password)
         db.add(admin)
         await db.flush()

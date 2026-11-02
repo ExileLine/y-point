@@ -26,6 +26,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, RunEventType, RunState
 from app.core.config import BASE_DIR, get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
@@ -195,7 +196,7 @@ async def enforce_owner_quota(db: AsyncSession, owner_id: int, *, add_count: int
         await db.execute(
             select(func.count(Artifact.id), func.coalesce(func.sum(Artifact.byte_size), 0)).where(
                 Artifact.owner_id == owner_id,
-                Artifact.state.in_(("ready", "pending")),
+                Artifact.state.in_((ArtifactState.READY, ArtifactState.PENDING)),
                 Artifact.is_deleted == 0,
                 or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
             )
@@ -259,8 +260,8 @@ async def save_upload(file: UploadFile, owner_id: int, root: Path) -> tuple[Arti
             byte_size=total,
             sha256=digest.hexdigest(),
             storage_key=key,
-            source="upload",
-            state="ready",
+            source=ArtifactOrigin.UPLOAD,
+            state=ArtifactState.READY,
             is_deleted=0,
             status=1,
             expires_at=expires_at,
@@ -292,7 +293,7 @@ async def publish_generated_artifact(
             if (
                 existing.filename != filename
                 or existing.sha256 != digest
-                or existing.state != "ready"
+                or existing.state != ArtifactState.READY
                 or existing.source_artifact_id != source_artifact_id
             ):
                 raise ArtifactValidationError("产物发布幂等键与已有文件冲突")
@@ -317,15 +318,15 @@ async def publish_generated_artifact(
         async with sessions.begin() as db:
             run = await db.get(AgentRun, run_id)
             user = await db.get(Admin, run.owner_id) if run is not None else None
-            if run is None or run.state != "completed" or user is None or user.status != 1 or user.is_deleted != 0:
+            if run is None or run.state != RunState.COMPLETED or user is None or user.status != 1 or user.is_deleted != 0:
                 raise ArtifactValidationError("仅可为已完成且所有者有效的运行发布产物")
             if source_artifact_id is not None:
                 source = await db.get(Artifact, source_artifact_id)
                 if (
                     source is None
                     or source.owner_id != run.owner_id
-                    or source.source != "upload"
-                    or source.state != "ready"
+                    or source.source != ArtifactOrigin.UPLOAD
+                    or source.state != ArtifactState.READY
                     or source.is_deleted != 0
                     or source.expires_at is not None
                     and source.expires_at <= shanghai_now(naive=True)
@@ -347,8 +348,8 @@ async def publish_generated_artifact(
                 byte_size=len(content),
                 sha256=digest,
                 storage_key=key,
-                source="generated",
-                state="ready",
+                source=ArtifactOrigin.GENERATED,
+                state=ArtifactState.READY,
                 expires_at=expires_at,
                 is_deleted=0,
                 status=1,
@@ -357,7 +358,7 @@ async def publish_generated_artifact(
             await db.flush()
             result = await db.execute(
                 update(AgentRun)
-                .where(AgentRun.id == run_id, AgentRun.state == "completed", AgentRun.version == run.version)
+                .where(AgentRun.id == run_id, AgentRun.state == RunState.COMPLETED, AgentRun.version == run.version)
                 .values(version=run.version + 1, event_seq=run.event_seq + 1)
                 .execution_options(synchronize_session=False)
             )
@@ -368,8 +369,8 @@ async def publish_generated_artifact(
                     run_id=run_id,
                     sequence=run.event_seq + 1,
                     protocol_version=1,
-                    event_type="artifact_published",
-                    state="completed",
+                    event_type=RunEventType.ARTIFACT_PUBLISHED,
+                    state=RunState.COMPLETED,
                     artifact_id=artifact.id,
                 )
             )
@@ -383,7 +384,7 @@ async def publish_generated_artifact(
             existing is not None
             and existing.filename == filename
             and existing.sha256 == digest
-            and existing.state == "ready"
+            and existing.state == ArtifactState.READY
             and existing.source_artifact_id == source_artifact_id
         ):
             return existing
@@ -422,7 +423,7 @@ async def stage_generated_artifact(
 
     existing = await existing_artifact()
     if existing is not None:
-        if existing.sha256 != digest or existing.filename != filename or existing.state != "pending":
+        if existing.sha256 != digest or existing.filename != filename or existing.state != ArtifactState.PENDING:
             raise ArtifactValidationError("同名生成文件内容冲突")
         return existing
 
@@ -447,7 +448,7 @@ async def stage_generated_artifact(
             if (
                 run is None
                 or run.owner_id != owner_id
-                or run.state != "running"
+                or run.state != RunState.RUNNING
                 or run.lease_token != lease_token
                 or run.lease_expires_at is None
                 or run.lease_expires_at <= now
@@ -455,7 +456,7 @@ async def stage_generated_artifact(
                 raise ArtifactValidationError("运行授权已失效")
             count = await db.scalar(
                 select(func.count(Artifact.id)).where(
-                    Artifact.run_id == run_id, Artifact.source == "generated", Artifact.state == "pending"
+                    Artifact.run_id == run_id, Artifact.source == ArtifactOrigin.GENERATED, Artifact.state == ArtifactState.PENDING
                 )
             )
             if count >= MAX_FILES:
@@ -479,8 +480,8 @@ async def stage_generated_artifact(
                 byte_size=len(data),
                 sha256=digest,
                 storage_key=key,
-                source="generated",
-                state="pending",
+                source=ArtifactOrigin.GENERATED,
+                state=ArtifactState.PENDING,
                 expires_at=now + timedelta(hours=1),
                 is_deleted=0,
                 status=1,
@@ -499,7 +500,7 @@ async def stage_generated_artifact(
     except IntegrityError:
         await _cleanup_uncommitted_blob(root, key, remote_attempted=remote_attempted)
         existing = await existing_artifact()
-        if existing is not None and existing.sha256 == digest and existing.filename == filename and existing.state == "pending":
+        if existing is not None and existing.sha256 == digest and existing.filename == filename and existing.state == ArtifactState.PENDING:
             return existing
         raise ArtifactValidationError("同名生成文件内容冲突") from None
     except BaseException:
@@ -518,7 +519,7 @@ async def publish_pending_answers(sessions: async_sessionmaker[AsyncSession], ro
         statement = (
             select(AgentRun.id)
             .where(
-                AgentRun.state == "completed",
+                AgentRun.state == RunState.COMPLETED,
                 AgentRun.publish_answer_artifact.is_(True),
                 ~existing,
                 or_(AgentRun.answer_artifact_retry_at.is_(None), AgentRun.answer_artifact_retry_at <= now),
@@ -530,7 +531,7 @@ async def publish_pending_answers(sessions: async_sessionmaker[AsyncSession], ro
     for run_id in run_ids:
         async with sessions() as db:
             answer = await db.scalar(
-                select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == "assistant")
+                select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.ASSISTANT)
             )
         if answer is None:
             async with sessions.begin() as db:
@@ -560,7 +561,13 @@ async def _remove_unreferenced_local_files(sessions: async_sessionmaker[AsyncSes
     keys = [path.name for path in paths if not path.name.endswith(".tmp")]
     async with sessions() as db:
         referenced = (
-            set((await db.scalars(select(Artifact.storage_key).where(Artifact.storage_key.in_(keys), Artifact.state == "ready"))).all())
+            set(
+                (
+                    await db.scalars(
+                        select(Artifact.storage_key).where(Artifact.storage_key.in_(keys), Artifact.state == ArtifactState.READY)
+                    )
+                ).all()
+            )
             if keys
             else set()
         )
@@ -584,14 +591,18 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
             (
                 await db.scalars(
                     select(Artifact)
-                    .where(Artifact.state.in_(("ready", "pending")), Artifact.expires_at.is_not(None), Artifact.expires_at <= now)
+                    .where(
+                        Artifact.state.in_((ArtifactState.READY, ArtifactState.PENDING)),
+                        Artifact.expires_at.is_not(None),
+                        Artifact.expires_at <= now,
+                    )
                     .order_by(Artifact.expires_at, Artifact.id)
                     .limit(limit)
                 )
             ).all()
         )
         for item in expired:
-            item.state = "deleted"
+            item.state = ArtifactState.DELETED
             item.is_deleted = 1
     for item in expired:
         await delete_blob(root, item.storage_key)
@@ -626,7 +637,9 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
                     set(
                         (
                             await db.scalars(
-                                select(Artifact.storage_key).where(Artifact.storage_key.in_(old_keys), Artifact.state == "ready")
+                                select(Artifact.storage_key).where(
+                                    Artifact.storage_key.in_(old_keys), Artifact.state == ArtifactState.READY
+                                )
                             )
                         ).all()
                     )

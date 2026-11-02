@@ -12,6 +12,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, ModelCapability, RunState
 from app.api.v1.agents import _available_text_model, _check_cost_pricing
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
@@ -86,7 +87,7 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
     run = await db.scalar(select(AgentRun).where(AgentRun.owner_id == owner_id, AgentRun.request_key == body.request_key))
     if run is None:
         return None
-    message = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "user"))
+    message = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
     saved_references = (
         (
             await db.scalars(
@@ -124,9 +125,9 @@ async def _uploaded_artifacts(db: AsyncSession, owner_id: int, artifact_ids: lis
             .where(
                 Artifact.id.in_(artifact_ids),
                 Artifact.owner_id == owner_id,
-                Artifact.source == "upload",
+                Artifact.source == ArtifactOrigin.UPLOAD,
                 Artifact.run_id.is_(None),
-                Artifact.state == "ready",
+                Artifact.state == ArtifactState.READY,
                 Artifact.status == 1,
                 Artifact.is_deleted == 0,
                 (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
@@ -309,7 +310,7 @@ async def submit_session_run(
     _check_cost_pricing(model, agent.max_estimated_cost)
     previous_model_id = await db.scalar(
         select(AgentRun.model_id)
-        .where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.state == "completed")
+        .where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.state == RunState.COMPLETED)
         .order_by(AgentRun.create_time.desc(), AgentRun.id.desc())
         .limit(1)
     )
@@ -327,7 +328,7 @@ async def submit_session_run(
     image_artifacts = [item for item in context_artifacts if item.media_type in IMAGE_CONTEXT_MEDIA_TYPES]
     if any(item.media_type not in CONTEXT_MEDIA_TYPES | IMAGE_CONTEXT_MEDIA_TYPES for item in context_artifacts):
         raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型上下文")
-    if image_artifacts and "vision" not in (model.verified_capabilities or []):
+    if image_artifacts and ModelCapability.VISION not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过视觉能力验证")
     if len(image_artifacts) > 2:
         raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
@@ -372,7 +373,9 @@ async def submit_session_run(
         await snapshot_run_skills(db, run.id, agent_id, owner_id)
         await snapshot_run_tools(db, run.id, agent_id, owner_id)
         if artifacts:
-            message_id = await db.scalar(select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "user"))
+            message_id = await db.scalar(
+                select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER)
+            )
             db.add_all(
                 [
                     AgentMessageAttachment(

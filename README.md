@@ -10,8 +10,8 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
 | Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
-| Skill | 私有或公开的说明型 Skill；版本化文本包、ZIP 导入导出、Agent 多选关联及 Run 版本固定；运行时按需读取并复核权限。 |
-| Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
+| Skill | 私有或公开的说明型 Skill；版本化文本包、ZIP 导入导出、Agent 多选关联及 Run 版本固定；运行时按需读取并复核权限，支持关联 Tool 的自然名称映射。 |
+| Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、模型及工具预算；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系。 |
 | 实时与恢复 | 持久化事件、SSE、快照和游标补发；助手消息关联产物，上传附件保留在用户消息中。 |
@@ -155,9 +155,11 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 创建或更新 Agent 时可传 `skill_ids`，最多关联 16 个可见、已启用且名称不冲突的 Skill。关联记录固定版本；编辑 Skill 后需重新保存 Agent 关联才能选用新版本。会话提交时再固定一次 Run 所用版本，并按实际使用者复核访问权；worker 装载前和每次读取前继续复核。DeepAgents 只在该 Run 内把已授权文本映射为 `/skills/{name}/{path}` 虚拟文件，并向模型提供 Skill 元数据和受限 `read_file`；新一轮会话会清理旧 Skill 虚拟文件。Skill 读取事件包含名称和版本，不公开文件正文。禁用、删除或转私有后，失去访问权的用户不能在新 Run 中使用该 Skill。
 
-当前 Skill 是说明和静态文本资源，`allowed-tools`、`Bash(...)` 和 `!` 命令替换不会执行，也不会授予服务器命令权限。Skill 可以说明何时使用已授权 Tool，但创建 Agent 时仍须分别关联 Skill 和 Tool。仅在正文提及 `scripts/example.py` 不会创建或执行脚本；需要执行时，应将源码创建为脚本 Tool，并在 Skill 中使用 Tool 创建响应的 `model_name` 指导调用。模型读取未打包或未授权的 Skill 路径时会收到 `read_file` 错误消息，且不读取该路径；模型可继续调用合法工具并完成本轮对话。真实权限撤销、运行授权失效或其他检查点异常仍按各自校验规则处理。
+当前 Skill 是说明和静态文本资源，`allowed-tools`、`Bash(...)` 和 `!` 命令替换不会执行，也不会授予服务器命令权限。Skill 可以说明何时使用已授权 Tool，但创建 Agent 时仍须分别关联 Skill 和 Tool。仅在正文提及 `scripts/example.py` 不会创建或执行脚本；需要执行时，应将源码创建为脚本 Tool，并在 Skill 中使用创建时填写的工具名称（如 `get_time`）指导调用。模型读取未打包或未授权的 Skill 路径时会收到 `read_file` 错误消息，且不读取该路径；模型可继续调用合法工具并完成本轮对话。真实权限撤销、运行授权失效或其他检查点异常仍按各自校验规则处理。
 
-例如，已关联 Tool 的 `model_name` 为 `user_tool_6_get_time`，且输入结构不接受参数时，可在 Skill 正文写“需要当前时间时调用 `user_tool_6_get_time`，参数为 `{}`，依据工具结果回答”。这是模型按需选择的调用指引，不是命中文本后必然执行。模型无需先加载 Skill，也可直接调用 Agent 已关联且当前用户有权使用的 Tool。本地真实模型已验证按需读取、版本事件，以及原会话修复后继续调用脚本 Tool；目标部署环境与浏览器全流程仍待验收。
+例如，已关联 Tool 的名称为 `get_time`，且输入结构不接受参数时，可在 Skill 正文写“需要当前时间时调用 `get_time`，参数为 `{}`，依据工具结果回答”。这是模型按需选择的调用指引，不是命中文本后必然执行。模型无需先加载 Skill，也可直接调用 Agent 已关联且当前用户有权使用的 Tool。本地真实模型已验证按需读取、版本事件，以及原会话修复后继续调用脚本 Tool；目标部署环境与浏览器全流程仍待验收。
+
+运行时会在已关联 Skill 的 `SKILL.md` 虚拟内容末尾附加本轮可用工具目录，将用户名称、Tool ID、所有者与内部模型名称对应起来；数据库中的原始 Skill 文件和版本摘要不变。模型返回自然名称时，执行器只对本轮授权集合中唯一且不与内置工具、保留名称或其他工具内部名称冲突的名称进行转换，再以内部名称进入审批、执行及审计。两个同名 Tool 不会自动择一，需在 Skill 或对话中明确目标 Tool ID/所有者；未关联或无权访问的 Tool 不会因为正文提及而获得授权。旧 `user_tool_{id}_{name}` 写法仍兼容。`get_time.py` 等文件名可以在 Skill 说明中使用，平台映射会引导模型调用已关联的 `get_time` Tool；正文中的任意 Shell 命令不会被自动解析执行。
 
 ## Tool 管理与沙箱
 
@@ -167,9 +169,66 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 MCP Tool 提交 `kind=mcp`、公网 HTTPS `mcp_url` 和远端 `mcp_tool_name`，可选 `mcp_bearer_token`。创建和更新时发现远端工具并固定输入结构；凭据加密保存。公开带凭据的连接须设置 `share_credentials=true`。MCP 连接只允许公网 HTTPS，解析结果不得包含私网、回环或保留地址；请求固定到校验过的 IP，保留原域名用于 Host 与 TLS 校验，且不跟随重定向。MCP 属于外部写入工具，正式调用需要审批；MCP 端点及配置详情仅所有者可读；凭据明文不在详情响应中返回，仅提供 `has_credentials` 标记。当前只支持 Streamable HTTP，每个 MCP Tool 保存一个远端工具定义；尚无独立 MCP 连接实体供多个 Tool 统一维护。调用时再次发现并核对远端输入结构，发生变化需发布新版本。MCP 结果在 SDK 接收、解析后校验 64 KiB 上限；传输层响应上限和工具发现列表的数量/字节上限尚未实现。
 
-Agent 创建/更新可传最多 16 个 `tool_ids`，关联当前有权使用的本人 Tool 或公开启用 Tool，内置 Tool 不受该可见性规则限制。关联与 Run 均固定版本；worker 装载及调用前按实际对话用户重新核对启用状态、版本摘要和访问权。脚本在无网络、只读根文件系统、非特权用户、有限 CPU/内存/进程数的 Docker 容器中执行，仅接受 JSON 输入并返回有界 JSON 结果；宿主机需安装 Docker CLI、启动 Docker 服务，并预拉取 `python:3.12-slim-bookworm`。当前容器上限为 128 MiB 内存、1 CPU、64 个进程和 8 MiB 临时目录，脚本试运行限时 10 秒，正式调用不超过 Agent 工具时限且最多 30 秒；超时、取消或执行异常会尝试强制删除本次容器。不挂载宿主机业务目录，容器里的系统信息反映沙箱环境；需要中国标准时间的脚本应明确指定 UTC+08:00，避免依赖容器默认时区。`GET /api/v1/tools/catalog` 查看可选目录，`GET /api/v1/tools/runs/{run_id}/calls` 仅向 Run 所有者返回调用状态、版本和脱敏失败类别。运行终态时尚未完成的调用标记为 `unknown`，不能当作已成功或可安全重试。
+Agent 创建/更新可传最多 16 个 `tool_ids`，关联当前有权使用的本人 Tool 或公开启用 Tool，内置 Tool 不受该可见性规则限制。关联与 Run 均固定版本；worker 装载及调用前按实际对话用户重新核对启用状态、版本摘要和访问权。脚本在无网络、只读根文件系统、非特权用户、有限 CPU/内存/进程数的 Docker 容器中执行，仅接受 JSON 输入并返回有界 JSON 结果；宿主机需安装 Docker CLI、启动 Docker 服务，并准备基础 `y-point-script-sandbox:1` 镜像（可通过 `SCRIPT_SANDBOX_IMAGE` 配置镜像标签或摘要）。当前容器上限为 128 MiB 内存、1 CPU、64 个进程和 8 MiB 临时目录，脚本试运行限时 10 秒，正式调用不超过 Agent 工具时限且最多 30 秒；超时、取消或执行异常会尝试强制删除本次容器。不挂载宿主机业务目录，容器里的系统信息反映沙箱环境；需要中国标准时间的脚本应明确指定 UTC+08:00，避免依赖容器默认时区。`GET /api/v1/tools/catalog` 查看可选目录，`GET /api/v1/tools/runs/{run_id}/calls` 仅向 Run 所有者返回调用状态、版本和脱敏失败类别。运行终态时尚未完成的调用标记为 `unknown`，不能当作已成功或可安全重试。
 
-本地现场验收可运行 `uv run python scripts/accept_m5_live.py`、`--mcp` 或 `--skill`，分别验证脚本对话、MCP 审批调用和 Skill 按需读取。脚本在终端交互读取 `admin`、`yyx` 密码，创建临时对象并通过 API 清理；运行前需启动 API、worker，且脚本场景要求 Docker 镜像可用。MCP 使用公开 DeepWiki 端点，可能受第三方服务状态影响。新增业务表由 `039_user_tools.py` 迁移管理，已有环境应先备份再升级至 `039`。现场 Run 与本机备份路径记录在开发清单中，不作为可移植的交付文件。M5 总验收仍未完成：浏览器全流程、目标部署环境、MCP 凭据轮换与清除、调用并发控制、传输层响应限制及外部写入幂等/补偿仍需实现或验收。
+Python 脚本可以在前端填写依赖清单，或导入 `requirements.txt`；创建/更新 API 使用 `requirements` 数组，最多 32 项，每项 256 字节，支持标准包名、版本约束、extras 和环境标记。只接受包声明，拒绝 URL、Git、本地路径、`-r` 和 pip 配置参数；Bash 和 MCP Tool 不能声明 Python 依赖。平台不会从 `import` 自动猜测安装包名，例如 `PIL` 对应的包应由用户填写为 `Pillow`。无额外依赖时提交空数组，沿用基础镜像。
+
+例如创建使用 `humanize` 格式化数字的脚本 Tool：
+
+```json
+{
+  "name": "format_number",
+  "description": "将数字格式化为易读文本",
+  "kind": "script",
+  "visibility": "private",
+  "input_schema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "script_language": "python",
+  "requirements": ["humanize==4.11.0"],
+  "source_code": "import json\nimport humanize\nprint(json.dumps({'formatted': humanize.intcomma(1234567)}))"
+}
+```
+
+保存返回的 `requirements` 是规范化后的声明；所有者详情中的 `environment` 提供 `state`、脱敏的 `failure_code`/`message` 和 `locked_requirements`。有依赖时状态为 `pending → building → ready/failed`；无依赖为 `not_required`。worker 独立领取数据库准备任务，不占用对话调度循环；浏览器每 2 秒查询已保存版本的准备进度，关闭页面不影响后台任务。准备完成后仍须调用 `/test`，成功后才可启用、公开和关联 Agent，`ready` 本身不会启用 Tool。依赖修改会创建新版本、清除验证并转为私有停用，关联 Agent 需要重新选择新版。
+
+准备失败后，所有者可调用 `POST /api/v1/tools/{id}/environment/retry`，提交 `{"expected_version": 1}` 重新排队。worker 停止会终止本次准备；异常退出遗留的租约到期后标记为 `failed/worker_interrupted`，由用户重试。已就绪版本也可通过同一入口重新准备：创建私有、停用、待试运行的新版本，保留旧版本文件与依赖锁，完整缓存可复用；环境文件损坏或缺失时重新生成。接口不允许重复领取正在准备的版本；所有者与期望版本校验继续生效。
+
+基础镜像由维护者构建，`Dockerfile.sandbox` 使用 Python 3.12，`sandbox/requirements.txt` 固定预装库及其版本。联网构建环境运行：
+
+```bash
+docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
+```
+
+默认准备阶段允许从 PyPI 下载 wheel。下载容器位于临时内部 Docker 网络，只能经代理访问 `SCRIPT_DEPENDENCY_INDEX_URL` 的源站域名和 `SCRIPT_DEPENDENCY_ALLOWED_HOSTS` 配置的 HTTPS/443 目标；默认允许 `pypi.org`、`files.pythonhosted.org`，不接受用户自定义包源。换成内网包仓库时，维护者统一配置 HTTPS 地址与实际下载域名；当前不支持包源内嵌凭据。随后在另一个禁网容器内按完整版本与 SHA-256 锁安装到独立目录，正式脚本只读挂载该目录。包安装不会执行用户脚本；仅接受兼容 wheel，不运行源码包构建或用户的安装钩子。`.pth` 等导入行为只发生在最终脚本沙箱中。
+
+完全离线部署需预先提供基础镜像和对应依赖的 wheel。维护者可在与目标 Python、Linux 系统及 CPU 架构一致的联网环境中准备用户所需的包及传递依赖：
+
+```bash
+# 联网环境：基础镜像与完整 wheel 一起交付
+mkdir -p .run-private/wheelhouse
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/.run-private/wheelhouse:/wheels" \
+  y-point-script-sandbox:1 \
+  python -m pip download --only-binary=:all: --dest=/wheels "humanize==4.11.0"
+docker save -o y-point-script-sandbox.tar y-point-script-sandbox:1
+# 离线目标环境：导入镜像，并把 wheel 复制到配置的目录
+docker load -i y-point-script-sandbox.tar
+```
+
+离线环境设置 `SCRIPT_DEPENDENCY_ALLOW_NETWORK=false` 和 `SCRIPT_DEPENDENCY_WHEELHOUSE=/absolute/path/to/wheelhouse`，准备阶段使用 `--network=none`、`--no-index` 和只读 wheel 目录。缺少包、版本或兼容 wheel 时明确标记失败，并在能安全提取时提示缺少的包声明；补入安装包后可重试。无网络且没有对应安装包时无法凭空安装新依赖。需要系统动态库、编译或超出资源限制的包，仍需维护者扩展基础镜像并重新验证。
+
+准备任务默认总时限 180 秒（可配置为 10～1800 秒），容器上限 512 MiB 内存、1 CPU、64 个进程、64 MiB 临时目录；构建文件周期性检查 512 MiB 容量和 20,000 个文件上限，这不是宿主机文件系统的硬配额。缓存按依赖声明、实际基础镜像 ID 和平台识别，保存完整依赖版本、wheel 摘要及安装文件清单；每次复用或调用前校验安装文件。宽泛版本约束也会复用已锁定缓存，需要不同版本时应修改依赖约束。旧 Tool/Run 继续指向各自环境，不会被新版本覆盖。
+
+API 和全部 worker 需配置相同的 `SCRIPT_DEPENDENCY_STORAGE_DIR`、共享文件存储并保有已固定的 Docker 镜像；当前没有跨主机环境分发及自动缓存回收。不要直接删除仍被 Tool 历史版本或 Run 引用的缓存；数据备份应包含业务库、环境目录和基础镜像。正常取消/超时会回收下载、安装、代理容器及临时网络；worker 被强杀时容器内仍有独立时限，但空临时网络或中间目录可能需要维护者清理。正式脚本仍始终禁网，安装 `httpx` 不会赋予外部访问能力；外部服务调用继续通过具有授权和审批的 MCP Tool。
+
+MCP 客户端采用 SDK 1.30.0 及以上提供的 `streamable_http_client`，显式传入受控 `httpx.AsyncClient`，将认证、连接/读取超时和固定 IP 传输统一配置，退出与异常时关闭客户端。固定 IP 传输层直接拒绝所有 3xx 响应，避免 SDK 的同源跳转逻辑改变原有禁止重定向策略。
+
+业务中的有限取值统一定义在 `app/core/enums.py`，包括 Tool 来源、脚本语言、可见性、副作用/恢复策略、调用状态、Run 状态/事件、审批状态/决定、文件状态/来源、用户/消息角色、供应商类型、模型能力及依赖环境状态/失败类别。Schema、授权分支和状态转换复用相同枚举；使用 `StrEnum` 保持 JSON 和数据库中的现有字符串值，无须为本次抽取修改数据库列或历史迁移。
+
+本地现场验收可运行 `uv run python scripts/accept_m5_live.py`、`--mcp` 或 `--skill`，分别验证脚本对话、MCP 审批调用和 Skill 按需读取。脚本在终端交互读取 `admin`、`yyx` 密码，创建临时对象并通过 API 清理；运行前需启动 API、worker，且脚本场景要求 Docker 镜像可用。MCP 使用公开 DeepWiki 端点，可能受第三方服务状态影响。Tool 业务表由 `039_user_tools.py` 建立，Python 依赖与环境准备字段由 `040_tool_environments.py` 增加；已有环境应先备份，再执行 `uv run alembic upgrade head` 升级至 `040`，随后重启 API 和 worker。历史 Tool 版本回填为空依赖和 `not_required` 状态，原有内容摘要及验证状态保留。现场 Run 与本机备份路径记录在开发清单中，不作为可移植的交付文件。M5 总验收仍未完成：浏览器全流程、目标部署环境、MCP 凭据轮换与清除、调用并发控制、传输层响应限制及外部写入幂等/补偿仍需实现或验收。
 
 ## Agent 对话业务流程
 

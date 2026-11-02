@@ -27,6 +27,17 @@ from deepagents.backends.utils import create_file_data
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import (
+    ApprovalDecision,
+    ApprovalState,
+    ArtifactOrigin,
+    ArtifactState,
+    MessageRole,
+    ModelCapability,
+    RunEventType,
+    RunState,
+    ToolInvocationState,
+)
 from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
@@ -67,7 +78,7 @@ from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
 from app.services.tool_registry import RESERVED_TOOL_NAMES
 from app.services.skills import load_run_skill_files
-from app.services.user_tools import load_run_tools, model_tool_name
+from app.services.user_tools import load_run_tools, model_tool_name, skill_tool_catalog, tool_name_aliases
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
@@ -212,6 +223,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         cost_input_price: Decimal | None,
         cost_output_price: Decimal | None,
         skill_paths: frozenset[str] = frozenset(),
+        tool_aliases: dict[str, str] | None = None,
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
         self.allowed_names = frozenset(allowed_names)
@@ -224,6 +236,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.cost_input_price = cost_input_price
         self.cost_output_price = cost_output_price
         self.skill_paths = skill_paths
+        self.tool_aliases = {
+            name: target for name, target in (tool_aliases or {}).items() if target in self.allowed_names and name not in self.allowed_names
+        }
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
         """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
@@ -235,6 +250,21 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and self.skill_paths)
         ]
         response = await handler(request.override(tools=visible_tools))
+        model_response = response.model_response if isinstance(response, ExtendedModelResponse) else response
+        for index, message in enumerate(model_response.result):
+            if isinstance(message, AIMessage) and message.tool_calls:
+                calls = [
+                    {
+                        **call,
+                        "name": self.tool_aliases.get(call["name"], call["name"]),
+                    }
+                    for call in message.tool_calls
+                ]
+                model_response.result[index] = message.model_copy(
+                    update={
+                        "tool_calls": calls,
+                    }
+                )
         await _account_model_response(
             response,
             self.sessions,
@@ -303,33 +333,35 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                         call_id=invocation_id,
                         tool_id=item.id,
                         tool_version=version.version,
-                        state="running",
+                        state=ToolInvocationState.RUNNING,
                         arguments_hash=arguments_hash,
                         is_deleted=0,
                         status=1,
                     )
                 )
             await reserve_tool_call(db, self.run_id, self.lease_token)
-            await append_tool_event(db, self.run_id, self.lease_token, "tool_started", tool_call_id, event_name)
+            await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
         try:
             result = await asyncio.wait_for(handler(request), timeout=self.tool_timeout_seconds)
         except Exception as exc:
             async with self.sessions.begin() as db:
-                await append_tool_event(db, self.run_id, self.lease_token, "tool_failed", tool_call_id, event_name)
+                await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_FAILED, tool_call_id, event_name)
                 if invocation_id is not None:
                     invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
-                    invocation.state = "failed"
+                    invocation.state = ToolInvocationState.FAILED
                     invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_error"
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
-        event_type = "tool_failed" if isinstance(result, ToolMessage) and result.status == "error" else "tool_completed"
+        event_type = (
+            RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
+        )
         async with self.sessions.begin() as db:
             await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
             if invocation_id is not None:
                 invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
-                invocation.state = "failed" if event_type == "tool_failed" else "completed"
-                invocation.failure_code = "execution_error" if event_type == "tool_failed" else None
+                invocation.state = ToolInvocationState.FAILED if event_type == RunEventType.TOOL_FAILED else ToolInvocationState.COMPLETED
+                invocation.failure_code = "execution_error" if event_type == RunEventType.TOOL_FAILED else None
         return result
 
 
@@ -452,8 +484,8 @@ async def _has_required_artifacts(db: AsyncSession, run_id: str, owner_id: int, 
             select(Artifact.filename).where(
                 Artifact.run_id == run_id,
                 Artifact.owner_id == owner_id,
-                Artifact.source == "generated",
-                Artifact.state == "pending",
+                Artifact.source == ArtifactOrigin.GENERATED,
+                Artifact.state == ArtifactState.PENDING,
                 Artifact.is_deleted == 0,
                 Artifact.status == 1,
                 Artifact.publication_key.like("model-%"),
@@ -499,7 +531,7 @@ async def _watch_run(
             should_cancel = False
             async with sessions.begin() as db:
                 run = await db.get(AgentRun, run_id)
-                if run is None or run.state != "running" or run.lease_token != lease_token:
+                if run is None or run.state != RunState.RUNNING or run.lease_token != lease_token:
                     should_cancel = True
                 else:
                     user = await db.get(Admin, run.owner_id)
@@ -540,11 +572,11 @@ async def _finish_interrupted(
             if run is None:
                 raise RunConflictError("运行已不存在")
             try:
-                if run.state == "cancel_requested" and run.lease_token == lease_token:
+                if run.state == RunState.CANCEL_REQUESTED and run.lease_token == lease_token:
                     result = await acknowledge_cancel(db, run_id, lease_token)
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
                     return result
-                if run.state == "running" and run.lease_token == lease_token:
+                if run.state == RunState.RUNNING and run.lease_token == lease_token:
                     if failure_code in {"execution_timeout", "tool_execution_timeout"}:
                         result = await timeout_run(db, run_id, lease_token, failure_code)
                     else:
@@ -572,7 +604,7 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
             select(AgentRunEvent)
             .where(
                 AgentRunEvent.run_id == failed_run.id,
-                AgentRunEvent.event_type.in_(("tool_started", "tool_completed", "tool_failed")),
+                AgentRunEvent.event_type.in_((RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED)),
             )
             .order_by(AgentRunEvent.sequence)
         )
@@ -583,11 +615,11 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
     for event in events:
         if not event.tool_call_id or not event.tool_name or not event.tool_name.startswith("skill:"):
             return False
-        if event.event_type == "tool_started":
+        if event.event_type == RunEventType.TOOL_STARTED:
             if event.tool_call_id in started:
                 return False
             started[event.tool_call_id] = event.tool_name
-        elif event.event_type == "tool_completed":
+        elif event.event_type == RunEventType.TOOL_COMPLETED:
             if started.pop(event.tool_call_id, None) != event.tool_name:
                 return False
         else:
@@ -631,7 +663,7 @@ async def execute_text_run(
         except Exception:
             return await fail_run(db, run_id, lease_token, "skill_access_revoked")
         input_text = await db.scalar(
-            select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == "user")
+            select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.USER)
         )
         if input_text is None:
             return await fail_run(db, run_id, lease_token, "runtime_error")
@@ -666,6 +698,13 @@ async def execute_text_run(
                 return await fail_run(db, run_id, lease_token, "runtime_error")
             if not set(interrupt_on) <= set(tool_names):
                 return await fail_run(db, run_id, lease_token, "runtime_error")
+        try:
+            available_tools = [item for item, _ in await load_run_tools(db, run_id, run.owner_id)]
+        except Exception:
+            return await fail_run(db, run_id, lease_token, "tool_access_revoked")
+        aliases = tool_name_aliases(available_tools, {tool.name for tool in tools} | RESERVED_TOOL_NAMES)
+        catalog = skill_tool_catalog(available_tools, aliases)
+        skill_files = {path: content + catalog if path.endswith("/SKILL.md") else content for path, content in skill_files.items()}
         if resume and not tools:
             return await fail_run(db, run_id, lease_token, "runtime_error")
         approval = (
@@ -674,7 +713,7 @@ async def execute_text_run(
             else None
         )
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
-        if image_blocks and (catalog_model is None or "vision" not in (catalog_model.verified_capabilities or [])):
+        if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
             return await fail_run(db, run_id, lease_token, "attachment_unavailable")
 
     assert model is not None
@@ -748,6 +787,7 @@ async def execute_text_run(
                             run.cost_input_price,
                             run.cost_output_price,
                             frozenset(skill_files),
+                            aliases,
                         )
                     ],
                     summarizer=summarize_history,
@@ -763,7 +803,8 @@ async def execute_text_run(
                     .where(
                         AgentRun.thread_id == thread_id,
                         AgentRun.owner_id == run.owner_id,
-                        (AgentRun.state == "completed") | (AgentRun.state == "failed") & (AgentRun.failure_code == "artifact_required"),
+                        (AgentRun.state == RunState.COMPLETED)
+                        | (AgentRun.state == RunState.FAILED) & (AgentRun.failure_code == "artifact_required"),
                         AgentRun.checkpoint_id.is_not(None),
                     )
                     .order_by(AgentRun.update_time.desc(), AgentRun.id.desc())
@@ -783,7 +824,7 @@ async def execute_text_run(
                 and checkpoint_run.agent_id == run.agent_id
                 and checkpoint_run.session_id == run.session_id
                 and checkpoint_run.thread_id == thread_id
-                and checkpoint_run.state in {"failed", "cancelled", "timed_out"}
+                and checkpoint_run.state in {RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT}
                 and safe_rewind
                 and expected_run.create_time < checkpoint_run.create_time < run.create_time
             ):
@@ -800,7 +841,7 @@ async def execute_text_run(
                 checkpoint_valid = (
                     actual_checkpoint_id == run.checkpoint_id
                     and approval is not None
-                    and approval.state == "approved"
+                    and approval.state == ApprovalState.APPROVED
                     and _approval_matches(actions, approval.actions)
                     and all(action["name"] in allowed_names for action in actions)
                 )
@@ -814,7 +855,7 @@ async def execute_text_run(
                     resume={
                         "decisions": [
                             {
-                                "type": "approve",
+                                "type": ApprovalDecision.APPROVE.value,
                             }
                             for _ in actions
                         ],
@@ -824,7 +865,7 @@ async def execute_text_run(
                 else {
                     "messages": [
                         {
-                            "role": "user",
+                            "role": MessageRole.USER.value,
                             "content": input_content,
                         }
                     ],
@@ -888,7 +929,7 @@ async def execute_text_run(
                     can_retry = (
                         not delivered
                         and current is not None
-                        and current.state == "running"
+                        and current.state == RunState.RUNNING
                         and current.lease_token == lease_token
                         and _artifact_retry_tools_available(required_artifact_suffixes, tools)
                         and (current.max_model_calls is None or current.model_call_count + 2 <= current.max_model_calls)
@@ -899,7 +940,7 @@ async def execute_text_run(
                         invocation = {
                             "messages": [
                                 {
-                                    "role": "user",
+                                    "role": MessageRole.USER.value,
                                     "content": (
                                         "系统内部纠正提示（不是新的用户消息）：上一轮只有文字，尚未交付用户要求的文件。"
                                         f"请调用文件生成工具交付 {formats} 文件，再给出最终回复；代码块不能代替文件。"
@@ -1012,16 +1053,16 @@ async def execute_text_run(
     except asyncio.CancelledError:
         async with sessions() as db:
             run = await db.get(AgentRun, run_id)
-            cancel_requested = run is not None and run.state == "cancel_requested"
+            cancel_requested = run is not None and run.state == RunState.CANCEL_REQUESTED
         if cancel_requested:
             return await _finish_interrupted(sessions, run_id, lease_token, "runtime_error", catalog_model=catalog_model, started=started)
-        if run is not None and (run.state != "running" or run.lease_token != lease_token):
+        if run is not None and (run.state != RunState.RUNNING or run.lease_token != lease_token):
             return run
         raise
     except RunConflictError:
         async with sessions.begin() as db:
             run = await db.get(AgentRun, run_id)
-            if run is not None and run.state == "cancel_requested" and run.lease_token == lease_token:
+            if run is not None and run.state == RunState.CANCEL_REQUESTED and run.lease_token == lease_token:
                 result = await acknowledge_cancel(db, run_id, lease_token)
                 _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
                 return result

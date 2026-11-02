@@ -106,6 +106,13 @@ class BaseConfig(BaseSettings):
     RUN_HOST: str = "0.0.0.0"
     RUN_PORT: int = 8000
     WORKER_LOG_FILE: str = ".logs/worker.log"
+    SCRIPT_SANDBOX_IMAGE: str = "y-point-script-sandbox:1"
+    SCRIPT_DEPENDENCY_ALLOW_NETWORK: bool = True
+    SCRIPT_DEPENDENCY_INDEX_URL: str = "https://pypi.org/simple"
+    SCRIPT_DEPENDENCY_ALLOWED_HOSTS: list[str] = ["pypi.org", "files.pythonhosted.org"]
+    SCRIPT_DEPENDENCY_WHEELHOUSE: str = ""
+    SCRIPT_DEPENDENCY_STORAGE_DIR: str = ".run-private/tool-environments"
+    SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS: int = 180
 
     # 跨域配置：如果 allow_credentials=True，则 allow_origins 不能设置为 ["*"]，必须明确指定允许的域名。
     ALLOW_ORIGINS: list[str] = ["*"]

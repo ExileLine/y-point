@@ -17,6 +17,7 @@ from langchain_core.tools import BaseTool, tool
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import ArtifactOrigin, ArtifactState, ModelCapability, RecoveryPolicy, RunState, ToolEffect, ToolKind
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
 from app.models.run_artifact_read import RunArtifactRead
@@ -29,6 +30,7 @@ from app.services.private_blob_store import read_blob, using_s3
 from app.services.tool_registry import ToolContext, ToolRegistry, ToolSpec
 from app.services.user_tools import load_run_tools, model_tool_name
 from app.services.script_sandbox import run_script
+from app.services.tool_environments import require_script_environment
 from app.services.mcp_tools import invoke_mcp_tool
 from app.services.provider_credentials import decrypt_credentials
 from jsonschema import Draft202012Validator
@@ -52,8 +54,8 @@ def _list_text_artifacts(context: ToolContext) -> BaseTool:
                     select(Artifact)
                     .where(
                         Artifact.owner_id == context.owner_id,
-                        Artifact.source == "upload",
-                        Artifact.state == "ready",
+                        Artifact.source == ArtifactOrigin.UPLOAD,
+                        Artifact.state == ArtifactState.READY,
                         Artifact.status == 1,
                         Artifact.is_deleted == 0,
                         Artifact.media_type == "text/plain",
@@ -92,8 +94,8 @@ def _read_text_artifact(context: ToolContext) -> BaseTool:
             if (
                 artifact is None
                 or artifact.owner_id != context.owner_id
-                or artifact.source != "upload"
-                or artifact.state != "ready"
+                or artifact.source != ArtifactOrigin.UPLOAD
+                or artifact.state != ArtifactState.READY
                 or artifact.status != 1
                 or artifact.is_deleted != 0
                 or artifact.media_type != "text/plain"
@@ -145,10 +147,10 @@ def _list_session_artifacts(context: ToolContext) -> BaseTool:
                     .where(
                         AgentRun.session_id == run.session_id,
                         AgentRun.owner_id == context.owner_id,
-                        AgentRun.state == "completed",
+                        AgentRun.state == RunState.COMPLETED,
                         Artifact.owner_id == context.owner_id,
-                        Artifact.source == "generated",
-                        Artifact.state == "ready",
+                        Artifact.source == ArtifactOrigin.GENERATED,
+                        Artifact.state == ArtifactState.READY,
                         Artifact.status == 1,
                         Artifact.is_deleted == 0,
                         or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
@@ -186,15 +188,15 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
                 .where(
                     Artifact.id == artifact_id,
                     Artifact.owner_id == context.owner_id,
-                    Artifact.source == "generated",
-                    Artifact.state == "ready",
+                    Artifact.source == ArtifactOrigin.GENERATED,
+                    Artifact.state == ArtifactState.READY,
                     Artifact.status == 1,
                     Artifact.is_deleted == 0,
                     Artifact.media_type.in_(GENERATED_CONTEXT_MEDIA_TYPES),
                     Artifact.byte_size <= MAX_FILE_BYTES,
                     AgentRun.session_id == run.session_id,
                     AgentRun.owner_id == context.owner_id,
-                    AgentRun.state == "completed",
+                    AgentRun.state == RunState.COMPLETED,
                     or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
                 )
             )
@@ -215,7 +217,7 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
             if (
                 current is None
                 or current.owner_id != context.owner_id
-                or current.state != "ready"
+                or current.state != ArtifactState.READY
                 or current.is_deleted != 0
                 or current.status != 1
                 or current.expires_at is not None
@@ -319,8 +321,8 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 factory=_list_text_artifacts,
                 enabled=lambda current: current.enable_text_artifact_tool,
                 requires_approval=False,
-                effect="read",
-                recovery="safe",
+                effect=ToolEffect.READ,
+                recovery=RecoveryPolicy.SAFE,
             )
         )
         registry.register(
@@ -329,12 +331,12 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 factory=_read_text_artifact,
                 enabled=lambda current: current.enable_text_artifact_tool,
                 requires_approval=True,
-                effect="read",
-                recovery="safe",
+                effect=ToolEffect.READ,
+                recovery=RecoveryPolicy.SAFE,
             )
         )
         model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
-        if model is not None and "tools" in (model.verified_capabilities or []):
+        if model is not None and ModelCapability.TOOLS in (model.verified_capabilities or []):
             if run.session_id is not None:
                 for name, factory in (
                     ("list_session_artifacts", _list_session_artifacts),
@@ -346,8 +348,8 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                             factory=factory,
                             enabled=lambda current: current.session_id is not None,
                             requires_approval=False,
-                            effect="read",
-                            recovery="safe",
+                            effect=ToolEffect.READ,
+                            recovery=RecoveryPolicy.SAFE,
                         )
                     )
             for name, factory in (
@@ -361,8 +363,8 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         factory=factory,
                         enabled=lambda current: current.model_id is not None,
                         requires_approval=False,
-                        effect="write",
-                        recovery="idempotent",
+                        effect=ToolEffect.WRITE,
+                        recovery=RecoveryPolicy.IDEMPOTENT,
                         staged=True,
                     )
                 )
@@ -384,7 +386,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     selected, selected_version = match
                     Draft202012Validator(selected_version.input_schema).validate(arguments)
                     timeout = min(current.tool_timeout_seconds, 30)
-                    if selected.kind == "mcp":
+                    if selected.kind == ToolKind.MCP:
                         token, _ = decrypt_credentials(selected_version.encrypted_credentials)
                         if (
                             selected.owner_id != run.owner_id
@@ -396,15 +398,23 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         expected_schema = selected_version.input_schema
                     else:
                         language, source = selected_version.script_language, selected_version.source_code
-                if selected.kind == "script":
-                    return await run_script(language, source, arguments, timeout)
+                        environment = await require_script_environment(selected_version)
+                if selected.kind == ToolKind.SCRIPT:
+                    options = (
+                        {
+                            "environment": environment,
+                        }
+                        if environment is not None
+                        else {}
+                    )
+                    return await run_script(language, source, arguments, timeout, **options)
                 return await invoke_mcp_tool(url, remote_name, arguments, token, timeout, expected_schema)
 
             builtins.append(
                 StructuredTool.from_function(
                     coroutine=invoke,
                     name=tool_name,
-                    description=definition.description,
+                    description=f"工具名称：{definition.name}。{definition.description}",
                     args_schema=version.input_schema,
                 )
             )

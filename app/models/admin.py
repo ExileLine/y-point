@@ -8,6 +8,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.enums import UserRole
 from app.core.password import hash_password, verify_password
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
@@ -39,7 +40,7 @@ class Admin(CustomBaseModel):
     modifier: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="更新人")
     modifier_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="更新人id")
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="备注")
-    role: Mapped[str] = mapped_column(String(16), default="user", nullable=False, comment="用户角色：admin 管理员，user 普通用户")
+    role: Mapped[str] = mapped_column(String(16), default=UserRole.USER, nullable=False, comment="用户角色：admin 管理员，user 普通用户")
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, comment="令牌版本")
     last_login_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="最近登录时间")
 

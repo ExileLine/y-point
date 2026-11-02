@@ -6,6 +6,7 @@
 """用户 Tool 版本校验、可见性及运行快照。"""
 
 import ast
+from collections import Counter
 import hashlib
 import ipaddress
 import json
@@ -18,9 +19,11 @@ from jsonschema.exceptions import SchemaError
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ScriptLanguage, ToolEffect, ToolKind, Visibility
 from app.core.custom_exception import CustomException
 from app.models.tool import AgentTool, RunTool, UserTool, UserToolVersion
 from app.services.provider_credentials import encrypt_credentials
+from app.services.tool_environments import normalize_requirements
 
 TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 MAX_SOURCE_BYTES = 64 * 1024
@@ -31,6 +34,28 @@ MAX_AGENT_TOOLS = 16
 def model_tool_name(tool: UserTool) -> str:
     """生成跨所有者唯一、不会覆盖内置工具的模型可见名称。"""
     return f"user_tool_{tool.id}_{tool.name}"
+
+
+def tool_name_aliases(tools: list[UserTool], reserved_names: set[str] | frozenset[str]) -> dict[str, str]:
+    """仅为本轮唯一且不与注册名称冲突的工具生成自然名称别名。"""
+    counts = Counter(tool.name for tool in tools)
+    reserved = set(reserved_names) | {model_tool_name(tool) for tool in tools}
+    return {tool.name: model_tool_name(tool) for tool in tools if counts[tool.name] == 1 and tool.name not in reserved}
+
+
+def skill_tool_catalog(tools: list[UserTool], aliases: dict[str, str]) -> str:
+    """生成本轮已授权工具名称映射，不将 Skill 描述视为新增授权。"""
+    lines = [
+        "\n\n## 本轮平台工具映射（由服务端生成）",
+        "Skill 中的工具名称或同名 .py/.sh 脚本指向下列已注册 Tool；调用对应模型工具，不要尝试读取或执行不存在的脚本文件。",
+        "Skill 的 allowed-tools 和文字描述不会新增工具权限。未列出的工具不可调用；重名时须根据明确的工具 ID/所有者选择，否则请用户澄清。",
+    ]
+    for tool in tools:
+        status = "名称唯一" if tool.name in aliases else "名称冲突，必须明确工具 ID/所有者"
+        lines.append(f"- {tool.name}（Tool ID={tool.id}，所有者={tool.owner_id}，{status}）→ {model_tool_name(tool)}")
+    if not tools:
+        lines.append("- 本轮未关联可用的用户 Tool。")
+    return "\n".join(lines)
 
 
 def validate_mcp_url(url: str) -> str:
@@ -60,28 +85,31 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
         raise ValueError("Tool 参数 JSON Schema 无效") from exc
-    if kind == "script":
+    requirements = normalize_requirements(fields.get("requirements"))
+    if requirements and (kind != ToolKind.SCRIPT or fields.get("script_language") != ScriptLanguage.PYTHON):
+        raise ValueError("只有 Python 脚本 Tool 可以声明 pip 依赖")
+    if kind == ToolKind.SCRIPT:
         language, source = fields.get("script_language"), fields.get("source_code")
-        if language not in {"python", "bash"} or not isinstance(source, str) or not 1 <= len(source.encode()) <= MAX_SOURCE_BYTES:
+        if language not in ScriptLanguage or not isinstance(source, str) or not 1 <= len(source.encode()) <= MAX_SOURCE_BYTES:
             raise ValueError("脚本需提供 64 KiB 内的 Python 或 Bash 源码")
         if any(fields.get(key) for key in ("mcp_url", "mcp_tool_name", "mcp_bearer_token", "encrypted_credentials")):
             raise ValueError("脚本 Tool 不能包含 MCP 连接配置")
-        if language == "python":
+        if language == ScriptLanguage.PYTHON:
             try:
                 ast.parse(source)
             except SyntaxError as exc:
                 raise ValueError("Python 脚本语法无效") from exc
-        effect, approval = "read", False
-    elif kind == "mcp":
+        effect, approval = ToolEffect.READ, False
+    elif kind == ToolKind.MCP:
         url, remote_name = fields.get("mcp_url"), fields.get("mcp_tool_name")
         if not isinstance(url, str) or not isinstance(remote_name, str) or not remote_name or len(remote_name) > 128:
             raise ValueError("MCP Tool 需要连接地址与远端工具名")
         validate_mcp_url(url)
         if fields.get("source_code") or fields.get("script_language"):
             raise ValueError("MCP Tool 不能包含脚本源码")
-        if fields.get("visibility") == "public" and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
+        if fields.get("visibility") == Visibility.PUBLIC and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
             raise ValueError("公开 MCP Tool 需明确授权共享连接凭据")
-        effect, approval = "write", True
+        effect, approval = ToolEffect.WRITE, True
     else:
         raise ValueError("Tool 类型不受支持")
     digest = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
@@ -90,9 +118,19 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
 
 def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
     """构造新版本的完整执行定义并加密新增凭据。"""
-    keys = ("input_schema", "script_language", "source_code", "mcp_url", "mcp_tool_name", "share_credentials", "encrypted_credentials")
+    keys = (
+        "requirements",
+        "input_schema",
+        "script_language",
+        "source_code",
+        "mcp_url",
+        "mcp_tool_name",
+        "share_credentials",
+        "encrypted_credentials",
+    )
     fields = {key: getattr(previous, key) if previous is not None else None for key in keys}
     fields.update({key: value for key, value in body.items() if key in keys})
+    fields["requirements"] = normalize_requirements(fields.get("requirements"))
     token = body.get("mcp_bearer_token")
     if token:
         fields["encrypted_credentials"] = encrypt_credentials(token, {})
@@ -125,7 +163,7 @@ async def selected_tools(db: AsyncSession, tool_ids: list[int], actor_id: int) -
         item.is_deleted != 0
         or not item.enabled
         or (item.id, item.current_version) not in verified_versions
-        or (item.owner_id != actor_id and item.visibility != "public")
+        or (item.owner_id != actor_id and item.visibility != Visibility.PUBLIC)
         for item in items
     ):
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在或不可用")
@@ -148,7 +186,7 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
                 UserTool.id.in_([row.tool_id for row in rows]),
                 UserTool.is_deleted == 0,
                 UserTool.enabled.is_(True),
-                or_(UserTool.owner_id == actor_id, UserTool.visibility == "public"),
+                or_(UserTool.owner_id == actor_id, UserTool.visibility == Visibility.PUBLIC),
             )
         )
     ).all()
@@ -187,7 +225,7 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
             or tool.is_deleted != 0
             or not tool.enabled
             or tool.owner_id != actor_id
-            and tool.visibility != "public"
+            and tool.visibility != Visibility.PUBLIC
             or version is None
             or not version.verified
             or version.content_hash != row.content_hash

@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import UserRole
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import require_admin
@@ -115,9 +116,9 @@ async def update_user(user_id: int, body: UserUpdateIn, actor: Admin = Depends(r
         new_status = body.status if "status" in fields else user.status
         if new_role is None or new_status is None:
             raise CustomException(status_code=400, custom_code=10005, detail="角色和状态不能为空")
-        if user.role == "admin" and user.status == 1 and (new_role != "admin" or new_status != 1):
+        if user.role == UserRole.ADMIN and user.status == 1 and (new_role != UserRole.ADMIN or new_status != 1):
             active_admins = await db.scalar(
-                select(func.count()).select_from(Admin).where(Admin.role == "admin", Admin.status == 1, Admin.is_deleted == 0)
+                select(func.count()).select_from(Admin).where(Admin.role == UserRole.ADMIN, Admin.status == 1, Admin.is_deleted == 0)
             )
             if active_admins <= 1:
                 raise CustomException(status_code=409, custom_code=10005, detail="不能停用或降级最后一位管理员")

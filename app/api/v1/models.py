@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ModelCapability
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin, require_admin
@@ -144,7 +145,7 @@ async def list_available_models(actor: Admin = Depends(get_current_admin), db: A
     data = [
         AgentModelOptionOut(id=model.id, display_name=model.display_name, context_window=model.context_window).model_dump(mode="json")
         for model, _provider in rows
-        if "text" in (model.verified_capabilities or [])
+        if ModelCapability.TEXT in (model.verified_capabilities or [])
         and (model.context_window is None or model.context_window >= minimum_context_window)
     ]
     return api_response(data=data, is_pop=False)

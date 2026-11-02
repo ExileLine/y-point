@@ -6,10 +6,12 @@
 """Agent 会话管理及会话内消息结构。"""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated
+
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.core.enums import MessageRole
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 from app.schemas.run import RunOut
 
@@ -84,7 +86,7 @@ class SessionMessageOut(BaseModel):
 
     id: int = Field(description="消息游标 ID", examples=[1])
     run_id: str = Field(description="所属运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
-    role: Literal["user", "assistant"] = Field(description="消息角色", examples=["assistant"])
+    role: MessageRole = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="消息正文", examples=["已整理需求"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-26T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])

@@ -24,6 +24,7 @@ from langchain_google_genai.chat_models import (
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.core.enums import ModelCapability, ProviderKind
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import ModelTestOut, ProbeCapability
@@ -93,7 +94,7 @@ async def _probe_reasoning_summary(
 ) -> ModelTestOut:
     """请求 Responses API 的公开摘要字段，只记录存在性、用量与脱敏故障。"""
     started = time.perf_counter()
-    if provider.kind != "openai":
+    if provider.kind != ProviderKind.OPENAI:
         return ModelTestOut(
             model_id=model.id,
             external_id=model.external_id,
@@ -185,7 +186,7 @@ async def probe_capability(
     response_client: httpx.AsyncClient | None = None,
 ) -> ModelTestOut:
     """通过实际调用验证单项能力，不保留上游正文或推理摘要。"""
-    if capability == "reasoning_summary":
+    if capability == ModelCapability.REASONING_SUMMARY:
         return await _probe_reasoning_summary(model, provider, response_client)
     chat_model = chat_model or build_chat_model(model, provider)
     started = time.perf_counter()
@@ -196,7 +197,7 @@ async def probe_capability(
         saw_chunk = False
         try:
             async with asyncio.timeout(provider.timeout_seconds + 5):
-                if capability == "streaming":
+                if capability == ModelCapability.STREAMING:
                     saw_text = False
                     async for chunk in chat_model.astream([HumanMessage(content="Reply with OK.")], max_tokens=128):
                         saw_chunk = True
@@ -204,7 +205,7 @@ async def probe_capability(
                         usage = chunk.usage_metadata or usage
                     if not saw_text:
                         failure = "invalid_response"
-                elif capability == "tools":
+                elif capability == ModelCapability.TOOLS:
                     bound = chat_model.bind_tools([VERIFY_TOOL])
                     message = await bound.ainvoke(
                         [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")], max_tokens=128
@@ -212,7 +213,7 @@ async def probe_capability(
                     usage = message.usage_metadata
                     if not any(call["name"] == "verify_capability" and call["args"].get("value") == "ping" for call in message.tool_calls):
                         failure = "invalid_response"
-                elif capability == "structured_output":
+                elif capability == ModelCapability.STRUCTURED_OUTPUT:
                     structured = chat_model.with_structured_output(STRUCTURED_SCHEMA, method="function_calling", include_raw=True)
                     response = await structured.ainvoke(
                         [HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128
@@ -229,7 +230,7 @@ async def probe_capability(
                         or response.get("parsing_error") is not None
                     ):
                         failure = "invalid_response"
-                elif capability == "vision":
+                elif capability == ModelCapability.VISION:
                     prompt = "Name the colors in the image from top-left to bottom-right. Reply with English color names only."
                     message = await chat_model.ainvoke(
                         [

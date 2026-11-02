@@ -7,10 +7,10 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.enums import ApprovalDecision, ApprovalState, MessageRole, RunState
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
@@ -73,7 +73,7 @@ class RunOut(BaseModel):
     max_tool_calls: int | None = Field(description="本次运行的工具调用次数上限", examples=[5])
     tool_call_count: int = Field(description="本次运行已开始的工具调用次数", examples=[2])
     thread_id: str = Field(description="检查点线程 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
-    state: str = Field(description="运行状态", examples=["queued"])
+    state: RunState = Field(description="运行状态", examples=["queued"])
     event_seq: int = Field(description="最新事件序号", examples=[1])
     failure_code: str | None = Field(description="脱敏故障类别", examples=["model_error"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-22T22:00:00"])
@@ -86,7 +86,7 @@ class RunEventOut(BaseModel):
     sequence: int = Field(description="运行内单调事件序号", examples=[2])
     protocol_version: int = Field(description="事件协议版本", examples=[1])
     event_type: str = Field(description="事件类型", examples=["state"])
-    state: str = Field(description="事件发生后的运行状态", examples=["running"])
+    state: RunState = Field(description="事件发生后的运行状态", examples=["running"])
     failure_code: str | None = Field(description="脱敏故障类别", examples=["model_error"])
     content: str | None = Field(description="可公开的模型文本增量", examples=["你好"])
     tool_call_id: str | None = Field(description="服务端生成的工具调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
@@ -138,7 +138,7 @@ class RunSnapshotOut(BaseModel):
 class RunMessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    role: Literal["user", "assistant"] = Field(description="消息角色", examples=["assistant"])
+    role: MessageRole = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="用户输入或最终可见回答", examples=["你好，我可以帮助你。"])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-22T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])
@@ -148,7 +148,7 @@ class RunMessageOut(BaseModel):
 class ApprovalDecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: Literal["approve", "reject"] = Field(description="审批决定：同意或拒绝", examples=["approve"])
+    decision: ApprovalDecision = Field(description="审批决定：同意或拒绝", examples=["approve"])
 
 
 class ApprovalActionOut(BaseModel):
@@ -174,7 +174,7 @@ class ApprovalOut(BaseModel):
             ]
         ],
     )
-    state: str = Field(description="审批状态", examples=["pending"])
+    state: ApprovalState = Field(description="审批状态", examples=["pending"])
     expires_at: datetime = Field(description="审批到期时间", examples=["2026-10-22T23:00:00"])
     decided_at: datetime | None = Field(description="审批决定时间", examples=["2026-10-22T22:30:00"])
 

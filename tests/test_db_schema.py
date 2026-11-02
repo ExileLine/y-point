@@ -172,7 +172,7 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "039"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "040"
                 await connection.run_sync(check_mapped_schema)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
             artifact_id = str(uuid4())

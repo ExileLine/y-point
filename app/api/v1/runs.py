@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ArtifactState, ModelCapability, RunState
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.config import get_config
@@ -80,7 +81,7 @@ async def _approval_data(db: AsyncSession, approval: object, owner_id: int) -> d
         if (
             artifact is not None
             and artifact.owner_id == owner_id
-            and artifact.state == "ready"
+            and artifact.state == ArtifactState.READY
             and artifact.status == 1
             and artifact.is_deleted == 0
             and (artifact.expires_at is None or artifact.expires_at > shanghai_now(naive=True))
@@ -114,7 +115,7 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.status != 1 or model.is_deleted != 0 or provider is None or provider.status != 1 or provider.is_deleted != 0:
         raise CustomException(status_code=404, custom_code=10002, detail="模型不可用")
-    if body.enable_text_artifact_tool and "tools" not in (model.verified_capabilities or []):
+    if body.enable_text_artifact_tool and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="模型尚未通过工具调用能力验证")
     options = dict(
         model_id=body.model_id,
@@ -340,7 +341,7 @@ async def stream_events(
                 payload = RunEventOut.model_validate(event).model_dump(mode="json")
                 yield f"id: {run_id}:{cursor}\nevent: {event.event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             if run.state in TERMINAL_STATES and cursor >= run.event_seq:
-                if run.state != "completed" or not run.publish_answer_artifact:
+                if run.state != RunState.COMPLETED or not run.publish_answer_artifact:
                     break
                 published = await db.scalar(
                     select(Artifact.id).where(Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1").limit(1)

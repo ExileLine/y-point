@@ -1,0 +1,7 @@
+# 构建阶段准备受信任依赖；执行阶段保持禁网、只读和非特权策略。
+FROM python:3.12-slim-bookworm
+COPY sandbox/requirements.txt /opt/sandbox/requirements.txt
+RUN python -m pip install --no-cache-dir -r /opt/sandbox/requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+USER 65534:65534

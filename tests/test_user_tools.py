@@ -6,6 +6,8 @@
 """验证用户 Tool 的权限、版本快照及不依赖 Skill 的对话调用。"""
 
 import asyncio
+import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 import socket
 
@@ -25,12 +27,22 @@ from app.models.agent_config import AgentConfig
 from app.models.base import Base
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.models.skill import AgentSkill, Skill, SkillVersion
 from app.models.tool import AgentTool, RunTool, ToolInvocation, UserTool, UserToolVersion
 from app.services.run_executor import execute_text_run
 from app.services.run_manager import claim_run, create_run, fail_run
+from app.services import mcp_tools
 from app.services.mcp_tools import _PinnedPublicTransport
-from app.services.script_sandbox import run_script
-from app.services.user_tools import model_tool_name, snapshot_run_tools, validate_mcp_url, validate_tool_definition
+from app.services.script_sandbox import SandboxConfigurationError, run_script
+from app.services.skills import snapshot_run_skills, validate_package
+from app.services.user_tools import (
+    model_tool_name,
+    skill_tool_catalog,
+    snapshot_run_tools,
+    tool_name_aliases,
+    validate_mcp_url,
+    validate_tool_definition,
+)
 from app.services.worker_tools import make_worker_tool_resolver
 
 
@@ -94,7 +106,7 @@ def test_tool_request_logging_masks_credentials_and_source() -> None:
     }
 
 
-def test_private_public_tool_and_agent_binding(tmp_path: Path) -> None:
+def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """跨用户只能选公开 Tool，且创建 Agent 可不关联 Skill。"""
 
     async def exercise() -> None:
@@ -195,6 +207,26 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path) -> None:
                     assert (await client.get(f"/api/v1/tools/{tool_id}", headers=other)).status_code == 404
                     catalog = (await client.get("/api/v1/tools/catalog", headers=other)).json()["data"]
                     assert catalog["builtin"] and catalog["user_tools"] == []
+
+                    async def missing_dependency(*args, **kwargs):
+                        """模拟镜像未预装依赖，不公开脚本源码或错误输出。"""
+                        raise SandboxConfigurationError("沙箱镜像缺少依赖 example_lib，请联系维护者构建预装依赖的镜像")
+
+                    with monkeypatch.context() as patch:
+                        patch.setattr("app.api.v1.tools.run_script", missing_dependency)
+                        failed = await client.post(
+                            f"/api/v1/tools/{tool_id}/test",
+                            headers=owner,
+                            json={
+                                "arguments": {
+                                    "value": 21,
+                                },
+                            },
+                        )
+                        assert failed.status_code == 400
+                        assert "沙箱镜像缺少依赖 example_lib" in failed.text
+                        unchanged = (await client.get(f"/api/v1/tools/{tool_id}", headers=owner)).json()["data"]
+                        assert unchanged["verified"] is False and unchanged["enabled"] is False
                     tested = await client.post(
                         f"/api/v1/tools/{tool_id}/test",
                         headers=owner,
@@ -295,6 +327,12 @@ def test_script_sandbox_blocks_network_and_times_out() -> None:
                 },
                 10,
             )
+        result = await run_script("python", "import httpx, json\nprint(json.dumps({'httpx': httpx.__version__}))", {}, 10)
+        assert json.loads(result)["httpx"] == "0.28.1"
+        with pytest.raises(ValueError, match="沙箱镜像缺少依赖 yp_missing_dependency"):
+            await run_script("python", "import yp_missing_dependency", {}, 10)
+        with pytest.raises(ValueError, match="脚本执行失败"):
+            await run_script("python", "import httpx\nhttpx.get('https://example.com', timeout=1)\n", {}, 10)
         with pytest.raises(ValueError, match="脚本执行失败"):
             await run_script("python", "import socket\nsocket.create_connection(('1.1.1.1', 80), timeout=1)\n", {}, 10)
         with pytest.raises(TimeoutError):
@@ -465,7 +503,8 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
     asyncio.run(exercise())
 
 
-def test_script_tool_runs_without_skill(tmp_path: Path) -> None:
+@pytest.mark.parametrize("use_skill,short_name", [(False, False), (False, True), (True, True)])
+def test_script_tool_runs_without_skill(tmp_path: Path, use_skill: bool, short_name: bool) -> None:
     """Agent 只关联 Tool 时，模型可在真实沙箱中调用并留下脱敏记录。"""
 
     async def exercise() -> None:
@@ -518,17 +557,58 @@ def test_script_tool_runs_without_skill(tmp_path: Path) -> None:
                         AgentTool(agent_id=3, tool_id=4, tool_version=1, status=1, is_deleted=0),
                     ]
                 )
+                if use_skill:
+                    files = {
+                        "SKILL.md": "---\nname: double-number\ndescription: 将整数翻倍\n---\n调用 double_value.py 获取结果。",
+                    }
+                    name, description, manifest, digest = validate_package(files)
+                    db.add(
+                        Skill(
+                            id=2,
+                            owner_id=1,
+                            name=name,
+                            description=description,
+                            category="数学",
+                            visibility="private",
+                            enabled=True,
+                            current_version=1,
+                            status=1,
+                            is_deleted=0,
+                        )
+                    )
+                    db.add(SkillVersion(skill_id=2, version=1, content_hash=digest, files=files, manifest=manifest, status=1, is_deleted=0))
+                    db.add(AgentSkill(agent_id=3, skill_id=2, skill_version=1, status=1, is_deleted=0))
                 await db.flush()
                 run = await create_run(db, 1, agent_id=3, input_text="double 21")
                 await snapshot_run_tools(db, run.id, 3, 1)
+                if use_skill:
+                    await snapshot_run_skills(db, run.id, 3, 1)
             model_name = model_tool_name(UserTool(id=4, name="double_value"))
             model = ToolModel(
                 responses=[
+                    *(
+                        [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {
+                                            "file_path": "/skills/double-number/SKILL.md",
+                                        },
+                                        "id": "call-read-skill",
+                                    }
+                                ],
+                            )
+                        ]
+                        if use_skill
+                        else []
+                    ),
                     AIMessage(
                         content="",
                         tool_calls=[
                             {
-                                "name": model_name,
+                                "name": "double_value" if short_name else model_name,
                                 "args": {
                                     "value": 21,
                                 },
@@ -557,5 +637,84 @@ def test_script_tool_runs_without_skill(tmp_path: Path) -> None:
                 assert (await db.scalars(select(RunTool).where(RunTool.run_id == run.id))).one().tool_version == 1
         finally:
             await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_tool_aliases_reject_ambiguity_and_reserved_names() -> None:
+    """同名、运行时保留名和其他工具规范名都不得被别名覆盖。"""
+    one = UserTool(id=6, owner_id=1, name="get_time")
+    assert tool_name_aliases([one], frozenset()) == {
+        "get_time": "user_tool_6_get_time",
+    }
+    other = UserTool(id=7, owner_id=2, name="get_time")
+    assert tool_name_aliases([one, other], frozenset()) == {}
+    assert tool_name_aliases([one], {"get_time"}) == {}
+    colliding = UserTool(id=8, owner_id=1, name="user_tool_6_get_time")
+    assert "user_tool_6_get_time" not in tool_name_aliases([one, colliding], frozenset())
+    assert tool_name_aliases([], frozenset()) == {}
+    catalog = skill_tool_catalog([one, other], {})
+    assert "必须明确工具 ID/所有者" in catalog
+    assert "user_tool_6_get_time" in catalog and "user_tool_7_get_time" in catalog
+
+
+def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """新 MCP 接口复用受限 HTTP 客户端，退出和异常时都关闭连接。"""
+    seen = []
+
+    @asynccontextmanager
+    async def fake_stream(url, *, http_client):
+        """模拟仅接受新版 SDK 参数的连接。"""
+        assert url == "https://mcp.example.com/mcp"
+        assert not http_client.is_closed
+        assert http_client.headers["Authorization"] == "Bearer test-token"
+        assert http_client.timeout.connect == 10 and http_client.timeout.read == 7
+        assert not http_client.follow_redirects
+        assert http_client._trust_env is False
+        assert isinstance(http_client._transport, _PinnedPublicTransport)
+        assert http_client._transport.address == "1.1.1.1"
+        seen.append(http_client)
+        yield "read", "write", None
+
+    monkeypatch.setattr(mcp_tools, "validate_mcp_url", lambda url: "1.1.1.1")
+    monkeypatch.setattr(mcp_tools, "streamable_http_client", fake_stream)
+
+    async def exercise() -> None:
+        """覆盖正常退出及执行期间异常的资源释放。"""
+        async with mcp_tools._mcp_connection("https://mcp.example.com/mcp", "test-token", 7) as streams:
+            assert streams[:2] == ("read", "write")
+        assert seen[-1].is_closed
+        with pytest.raises(RuntimeError):
+            async with mcp_tools._mcp_connection("https://mcp.example.com/mcp", "test-token", 7):
+                raise RuntimeError("session failed")
+        assert seen[-1].is_closed
+
+    asyncio.run(exercise())
+
+
+def test_mcp_transport_rejects_same_origin_redirects() -> None:
+    """即使新版 SDK 会处理同源跳转，固定 IP 传输层也必须先拒绝。"""
+
+    async def exercise() -> None:
+        """模拟同源 307 响应并确认只发出一次请求。"""
+        seen = []
+
+        def redirect(request: httpx.Request) -> httpx.Response:
+            """返回同源重定向，不连接外部服务。"""
+            seen.append(request)
+            return httpx.Response(
+                307,
+                headers={
+                    "Location": "https://mcp.example.com/other",
+                },
+            )
+
+        transport = _PinnedPublicTransport("mcp.example.com", "1.1.1.1")
+        await transport.transport.aclose()
+        transport.transport = httpx.MockTransport(redirect)
+        async with httpx.AsyncClient(transport=transport, follow_redirects=True) as client:
+            with pytest.raises(ValueError, match="不允许重定向"):
+                await client.post("https://mcp.example.com/mcp")
+        assert len(seen) == 1
 
     asyncio.run(exercise())

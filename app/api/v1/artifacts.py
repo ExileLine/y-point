@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import quote
 
+from app.core.enums import ArtifactOrigin, ArtifactState
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -46,7 +47,7 @@ async def _owned_artifact(db: AsyncSession, artifact_id: str, owner_id: int) -> 
     if (
         artifact is None
         or artifact.owner_id != owner_id
-        or artifact.state != "ready"
+        or artifact.state != ArtifactState.READY
         or artifact.is_deleted != 0
         or artifact.expires_at is not None
         and artifact.expires_at <= shanghai_now(naive=True)
@@ -110,7 +111,7 @@ async def read_artifact(artifact_id: str, actor: Admin = Depends(get_current_adm
     """仅文件所有者可以查看不含存储路径的元数据。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
     data = ArtifactOut.model_validate(item).model_dump(mode="json")
-    if item.source == "generated" and item.run_id is not None:
+    if item.source == ArtifactOrigin.GENERATED and item.run_id is not None:
         data["context_artifact_ids"] = (await load_run_context_artifact_ids(db, actor.id, [item.run_id])).get(item.run_id, [])
         data["read_source_artifact_ids"] = (await load_read_source_artifact_ids(db, actor.id, [item.id])).get(item.id, [])
     return api_response(data=data, datetime_format=False)
@@ -127,8 +128,8 @@ async def list_run_artifacts(run_id: str, actor: Admin = Depends(get_current_adm
         .where(
             Artifact.run_id == run_id,
             Artifact.owner_id == actor.id,
-            Artifact.source == "generated",
-            Artifact.state == "ready",
+            Artifact.source == ArtifactOrigin.GENERATED,
+            Artifact.state == ArtifactState.READY,
             Artifact.is_deleted == 0,
             (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
         )
@@ -184,7 +185,7 @@ async def download_artifact(artifact_id: str, actor: Admin = Depends(get_current
 async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """先撤销访问，再尽力移除私有文件正文。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
-    item.state = "deleted"
+    item.state = ArtifactState.DELETED
     item.is_deleted = 1
     await db.commit()
     try:

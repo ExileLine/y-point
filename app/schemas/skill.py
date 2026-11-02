@@ -6,6 +6,7 @@
 """Skill 管理接口结构。"""
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.enums import Visibility
 
 
 class SkillCreateIn(BaseModel):
@@ -20,7 +21,7 @@ class SkillCreateIn(BaseModel):
         ],
     )
     category: str | None = Field(default=None, max_length=64, description="Skill 分组", examples=["写作"])
-    visibility: str = Field(default="private", pattern="^(private|public)$", description="私有或公开", examples=["private"])
+    visibility: Visibility = Field(default=Visibility.PRIVATE, description="私有或公开", examples=["private"])
 
 
 class SkillUpdateIn(BaseModel):
@@ -37,5 +38,5 @@ class SkillUpdateIn(BaseModel):
         ],
     )
     category: str | None = Field(default=None, max_length=64, description="Skill 分组", examples=["写作"])
-    visibility: str | None = Field(default=None, pattern="^(private|public)$", description="私有或公开", examples=["public"])
+    visibility: Visibility | None = Field(default=None, description="私有或公开", examples=["public"])
     enabled: bool | None = Field(default=None, description="是否启用", examples=[True])

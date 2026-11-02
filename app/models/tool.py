@@ -5,10 +5,13 @@
 
 """用户 Tool、不可变版本及 Agent/Run 调用关系。"""
 
+from datetime import datetime
+
 from sqlalchemy import Boolean, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.core.enums import ToolEnvironmentState
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class UserTool(CustomBaseModel):
@@ -45,6 +48,22 @@ class UserToolVersion(CustomBaseModel):
     effect: Mapped[str] = mapped_column(String(16), nullable=False, comment="只读或外部写入")
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, comment="调用前是否要求审批")
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="当前版本是否通过发布验证")
+    requirements: Mapped[list] = mapped_column(JSON, nullable=False, default=list, comment="用户声明的 Python 依赖清单")
+    environment_state: Mapped[str] = mapped_column(
+        String(24), nullable=False, default=ToolEnvironmentState.NOT_REQUIRED, comment="脚本依赖环境准备状态"
+    )
+    environment_spec_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, comment="依赖声明与基础镜像的准备请求摘要"
+    )
+    environment_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, comment="依赖与基础镜像的环境缓存键")
+    environment_image: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="已固定的沙箱基础镜像 ID")
+    environment_lock: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="完整依赖版本和 wheel SHA256 清单")
+    environment_manifest: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="已安装环境文件的路径与 SHA256 清单")
+    environment_error_code: Mapped[str | None] = mapped_column(String(48), nullable=True, comment="环境准备脱敏失败类别")
+    environment_error_detail: Mapped[str | None] = mapped_column(String(256), nullable=True, comment="可公开的缺失依赖说明")
+    environment_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="环境准备任务租约令牌")
+    environment_lease_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="环境准备租约到期时间")
+    environment_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="环境准备尝试次数")
     script_language: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="脚本语言")
     source_code: Mapped[str | None] = mapped_column(Text, nullable=True, comment="脚本源代码")
     mcp_url: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="MCP Streamable HTTP 地址")

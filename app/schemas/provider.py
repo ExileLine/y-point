@@ -8,11 +8,11 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
+from app.core.enums import ModelCapability, ProviderKind
 
 
-ProviderKind = Literal["openai_compatible", "openai", "anthropic", "ollama", "azure_openai", "gemini", "bedrock"]
-Capability = Literal["text", "vision", "tools", "streaming", "structured_output", "reasoning_summary"]
-ProbeCapability = Literal["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"]
+Capability = ModelCapability
+ProbeCapability = ModelCapability
 ConnectionName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 BaseUrl = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
 ExternalModelId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]

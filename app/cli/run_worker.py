@@ -51,6 +51,7 @@ from app.services.run_reconciler import reconcile_expired_runs
 from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.worker_monitor import WORKER_STALE_SECONDS, prune_worker_heartbeats, register_worker, stop_worker, touch_worker
 from app.services.worker_tools import make_worker_tool_resolver
+from app.services.tool_environments import prepare_next_tool_environment
 
 DEFAULT_CHECKPOINT_PATH = Path(__file__).resolve().parents[2] / ".run-private" / "checkpoints.sqlite"
 HEARTBEAT_PRUNE_INTERVAL_SECONDS = 3600
@@ -67,6 +68,20 @@ async def _heartbeat_loop(worker_id: str, heartbeat_seconds: float) -> None:
             logger.error("执行器心跳写入失败：{}", type(exc).__name__)
 
 
+async def _tool_environment_loop(idle_seconds: float) -> None:
+    """独立准备依赖，避免下载和安装阻塞对话调度。"""
+    while True:
+        try:
+            prepared = await prepare_next_tool_environment(AsyncSessionLocal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("依赖环境调度失败：{}", type(exc).__name__)
+            prepared = False
+        if not prepared:
+            await asyncio.sleep(idle_seconds)
+
+
 async def run_worker(
     checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5, artifact_path: Path | None = None
 ) -> None:
@@ -77,6 +92,7 @@ async def run_worker(
         await checkpointer.setup()
     worker_id = str(uuid4()) if not once else None
     heartbeat_task = None
+    environment_task = None
     if worker_id is not None:
         async with AsyncSessionLocal.begin() as db:
             await register_worker(db, worker_id)
@@ -86,6 +102,10 @@ async def run_worker(
         while True:
             try:
                 reconciled = await reconcile_expired_runs(AsyncSessionLocal, checkpoint_path)
+                if once:
+                    await prepare_next_tool_environment(AsyncSessionLocal)
+                elif environment_task is None:
+                    environment_task = asyncio.create_task(_tool_environment_loop(idle_seconds))
                 prune_due = last_prune_at is None or time.monotonic() - last_prune_at >= HEARTBEAT_PRUNE_INTERVAL_SECONDS
                 async with AsyncSessionLocal.begin() as db:
                     recovered = await recover_expired_runs(db)
@@ -134,6 +154,10 @@ async def run_worker(
             if run is None:
                 await asyncio.sleep(idle_seconds)
     finally:
+        if environment_task is not None:
+            environment_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await environment_task
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):

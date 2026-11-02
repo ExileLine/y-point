@@ -8,6 +8,7 @@ import re
 
 import httpx
 
+from app.core.enums import ProviderKind
 from app.core.custom_exception import CustomException
 from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import ConnectionTestOut
@@ -17,14 +18,14 @@ from app.services.provider_credentials import decrypt_credentials
 
 def normalize_base_url(value: str | None, *, kind: str | None = None, region: str | None = None) -> str:
     """规范化供应商根地址，并为可省略地址的供应商生成默认值。"""
-    if kind == "bedrock":
+    if kind == ProviderKind.BEDROCK:
         if value is not None:
             raise CustomException(status_code=400, custom_code=10006, detail="Bedrock 接口地址由区域决定")
         if not region or not re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+", region):
             raise CustomException(status_code=400, custom_code=10006, detail="Bedrock 区域无效")
         suffix = "amazonaws.com.cn" if region.startswith("cn-") else "amazonaws.com"
         return f"https://bedrock-runtime.{region}.{suffix}"
-    value = value or ("https://generativelanguage.googleapis.com" if kind == "gemini" else None)
+    value = value or ("https://generativelanguage.googleapis.com" if kind == ProviderKind.GEMINI else None)
     if value is None:
         raise CustomException(status_code=400, custom_code=10006, detail="供应商接口地址不能为空")
     try:
@@ -33,7 +34,7 @@ def normalize_base_url(value: str | None, *, kind: str | None = None, region: st
         raise CustomException(status_code=400, custom_code=10006, detail="供应商接口地址无效") from None
     if url.scheme not in {"http", "https"} or not url.host or url.username or url.password or url.query or url.fragment:
         raise CustomException(status_code=400, custom_code=10006, detail="供应商接口地址无效")
-    if kind in {"gemini", "azure_openai"} and url.path not in {"", "/"}:
+    if kind in {ProviderKind.GEMINI, ProviderKind.AZURE_OPENAI} and url.path not in {"", "/"}:
         raise CustomException(status_code=400, custom_code=10006, detail="该供应商接口地址只允许填写服务根地址")
     return str(url).rstrip("/")
 
@@ -77,7 +78,7 @@ def provider_request_headers(provider: ProviderConnection) -> dict[str, str]:
         "accept": "application/json",
         **custom_headers,
     }
-    if provider.kind == "anthropic":
+    if provider.kind == ProviderKind.ANTHROPIC:
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         headers.update(
@@ -86,32 +87,32 @@ def provider_request_headers(provider: ProviderConnection) -> dict[str, str]:
                 "anthropic-version": provider.api_version or "2023-06-01",
             }
         )
-    elif provider.kind == "azure_openai":
+    elif provider.kind == ProviderKind.AZURE_OPENAI:
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         headers["api-key"] = api_key
-    elif provider.kind == "gemini":
+    elif provider.kind == ProviderKind.GEMINI:
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         headers["x-goog-api-key"] = api_key
     elif api_key:
         headers["authorization"] = f"Bearer {api_key}"
-    elif provider.kind == "openai":
+    elif provider.kind == ProviderKind.OPENAI:
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     return headers
 
 
 async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient | None = None) -> ConnectionTestOut:
     """调用供应商模型列表接口并返回模型 ID 和不含密钥的诊断结果。"""
-    if provider.kind == "azure_openai":
+    if provider.kind == ProviderKind.AZURE_OPENAI:
         return ConnectionTestOut(available=False, latency_ms=0, failure="model_list_unavailable")
-    if provider.kind == "bedrock":
+    if provider.kind == ProviderKind.BEDROCK:
         from app.services.bedrock_probe import probe_bedrock_provider
 
         return await probe_bedrock_provider(provider)
     headers = provider_request_headers(provider)
     base_url = httpx.URL(provider.base_url)
-    path = f"/{provider.api_version or 'v1beta'}/models" if provider.kind == "gemini" else f"{base_url.path.rstrip('/')}/models"
+    path = f"/{provider.api_version or 'v1beta'}/models" if provider.kind == ProviderKind.GEMINI else f"{base_url.path.rstrip('/')}/models"
     url = base_url.copy_with(path=path)
     started = time.perf_counter()
     own_client = client is None
@@ -142,27 +143,29 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
                 data = response.json()
                 if not isinstance(data, dict):
                     raise ValueError("invalid models")
-                models = data["models"] if provider.kind == "gemini" else data["data"]
+                models = data["models"] if provider.kind == ProviderKind.GEMINI else data["data"]
                 if not isinstance(models, list):
                     raise ValueError("invalid models")
                 for model in models:
                     if not isinstance(model, dict):
                         raise ValueError("invalid model id")
-                    raw_id = model.get("name") if provider.kind == "gemini" else model.get("id")
+                    raw_id = model.get("name") if provider.kind == ProviderKind.GEMINI else model.get("id")
                     if not isinstance(raw_id, str) or not raw_id.strip():
                         raise ValueError("invalid model id")
-                    model_id = raw_id.removeprefix("models/") if provider.kind == "gemini" else raw_id
-                    if provider.kind == "gemini":
+                    model_id = raw_id.removeprefix("models/") if provider.kind == ProviderKind.GEMINI else raw_id
+                    if provider.kind == ProviderKind.GEMINI:
                         methods = model.get("supportedGenerationMethods")
                         if not isinstance(methods, list):
                             raise ValueError("invalid generation methods")
                         if "generateContent" not in methods:
                             continue
                     model_ids.append(model_id)
-                    display_name = model.get("displayName") if provider.kind == "gemini" else model.get("display_name") or model.get("name")
+                    display_name = (
+                        model.get("displayName") if provider.kind == ProviderKind.GEMINI else model.get("display_name") or model.get("name")
+                    )
                     if isinstance(display_name, str) and display_name.strip() and display_name.isprintable():
                         model_names[model_id] = display_name.strip()
-                token = data.get("nextPageToken") if provider.kind == "gemini" else None
+                token = data.get("nextPageToken") if provider.kind == ProviderKind.GEMINI else None
                 if not token:
                     break
                 if not isinstance(token, str) or token in page_tokens:

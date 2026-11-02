@@ -15,6 +15,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import MessageRole, RunState
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.agent_run_message import AgentRunMessage
@@ -47,7 +48,7 @@ async def reconcile_expired_runs(sessions: async_sessionmaker[AsyncSession], che
     async with sessions() as db:
         statement = (
             select(AgentRun.id, AgentRun.owner_id, AgentRun.thread_id)
-            .where(AgentRun.state == "running", AgentRun.lease_expires_at <= shanghai_now(naive=True))
+            .where(AgentRun.state == RunState.RUNNING, AgentRun.lease_expires_at <= shanghai_now(naive=True))
             .order_by(AgentRun.lease_expires_at, AgentRun.id)
             .limit(limit)
         )
@@ -93,7 +94,9 @@ async def reconcile_expired_runs(sessions: async_sessionmaker[AsyncSession], che
                     if user is None or user.status != 1 or user.is_deleted != 0:
                         continue
                     existing = await db.scalar(
-                        select(AgentRunMessage.id).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == "assistant").limit(1)
+                        select(AgentRunMessage.id)
+                        .where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.ASSISTANT)
+                        .limit(1)
                     )
                     if existing is not None:
                         continue

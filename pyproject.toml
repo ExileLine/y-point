@@ -42,8 +42,9 @@ dependencies = [
   "pypdf>=6.21.2",
   "pillow>=13,<14",
   "pyyaml>=6,<7",
-  "mcp>=1.0,<2",
+  "mcp>=1.30.0,<2",
   "jsonschema>=4.0,<5",
+  "packaging>=24,<27",
 ]
 
 [dependency-groups]

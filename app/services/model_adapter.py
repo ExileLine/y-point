@@ -11,6 +11,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 
+from app.core.enums import ProviderKind
 from app.core.custom_exception import CustomException
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
@@ -38,7 +39,7 @@ def build_chat_model(
         if max_output_tokens is not None
         else {}
     )
-    if provider.kind == "azure_openai":
+    if provider.kind == ProviderKind.AZURE_OPENAI:
         if not api_key or not provider.api_version:
             raise CustomException(status_code=400, custom_code=10005, detail="Azure OpenAI 缺少 API 密钥或版本")
         return AzureChatOpenAI(
@@ -53,7 +54,7 @@ def build_chat_model(
             **generation,
             **token_limit,
         )
-    if provider.kind == "gemini":
+    if provider.kind == ProviderKind.GEMINI:
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="Gemini 缺少 API 密钥")
         return ChatGoogleGenerativeAI(
@@ -73,7 +74,7 @@ def build_chat_model(
                 else {}
             ),
         )
-    if provider.kind == "bedrock":
+    if provider.kind == ProviderKind.BEDROCK:
         if not provider.region:
             raise CustomException(status_code=400, custom_code=10005, detail="Bedrock 缺少区域")
         return ChatBedrockConverse(
@@ -84,7 +85,7 @@ def build_chat_model(
             **generation,
             **token_limit,
         )
-    if provider.kind == "anthropic":
+    if provider.kind == ProviderKind.ANTHROPIC:
         if not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         base_url = provider.base_url.removesuffix("/v1")
@@ -108,8 +109,8 @@ def build_chat_model(
             max_tokens=max_output_tokens or 1024,
             **generation,
         )
-    if provider.kind in {"openai", "openai_compatible", "ollama"}:
-        if provider.kind == "openai" and not api_key:
+    if provider.kind in {ProviderKind.OPENAI, ProviderKind.OPENAI_COMPATIBLE, ProviderKind.OLLAMA}:
+        if provider.kind == ProviderKind.OPENAI and not api_key:
             raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
         return ChatOpenAI(
             model=model.external_id,

@@ -11,6 +11,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import ApprovalState, RunState
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.model_catalog import ModelCatalog
@@ -50,16 +51,18 @@ async def dispatch_next_run(
 ) -> AgentRun | None:
     """读取最早排队或可安全恢复的运行；竞争失败由下一轮处理。"""
     async with sessions() as db:
-        eligible = AgentRun.state == "queued"
+        eligible = AgentRun.state == RunState.QUEUED
         if resolve_tools is not None:
             approved = (
                 select(RunApproval.id)
                 .where(
-                    RunApproval.run_id == AgentRun.id, RunApproval.checkpoint_id == AgentRun.checkpoint_id, RunApproval.state == "approved"
+                    RunApproval.run_id == AgentRun.id,
+                    RunApproval.checkpoint_id == AgentRun.checkpoint_id,
+                    RunApproval.state == ApprovalState.APPROVED,
                 )
                 .exists()
             )
-            eligible = or_(eligible, and_(AgentRun.state == "waiting_for_approval", approved))
+            eligible = or_(eligible, and_(AgentRun.state == RunState.WAITING_FOR_APPROVAL, approved))
         statement = select(AgentRun.id, AgentRun.state).where(eligible).order_by(AgentRun.create_time, AgentRun.id).limit(1)
         candidate = (await db.execute(statement)).first()
     if candidate is None:
@@ -72,7 +75,7 @@ async def dispatch_next_run(
             checkpoint_path,
             resolve_model=resolve_model,
             resolve_tools=resolve_tools,
-            resume=candidate.state == "waiting_for_approval",
+            resume=candidate.state == RunState.WAITING_FOR_APPROVAL,
             timeout_seconds=timeout_seconds,
             lease_seconds=lease_seconds,
             poll_seconds=poll_seconds,

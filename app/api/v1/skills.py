@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -90,7 +91,9 @@ async def list_skills(actor: Admin = Depends(get_current_admin), db: AsyncSessio
     items = (
         await db.scalars(
             select(Skill)
-            .where(Skill.is_deleted == 0, or_(Skill.owner_id == actor.id, (Skill.visibility == "public") & Skill.enabled.is_(True)))
+            .where(
+                Skill.is_deleted == 0, or_(Skill.owner_id == actor.id, (Skill.visibility == Visibility.PUBLIC) & Skill.enabled.is_(True))
+            )
             .order_by(Skill.id.desc())
         )
     ).all()
@@ -139,7 +142,7 @@ async def upload_skill(
     return api_response(
         http_code=201,
         code=201,
-        data=await _create(db, actor.id, SkillCreateIn(files=files, visibility=visibility or "private")),
+        data=await _create(db, actor.id, SkillCreateIn(files=files, visibility=visibility or Visibility.PRIVATE)),
         datetime_format=False,
     )
 
@@ -154,7 +157,7 @@ async def create_skill(body: SkillCreateIn, actor: Admin = Depends(get_current_a
 async def get_skill(skill_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """所有者可编辑正文；其他用户仅可读取公开元数据。"""
     item = await db.get(Skill, skill_id)
-    if item is None or item.is_deleted != 0 or (item.owner_id != actor.id and (item.visibility != "public" or not item.enabled)):
+    if item is None or item.is_deleted != 0 or (item.owner_id != actor.id and (item.visibility != Visibility.PUBLIC or not item.enabled)):
         raise CustomException(status_code=404, custom_code=10002, detail="Skill 不存在")
     return api_response(data=_output(item, await _version(db, item) if item.owner_id == actor.id else None), datetime_format=False)
 
@@ -163,7 +166,7 @@ async def get_skill(skill_id: int, actor: Admin = Depends(get_current_admin), db
 async def download_skill(skill_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """所有者或公开 Skill 的使用者可下载当前版本。"""
     item = await db.get(Skill, skill_id)
-    if item is None or item.is_deleted != 0 or (item.owner_id != actor.id and (item.visibility != "public" or not item.enabled)):
+    if item is None or item.is_deleted != 0 or (item.owner_id != actor.id and (item.visibility != Visibility.PUBLIC or not item.enabled)):
         raise CustomException(status_code=404, custom_code=10002, detail="Skill 不存在")
     version = await _version(db, item)
     return Response(

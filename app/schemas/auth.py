@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.core.enums import UserRole
+
 
 class LoginIn(BaseModel):
     identifier: str = Field(min_length=3, max_length=256, description="用户名或邮箱", examples=["admin@example.com"])
@@ -39,14 +41,14 @@ class UserCreateIn(BaseModel):
     mail: EmailStr | None = Field(default=None, description="邮箱地址", examples=["alice@example.com"])
     password: str = Field(description="初始密码", examples=["ExamplePassword123!"])
     nickname: str | None = Field(default=None, max_length=128, description="昵称", examples=["Alice"])
-    role: Literal["admin", "user"] = Field(default="user", description="用户角色", examples=["user"])
+    role: UserRole = Field(default=UserRole.USER, description="用户角色", examples=["user"])
 
 
 class UserUpdateIn(BaseModel):
     nickname: str | None = Field(default=None, max_length=128, description="昵称", examples=["Alice"])
     mail: EmailStr | None = Field(default=None, description="邮箱地址", examples=["alice@example.com"])
     status: Literal[0, 1] | None = Field(default=None, description="状态：1 启用，0 停用", examples=[1])
-    role: Literal["admin", "user"] | None = Field(default=None, description="用户角色", examples=["user"])
+    role: UserRole | None = Field(default=None, description="用户角色", examples=["user"])
 
 
 class ProfileUpdateIn(BaseModel):
@@ -61,7 +63,7 @@ class UserOut(BaseModel):
     username: str | None = Field(description="用户名", examples=["alice_01"])
     mail: str | None = Field(description="邮箱地址", examples=["alice@example.com"])
     nickname: str | None = Field(description="昵称", examples=["Alice"])
-    role: str = Field(description="用户角色", examples=["user"])
+    role: UserRole = Field(description="用户角色", examples=["user"])
     status: int | None = Field(description="状态：1 启用，0 停用", examples=[1])
     last_login_at: datetime | None = Field(description="最近登录时间", examples=["2026-10-22T10:00:00"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-21T16:46:46"])

@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.enums import ArtifactState
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
 from app.services.artifact_store import MAX_FILE_BYTES, ArtifactValidationError, storage_path
@@ -50,7 +51,7 @@ async def migrate_local_artifacts_to_s3(
                     select(Artifact)
                     .where(
                         Artifact.id > last_id,
-                        Artifact.state == "ready",
+                        Artifact.state == ArtifactState.READY,
                         Artifact.is_deleted == 0,
                         or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
                     )

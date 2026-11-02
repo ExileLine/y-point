@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.enums import ToolEnvironmentState, ToolKind, Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -18,11 +19,12 @@ from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.tool import ToolInvocation, UserTool, UserToolVersion
-from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdateIn
+from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdateIn, ToolEnvironmentRetryIn
 from app.services.identity import audit
 from app.services.mcp_tools import discover_mcp_tools
 from app.services.provider_credentials import decrypt_credentials
-from app.services.script_sandbox import run_script
+from app.services.script_sandbox import SandboxConfigurationError, run_script
+from app.services.tool_environments import environment_output, initial_environment_fields, require_script_environment
 from app.services.user_tools import model_tool_name, validate_tool_definition, version_fields
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -72,6 +74,8 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
                 "share_credentials": version.share_credentials,
                 "content_hash": version.content_hash,
                 "verified": version.verified,
+                "requirements": version.requirements,
+                "environment": environment_output(version),
             }
         )
     return data
@@ -88,7 +92,7 @@ async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = Fal
 
 async def _prepare(kind: str, name: str, fields: dict, token: str | None) -> tuple[dict, str, bool, str]:
     """验证 Tool 执行定义，MCP 输入结构从远端发现结果取得。"""
-    if kind == "mcp":
+    if kind == ToolKind.MCP:
         try:
             found = await discover_mcp_tools(fields["mcp_url"], token)
         except Exception as exc:
@@ -113,7 +117,7 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
             select(UserTool)
             .where(
                 UserTool.is_deleted == 0,
-                or_(UserTool.owner_id == actor.id, (UserTool.visibility == "public") & UserTool.enabled.is_(True)),
+                or_(UserTool.owner_id == actor.id, (UserTool.visibility == Visibility.PUBLIC) & UserTool.enabled.is_(True)),
             )
             .order_by(UserTool.id.desc())
         )
@@ -173,9 +177,12 @@ async def list_tool_calls(run_id: str, actor: Admin = Depends(get_current_admin)
 @router.post("", summary="创建 Tool")
 async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """脚本先私有试运行；MCP 发现成功后可直接发布。"""
-    if body.kind == "script" and body.visibility != "private":
+    if body.kind == ToolKind.SCRIPT and body.visibility != Visibility.PRIVATE:
         raise CustomException(status_code=409, custom_code=10005, detail="脚本需先私有创建并试运行")
-    fields = version_fields(body.model_dump(), None)
+    try:
+        fields = version_fields(body.model_dump(), None)
+    except ValueError as exc:
+        raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     fields, effect, approval, digest = await _prepare(body.kind, body.name, fields, body.mcp_bearer_token)
     tool = UserTool(
         owner_id=actor.id,
@@ -183,7 +190,7 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
         description=body.description,
         kind=body.kind,
         visibility=body.visibility,
-        enabled=body.kind == "mcp",
+        enabled=body.kind == ToolKind.MCP,
         current_version=1,
         is_deleted=0,
         status=1,
@@ -197,10 +204,11 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
                 version=1,
                 effect=effect,
                 requires_approval=approval,
-                verified=body.kind == "mcp",
+                verified=body.kind == ToolKind.MCP,
                 content_hash=digest,
                 is_deleted=0,
                 status=1,
+                **initial_environment_fields(fields["requirements"]),
                 **fields,
             )
         )
@@ -216,7 +224,7 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
 async def get_tool(tool_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """公开 Tool 对所有用户可见，但源码和连接配置仅返回创建者。"""
     tool = await db.get(UserTool, tool_id)
-    if tool is None or tool.is_deleted != 0 or tool.owner_id != actor.id and (tool.visibility != "public" or not tool.enabled):
+    if tool is None or tool.is_deleted != 0 or tool.owner_id != actor.id and (tool.visibility != Visibility.PUBLIC or not tool.enabled):
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
     return api_response(data=_output(tool, await _version(db, tool) if tool.owner_id == actor.id else None), datetime_format=False)
 
@@ -234,22 +242,25 @@ async def update_tool(
         raise CustomException(status_code=400, custom_code=10005, detail="更新字段不能为空")
     previous = await _version(db, tool)
     visibility = changes.get("visibility", tool.visibility)
-    fields = version_fields(
-        {
-            **changes,
-            "visibility": visibility,
-        },
-        previous,
-    )
+    try:
+        fields = version_fields(
+            {
+                **changes,
+                "visibility": visibility,
+            },
+            previous,
+        )
+    except ValueError as exc:
+        raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     token, _ = decrypt_credentials(previous.encrypted_credentials)
     fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, changes.get("mcp_bearer_token") or token)
     execution_changed = any(
         fields[key] != getattr(previous, key)
-        for key in ("input_schema", "script_language", "source_code", "mcp_url", "mcp_tool_name", "encrypted_credentials")
+        for key in ("requirements", "input_schema", "script_language", "source_code", "mcp_url", "mcp_tool_name", "encrypted_credentials")
     )
-    verified = tool.kind == "mcp" or previous.verified and not execution_changed
-    if tool.kind == "script" and not verified:
-        visibility = "private"
+    verified = tool.kind == ToolKind.MCP or previous.verified and not execution_changed
+    if tool.kind == ToolKind.SCRIPT and not verified:
+        visibility = Visibility.PRIVATE
     if "description" in changes:
         tool.description = changes["description"]
     tool.visibility = visibility
@@ -265,6 +276,7 @@ async def update_tool(
             content_hash=digest,
             is_deleted=0,
             status=1,
+            **initial_environment_fields(fields["requirements"], previous),
             **fields,
         )
     )
@@ -290,11 +302,23 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
     """仅允许创建者试运行；MCP 工具按正式调用策略审批，不提供直接试运行。"""
     tool = await _owned(db, tool_id, actor.id)
     version = await _version(db, tool)
-    if tool.kind != "script":
+    if tool.kind != ToolKind.SCRIPT:
         raise CustomException(status_code=409, custom_code=10005, detail="MCP Tool 请在 Agent 对话中审批调用")
+    if version.requirements and version.environment_state != ToolEnvironmentState.READY:
+        raise CustomException(status_code=409, custom_code=10005, detail="依赖环境尚未准备成功，请查看进度或重试")
     try:
         Draft202012Validator(version.input_schema).validate(body.arguments)
-        result = await run_script(version.script_language, version.source_code, body.arguments, 10)
+        environment = await require_script_environment(version)
+        options = (
+            {
+                "environment": environment,
+            }
+            if environment is not None
+            else {}
+        )
+        result = await run_script(version.script_language, version.source_code, body.arguments, 10, **options)
+    except SandboxConfigurationError as exc:
+        raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     except (ValidationError, ValueError, OSError, TimeoutError) as exc:
         raise CustomException(status_code=400, custom_code=10005, detail="脚本试运行失败或参数无效") from exc
     tool = await _owned(db, tool_id, actor.id, lock=True)
@@ -311,3 +335,47 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
         },
         datetime_format=False,
     )
+
+
+@router.post("/{tool_id}/environment/retry", summary="重试或重新准备我的 Tool 依赖环境")
+async def retry_tool_environment(
+    tool_id: int, body: ToolEnvironmentRetryIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+):
+    """失败版本重新排队；已就绪环境通过新版本重建，保留旧版依赖锁。"""
+    tool = await _owned(db, tool_id, actor.id, lock=True)
+    if tool.current_version != body.expected_version:
+        raise CustomException(status_code=409, custom_code=10005, detail="Tool 版本已变化")
+    version = await _version(db, tool)
+    if version.environment_state == ToolEnvironmentState.READY:
+        fields = version_fields(
+            {
+                "visibility": Visibility.PRIVATE,
+            },
+            version,
+        )
+        fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, None)
+        tool.current_version += 1
+        tool.visibility = Visibility.PRIVATE
+        tool.enabled = False
+        version = UserToolVersion(
+            tool_id=tool.id,
+            version=tool.current_version,
+            effect=effect,
+            requires_approval=approval,
+            verified=False,
+            content_hash=digest,
+            is_deleted=0,
+            status=1,
+            **initial_environment_fields(fields["requirements"]),
+            **fields,
+        )
+        db.add(version)
+    elif version.environment_state == ToolEnvironmentState.FAILED:
+        version.environment_state = ToolEnvironmentState.PENDING
+        version.environment_error_code = None
+        version.environment_error_detail = None
+    else:
+        raise CustomException(status_code=409, custom_code=10005, detail="依赖环境无需准备或正在准备，请稍后查看")
+    audit(db, "tool.environment_retried", actor_id=actor.id, target_id=tool.id)
+    await db.commit()
+    return api_response(data=_output(tool, version), datetime_format=False)
