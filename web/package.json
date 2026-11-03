@@ -1,0 +1,39 @@
+{
+  "name": "y-point-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc -b --pretty false",
+    "verify:agents": "node scripts/verify-agents.mjs",
+    "verify:models": "node scripts/verify-models.mjs",
+    "verify:sessions": "node scripts/verify-sessions.mjs",
+    "verify:knowledge": "node scripts/verify-knowledge.mjs",
+    "verify:resources": "node scripts/verify-resources.mjs",
+    "verify:chat": "node scripts/verify-chat.mjs",
+    "verify:artifacts": "node scripts/verify-artifacts.mjs",
+    "verify:calls": "node scripts/verify-calls.mjs"
+  },
+  "dependencies": {
+    "antd": "^5.29.1",
+    "lucide-react": "^0.562.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.5",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^18.3.24",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "playwright": "^1.64.1",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  }
+}

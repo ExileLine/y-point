@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
+const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
+const envelope = data => ({ code: 200, message: '操作成功', data });
+const skill = { id: 1, owner_id: 1, name: '差旅报销助手', description: '整理差旅规则与报销资料。', category: '财务', visibility: 'private', enabled: true, current_version: 3, files: { 'SKILL.md': '---\nname: trip\ndescription: travel\n---\n规则', 'references/policy.md': '必须保留的附加文件' } };
+const tool = { id: 1, owner_id: 1, name: '差旅计算', model_name: 'trip_calc', description: '根据出差天数计算补助。', kind: 'script', visibility: 'private', enabled: false, current_version: 2, verified: false, input_schema: { type: 'object' }, script_language: 'python', source_code: 'print("ok")', requirements: [], environment: { state: 'not_required', failure_code: null, message: null, locked_requirements: [] } };
+let checks = 0;
+try {
+  for (const [label, width] of [['desktop', 1280], ['mobile', 375]]) {
+    const context = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: 'reduce' });
+    await context.addInitScript(() => { sessionStorage.setItem('yp.access_token', 'fixture-token'); sessionStorage.setItem('yp.refresh_token', 'fixture-refresh'); });
+    const page = await context.newPage();
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    let failList = false, conflict = true, updateBody;
+    const unexpected = [];
+    await page.route('**/api/v1/**', async route => {
+      const req = route.request(), path = new URL(req.url()).pathname, method = req.method();
+      const send = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(status === 200 ? envelope(data) : { code: status, message: data }) });
+      if (path === '/api/v1/auth/me') return send({ id: 1, username: 'root', nickname: '管理员', role: 'admin' });
+      if (path === '/api/v1/skills' && method === 'GET') return failList ? send('Skill 服务暂不可用', 503) : send([skill, { ...skill, id: 2, owner_id: 2, name: '公开知识整理', category: '资料', visibility: 'public', enabled: false }]);
+      if (path === '/api/v1/skills/1' && method === 'GET') return send(skill);
+      if (path === '/api/v1/skills/1' && method === 'PUT') { updateBody = req.postDataJSON(); return conflict ? send('版本冲突，请刷新后重试', 409) : send(skill); }
+      if (path === '/api/v1/tools/catalog') return send({ builtin: [{ model_name: 'search_knowledge_base', description: '检索授权知识库', kind: 'builtin', visibility: 'builtin' }], user_tools: [tool, { ...tool, id: 2, name: '远端天气', kind: 'mcp', verified: true, visibility: 'public' }] });
+      if (path === '/api/v1/tools/1' && method === 'GET') return send(tool);
+      if (path === '/api/v1/tools/1' && method === 'PUT') return send('工具版本已变化', 409);
+      unexpected.push(`${method} ${path}`); return send('未定义的测试接口', 404);
+    });
+    const waitText = async text => { await page.getByText(text, { exact: true }).first().waitFor(); checks++; };
+    const noOverflow = async () => { assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); checks++; };
+    const screenshot = async name => page.screenshot({ path: `../docs/web-${name}-${label}.png`, fullPage: true, animations: 'disabled' });
+    const close = async () => { await page.getByRole('button', { name: 'Close', exact: true }).click(); await page.locator('.ant-drawer-open').waitFor({ state: 'hidden' }); };
+    const select = async (name, option) => { const input = page.getByRole('combobox', { name, exact: true }); await page.locator('.ant-select').filter({ has: input }).click(); await page.locator('.ant-select-dropdown:visible').getByText(option, { exact: true }).click(); };
+    await page.goto(`${base}/skills`); await waitText(skill.name); await noOverflow();
+    assert.equal(await page.locator('.account-brand-icon').getAttribute('src'), '/brand-icon.png'); checks++;
+    assert.equal(await page.locator('.account-brand-icon').evaluate(img => img.complete && img.naturalWidth === 159), true); checks++;
+    assert.equal(await page.getByRole('button', { name: '编辑', exact: true }).count(), 1); checks++;
+    await screenshot('skills');
+    await page.keyboard.press('Tab'); assert.equal(await page.locator('.skip-link').evaluate(el => el === document.activeElement), true); checks++;
+    if (width < 768) assert.equal(await page.locator('.resource-mobile-list').count(), 1); else assert.equal(await page.locator('.ant-table').count(), 1); checks++;
+    await page.getByRole('textbox', { name: '搜索 Skill' }).fill('不存在'); await waitText('没有匹配的 Skill，请调整筛选条件');
+    await page.getByRole('textbox', { name: '搜索 Skill' }).fill('');
+    await select('Skill 归属', '我的 Skill'); await page.getByText('公开知识整理', { exact: true }).waitFor({ state: 'hidden' }); checks++;
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.getByLabel('SKILL.md', { exact: true }).fill('更新后的内容');
+    await page.getByRole('button', { name: /保\s*存/ }).click(); await waitText('版本冲突，请刷新后重试');
+    assert.equal(await page.getByLabel('SKILL.md', { exact: true }).inputValue(), '更新后的内容');
+    assert.equal(updateBody.files['references/policy.md'], skill.files['references/policy.md']); assert.equal(updateBody.expected_version, 3); checks += 3;
+    await noOverflow(); await page.screenshot({ path: `../docs/web-skills-editor-${label}.png`, fullPage: false, animations: 'disabled' });
+    conflict = false; await page.getByRole('button', { name: /保\s*存/ }).click(); await page.locator('.ant-drawer-open').waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '导入 ZIP', exact: true }).click(); await waitText('ZIP 不超过 1 MiB，需包含 SKILL.md。'); await page.getByRole('button', { name: 'Close', exact: true }).click();
+    failList = true; await page.getByRole('button', { name: '刷新', exact: true }).click(); await waitText('Skill 服务暂不可用');
+    failList = false; await page.getByRole('button', { name: /重\s*试/ }).click(); await page.getByText('Skill 服务暂不可用', { exact: true }).waitFor({ state: 'hidden' }); checks++;
+    await page.goto(`${base}/tools`); await waitText(tool.name); await waitText('待试运行'); await waitText('已停用'); await noOverflow(); await screenshot('tools');
+    await page.getByRole('textbox', { name: '搜索 Tool' }).fill('没有'); await waitText('没有匹配的 Tool，请调整筛选条件'); await page.getByRole('textbox', { name: '搜索 Tool' }).fill('');
+    await select('Tool 类型', 'MCP'); await page.getByText(tool.name, { exact: true }).waitFor({ state: 'hidden' }); checks++;
+    await select('Tool 类型', '全部类型');
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    await page.getByLabel('用途', { exact: true }).fill('修改后的用途'); await page.getByRole('button', { name: /保\s*存/ }).click(); await waitText('工具版本已变化');
+    assert.equal(await page.getByLabel('用途', { exact: true }).inputValue(), '修改后的用途'); checks++;
+    await noOverflow(); await page.screenshot({ path: `../docs/web-tools-editor-${label}.png`, fullPage: false, animations: 'disabled' }); await close();
+    await page.getByRole('tab', { name: '内置 Tool (1)' }).click(); await waitText('search_knowledge_base'); await noOverflow();
+    await page.getByRole('button', { name: '新建 Tool', exact: true }).click(); await page.getByRole('button', { name: /保\s*存/ }).click(); await waitText('请填写名称和用途'); await close();
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.getByRole('tab', { name: '用户 Tool (2)' }).click(); await select('Tool 类型', 'MCP'); await waitText('远端天气'); await noOverflow();
+    assert.deepEqual(errors, []); assert.deepEqual(unexpected, []); checks += 2;
+    await context.close(); console.log(`${label}: Skill / Tool 布局、筛选、权限、版本冲突、附加文件保留与错误恢复通过`);
+  }
+} finally { await browser.close(); }
+console.log(`资源页浏览器契约回归通过：${checks} 项断言；使用拦截响应，不访问真实业务数据。`);

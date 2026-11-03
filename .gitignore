@@ -236,8 +236,23 @@ __marimo__/
 /y-point-web-todo.md
 /.env.development.local
 /y-point-web-reference-standards.md
+
+# Frontend dependencies, build output and caches
 /web/node_modules/
 /web/dist/
-/web/tsconfig.tsbuildinfo
-/web/*.tsbuildinfo
-/web/.env.local
+/web/**/*.tsbuildinfo
+/web/.vite/
+/web/.vite-temp/
+
+# Frontend environment overrides; keep shareable examples
+/web/.env.*
+!/web/.env.example
+!/web/.env.*.example
+
+# Frontend test output and browser authentication state
+/web/coverage/
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/
+/web/playwright/.auth/
+/web/.playwright/.auth/
