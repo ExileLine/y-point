@@ -9,12 +9,12 @@ import asyncio
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from app.core.enums import ScriptLanguage
+from app.services.tool_resources import managed_workspace, resource_labels
 from app.core.config import get_config
 
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -66,7 +66,7 @@ async def run_script(
     SANDBOX_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     filename = "main.py" if language == ScriptLanguage.PYTHON else "main.sh"
     container_name = f"yp-tool-{uuid4().hex}"
-    with tempfile.TemporaryDirectory(prefix="run-", dir=SANDBOX_ROOT) as directory:
+    with managed_workspace(SANDBOX_ROOT, "run-", timeout_seconds) as directory:
         script = Path(directory) / filename
         script.write_text(source, encoding="utf-8")
         os.chmod(script, 0o644)
@@ -99,6 +99,7 @@ async def run_script(
             "--rm",
             "--name",
             container_name,
+            *resource_labels(timeout_seconds),
             "--interactive",
             "--network=none",
             "--read-only",

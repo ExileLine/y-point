@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -23,9 +22,17 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import BASE_DIR, get_config
-from app.core.enums import ToolEnvironmentFailure, ToolEnvironmentState
+from app.core.enums import ToolEnvironmentFailure, ToolEnvironmentState, ToolLeaseKind
 from app.models.base import shanghai_now
 from app.models.tool import UserTool, UserToolVersion
+from app.services.tool_resources import (
+    BUILD_RESERVATION_BYTES,
+    ToolStorageCapacityError,
+    managed_workspace,
+    mark_resource_directory,
+    resource_labels,
+)
+from app.services.tool_execution import acquire_tool_slot, release_tool_slot, ToolCapacityError
 from app.services.script_sandbox import ScriptEnvironment, SandboxConfigurationError, _read_bounded, _remove_container
 
 MAX_ENVIRONMENT_BYTES = 512 * 1024 * 1024
@@ -227,7 +234,7 @@ async def _package_network(image: str):
     proxy = f"yp-deps-proxy-{uuid4().hex}"
     script = BASE_DIR / "sandbox" / "package_proxy.py"
     try:
-        await _docker_output("network", "create", "--internal", network)
+        await _docker_output("network", "create", *resource_labels(config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS), "--internal", network)
         await _docker_output(
             "run",
             "--detach",
@@ -235,6 +242,7 @@ async def _package_network(image: str):
             "--rm",
             "--name",
             proxy,
+            *resource_labels(config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS),
             "--network=bridge",
             "--read-only",
             "--cap-drop=ALL",
@@ -289,6 +297,7 @@ async def _run_preparer(image: str, stage: Path, mounts: list[str], command: lis
         "--rm",
         "--name",
         name,
+        *resource_labels(get_config().SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS),
         f"--network={network}" if network else "--network=none",
         "--read-only",
         "--cap-drop=ALL",
@@ -334,7 +343,9 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
     """先获取 wheel，再在禁网容器中按完整哈希锁安装并保存只读缓存。"""
     config = get_config()
     root = environment_root()
-    with tempfile.TemporaryDirectory(prefix="build-", dir=root) as directory:
+    with managed_workspace(
+        root, "build-", config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS, reserve_bytes=BUILD_RESERVATION_BYTES
+    ) as directory:
         stage = Path(directory)
         wheels, site = stage / "wheels", stage / "site"
         wheels.mkdir(mode=0o777)
@@ -430,6 +441,7 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
             "/requirements.txt",
         ]
         await _run_preparer(image, stage, mounts, command, None, f"yp-deps-{uuid4().hex}")
+        mark_resource_directory(site, config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS)
         manifest = await asyncio.to_thread(_file_manifest, site)
         key = hashlib.sha256(f"{spec_hash}:{uuid4().hex}".encode()).hexdigest()
         destination = root / key
@@ -470,6 +482,11 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
         )
         if version is None:
             return False
+        try:
+            owner_id = await db.scalar(select(UserTool.owner_id).where(UserTool.id == version.tool_id))
+            slot_token = await acquire_tool_slot(db, owner_id, None, ToolLeaseKind.PREPARATION, timeout)
+        except ToolCapacityError:
+            return False
         token = str(uuid4())
         claimed = await db.execute(
             update(UserToolVersion)
@@ -485,6 +502,10 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
             )
         )
         if claimed.rowcount != 1:
+            from app.models.tool_execution import ToolExecutionLease
+            from sqlalchemy import delete
+
+            await db.execute(delete(ToolExecutionLease).where(ToolExecutionLease.token == slot_token))
             return False
         version_id, requirements = version.id, list(version.requirements)
     result = {}
@@ -538,7 +559,13 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
         code = (
             exc.code
             if isinstance(exc, EnvironmentBuildError)
-            else (ToolEnvironmentFailure.BUILD_TIMEOUT if isinstance(exc, TimeoutError) else ToolEnvironmentFailure.CONFIGURATION_ERROR)
+            else (
+                ToolEnvironmentFailure.SIZE_LIMIT
+                if isinstance(exc, ToolStorageCapacityError)
+                else ToolEnvironmentFailure.BUILD_TIMEOUT
+                if isinstance(exc, TimeoutError)
+                else ToolEnvironmentFailure.CONFIGURATION_ERROR
+            )
         )
         result = {
             "environment_state": ToolEnvironmentState.FAILED,
@@ -556,4 +583,5 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                 )
                 .values(**result, environment_lease_token=None, environment_lease_expires_at=None)
             )
+        await release_tool_slot(sessions, slot_token)
     return True

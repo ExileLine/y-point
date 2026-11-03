@@ -32,6 +32,7 @@ from app.services.user_tools import load_run_tools, model_tool_name
 from app.services.script_sandbox import run_script
 from app.services.tool_environments import require_script_environment
 from app.services.mcp_tools import invoke_mcp_tool
+from app.services.tool_execution import CURRENT_TOOL_CALL_ID
 from app.services.provider_credentials import decrypt_credentials
 from jsonschema import Draft202012Validator
 from langchain_core.tools import StructuredTool
@@ -384,9 +385,22 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     if match is None or current is None:
                         raise ValueError("Tool 授权已失效")
                     selected, selected_version = match
-                    Draft202012Validator(selected_version.input_schema).validate(arguments)
                     timeout = min(current.tool_timeout_seconds, 30)
                     if selected.kind == ToolKind.MCP:
+                        if selected_version.effect == ToolEffect.WRITE:
+                            if (
+                                selected_version.recovery_policy != RecoveryPolicy.IDEMPOTENT
+                                or not selected_version.idempotency_key_field
+                                or not selected_version.write_contract_verified
+                            ):
+                                raise ValueError("外部写工具缺少经声明的幂等恢复契约，当前禁止执行")
+                            call_id = CURRENT_TOOL_CALL_ID.get()
+                            if call_id is None:
+                                raise ValueError("外部写工具必须经过正式执行上下文")
+                            arguments = {
+                                **arguments,
+                                selected_version.idempotency_key_field: call_id,
+                            }
                         token, _ = decrypt_credentials(selected_version.encrypted_credentials)
                         if (
                             selected.owner_id != run.owner_id
@@ -399,6 +413,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     else:
                         language, source = selected_version.script_language, selected_version.source_code
                         environment = await require_script_environment(selected_version)
+                    Draft202012Validator(selected_version.input_schema).validate(arguments)
                 if selected.kind == ToolKind.SCRIPT:
                     options = (
                         {
@@ -408,14 +423,28 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         else {}
                     )
                     return await run_script(language, source, arguments, timeout, **options)
-                return await invoke_mcp_tool(url, remote_name, arguments, token, timeout, expected_schema)
+                return await invoke_mcp_tool(
+                    url,
+                    remote_name,
+                    arguments,
+                    token,
+                    timeout,
+                    expected_schema,
+                    expected_read_only=selected_version.effect == ToolEffect.READ,
+                )
 
+            schema = dict(version.input_schema)
+            if version.idempotency_key_field:
+                schema["properties"] = {
+                    key: value for key, value in schema.get("properties", {}).items() if key != version.idempotency_key_field
+                }
+                schema["required"] = [key for key in schema.get("required", []) if key != version.idempotency_key_field]
             builtins.append(
                 StructuredTool.from_function(
                     coroutine=invoke,
                     name=tool_name,
                     description=f"工具名称：{definition.name}。{definition.description}",
-                    args_schema=version.input_schema,
+                    args_schema=schema,
                 )
             )
             if version.requires_approval:

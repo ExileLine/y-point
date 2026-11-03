@@ -45,6 +45,7 @@ class RecoveryPolicy(StrEnum):
     SAFE = "safe"
     IDEMPOTENT = "idempotent"
     COMPENSATED = "compensated"
+    MANUAL = "manual"
 
 
 class ToolInvocationState(StrEnum):
@@ -170,3 +171,10 @@ class ToolEnvironmentFailure(StrEnum):
     INVALID_ARTIFACT = "invalid_artifact"
     WORKER_INTERRUPTED = "worker_interrupted"
     CONFIGURATION_ERROR = "configuration_error"
+
+
+class ToolLeaseKind(StrEnum):
+    """工具执行及依赖准备的并发资源类别。"""
+
+    CALL = "call"
+    PREPARATION = "preparation"

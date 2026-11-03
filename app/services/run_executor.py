@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
@@ -37,7 +37,10 @@ from app.core.enums import (
     RunEventType,
     RunState,
     ToolInvocationState,
+    ToolEffect,
+    ToolLeaseKind,
 )
+from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
@@ -280,7 +283,23 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
     async def awrap_tool_call(
         self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
     ) -> ToolMessage | Command:
-        """授权后记录工具开始和结束事件，不公开工具参数或结果。"""
+        """在工具实际执行前领取跨进程名额，审批等待不占用执行资源。"""
+        async with self.sessions() as db:
+            run = await db.get(AgentRun, self.run_id)
+            if run is None:
+                raise PermissionError("运行不存在")
+            owner_id = run.owner_id
+        async with tool_execution_slot(self.sessions, owner_id, self.run_id, ToolLeaseKind.CALL, self.tool_timeout_seconds):
+            token = CURRENT_TOOL_CALL_ID.set(str(uuid5(NAMESPACE_URL, f"{self.run_id}:{request.tool_call['id']}")))
+            try:
+                return await self._execute_authorized_tool_call(request, handler)
+            finally:
+                CURRENT_TOOL_CALL_ID.reset(token)
+
+    async def _execute_authorized_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
+    ) -> ToolMessage | Command:
+        """授权后记录工具开始和结束事件，外部写结果不明时禁止自动重放。"""
         tool_name = request.tool_call["name"]
         if tool_name not in self.allowed_names and tool_name != "read_file":
             raise PermissionError("运行未授权该工具")
@@ -296,6 +315,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         tool_call_id = str(uuid4())
         event_name = tool_name
         invocation_id = None
+        invocation_effect = ToolEffect.READ
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
@@ -323,7 +343,13 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if matched is None:
                     raise PermissionError("Tool 未在本轮授权")
                 item, version = matched
-                invocation_id = str(uuid4())
+                invocation_id = CURRENT_TOOL_CALL_ID.get()
+                invocation_effect = version.effect
+                existing = await db.scalar(
+                    select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
+                )
+                if existing is not None:
+                    raise PermissionError("该工具调用已有执行记录，禁止自动重放")
                 arguments_hash = hashlib.sha256(
                     json.dumps(request.tool_call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str).encode()
                 ).hexdigest()
@@ -343,13 +369,20 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
         try:
             result = await asyncio.wait_for(handler(request), timeout=self.tool_timeout_seconds)
-        except Exception as exc:
-            async with self.sessions.begin() as db:
-                await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_FAILED, tool_call_id, event_name)
-                if invocation_id is not None:
-                    invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
-                    invocation.state = ToolInvocationState.FAILED
-                    invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_error"
+        except BaseException as exc:
+            if invocation_id is not None:
+                async with self.sessions.begin() as db:
+                    invocation = await db.scalar(
+                        select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
+                    )
+                    if invocation is not None:
+                        invocation.state = (
+                            ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED
+                        )
+                        invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_interrupted"
+            with suppress(RunConflictError):
+                async with self.sessions.begin() as db:
+                    await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_FAILED, tool_call_id, event_name)
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
@@ -359,8 +392,14 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         async with self.sessions.begin() as db:
             await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
             if invocation_id is not None:
-                invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.call_id == invocation_id))
-                invocation.state = ToolInvocationState.FAILED if event_type == RunEventType.TOOL_FAILED else ToolInvocationState.COMPLETED
+                invocation = await db.scalar(
+                    select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
+                )
+                invocation.state = (
+                    (ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED)
+                    if event_type == RunEventType.TOOL_FAILED
+                    else ToolInvocationState.COMPLETED
+                )
                 invocation.failure_code = "execution_error" if event_type == RunEventType.TOOL_FAILED else None
         return result
 
@@ -1034,6 +1073,15 @@ async def execute_text_run(
             run_id,
             lease_token,
             "tool_call_budget_exceeded",
+            catalog_model=catalog_model,
+            started=started,
+        )
+    except ToolCapacityError:
+        return await _finish_interrupted(
+            sessions,
+            run_id,
+            lease_token,
+            "tool_capacity_exceeded",
             catalog_model=catalog_model,
             started=started,
         )

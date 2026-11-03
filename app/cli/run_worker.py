@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from loguru import logger
 
-from app.core.config import BASE_DIR, BaseConfig, normalize_env, resolve_env_files
+from app.core.config import BASE_DIR, BaseConfig, get_config, normalize_env, resolve_env_files
 from app.core.worker_logging import WorkerLogCapture
 
 
@@ -52,6 +52,7 @@ from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.worker_monitor import WORKER_STALE_SECONDS, prune_worker_heartbeats, register_worker, stop_worker, touch_worker
 from app.services.worker_tools import make_worker_tool_resolver
 from app.services.tool_environments import prepare_next_tool_environment
+from app.services.tool_resources import prune_tool_resources
 
 DEFAULT_CHECKPOINT_PATH = Path(__file__).resolve().parents[2] / ".run-private" / "checkpoints.sqlite"
 HEARTBEAT_PRUNE_INTERVAL_SECONDS = 3600
@@ -82,6 +83,20 @@ async def _tool_environment_loop(idle_seconds: float) -> None:
             await asyncio.sleep(idle_seconds)
 
 
+async def _tool_resource_loop() -> None:
+    """定期核对强杀残留与容量，不依赖对话队列是否空闲。"""
+    while True:
+        try:
+            resources = await prune_tool_resources(AsyncSessionLocal)
+            if any(resources[key] for key in ("containers", "networks", "directories", "unknown_invocations")):
+                logger.info("工具资源核对完成：{}", resources)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("工具资源核对失败：{}", type(exc).__name__)
+        await asyncio.sleep(get_config().TOOL_RESOURCE_RECONCILE_SECONDS)
+
+
 async def run_worker(
     checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5, artifact_path: Path | None = None
 ) -> None:
@@ -93,10 +108,12 @@ async def run_worker(
     worker_id = str(uuid4()) if not once else None
     heartbeat_task = None
     environment_task = None
+    resource_task = None
     if worker_id is not None:
         async with AsyncSessionLocal.begin() as db:
             await register_worker(db, worker_id)
         heartbeat_task = asyncio.create_task(_heartbeat_loop(worker_id, heartbeat_seconds))
+        resource_task = asyncio.create_task(_tool_resource_loop())
     try:
         last_prune_at = None
         while True:
@@ -154,6 +171,10 @@ async def run_worker(
             if run is None:
                 await asyncio.sleep(idle_seconds)
     finally:
+        if resource_task is not None:
+            resource_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await resource_task
         if environment_task is not None:
             environment_task.cancel()
             with suppress(asyncio.CancelledError):

@@ -5,6 +5,7 @@
 
 """通过 MCP Streamable HTTP 发现和调用远端工具。"""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -14,7 +15,32 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from app.core.config import get_config
 from app.services.user_tools import validate_mcp_url
+
+
+class _BoundedResponseStream(httpx.AsyncByteStream):
+    """在字节进入 SDK 解析器前执行连接级接收预算。"""
+
+    def __init__(self, stream: httpx.AsyncByteStream, transport: "_PinnedPublicTransport") -> None:
+        """保留底层流及多个响应共用的接收计数。"""
+        self.stream = stream
+        self.transport = transport
+
+    async def __aiter__(self):
+        """超限数据不向上游解析器交付，并始终关闭底层流。"""
+        try:
+            async for chunk in self.stream:
+                self.transport.received += len(chunk)
+                if self.transport.received > self.transport.max_bytes:
+                    raise ValueError("MCP 传输超过接收字节上限")
+                yield chunk
+        finally:
+            await self.stream.aclose()
+
+    async def aclose(self) -> None:
+        """关闭原始 HTTP 响应。"""
+        await self.stream.aclose()
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
@@ -24,6 +50,8 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
         """保存本次域名和已验证公网地址。"""
         self.host = host
         self.address = address
+        self.received = 0
+        self.max_bytes = get_config().MCP_RESPONSE_MAX_BYTES
         self.transport = httpx.AsyncHTTPTransport(retries=0)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -48,6 +76,12 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
         if 300 <= response.status_code < 400:
             await response.aclose()
             raise ValueError("MCP 不允许重定向")
+        encoding = response.headers.get("content-encoding", "identity").lower()
+        length = response.headers.get("content-length")
+        if encoding != "identity" or (length is not None and (not length.isdigit() or int(length) > self.max_bytes - self.received)):
+            await response.aclose()
+            raise ValueError("MCP 响应编码或声明长度超过接收限制")
+        response.stream = _BoundedResponseStream(response.stream, self)
         return response
 
     async def aclose(self) -> None:
@@ -67,7 +101,10 @@ async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int)
         else None
     )
     async with httpx.AsyncClient(
-        headers=headers,
+        headers={
+            **(headers or {}),
+            "Accept-Encoding": "identity",
+        },
         timeout=httpx.Timeout(10, read=read_timeout),
         transport=_PinnedPublicTransport(urlsplit(url).hostname, address),
         trust_env=False,
@@ -77,32 +114,69 @@ async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int)
             yield streams
 
 
+async def _discover_session(session: ClientSession) -> list[dict]:
+    """有界分页发现，校验数量、名称、描述、Schema 与结果总大小。"""
+    config = get_config()
+    tools = []
+    names = set()
+    cursors = set()
+    cursor = None
+    total_bytes = 2
+    for _ in range(config.MCP_DISCOVERY_MAX_TOOLS + 1):
+        response = await session.list_tools(cursor=cursor)
+        for item in response.tools:
+            description = item.description or ""
+            schema_size = len(json.dumps(item.inputSchema, ensure_ascii=False).encode())
+            if len(item.name.encode()) > 128 or len(description.encode()) > 4096 or schema_size > 16 * 1024:
+                raise ValueError("MCP 工具名称、描述或参数结构超限")
+            if item.name in names:
+                raise ValueError("MCP 发现包含重复工具名")
+            names.add(item.name)
+            tool = {
+                "name": item.name,
+                "description": description,
+                "input_schema": item.inputSchema,
+                "read_only": item.annotations.readOnlyHint if item.annotations is not None else None,
+            }
+            total_bytes += len(json.dumps(tool, ensure_ascii=False).encode()) + 2
+            if len(tools) >= config.MCP_DISCOVERY_MAX_TOOLS or total_bytes > config.MCP_DISCOVERY_MAX_BYTES:
+                raise ValueError("MCP 发现工具数量或总字节超限")
+            tools.append(tool)
+        cursor = response.nextCursor
+        if cursor is None:
+            return tools
+        if cursor in cursors:
+            raise ValueError("MCP 发现分页游标重复")
+        cursors.add(cursor)
+    raise ValueError("MCP 发现分页超限")
+
+
 async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[dict]:
-    """建立连接并返回远端可发布工具的名称、说明和输入结构。"""
-    async with _mcp_connection(url, bearer_token, 10) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            response = await session.list_tools()
-            return [
-                {
-                    "name": item.name,
-                    "description": item.description or "",
-                    "input_schema": item.inputSchema,
-                }
-                for item in response.tools
-            ]
+    """在完整连接时限和传输预算内发现远端可发布工具。"""
+    async with asyncio.timeout(15):
+        async with _mcp_connection(url, bearer_token, 10) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await _discover_session(session)
 
 
 async def invoke_mcp_tool(
-    url: str, name: str, arguments: dict, bearer_token: str | None, timeout_seconds: int, expected_schema: dict
+    url: str,
+    name: str,
+    arguments: dict,
+    bearer_token: str | None,
+    timeout_seconds: int,
+    expected_schema: dict,
+    *,
+    expected_read_only: bool = False,
 ) -> str:
     """核对远端工具结构后调用，并仅返回有界的文本或结构化内容。"""
     async with _mcp_connection(url, bearer_token, timeout_seconds) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            discovered = await session.list_tools()
-            remote = next((item for item in discovered.tools if item.name == name), None)
-            if remote is None or remote.inputSchema != expected_schema:
+            discovered = await _discover_session(session)
+            remote = next((item for item in discovered if item["name"] == name), None)
+            if remote is None or remote["input_schema"] != expected_schema or expected_read_only and remote["read_only"] is False:
                 raise ValueError("MCP 工具结构已变化，请发布新版本")
             response = await session.call_tool(name, arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout_seconds))
             result = json.dumps(response.model_dump(mode="json"), ensure_ascii=False)

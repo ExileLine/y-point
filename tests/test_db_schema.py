@@ -126,6 +126,43 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
     asyncio.run(inspect_rows())
 
 
+async def _assert_tool_slot_processes(url: URL) -> None:
+    """在同一隔离库让独立进程竞争名额，验证数据库方言下不会超卖。"""
+    script = """
+import asyncio, os
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from app.core.enums import ToolLeaseKind
+from app.services.tool_execution import acquire_tool_slot, ToolCapacityError
+async def exercise():
+    '''在独立进程中争抢数据库工具名额并报告结果。'''
+    engine = create_async_engine(os.environ["YPOINT_SLOT_TEST_URL"])
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions.begin() as db:
+            await acquire_tool_slot(db, 1, "same-run", ToolLeaseKind.CALL, 10)
+        print("CLAIMED", flush=True)
+    except ToolCapacityError:
+        print("REJECTED", flush=True)
+    finally:
+        await engine.dispose()
+asyncio.run(exercise())
+"""
+    env = {
+        **os.environ,
+        "YPOINT_SLOT_TEST_URL": url.render_as_string(hide_password=False),
+        "TOOL_CALL_GLOBAL_LIMIT": "1",
+        "TOOL_CALL_USER_LIMIT": "1",
+        "TOOL_CALL_RUN_LIMIT": "1",
+    }
+    processes = [
+        subprocess.Popen([sys.executable, "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    results = [await asyncio.to_thread(process.communicate, timeout=30) for process in processes]
+    assert all(process.returncode == 0 for process in processes), "独立进程并发验收失败"
+    assert sorted(output.strip().splitlines()[-1] for output, _ in results) == ["CLAIMED", "REJECTED"]
+
+
 async def _exercise_isolated_migrations(
     backend: str, base_url: URL, admin_database: str | None, database_env_key: str, private_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -172,8 +209,9 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "040"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "041"
                 await connection.run_sync(check_mapped_schema)
+            await _assert_tool_slot_processes(engine.url)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
             artifact_id = str(uuid4())
             async with sessions.begin() as db:

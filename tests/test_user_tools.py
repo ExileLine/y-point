@@ -417,7 +417,7 @@ def test_terminal_run_marks_unfinished_tool_call_unknown(tmp_path: Path) -> None
 def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """公开且无凭据的 MCP Tool 可供其他用户直接关联和调用。"""
 
-    async def fake_invoke(url, name, arguments, token, timeout, schema):
+    async def fake_invoke(url, name, arguments, token, timeout, schema, **kwargs):
         """代替外部 MCP 服务，保留运行时授权检查。"""
         assert token is None and arguments == {
             "repoName": "modelcontextprotocol/python-sdk",
@@ -463,7 +463,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
                                 },
                                 "required": ["repoName"],
                             },
-                            effect="write",
+                            effect="read",
                             requires_approval=True,
                             verified=True,
                             mcp_url="https://mcp.deepwiki.com/mcp",

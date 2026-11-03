@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import ScriptLanguage, ToolKind, Visibility
+from app.core.enums import RecoveryPolicy, ScriptLanguage, ToolEffect, ToolKind, Visibility
 
 
 class ToolCreateIn(BaseModel):
@@ -42,6 +42,13 @@ class ToolCreateIn(BaseModel):
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="远端 MCP 工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="MCP Bearer 凭据，仅写入时接收", examples=["token-value"])
     share_credentials: bool = Field(default=False, description="公开 MCP 工具时明确允许他人使用该凭据", examples=[False])
+    effect: ToolEffect | None = Field(default=None, description="MCP 读写属性；远端未提供声明时仅管理员可确认只读", examples=["read"])
+    recovery_policy: RecoveryPolicy | None = Field(
+        default=None, description="恢复策略，外部写需配置可核对的幂等契约", examples=["idempotent"]
+    )
+    idempotency_key_field: str | None = Field(
+        default=None, min_length=1, max_length=128, description="服务端注入幂等键的顶层字符串参数名", examples=["request_id"]
+    )
 
 
 class ToolUpdateIn(BaseModel):
@@ -68,6 +75,12 @@ class ToolUpdateIn(BaseModel):
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="新版远端工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="替换 MCP Bearer 凭据，留空时保留", examples=["new-token"])
     share_credentials: bool | None = Field(default=None, description="公开时是否授权共享凭据", examples=[True])
+    clear_mcp_credentials: bool = Field(default=False, description="清除新版本凭据并撤销历史凭据版本，与替换密钥互斥", examples=[True])
+    effect: ToolEffect | None = Field(default=None, description="新版 MCP 读写属性", examples=["read"])
+    recovery_policy: RecoveryPolicy | None = Field(default=None, description="新版调用恢复策略", examples=["idempotent"])
+    idempotency_key_field: str | None = Field(
+        default=None, min_length=1, max_length=128, description="远端幂等键字符串参数名", examples=["request_id"]
+    )
 
 
 class ToolTestIn(BaseModel):
@@ -94,3 +107,25 @@ class ToolEnvironmentRetryIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_version: int = Field(ge=1, description="待重新准备环境的当前 Tool 版本号", examples=[1])
+
+
+class ToolCredentialRevokeIn(BaseModel):
+    """在远端不可用时仍能撤销本地所有历史凭据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1, description="预期的当前 Tool 版本号", examples=[1])
+
+
+class ToolWriteContractVerifyIn(BaseModel):
+    """管理员对指定外部写工具版本的恢复证据作出验收确认。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1, description="已验证幂等及故障行为的 Tool 版本号", examples=[1])
+    evidence_reference: str = Field(
+        min_length=8,
+        max_length=256,
+        description="重复提交与返回丢失验收记录的引用，不填写密钥或正文",
+        examples=["docs/m5-write-evidence.md#case-1"],
+    )

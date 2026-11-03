@@ -19,7 +19,7 @@ from jsonschema.exceptions import SchemaError
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ScriptLanguage, ToolEffect, ToolKind, Visibility
+from app.core.enums import RecoveryPolicy, RunState, ScriptLanguage, ToolEffect, ToolKind, Visibility
 from app.core.custom_exception import CustomException
 from app.models.tool import AgentTool, RunTool, UserTool, UserToolVersion
 from app.services.provider_credentials import encrypt_credentials
@@ -100,6 +100,8 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             except SyntaxError as exc:
                 raise ValueError("Python 脚本语法无效") from exc
         effect, approval = ToolEffect.READ, False
+        fields["recovery_policy"] = RecoveryPolicy.SAFE
+        fields["idempotency_key_field"] = None
     elif kind == ToolKind.MCP:
         url, remote_name = fields.get("mcp_url"), fields.get("mcp_tool_name")
         if not isinstance(url, str) or not isinstance(remote_name, str) or not remote_name or len(remote_name) > 128:
@@ -109,7 +111,18 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             raise ValueError("MCP Tool 不能包含脚本源码")
         if fields.get("visibility") == Visibility.PUBLIC and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
             raise ValueError("公开 MCP Tool 需明确授权共享连接凭据")
-        effect, approval = ToolEffect.WRITE, True
+        effect, approval = fields.get("effect") or ToolEffect.WRITE, True
+        policy = fields.get("recovery_policy") or (RecoveryPolicy.SAFE if effect == ToolEffect.READ else RecoveryPolicy.MANUAL)
+        key = fields.get("idempotency_key_field")
+        if effect == ToolEffect.READ and policy != RecoveryPolicy.SAFE:
+            raise ValueError("只读 MCP 使用 safe 恢复策略")
+        if effect == ToolEffect.WRITE and policy not in (RecoveryPolicy.MANUAL, RecoveryPolicy.IDEMPOTENT):
+            raise ValueError("外部写 MCP 仅支持人工核对或已声明幂等键的策略")
+        if policy == RecoveryPolicy.IDEMPOTENT and (not key or schema.get("properties", {}).get(key, {}).get("type") != "string"):
+            raise ValueError("幂等写工具必须声明顶层字符串幂等键参数")
+        fields["recovery_policy"] = policy
+        if policy != RecoveryPolicy.IDEMPOTENT:
+            fields["idempotency_key_field"] = None
     else:
         raise ValueError("Tool 类型不受支持")
     digest = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
@@ -127,9 +140,17 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
         "mcp_tool_name",
         "share_credentials",
         "encrypted_credentials",
+        "recovery_policy",
+        "idempotency_key_field",
     )
     fields = {key: getattr(previous, key) if previous is not None else None for key in keys}
     fields.update({key: value for key, value in body.items() if key in keys})
+    fields["effect"] = body.get("effect", previous.effect if previous is not None else None)
+    if body.get("clear_mcp_credentials"):
+        if body.get("mcp_bearer_token"):
+            raise ValueError("清除凭据与替换凭据不能同时提交")
+        fields["encrypted_credentials"] = None
+        fields["share_credentials"] = False
     fields["requirements"] = normalize_requirements(fields.get("requirements"))
     token = body.get("mcp_bearer_token")
     if token:
@@ -228,8 +249,42 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
             and tool.visibility != Visibility.PUBLIC
             or version is None
             or not version.verified
+            or version.encrypted_credentials is not None
+            and version.version <= (tool.credentials_revoked_through or 0)
+            or tool.owner_id != actor_id
+            and version.encrypted_credentials is not None
+            and not await _credentials_shared(db, tool)
             or version.content_hash != row.content_hash
         ):
             raise CustomException(status_code=409, custom_code=10005, detail="Tool 授权或版本已失效")
         result.append((tool, version))
     return result
+
+
+async def _credentials_shared(db: AsyncSession, tool: UserTool) -> bool:
+    """凭据共享以当前发布规则为准，历史快照不能绕过撤销。"""
+    current = await db.scalar(
+        select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == tool.current_version)
+    )
+    return current is not None and current.share_credentials
+
+
+async def cancel_tool_runs(db: AsyncSession, tool: UserTool, *, credentials_only: bool = False, others_only: bool = False) -> int:
+    """取消受禁用、撤权或密钥轮换影响的运行，等待审批的运行同步关闭。"""
+    from app.models.agent_run import AgentRun
+    from app.services.run_manager import request_cancel
+
+    query = select(AgentRun).join(RunTool, RunTool.run_id == AgentRun.id).where(RunTool.tool_id == tool.id)
+    if credentials_only:
+        query = query.join(
+            UserToolVersion,
+            (UserToolVersion.tool_id == RunTool.tool_id) & (UserToolVersion.version == RunTool.tool_version),
+        ).where(UserToolVersion.encrypted_credentials.is_not(None), RunTool.tool_version <= tool.credentials_revoked_through)
+    if others_only:
+        query = query.where(AgentRun.owner_id != tool.owner_id)
+    count = 0
+    for run in (await db.scalars(query)).all():
+        if run.state not in (RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT):
+            await request_cancel(db, run.id, run.owner_id)
+            count += 1
+    return count

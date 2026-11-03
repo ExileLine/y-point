@@ -115,6 +115,22 @@ class BaseConfig(BaseSettings):
     SCRIPT_DEPENDENCY_WHEELHOUSE: str = ""
     SCRIPT_DEPENDENCY_STORAGE_DIR: str = ".run-private/tool-environments"
     SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS: int = 180
+    MCP_RESPONSE_MAX_BYTES: int = Field(
+        default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576]
+    )
+    MCP_DISCOVERY_MAX_TOOLS: int = Field(default=128, ge=1, le=1024, description="MCP 发现工具数量上限", examples=[128])
+    MCP_DISCOVERY_MAX_BYTES: int = Field(
+        default=256 * 1024, ge=1024, le=1024 * 1024, description="MCP 发现结果总字节上限", examples=[262144]
+    )
+    TOOL_CALL_GLOBAL_LIMIT: int = Field(default=16, ge=1, le=1024, description="全部进程的工具调用并发上限", examples=[16])
+    TOOL_CALL_USER_LIMIT: int = Field(default=4, ge=1, le=1024, description="单用户工具调用并发上限", examples=[4])
+    TOOL_CALL_RUN_LIMIT: int = Field(default=2, ge=1, le=128, description="单 Run 工具调用并发上限", examples=[2])
+    TOOL_PREPARATION_GLOBAL_LIMIT: int = Field(default=2, ge=1, le=128, description="全部进程的依赖准备并发上限", examples=[2])
+    TOOL_PREPARATION_USER_LIMIT: int = Field(default=1, ge=1, le=128, description="单用户依赖准备并发上限", examples=[1])
+    TOOL_STORAGE_MAX_BYTES: int = Field(default=8 * 1024**3, ge=1024, description="依赖缓存和准备目录的应用容量预算", examples=[8589934592])
+    TOOL_STORAGE_MIN_FREE_BYTES: int = Field(default=1024**3, ge=0, description="准备前必须保留的文件系统可用字节", examples=[1073741824])
+    TOOL_RESOURCE_RECONCILE_SECONDS: int = Field(default=60, ge=1, description="工具资源核对间隔秒数", examples=[60])
+    TOOL_RESOURCE_GRACE_SECONDS: int = Field(default=300, ge=30, description="过期资源清理宽限秒数", examples=[300])
 
     # 跨域配置：如果 allow_credentials=True，则 allow_origins 不能设置为 ["*"]，必须明确指定允许的域名。
     ALLOW_ORIGINS: list[str] = ["*"]

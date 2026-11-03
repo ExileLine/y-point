@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import ToolEnvironmentState
+from app.core.enums import RecoveryPolicy, ToolEnvironmentState
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
@@ -29,6 +29,7 @@ class UserTool(CustomBaseModel):
     kind: Mapped[str] = mapped_column(String(16), nullable=False, comment="脚本或 MCP 来源类型")
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, comment="私有或公开")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用")
+    credentials_revoked_through: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="已撤销凭据的最大 Tool 版本号")
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="当前发布版本号")
 
 
@@ -46,6 +47,11 @@ class UserToolVersion(CustomBaseModel):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, comment="执行定义 SHA256")
     input_schema: Mapped[dict] = mapped_column(JSON, nullable=False, comment="工具输入 JSON Schema")
     effect: Mapped[str] = mapped_column(String(16), nullable=False, comment="只读或外部写入")
+    recovery_policy: Mapped[str] = mapped_column(String(24), nullable=False, default=RecoveryPolicy.MANUAL, comment="调用恢复策略")
+    idempotency_key_field: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="远端幂等键参数名")
+    write_contract_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="外部写恢复契约是否经管理员验收")
+    write_contract_evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="外部写恢复验收证据引用摘要")
+
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, comment="调用前是否要求审批")
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="当前版本是否通过发布验证")
     requirements: Mapped[list] = mapped_column(JSON, nullable=False, default=list, comment="用户声明的 Python 依赖清单")

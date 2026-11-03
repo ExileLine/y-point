@@ -5,27 +5,31 @@
 
 """用户脚本与 MCP Tool 的发布、可见性和试运行接口。"""
 
+import hashlib
+
 from jsonschema import Draft202012Validator, ValidationError
 from fastapi import APIRouter, Depends
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.enums import ToolEnvironmentState, ToolKind, Visibility
+from app.core.enums import RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, UserRole, Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.tool import ToolInvocation, UserTool, UserToolVersion
-from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdateIn, ToolEnvironmentRetryIn
+from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdateIn, ToolEnvironmentRetryIn, ToolCredentialRevokeIn
+from app.schemas.tool import ToolWriteContractVerifyIn
 from app.services.identity import audit
 from app.services.mcp_tools import discover_mcp_tools
 from app.services.provider_credentials import decrypt_credentials
 from app.services.script_sandbox import SandboxConfigurationError, run_script
 from app.services.tool_environments import environment_output, initial_environment_fields, require_script_environment
-from app.services.user_tools import model_tool_name, validate_tool_definition, version_fields
+from app.services.user_tools import cancel_tool_runs, model_tool_name, validate_tool_definition, version_fields
+from app.services.tool_execution import ToolCapacityError, tool_execution_slot
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -43,7 +47,7 @@ BUILTIN_TOOLS = (
 async def _version(db: AsyncSession, tool: UserTool) -> UserToolVersion:
     """读取用户 Tool 当前不可变版本。"""
     return await db.scalar(
-        select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == tool.current_version)
+        select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == tool.current_version),
     )
 
 
@@ -59,12 +63,16 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
         "visibility": tool.visibility,
         "enabled": tool.enabled,
         "current_version": tool.current_version,
+        "credentials_revoked_through": tool.credentials_revoked_through,
     }
     if version is not None:
         data.update(
             {
                 "input_schema": version.input_schema,
                 "effect": version.effect,
+                "recovery_policy": version.recovery_policy,
+                "write_contract_verified": version.write_contract_verified,
+                "idempotency_key_field": version.idempotency_key_field,
                 "requires_approval": version.requires_approval,
                 "script_language": version.script_language,
                 "source_code": version.source_code,
@@ -90,22 +98,33 @@ async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = Fal
     return tool
 
 
-async def _prepare(kind: str, name: str, fields: dict, token: str | None) -> tuple[dict, str, bool, str]:
+async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: AsyncSession, owner_id: int) -> tuple[dict, str, bool, str]:
     """验证 Tool 执行定义，MCP 输入结构从远端发现结果取得。"""
     if kind == ToolKind.MCP:
         try:
-            found = await discover_mcp_tools(fields["mcp_url"], token)
+            sessions = async_sessionmaker(db.bind, expire_on_commit=False)
+            async with tool_execution_slot(sessions, owner_id, None, ToolLeaseKind.CALL, 15):
+                found = await discover_mcp_tools(fields["mcp_url"], token)
+        except ToolCapacityError as exc:
+            raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
         except Exception as exc:
             raise CustomException(status_code=409, custom_code=10005, detail="MCP 连接或工具发现失败") from exc
         remote = next((item for item in found if item["name"] == fields["mcp_tool_name"]), None)
         if remote is None:
             raise CustomException(status_code=409, custom_code=10005, detail="MCP 工具不存在")
         fields["input_schema"] = remote["input_schema"]
+        if fields.get("effect") == ToolEffect.READ and remote.get("read_only") is not True:
+            owner = await db.get(Admin, owner_id)
+            if owner is None or owner.role != UserRole.ADMIN or remote.get("read_only") is False:
+                raise CustomException(status_code=400, custom_code=10005, detail="远端未声明只读时须由管理员确认；显式写声明不能降为只读")
+        if fields.get("effect") is None:
+            fields["effect"] = ToolEffect.READ if remote.get("read_only") else ToolEffect.WRITE
     try:
         effect, _, approval, digest = validate_tool_definition(kind, name, fields)
     except ValueError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     fields.pop("visibility")
+    fields.pop("effect", None)
     return fields, effect, approval, digest
 
 
@@ -141,10 +160,14 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
 
 
 @router.post("/mcp/discover", summary="发现 MCP 连接的工具")
-async def discover_tools(body: McpDiscoverIn, actor: Admin = Depends(get_current_admin)):
+async def discover_tools(body: McpDiscoverIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """校验公网连接并列出远端工具，不保存提交的凭据。"""
     try:
-        found = await discover_mcp_tools(body.url, body.bearer_token)
+        sessions = async_sessionmaker(db.bind, expire_on_commit=False)
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 15):
+            found = await discover_mcp_tools(body.url, body.bearer_token)
+    except ToolCapacityError as exc:
+        raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
     except Exception as exc:
         raise CustomException(status_code=409, custom_code=10005, detail="MCP 连接或工具发现失败") from exc
     return api_response(data=found, is_pop=False)
@@ -183,7 +206,7 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
         fields = version_fields(body.model_dump(), None)
     except ValueError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
-    fields, effect, approval, digest = await _prepare(body.kind, body.name, fields, body.mcp_bearer_token)
+    fields, effect, approval, digest = await _prepare(body.kind, body.name, fields, body.mcp_bearer_token, db, actor.id)
     tool = UserTool(
         owner_id=actor.id,
         name=body.name,
@@ -252,8 +275,27 @@ async def update_tool(
         )
     except ValueError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
-    token, _ = decrypt_credentials(previous.encrypted_credentials)
-    fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, changes.get("mcp_bearer_token") or token)
+    if tool.kind != ToolKind.MCP and (changes.get("clear_mcp_credentials") or changes.get("mcp_bearer_token")):
+        raise CustomException(status_code=400, custom_code=10005, detail="脚本 Tool 不能管理 MCP 凭据")
+    if (
+        previous.encrypted_credentials
+        and previous.version <= (tool.credentials_revoked_through or 0)
+        and not (changes.get("mcp_bearer_token") or changes.get("clear_mcp_credentials"))
+    ):
+        raise CustomException(status_code=409, custom_code=10005, detail="凭据已撤销，请替换或清除后发布新版本")
+    token, _ = decrypt_credentials(fields["encrypted_credentials"])
+    fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, token, db, actor.id)
+    credentials_changed = bool(changes.get("mcp_bearer_token") or changes.get("clear_mcp_credentials"))
+    if credentials_changed:
+        tool.credentials_revoked_through = tool.current_version
+        await cancel_tool_runs(db, tool, credentials_only=True)
+        audit(db, "tool.credentials_rotated", actor_id=actor.id, target_id=tool.id)
+    if (tool.visibility == Visibility.PUBLIC and visibility == Visibility.PRIVATE) or (
+        previous.encrypted_credentials and previous.share_credentials and not fields["share_credentials"]
+    ):
+        await cancel_tool_runs(db, tool, others_only=True)
+    if changes.get("enabled") is False:
+        await cancel_tool_runs(db, tool)
     execution_changed = any(
         fields[key] != getattr(previous, key)
         for key in ("requirements", "input_schema", "script_language", "source_code", "mcp_url", "mcp_tool_name", "encrypted_credentials")
@@ -289,6 +331,7 @@ async def update_tool(
 async def delete_tool(tool_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """逻辑删除并立即禁止新的 Tool 调用。"""
     tool = await _owned(db, tool_id, actor.id, lock=True)
+    await cancel_tool_runs(db, tool)
     tool.is_deleted = 1
     tool.enabled = False
     tool.name = f"_deleted_{tool.id}"
@@ -316,7 +359,11 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
             if environment is not None
             else {}
         )
-        result = await run_script(version.script_language, version.source_code, body.arguments, 10, **options)
+        sessions = async_sessionmaker(db.bind, expire_on_commit=False)
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 10):
+            result = await run_script(version.script_language, version.source_code, body.arguments, 10, **options)
+    except ToolCapacityError as exc:
+        raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
     except SandboxConfigurationError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     except (ValidationError, ValueError, OSError, TimeoutError) as exc:
@@ -353,7 +400,7 @@ async def retry_tool_environment(
             },
             version,
         )
-        fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, None)
+        fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, None, db, actor.id)
         tool.current_version += 1
         tool.visibility = Visibility.PRIVATE
         tool.enabled = False
@@ -379,3 +426,59 @@ async def retry_tool_environment(
     audit(db, "tool.environment_retried", actor_id=actor.id, target_id=tool.id)
     await db.commit()
     return api_response(data=_output(tool, version), datetime_format=False)
+
+
+@router.post("/{tool_id}/credentials/revoke", summary="撤销我的 MCP Tool 历史凭据")
+async def revoke_tool_credentials(
+    tool_id: int, body: ToolCredentialRevokeIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+):
+    """不访问远端即可禁用凭据并取消关联运行，恢复须显式替换或清除密钥。"""
+    tool = await _owned(db, tool_id, actor.id, lock=True)
+    if tool.kind != ToolKind.MCP:
+        raise CustomException(status_code=400, custom_code=10005, detail="仅 MCP Tool 支持凭据撤销")
+    if tool.current_version != body.expected_version:
+        raise CustomException(status_code=409, custom_code=10005, detail="Tool 版本已变化")
+    tool.credentials_revoked_through = tool.current_version
+    tool.enabled = False
+    cancelled = await cancel_tool_runs(db, tool, credentials_only=True)
+    audit(db, "tool.credentials_revoked", actor_id=actor.id, target_id=tool.id)
+    await db.commit()
+    return api_response(
+        data={
+            "tool_id": tool.id,
+            "credentials_revoked_through": tool.credentials_revoked_through,
+            "cancelled_runs": cancelled,
+        },
+        datetime_format=False,
+    )
+
+
+@router.post("/{tool_id}/write-contract/verify", summary="验收指定版本的外部写恢复契约")
+async def verify_tool_write_contract(
+    tool_id: int, body: ToolWriteContractVerifyIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
+):
+    """管理员核对重复写入与返回丢失证据后，允许该固定版本执行幂等写操作。"""
+    tool = await db.scalar(select(UserTool).where(UserTool.id == tool_id, UserTool.is_deleted == 0).with_for_update())
+    if tool is None:
+        raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
+    if tool.current_version != body.expected_version:
+        raise CustomException(status_code=409, custom_code=10005, detail="Tool 版本已变化")
+    version = await _version(db, tool)
+    if (
+        tool.kind != ToolKind.MCP
+        or version.effect != ToolEffect.WRITE
+        or (version.recovery_policy != RecoveryPolicy.IDEMPOTENT or not version.idempotency_key_field)
+    ):
+        raise CustomException(status_code=400, custom_code=10005, detail="当前版本未声明完整的外部写幂等契约")
+    version.write_contract_verified = True
+    version.write_contract_evidence_hash = hashlib.sha256(body.evidence_reference.encode()).hexdigest()
+    audit(db, "tool.write_contract_verified", actor_id=actor.id, target_id=tool.id)
+    await db.commit()
+    return api_response(
+        data={
+            "tool_id": tool.id,
+            "version": version.version,
+            "write_contract_verified": True,
+        },
+        datetime_format=False,
+    )
