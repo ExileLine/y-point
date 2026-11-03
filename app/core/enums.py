@@ -132,6 +132,7 @@ class ModelCapability(StrEnum):
     """模型声明或实际验证的能力。"""
 
     TEXT = "text"
+    EMBEDDING = "embedding"
     VISION = "vision"
     TOOLS = "tools"
     STREAMING = "streaming"
@@ -178,3 +179,66 @@ class ToolLeaseKind(StrEnum):
 
     CALL = "call"
     PREPARATION = "preparation"
+
+
+class KnowledgeSearchMode(StrEnum):
+    """知识检索组合策略。"""
+
+    KEYWORD = "keyword"
+    HYBRID = "hybrid"
+
+
+class KnowledgeIndexState(StrEnum):
+    """不可变索引代的发布状态。"""
+
+    BUILDING = "building"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class KnowledgeJobState(StrEnum):
+    """文档异步处理阶段及可恢复终态。"""
+
+    UPLOADED = "uploaded"
+    PARSING = "parsing"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    INDEXING = "indexing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCEL_REQUESTED = "cancel_requested"
+    CANCELLED = "cancelled"
+
+
+class KnowledgeFailure(StrEnum):
+    """知识任务可对外公开的脱敏失败类别。"""
+
+    PARSE_FAILED = "parse_failed"
+    OCR_REQUIRED = "ocr_required"
+    SIZE_LIMIT = "size_limit"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
+    WORKER_INTERRUPTED = "worker_interrupted"
+    TIMEOUT = "timeout"
+    AUTHENTICATION = "authentication"
+    RATE_LIMIT = "rate_limit"
+    UPSTREAM = "upstream"
+    INVALID_EMBEDDING = "invalid_embedding"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
+
+
+class KnowledgeVectorBackend(StrEnum):
+    """知识向量距离计算适配。"""
+
+    EXACT = "exact"
+    PGVECTOR = "pgvector"
+
+
+class KnowledgeRerank(StrEnum):
+    """不依赖额外外部服务的可选重排策略。"""
+
+    NONE = "none"
+    COVERAGE = "coverage"

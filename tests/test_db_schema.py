@@ -209,7 +209,7 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "041"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "042"
                 await connection.run_sync(check_mapped_schema)
             await _assert_tool_slot_processes(engine.url)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -397,6 +397,9 @@ async def _exercise_isolated_migrations(
                             "completed",
                         ]
                         assert (await client.get(f"/api/v1/runs/{run_id}/events?after=0", headers=outsider)).status_code == 404
+                        from tests.test_knowledge_integration import exercise_native_knowledge
+
+                        await exercise_native_knowledge(client, sessions, owned, outsider)
                         removed = await client.delete(f"/api/v1/artifacts/{file_id}", headers=owned)
                         assert removed.status_code == 200, removed.text
                         assert (await client.get(f"/api/v1/artifacts/{file_id}/download", headers=owned)).status_code == 404

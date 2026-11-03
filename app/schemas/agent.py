@@ -43,6 +43,10 @@ class AgentCreateIn(BaseModel):
     skill_ids: list[int] = Field(default_factory=list, max_length=16, description="关联的可见 Skill ID", examples=[[1, 2]])
     tool_ids: list[int] = Field(default_factory=list, max_length=16, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
 
+    knowledge_base_ids: list[int] = Field(
+        default_factory=list, max_length=8, description="关联的授权知识库 ID，不随 Agent 共享权限", examples=[[1, 2]]
+    )
+
 
 class AgentUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -75,6 +79,8 @@ class AgentUpdateIn(BaseModel):
     skill_ids: list[int] | None = Field(default=None, max_length=16, description="替换关联的 Skill ID 列表", examples=[[1, 2]])
     tool_ids: list[int] | None = Field(default=None, max_length=16, description="替换直接关联的 Tool ID 列表", examples=[[1, 2]])
 
+    knowledge_base_ids: list[int] | None = Field(default=None, max_length=8, description="替换关联的知识库 ID 列表", examples=[[1, 2]])
+
 
 class AgentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -98,6 +104,7 @@ class AgentOut(BaseModel):
     version: int = Field(description="配置版本号", examples=[1])
     skill_ids: list[int] = Field(default_factory=list, description="关联的 Skill ID", examples=[[1, 2]])
     tool_ids: list[int] = Field(default_factory=list, description="直接关联的用户 Tool ID", examples=[[1, 2]])
+    knowledge_base_ids: list[int] = Field(default_factory=list, description="关联知识库 ID", examples=[[1, 2]])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-26T11:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-26T11:00:00"])
 

@@ -61,3 +61,29 @@ __all__ = [
     "ToolExecutionGate",
     "ToolExecutionLease",
 ]
+
+from app.models.knowledge import (
+    KnowledgeBase,
+    KnowledgeShare,
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+    KnowledgeIndex,
+    KnowledgeChunk,
+    KnowledgeJob,
+    AgentKnowledgeBase,
+    RunKnowledgeBase,
+    KnowledgeRetrieval,
+)
+
+__all__ += [
+    "KnowledgeBase",
+    "KnowledgeShare",
+    "KnowledgeDocument",
+    "KnowledgeDocumentVersion",
+    "KnowledgeIndex",
+    "KnowledgeChunk",
+    "KnowledgeJob",
+    "AgentKnowledgeBase",
+    "RunKnowledgeBase",
+    "KnowledgeRetrieval",
+]

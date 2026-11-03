@@ -4,7 +4,7 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 
 ## 核心业务概览
 
-管理员登录后可配置供应商和模型。登录用户可创建自己的 Agent、Skill 和 Tool，或使用被指定共享的 Agent 创建独立会话进行多轮对话，也可直接提交不关联 Agent 的文本 Run。两种入口都创建持久化 Run，由独立 worker 调用 DeepAgents，保存检查点、最终消息和可重放事件。会话、附件、产物和运行按实际使用者隔离。浏览器通过快照与 SSE 游标恢复运行进度，最终回答以消息接口为准。
+管理员登录后可配置供应商和模型。登录用户可创建自己的 Agent、Skill、Tool 和知识库，或使用被指定共享的 Agent 创建独立会话进行多轮对话，也可直接提交不关联 Agent 的文本 Run。两种入口都创建持久化 Run，由独立 worker 调用 DeepAgents，保存检查点、最终消息和可重放事件。会话、附件、产物和运行按实际使用者隔离。浏览器通过快照与 SSE 游标恢复运行进度，最终回答以消息接口为准。
 
 | 业务环节 | 当前能力 |
 | --- | --- |
@@ -13,6 +13,7 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | Skill | 私有或公开的说明型 Skill；版本化文本包、ZIP 导入导出、Agent 多选关联及 Run 版本固定；运行时按需读取并复核权限，支持关联 Tool 的自然名称映射。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
+| 知识库 | 私有或指定只读共享；文档版本、后台索引、关键词/向量混合检索及固定引用；Agent 检索使用实际用户权限，支持撤权、删除、取消与恢复。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、模型及工具预算；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系。 |
 | 实时与恢复 | 持久化事件、SSE、快照和游标补发；助手消息关联产物，上传附件保留在用户消息中。 |
@@ -77,6 +78,8 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `app/services/artifact_renderers.py`、`worker_tools.py` | 生成常见格式文件，按会话授权列出或读取旧产物，并装配本轮已授权用户 Tool。 |
 | `app/services/user_tools.py`、`tool_environments.py` | Tool 定义、授权、版本快照、自然名称映射，以及依赖准备任务、锁和缓存校验。 |
 | `app/services/script_sandbox.py`、`mcp_tools.py` | 在 Docker 中执行脚本，通过 MCP Streamable HTTP 发现和调用远端工具。 |
+| `app/services/knowledge.py`、`knowledge_jobs.py` | 知识库授权、完整索引代、检索审计，以及可恢复的后台解析和原子发布。 |
+| `app/services/knowledge_parser.py`、`knowledge_backend.py`、`embedding_adapter.py` | 文档结构与偏移、原生全文/向量后端、独立嵌入协议和维度验证。 |
 | `app/core/enums.py` | 跨模块业务类型、状态、角色、可见性和策略的统一枚举。 |
 | `app/models`、`app/db`、`migrations/versions` | 业务表、数据库连接及 Alembic 迁移。 |
 
@@ -318,7 +321,7 @@ docker load -i y-point-script-sandbox.tar
 - 工具调用（含发现与试运行）共用数据库名额：默认全局/用户/Run 为 16/4/2；准备任务另按全局/用户 2/1 限制。工具满额直接返回 429 或 `tool_capacity_exceeded`，准备满额保留排队；审批等待不占名额。正常退出、取消和异常会释放，强杀后按有限租约到期回收。
 - 构建在共享文件锁下先预留 512 MiB；默认环境目录预算 8 GiB，磁盘保留 1 GiB，80% 时告警。该机制是应用预算和准入控制，运行中检查也不能代替文件系统硬配额；需要硬磁盘隔离的目标部署须配置专用卷/文件系统配额并验收。缓存必须保留全部历史版本引用。
 
-新增业务入口与权限：
+治理接口与权限：
 
 | 入口 | 权限与行为 |
 | --- | --- |
@@ -327,7 +330,7 @@ docker load -i y-point-script-sandbox.tar
 | `POST /api/v1/tools/{tool_id}/write-contract/verify` | 仅管理员；提交 `expected_version` 与 `evidence_reference`，按固定版本验收写恢复契约，仅保存证据引用的 SHA256。 |
 | `uv run python -m app.cli.reconcile_tool_resources` | 服务端运维命令，按部署作用域核对过期容器、代理、网络、目录及终态 Run 的遗留调用，输出清理统计与存储状态。 |
 
-新增配置及默认值见 `.env.example`：
+配置及默认值见 `.env.example`：
 
 | 配置 | 默认值及用途 |
 | --- | --- |
@@ -340,13 +343,272 @@ docker load -i y-point-script-sandbox.tar
 
 API 和全部 worker 必须使用一致的并发配置、时钟、业务数据库及共享环境目录。工具调用满额在 API 返回 HTTP 429，Run 记录 `tool_capacity_exceeded`；依赖准备满额保留 `pending`。远端连接、鉴权、发现及限流失败统一返回脱敏业务错误，不能将远端 429 与本地容量 429 混为同一语义。
 
-迁移 `041` 新增 `yp_tool_execution_gate`、`yp_tool_execution_lease`，以及 Tool 凭据撤销水位、版本恢复策略、幂等参数和写契约验收字段；全部表间关联不设置外键。历史读版本回填 `safe`，历史写版本回填 `manual` 且未验收，不重写旧内容摘要；同时恢复 `040` 在 MySQL 非空字段变更中丢失的三处中文注释。目标升级前备份业务库与检查点，执行 `uv run alembic upgrade head` 和 `uv run alembic check`，再重启 API 与 worker。回退会移除治理字段及短期租约，不能撤销远端已发生的副作用。
+目标升级前备份业务库、检查点和共享环境目录，执行 `uv run alembic upgrade head` 和 `uv run alembic check`，再重启 API 与 worker。历史未通过写恢复契约验收的外部写版本保持禁用；数据库回退不能撤销远端已发生的副作用。
 
-本机验证记录（2026-11-03）：隔离 SQLite 完整回归 `184 passed, 17 skipped`；治理与依赖准备专项 `21 passed`；显式启用的隔离 MySQL/PostgreSQL 迁移、回退重升及独立进程名额争抢 `2 passed`；真实模型、离线 wheel、Docker、独立 worker 和公开 DeepWiki MCP 审批恢复组合链 `1 passed`。专项与完整回归有重叠，不累加为独立用例数；默认跳过项不算验收通过。
+## 知识库与检索
 
-治理专项入口为 `uv run --no-sync pytest -q tests/test_m51_governance.py tests/test_tool_environments.py`；真实模型组合链需显式执行 `YPOINT_TEST_OLLAMA_M51=1 uv run --no-sync pytest -q tests/test_m51_live_acceptance.py`，要求本机模型、Docker 镜像和公网 MCP 可用，数据使用隔离临时用户与数据库。凭据协议测试使用真实 MCP SDK 和 FastMCP，仅将底层网络替换为进程内 HTTP，不代表具体公网凭据服务已验收。
+知识库是独立持久资源，默认私有，仅创建者可管理，可向指定的有效用户授予只读权限。Agent 的 `knowledge_base_ids` 最多关联八个库；共享 Agent 只共享配置，接受方必须另有知识库授权。Run 提交时固定当时实际可见的已发布索引，尚无可用索引的库不会在本轮稍后自动切代。每次工具调用、模型嵌入返回后和引用读取都重新检查实际用户、知识库及文档状态。
 
-当前交付按单机 Docker、固定镜像与 API/worker 共享目录验证；M5/M5.1 尚未总验收，M6 未开始。剩余现场验收包括浏览器双用户完整流程、具体外部写服务的真实幂等/返回丢失、目标平台 wheel 与在线/离线部署，以及目标卷共享/硬配额、容量预算和运维责任。
+原始文件复用私有 Artifact/Blob 存储。本地后端默认写入 `ARTIFACT_STORAGE_DIR=.run-private/artifacts`，文件按 `yp_artifact.storage_key` 保存，不以原始文件名组织目录；切换 S3 后由对应桶和前缀保存正文。知识文档不按普通附件的三十天策略到期，仍计入用户文件配额。文档 ID 稳定，更新增加上传版本；原始哈希、文件名、提取原文与分块位置随版本保存。同一库、同一未删除文档的当前文件名和哈希相同时去重；不同库或用户分别保存。已存在的同名文件须使用文档更新接口，删除后可重新上传；通用附件删除接口拒绝直接删除知识原始文件，避免绕过文档与索引生命周期。
+
+### 业务流程与调用链
+
+以“上传《报销制度.md》，再向 Agent 询问报销期限”为例，文件处理和对话检索分开执行。上传成功表示文件及任务已保存，首次索引完成后才能检索；Agent 按需调用工具获取片段，不会在提交 Run 时把整个知识库装入提示词。
+
+```mermaid
+flowchart TD
+    A[上传或更新文档] --> B[私有 Blob 保存原始文件]
+    A --> C[同事务保存文档版本、索引清单和任务]
+    B --> D[Worker 读取并解析文件]
+    C --> D
+    D --> E[缓存提取原文和结构块]
+    E --> F[按标题和页码分块，混合模式生成向量]
+    F --> G[同事务写入片段和全文索引，发布并切换活动索引]
+    G --> H[手动检索：读取当前活动索引]
+    G --> I[提交 Agent Run：固定本轮索引快照]
+    I --> J[模型按需调用 search_knowledge_base]
+    H --> K[统一检索：权限过滤、召回、融合、去重和限额]
+    J --> K
+    K --> L[返回固定版本原文片段及引用]
+    L --> M[模型组织回答，沿用消息、事件和检查点持久化]
+    K --> N[Agent 检索审计：返回引用、用量和耗时]
+```
+
+1. **上传并排队**：[`_upload_knowledge_document()`](app/api/v1/knowledge.py) 调用 `save_upload()` 校验和保存文件，检查管理权限、配额、同名摘要及 `expected_revision`。[`enqueue_knowledge_index()`](app/services/knowledge.py) 以条件更新递增 revision，固定全库当前文档版本和配置，创建 `BUILDING` 索引及 `UPLOADED` 任务；文件元数据、文档版本和调度意图在同一次数据库提交中保存。异常时回滚数据库并补偿清理文件，Blob 与数据库之间没有跨系统原子事务。
+2. **后台构建并发布**：[`_knowledge_loop()`](app/cli/run_worker.py) 经 [`process_next_knowledge_job()`](app/services/knowledge_jobs.py) 领取租约，交给 `_build_knowledge_index()`。解析结果缓存到文档版本；[`chunk_knowledge()`](app/services/knowledge_parser.py) 按标题、页码和长度切块，混合模式通过 [`embed_texts()`](app/services/embedding_adapter.py) 分批生成归一化向量。发布事务再次检查用户、租约、取消状态和最新 revision，再一次性写入片段及全文索引、将索引置为 `READY`、切换 `active_index_id` 并完成任务；失败保留旧活动索引。
+3. **手动检索**：搜索接口选择请求时的活动索引，进入 [`search_knowledge()`](app/services/knowledge.py)。服务先过滤授权索引及已删除文档，执行关键词和可选向量召回，以 RRF 融合并去重、截断；远程查询嵌入返回后及交付片段前再次鉴权。引用固定到索引代、文档版本和片段，字符偏移对应规范化提取原文；返回 `score` 是融合后的排序分数，不是直接的余弦相似度。
+4. **Agent 回答**：Agent 配置将关联保存到 `AgentKnowledgeBase`，默认聊天模型须通过工具调用能力验证。[`submit_session_run()`](app/api/v1/agent_sessions.py) 在创建 Run 的事务中调用 `snapshot_run_knowledge()`，保存实际用户有权访问的索引快照。[`make_worker_tool_resolver()`](app/services/worker_tools.py) 注册只读、无需审批的工具，[`knowledge_search_tool()`](app/services/knowledge_tool.py) 从本轮快照推导检索范围，仅向模型开放 `query/top_k`。模型自行决定是否调用，工具调用前后复核用户、Run 和租约；返回证据后，回答沿用既有 Run 执行链路保存。
+
+### 版本、落库与一致性
+
+三个版本概念分别承担内容追溯、并发控制和完整视图职责，不能互换：
+
+| 概念 | 保存位置 | 含义 |
+| --- | --- | --- |
+| 文档上传版本 `version` | `KnowledgeDocumentVersion` | 文档 ID 保持不变，每次内容更新生成新版本，保存对应文件和提取结果。 |
+| 知识库版本 `revision` | `KnowledgeBase` | 最新文档清单及配置的期望版本；写请求携带 `expected_revision`，冲突返回 409。 |
+| 索引代 `index_id` | `KnowledgeIndex` | 固定完整文档版本清单、分块参数和嵌入模型身份；构建成功后才成为活动索引。 |
+
+例如 revision 已递增到 3，而 `active_index_id` 仍指向 revision 2 的索引，表示新代尚未发布；旧代继续提供检索。Run 固定提交时的索引，即使新代随后发布也不切换；快照固定数据版本，当前权限仍在每次访问时复核。
+
+| 数据位置 | 主要内容与写入时机 |
+| --- | --- |
+| 私有本地目录 / S3、既有 `yp_artifact` | Blob 保存原始字节；Artifact 保存存储键、所有者、摘要、大小及状态，上传时建立引用。 |
+| `yp_knowledge_base`、`yp_knowledge_share` | 知识库配置、revision、活动索引指针，以及指定用户只读授权。 |
+| `yp_knowledge_document`、`yp_knowledge_document_version` | 稳定文档及当前版本、每版文件引用；Worker 追加提取原文和结构块缓存。 |
+| `yp_knowledge_index`、`yp_knowledge_job` | 排队时保存完整构建快照；运行中分阶段提交状态、租约、尝试次数及嵌入预算和用量。 |
+| `yp_knowledge_chunk`、数据库原生全文结构 | 正文片段、关键词、向量、标题、页码及偏移，在发布事务内写入；SQLite FTS 与片段同事务维护。 |
+| `yp_agent_knowledge_base`、`yp_run_knowledge_base` | Agent 关联范围，以及 Run 提交时实际可见的固定索引代。 |
+| `yp_knowledge_retrieval` | Agent 工具检索交付时记录查询哈希、返回片段引用、数量、字节、耗时及查询嵌入用量。 |
+| 既有 Run 消息、事件和 checkpoint 存储 | 保存问题、最终回答、执行事件及恢复状态；业务数据库与 checkpoint 之间沿用既有补偿机制。 |
+
+文档更新接口只提交变化文件，但当前每代索引仍按完整知识库构建，可复用解析缓存，尚未复用未变化片段的嵌入。新代构建期间保留旧代；更新清单导致 revision 变化后，过期任务不能覆盖新代。删除成功提交后，通过逻辑状态阻断所有代的后续检索和引用，再由 Worker 分批清理正文；既有消息和检查点历史不自动抹除。任务中断通过租约回收和有限重试恢复，解析、预算或上游错误保留失败类别，取消优先于恢复。
+
+### 使用与接口
+
+先启动 API 和独立 worker。关键词模式无需嵌入服务；混合模式先由管理员创建嵌入模型，调用 `POST /api/v1/models/{model_id}/embedding-test`，以实际响应验证 `embedding` 能力和维度。通用 `/capabilities/test` 不接受 embedding，聊天、流式或工具能力验证不能替代嵌入验证；探测失败会撤销嵌入标记。模型目录响应中的 `embedding_dimensions` 是探测所得值。适配器支持 Ollama、OpenAI、OpenAI Compatible 和 Azure OpenAI 的嵌入协议；具体上游服务须分别验证。
+
+| 接口（统一以 `/api/v1` 为前缀） | 行为 |
+| --- | --- |
+| `POST /knowledge-bases`、`GET /knowledge-bases` | 创建、分页列出本人和指定共享的库。 |
+| `GET /knowledge-bases/{id}`、`PUT /knowledge-bases/{id}` | 读取详情；提交完整配置与 `expected_revision`，排队创建新索引代。 |
+| `DELETE /knowledge-bases/{id}?expected_revision=…` | 删除知识库、立即阻断访问并取消受影响运行，后台清理正文。 |
+| `POST/GET /knowledge-bases/{id}/shares`、`DELETE /knowledge-bases/{id}/shares/{user_id}` | 授予、查看或撤销指定用户只读权限；POST 传 `user_id`。 |
+| `POST /knowledge-bases/{id}/documents` | multipart 上传 `file`、`expected_revision`，返回文档、最新 revision、任务 ID 和去重标记；新任务返回 HTTP 202。 |
+| `PUT /knowledge-bases/{id}/documents/{document_id}` | 以相同 multipart 字段上传该文档的新版本。 |
+| `GET /knowledge-bases/{id}/documents`、`DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=…` | 列出当前文档；删除成功提交后影响所有代的检索和引用，嵌入配置失效时的现有限制见下方已知问题。 |
+| `POST /knowledge-bases/{id}/rebuild` | 传 `expected_revision`，固定当前文档版本清单，返回 HTTP 202 和新任务。 |
+| `GET /knowledge-bases/{id}/jobs`、`GET /knowledge-bases/jobs/{job_id}` | 创建者查看任务阶段、履历、跳过记录、尝试次数、用量与脱敏失败类别。 |
+| `POST /knowledge-bases/jobs/{job_id}/cancel`、`POST /knowledge-bases/jobs/{job_id}/retry?expected_attempts=…` | 请求取消；仅最新期望代可在尝试上限内重试，过期任务应重建。 |
+| `POST /knowledge-bases/{id}/search` | 关键词/混合检索，可限定 Top-K、正文预算、相似度及重排。 |
+| `GET /knowledge-bases/{id}/citations/{chunk_id}` | 按固定片段重新鉴权读取原文与位置。 |
+| `GET /runs/{run_id}/knowledge-retrievals?after_id=…` | 仅本轮实际使用者分页读取检索审计；每页最多五十项，不返回问题或文档正文。 |
+
+创建混合知识库的请求示例，`embedding_model_id` 须替换为已验证的嵌入模型 ID；PUT 更新还必须提供 `expected_revision`，未填写的配置会使用 Schema 默认值：
+
+```json
+{
+  "name": "内部制度",
+  "description": "差旅及产品资料",
+  "search_mode": "hybrid",
+  "embedding_model_id": 2,
+  "chunk_size": 800,
+  "chunk_overlap": 100,
+  "embedding_token_budget": 200000,
+  "embedding_cost_budget": null
+}
+```
+
+检索请求示例：
+
+```json
+{
+  "query": "差旅报销提交期限",
+  "top_k": 3,
+  "max_bytes": 12000,
+  "keyword_only": false,
+  "min_similarity": 0.7,
+  "rerank": "coverage"
+}
+```
+
+命中包含 `knowledge_base_id`、`index_id`、`document_id`、`document_version`、`chunk_id`、原文件名和 SHA-256、`start_offset/end_offset`、页码、标题及正文，引用形如 `kb:1:i:2:c:7`。偏移是规范化提取原文的字符位置，正文等于对应子串；PDF 使用实际页号，DOCX 不伪造页码。无候选返回 `no_answer=true`。`keyword_only=true` 可在嵌入服务不可用时显式使用关键词检索。
+
+### 检索方式、阈值与分数
+
+关键词检索和向量检索不会随机二选一。实际分支由**所选索引代保存的 `search_mode`** 与本次 `keyword_only` 决定：
+
+| 索引模式 | 请求参数 | 实际执行 |
+| --- | --- | --- |
+| `keyword` | `keyword_only=true/false` | 只执行关键词检索，不生成查询向量。 |
+| `hybrid` | `keyword_only=true` | 只执行关键词检索，可用于人工降级与对照。 |
+| `hybrid` | `keyword_only=false` | 先执行关键词检索，再生成查询向量、召回向量候选，融合两路排名。 |
+
+当前接口没有“只执行向量检索”的开关。把 query 改成自然语言问句不会切换检索模式，`keyword_only=false` 也不表示关闭关键词检索。索引发布前，修改后的知识库配置尚未替换旧活动代；应结合 `active_index_id` 和对应任务核对实际使用的模式。
+
+关键词链路为 `query → knowledge_tokens() → 原生全文匹配 → 候选 chunk_id`：中文按相邻双字切分，拉丁词统一规范化、编码，查询词项使用 OR 匹配。向量链路为 `query → embed_texts() → 查询向量 → 与分块向量计算余弦相似度 → 阈值过滤`。两路都先限制授权范围，片段原文最后从 `yp_knowledge_chunk` 读取。具体实现见 [knowledge_backend.py](app/services/knowledge_backend.py) 和 [search_knowledge()](app/services/knowledge.py)。
+
+`min_similarity` 只过滤向量候选，不过滤关键词结果。向量调用成功但全部候选低于阈值时，最终仍可返回关键词结果；这不是重新选择了检索模式。无候选返回 `no_answer=true`，但 `no_answer=false` 只表示存在返回片段，不能证明片段足以回答问题。两路均成功执行时，稳定的数据、模型与参数通常产生稳定排名；模型变化、索引切换、参数变化或接近阈值的数值差异可能改变结果。Agent 是否调用工具，还受聊天模型的决策影响。
+
+返回的 `score` 是 RRF 排名分数，不是余弦相似度：每路排名从 1 开始，贡献 `1 / (60 + rank)`，同一片段命中两路则累加。`rerank=coverage` 还会增加词项覆盖分，因此不能直接用返回分数与 `min_similarity` 比较。在单个知识库、`rerank=none` 的当前实现下，单路贡献最高为 `1/61 ≈ 0.01639344`；高于这个值可证明两路均有贡献，低于或等于它无法判断该片段的来源，也无法证明没有执行向量检索。
+
+#### 查询嵌入的日志排查
+
+macOS 可监听 Ollama 日志后发起检索请求，按请求时刻核对上游调用：
+
+```bash
+tail -n 0 -F ~/.ollama/logs/server.log \
+  | grep --line-buffered -E 'POST.*(/v1/embeddings|/api/embed)'
+```
+
+命令无输出时通常是在等待新日志，`-n 0` 不显示历史记录；请求结束后查看是否出现状态为 `200` 的 embedding 请求，按 `Ctrl+C` 退出。若仍无输出，可用 `tail -n 50 -F ~/.ollama/logs/server.log` 查看未过滤日志。排查期间避免同时上传、重建或执行其他嵌入请求，防止误认调用来源。
+
+日志中的 embedding `200` 证明上游处理了向量生成请求，需结合请求时刻和当前配置对应到本次查询；它本身不能证明向量候选通过阈值。当前 `/search` 响应没有执行标记、召回来源、候选数或原始相似度字段，仅凭 `index_id` 和低分不能还原完整执行过程。
+
+### 本地 Ollama 接入与任务排查
+
+以已经下载的 `embeddinggemma:latest` 为例，先启动本地 Ollama，再依次配置服务端资源。下表路径均以 `/api/v1` 为前缀，资源 ID 使用实际响应值，不固定为示例中的数字。
+
+| 顺序 | 接口或配置 | 要点 |
+| --- | --- | --- |
+| 1 | `POST /providers` | 创建本地供应商。`kind=ollama` 可使用 `http://127.0.0.1:11434`；或使用 `kind=openai_compatible`、`base_url=http://127.0.0.1:11434/v1`。 |
+| 2 | `POST /models` | 传实际 `provider_id`、`external_id=embeddinggemma:latest`、`display_name`、`capabilities=["embedding"]` 与启用状态。 |
+| 3 | `POST /models/{model_id}/embedding-test` | 管理员执行实际探测，验证并保存 embedding 能力和实际维度，不能仅凭声明 capabilities 使用。 |
+| 4 | `GET /knowledge-bases/{id}`，再 `PUT /knowledge-bases/{id}` | 携带最新 `expected_revision` 和完整配置，设置 `search_mode=hybrid`、实际 `embedding_model_id`；自动创建新索引代，无须重复上传原文件。 |
+| 5 | `GET /knowledge-bases/jobs/{job_id}` | 等待本次返回的新任务完成，再调用 `/search` 对照测试。 |
+
+[embedding_adapter.py](app/services/embedding_adapter.py) 按供应商类型选择协议：`ollama` 调用 `/api/embed`，上述 OpenAI Compatible 配置调用 `/v1/embeddings`，后者出现在日志中也属于正常向量生成。嵌入模型的实际维度以 `embedding-test` 响应为准。聊天模型负责工具调用与组织答案，嵌入模型负责生成向量，两者分别配置。若本地嵌入模型没有输入价格，测试可设置 `embedding_cost_budget=null`，启用费用预算则必须补齐价格。
+
+| 常见问题 | 判断与处理 |
+| --- | --- |
+| 上传返回 202，是否已经可检索？ | 仅表示文件与任务已保存。轮询返回的 `job_id`；新库等待首代完成，已有库在新代发布前继续使用旧活动索引。 |
+| `uploaded`、`attempts=0` 长时间不变？ | 任务尚未被领取。检查独立 worker 是否运行并加载知识任务代码、API/worker 是否连接同一数据库、日志及执行名额；API 自身不会构建索引。 |
+| worker 心跳正常，任务却不动？ | `GET /api/v1/health/worker` 只证明有心跳，不能证明当前进程已加载知识任务循环。升级后重启相应 worker，勿仅据心跳判定功能正常。使用 `make dev` 时日志位于 `.logs/worker.log`。 |
+| 多久会 `completed`？ | 无固定完成时长，取决于排队、文件解析、模型冷启动、嵌入批次和数据库。查看 `progress`、`attempts`、`lease_expires_at`、`failure_code` 与日志；处理超时和重试边界见“索引、格式与运行边界”。 |
+| `completed` 但 `embedding.skipped=true`、tokens 为 0？ | 若该任务使用关键词模式或空库，这是正常行为。切换 hybrid 后应查询新任务；旧任务的阶段与用量不会被改写，不能据旧任务判断新索引是否成功。 |
+| `expected_revision` 返回“知识库版本已变化”？ | 重新 GET 当前库，使用其 `revision`；它不是文档版本、索引 ID 或任意目标值。确认当前内容和配置后再提交，避免盲目覆盖。 |
+| 原文件和数据库记录在哪里？ | 默认 Blob 位于 `.run-private/artifacts/{storage_key}`，文件元数据在 `yp_artifact`；知识文档、版本、提取文本、分块、向量及任务分布见前文落库表。业务模型由 Alembic 迁移建表。 |
+| 模型定义与实际表名是什么关系？ | 知识业务模型在 `app/models/knowledge.py` 定义结构，正式数据库由 Alembic 迁移创建；`__table_name__="knowledge_base"` 等后缀由 [CustomBaseModel](app/models/base.py) 添加统一 `yp_` 前缀。FTS 影子表由 SQLite 自动维护，无需分别定义业务模型。 |
+| curl 的 JSON 或 multipart 为什么失败？ | 标准 JSON 不能带 `//` 注释；`curl --form` 让客户端自动生成 multipart `Content-Type` 和 boundary，不手写缺失 boundary 的头。文档示例统一使用 Token 占位符，不粘贴真实凭据。 |
+
+### 从检索到 Agent 问答的接口顺序
+
+手动 `/search` 已返回片段后，后续流程是让 Agent 主动检索并生成回答。无须把这些 hits 手工拼入 Run。以下路径统一以 `/api/v1` 为前缀，普通请求使用 `Authorization: Bearer {{token}}`；`agentId`、`sessionId`、`runId`、`chunkId` 都从实际响应取得。
+
+| 顺序 | 调用接口 | 请求或检查重点 |
+| --- | --- | --- |
+| 1 | `GET /agents`，再 `GET /agents/{agentId}` | 选择已启用的 Agent，读取 `version`、`knowledge_base_ids`、`default_model_id`。默认聊天模型必须通过工具调用能力验证。 |
+| 2 | `PUT /agents/{agentId}` | 传 Agent 的 `expected_version` 和 `knowledge_base_ids`；已关联则跳过。数组替换全部关联，保留其他库时一并传入；这不是知识库的 `expected_revision`。 |
+| 3 | `POST /agents/{agentId}/sessions` | 传 `title`，将响应 `data.id` 保存为 `sessionId`；已有适用会话可复用。 |
+| 4 | `POST /agents/{agentId}/sessions/{sessionId}/runs` | 提交 `input_text`、`request_key`，保存本次响应的运行 `id`。 |
+| 5 | `GET /runs/{runId}`，再 `GET /runs/{runId}/messages` | 等待 `completed` 后读取回答；失败先检查运行详情，不把请求已受理视为已完成。 |
+| 6 | `GET /runs/{runId}/knowledge-retrievals` | 查看工具检索交付的 `references`、`hit_count`、`embedding_usage` 与耗时。 |
+| 7 | `GET /knowledge-bases/{id}/citations/{chunkId}` | 按回答引用核对原文及位置；引用 `kb:1:i:2:c:16` 中的片段 ID 为 16。 |
+
+Agent 关联请求示例，`expected_version=1` 仅作格式示例，必须替换为刚查询的真实版本：
+
+```json
+{
+  "expected_version": 1,
+  "knowledge_base_ids": [1]
+}
+```
+
+创建会话可传 `{"title":"员工手册知识库问答测试"}`，随后提交运行：
+
+```json
+{
+  "input_text": "请先调用知识库检索工具，查询员工手册中的报销时限，再回答：出差回来后，最晚什么时候需要提交费用报销？请给出 citation 引用；没有依据时请明确说明。",
+  "request_key": "kb1-reimbursement-test-001"
+}
+```
+
+同一次提交重试保持 `request_key` 不变；新的问题更换它，并记录新 `runId`。连续追问沿用同一个 `sessionId`，例如“那超过30天才提交呢？超过90天还有例外吗？”，再核对回答与原文。
+
+内置工具只向模型开放 `query/top_k`，使用 `KnowledgeSearchIn` 的默认 `keyword_only=false`、`min_similarity=0.7`、`rerank=none`。手动 `/search` 设置的 `0.5` 不会保存到知识库，也不会自动影响 Agent 检索。聊天模型可能改写查询，不能假定其相似度与手动测试相同。
+
+直接 `/search` 不写 Run 检索审计；Agent 工具才向 `yp_knowledge_retrieval` 写记录。审计列表为空时，应结合 Run 状态和工具事件确认模型是否调用工具或检索是否失败；`hit_count>0` 表示交付了片段，`embedding_usage` 非空表示生成过查询向量，两者都不能单独证明向量候选参与最终排名或答案采用了全部片段。
+
+### 索引、格式与运行边界
+
+上传请求只保存文件和调度意图，解析、分块、嵌入及索引交给 worker。任务持久化 `uploaded → parsing → chunking → embedding → indexing → completed` 与失败、请求取消和取消终态；纯关键词或空库明确记录跳过 embedding。总处理上限 180 秒，解析子进程上限 25 秒，最多三次领取；解析期间限制 CPU 和文件描述符，Linux 同时限制虚拟内存。正常停止 worker 会重新排队未完成任务，强制终止后等待数据库租约过期恢复。重试保留已报告的用量和保守预留，未知上游是否完成时也不会重新获得整份预算。
+
+每代固定完整文档版本清单、分块配置和嵌入身份。文件变更、重建或检索配置变更创建新代，片段、原生全文设施、索引状态及活动指针在一次事务发布，且必须仍是最新期望代。失败或取消保留旧活动索引；Run 已固定的旧代继续用于本轮引用。嵌入模型、维度或供应商连接身份变化必须通过新代切换，不能混用向量空间。历史有效代保留以支撑引用，并受用户文件配额和部署容量管理约束。
+
+支持 UTF-8 TXT、Markdown、带可提取文本的 PDF 和 DOCX。PDF 按文本和页定位，不保证复杂版式或表格重建，最多二百页；扫描或空白页返回 `ocr_required`，不执行自动 OCR。DOCX 保留段落、标题及表格单元格文本，使用标题/字符位置定位。单文件最大 10 MiB，multipart 实际接收上限 11 MiB；每库当前文档最多一百份、原始文件合计 50 MiB，每代最多二千片段；提取原文最多五十万字符。长文按结构分块并重叠，检索合并完全相同的片段正文。
+
+嵌入每批最多十六段、每段最多 8192 UTF-8 字节，实际维度最多 4096；响应最多 4 MiB，验证数量、维度、有限数值与非零范数并归一化。Token 预算在发送前按输入字节数保守预留并跨重试累计，另记录上游实际用量；启用费用预算须配置模型输入价格，费用按该模型币种核算。解析、索引准备与其他依赖准备共用 `TOOL_PREPARATION_*` 名额，HTTP 检索和嵌入探测共用 `TOOL_CALL_*` 名额，Agent 工具复用 Registry 的运行预算和租约。
+
+知识文档上传与更新沿用请求体限额中间件，既检查声明的 `Content-Length`，也累计未声明长度的实际接收字节；超过 11 MiB 的 multipart 请求统一返回 HTTP 413，单文件仍限制为 10 MiB。请求日志对 `query`、`extracted_text`、`evidence_reference` 字段作脱敏处理，查询原文不写入 Run 检索审计。
+
+检索先按授权限定索引和未删除文档，关键词与向量各最多八十个候选，以 RRF（k=60）融合；可选 `coverage` 本地词项覆盖重排。Top-K 最大十段，正文 UTF-8 总预算最大 24000 字节，默认向量相似度阈值 0.7。中文使用稳定二元词项，拉丁长词有界分段，各后端使用一致编码。正文标记为不可信证据；Agent 内置 `search_knowledge_base` 工具仅检索本轮快照，提示模型忽略文档指令、提供引用和无答案说明。SSE 复用脱敏工具开始/结束/失败事件，不携带问题和文档正文；工具返回的片段引用、查询 SHA-256、数量、耗时及嵌入用量保存在独立检索审计中，不代表模型在答案中采用了全部片段。查询嵌入用量与普通聊天模型 token 计数分开保存，原文只经当前授权的检索/引用接口读取。
+
+撤权、用户停用、删除库及成功提交的文档删除立即影响新检索及旧引用，并请求取消受影响运行。后台每轮有界删除原始 Blob、提取原文和片段/全文内容，保留版本与引用审计元数据。已经交付的消息和检查点历史不承诺追溯擦除；恢复执行仍复核当前授权。
+
+### 数据库后端与全文索引
+
+| 业务数据库 | 关键词后端 | 向量后端 |
+| --- | --- | --- |
+| SQLite | FTS5 | `exact`，授权范围内有界精确余弦。 |
+| MySQL | 原生 FULLTEXT | `exact`，不依赖 MySQL 向量扩展。 |
+| PostgreSQL | `simple` 全文解析及 GIN | `exact`；可显式选择 `pgvector`。 |
+
+SQLite 数据库中看到的 `yp_knowledge_fts*` 是关键词检索设施，向量实际保存在 `yp_knowledge_chunk.embedding`。应用只显式创建一个 FTS5 虚拟表：
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS yp_knowledge_fts
+USING fts5(terms, index_id UNINDEXED, chunk_id UNINDEXED);
+```
+
+SQLite 自动创建其余内部影子表，所以代码中没有每张表各自的建表语句或 ORM 模型：
+
+| 表 | 作用 |
+| --- | --- |
+| `yp_knowledge_fts` | 应用读写入口；`terms` 参与全文匹配，两个 `UNINDEXED` 列保存索引代和片段 ID。 |
+| `yp_knowledge_fts_content` | 保存传入虚拟表的列值，`c0/c1/c2` 对应 `terms/index_id/chunk_id`；这里的 content 是检索词项等列值，片段原文在业务分块表。 |
+| `yp_knowledge_fts_data` | 保存倒排索引数据块，包括词项及匹配记录、位置等内部编码。 |
+| `yp_knowledge_fts_idx` | 保存索引段和词项的页定位信息，辅助定位索引数据。 |
+| `yp_knowledge_fts_docsize` | 保存全文记录各列的词项数量，供评分等逻辑使用，不是原文件字节大小。 |
+| `yp_knowledge_fts_config` | 保存 FTS5 的持久化配置。 |
+
+正式建表由 [知识库迁移](migrations/versions/042_knowledge.py) 管理；ORM 的 `KnowledgeChunk` 建表事件也调用 [create_native_keyword_index()](app/services/knowledge_backend.py)，供测试等建表场景保持一致。发布时 `write_keyword_rows()` 与片段同事务写入，查询使用 `MATCH` 和 BM25。只通过虚拟表入口维护，不直接修改或单独删除影子表，也不为它们补 `CustomBaseModel`、`__table_name__`；[Alembic 比较规则](migrations/env.py) 已排除这些内部表，避免误生成删除迁移。
+
+切换 PostgreSQL 后不会创建这组表，而是在分块表上创建原生全文索引：
+
+```sql
+CREATE INDEX IF NOT EXISTS ix_yp_knowledge_native_terms
+ON yp_knowledge_chunk USING gin (to_tsvector('simple', search_terms));
+```
+
+它出现在 `yp_knowledge_chunk` 的索引列表中，查询使用 `to_tsvector(...) @@ to_tsquery(...)` 并通过 `ts_rank_cd(...)` 排序；`tsvector` 是全文词项结构，与嵌入模型的语义向量不同。SQLite 切换 PG 需要另行迁移业务数据和私有文件，修改连接配置不会自动搬迁；保留 `search_terms` 后建立 GIN 即可恢复关键词索引，不迁移 SQLite 影子表。关键词索引本身不要求重新生成 embedding，是否能沿用已有向量还须核对迁移后索引保存的模型身份、维度与供应商配置。
+
+默认 `KNOWLEDGE_VECTOR_BACKEND=exact`，每次最多读取一万六千个授权向量。设置 `pgvector` 时须在目标 PostgreSQL 安装并启用 `vector` 扩展；该适配当前用原生余弦距离进行精确排序，未建立 ANN 索引，不承诺大规模向量服务性能。扩展不参与默认迁移，不影响 SQLite/MySQL 启动；选择错误后端会明确拒绝检索。
+
+知识资源表及模型维度字段由 Alembic 迁移管理，表间无数据库外键。升级前备份业务库，运行 `uv run alembic upgrade head` 和 `uv run alembic check`，重启 API、worker 使路由和知识任务循环生效。降级会删除知识表和检索记录，应先备份所需知识数据；私有 Blob 另按存储备份/保留策略管理。
+
+### 已知限制
+
+hybrid 知识库删除文档时会同步创建新索引任务，并重新校验嵌入配置。如果模型停用、被删除或独立验证失效，删除请求可能返回 HTTP 409 / 10005，整个事务回滚，文档仍未删除，关键词检索和旧引用仍可访问。调用方须确认删除请求成功；收到错误时不能将文档显示为已删除。实现见 [delete_knowledge_document()](app/api/v1/knowledge.py) 与 [enqueue_knowledge_index()](app/services/knowledge.py)；处理进度与复现证据见 `y-point-server-todo.md`。
 
 ## Agent 对话业务流程
 
@@ -401,7 +663,6 @@ SQLAlchemy 模型在 `app/models` 注册，Alembic 以其元数据管理业务�
 
 ```bash
 uv run pytest -q
-uv run pytest -q tests/test_run_manager.py tests/test_run_executor.py tests/test_agent_sessions.py
 uv run alembic check
 uvx ruff check app migrations tests scripts sandbox local_run.py
 uvx ruff format --check app migrations tests scripts sandbox local_run.py

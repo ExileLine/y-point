@@ -44,6 +44,7 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024
 ORPHAN_GRACE_SECONDS = 3600
 MEDIA_TYPES = {
     ".txt": "text/plain",
+    ".md": "text/markdown",
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

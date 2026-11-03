@@ -27,6 +27,7 @@ class ModelCatalog(CustomBaseModel):
     capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, comment="模型能力标签")
     verified_capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, comment="实际探测通过的模型能力")
     capabilities_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="能力是否已实际验证")
+    embedding_dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="实际嵌入探测通过的向量维度")
     context_window: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="上下文窗口 Token 数")
     input_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="每百万输入 Token 价格")
     output_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="每百万输出 Token 价格")

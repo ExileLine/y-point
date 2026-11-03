@@ -14,6 +14,8 @@ from pydantic import Field
 from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.enums import KnowledgeVectorBackend
+
 
 class Environment(str, Enum):
     DEVELOPMENT = "development"
@@ -89,6 +91,10 @@ BASE_SETTINGS_CONFIG = SettingsConfigDict(env_file_encoding="utf-8", case_sensit
 
 
 class BaseConfig(BaseSettings):
+    KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(
+        default=KnowledgeVectorBackend.EXACT, description="知识向量距离后端，pgvector 须在 PostgreSQL 显式安装", examples=["exact"]
+    )
+
     model_config = BASE_SETTINGS_CONFIG
 
     DOCS_TITLE: str = "y-point"

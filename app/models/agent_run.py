@@ -16,7 +16,6 @@ from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 class AgentRun(CustomBaseModel):
     __table_name__ = "agent_run"
-    __enable_auto_id__ = False
     __table_args__ = (
         UniqueConstraint("owner_id", "request_key", name="uq_yp_agent_run_owner_request_key"),
         UniqueConstraint("active_thread_id", name="uq_yp_agent_run_active_thread_id"),
@@ -24,6 +23,8 @@ class AgentRun(CustomBaseModel):
             "comment": "智能体运行任务表",
         },
     )
+
+    __enable_auto_id__ = False
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="运行 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="运行所属用户 ID")

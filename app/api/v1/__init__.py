@@ -16,6 +16,7 @@ from app.api.v1.agents import router as agents_router
 from app.api.v1.agent_sessions import router as agent_sessions_router
 from app.api.v1.skills import router as skills_router
 from app.api.v1.tools import router as tools_router
+from app.api.v1.knowledge import router as knowledge_router, embedding_router, retrieval_router
 
 api_router = APIRouter(prefix="/v1")
 api_router.include_router(health_router)
@@ -29,3 +30,8 @@ api_router.include_router(agents_router)
 api_router.include_router(agent_sessions_router)
 api_router.include_router(skills_router)
 api_router.include_router(tools_router)
+
+api_router.include_router(knowledge_router)
+api_router.include_router(embedding_router)
+
+api_router.include_router(retrieval_router)

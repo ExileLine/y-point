@@ -186,6 +186,8 @@ async def probe_capability(
     response_client: httpx.AsyncClient | None = None,
 ) -> ModelTestOut:
     """通过实际调用验证单项能力，不保留上游正文或推理摘要。"""
+    if capability == ModelCapability.EMBEDDING:
+        raise ValueError("嵌入能力必须经独立嵌入适配器验证，不能使用聊天探测")
     if capability == ModelCapability.REASONING_SUMMARY:
         return await _probe_reasoning_summary(model, provider, response_client)
     chat_model = chat_model or build_chat_model(model, provider)

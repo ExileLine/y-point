@@ -17,13 +17,14 @@ class Artifact(CustomBaseModel):
     """保存文件授权信息，文件正文由私有存储管理。"""
 
     __table_name__ = "artifact"
-    __enable_auto_id__ = False
     __table_args__ = (
         UniqueConstraint("run_id", "publication_key", name="uq_yp_artifact_run_publication_key"),
         {
             "comment": "用户附件与运行产物表",
         },
     )
+
+    __enable_auto_id__ = False
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="文件 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="文件所属用户 ID")

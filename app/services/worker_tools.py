@@ -315,7 +315,22 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
 
     async def resolve_tools(db: AsyncSession, run: AgentRun) -> tuple[list[BaseTool], dict[str, bool]]:
         """根据当前运行授权解析注册工具及审批配置。"""
+        from app.models.knowledge import RunKnowledgeBase
+        from app.services.knowledge_tool import knowledge_search_tool
+
         registry = ToolRegistry()
+        knowledge_enabled = await db.scalar(select(RunKnowledgeBase.id).where(RunKnowledgeBase.run_id == run.id).limit(1)) is not None
+        if knowledge_enabled:
+            registry.register(
+                ToolSpec(
+                    name="search_knowledge_base",
+                    factory=knowledge_search_tool,
+                    enabled=lambda current: current.id == run.id,
+                    requires_approval=False,
+                    effect=ToolEffect.READ,
+                    recovery=RecoveryPolicy.SAFE,
+                )
+            )
         registry.register(
             ToolSpec(
                 name="list_text_artifacts",

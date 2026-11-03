@@ -23,6 +23,7 @@ from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
+from app.models.knowledge import KnowledgeDocumentVersion
 from app.models.base import shanghai_now
 from app.schemas.artifact import ArtifactOut
 from app.services.artifact_store import (
@@ -185,6 +186,11 @@ async def download_artifact(artifact_id: str, actor: Admin = Depends(get_current
 async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """先撤销访问，再尽力移除私有文件正文。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
+    knowledge_version = await db.scalar(
+        select(KnowledgeDocumentVersion.id).where(KnowledgeDocumentVersion.artifact_id == artifact_id).limit(1)
+    )
+    if knowledge_version is not None:
+        raise CustomException(status_code=409, custom_code=10005, detail="知识库原始文件须通过知识文档删除接口管理")
     item.state = ArtifactState.DELETED
     item.is_deleted = 1
     await db.commit()
@@ -195,5 +201,5 @@ async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_a
     return api_response(
         data={
             "id": artifact_id,
-        }
+        },
     )

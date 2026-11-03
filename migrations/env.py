@@ -21,11 +21,19 @@ if config.config_file_name:
 target_metadata = Base.metadata
 
 
+def include_schema_object(_object, name, type_, _reflected, _compare_to) -> bool:
+    """全文虚拟表辅助结构及手工方言索引不参与 ORM 业务结构差异比较。"""
+    if type_ == "table" and name.startswith("yp_knowledge_fts"):
+        return False
+    return not (type_ == "index" and name == "ix_yp_knowledge_native_terms")
+
+
 def run_migrations_offline() -> None:
     """按配置生成离线迁移 SQL，不建立数据库连接。"""
     context.configure(
         url=get_config().database_url,
         target_metadata=target_metadata,
+        include_object=include_schema_object,
         literal_binds=True,
         dialect_opts={
             "paramstyle": "named",
@@ -37,7 +45,7 @@ def run_migrations_offline() -> None:
 
 def run_sync_migrations(connection) -> None:
     """使用已提供的数据库连接在事务中执行迁移。"""
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata, include_object=include_schema_object)
     with context.begin_transaction():
         context.run_migrations()
 

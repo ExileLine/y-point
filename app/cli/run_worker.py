@@ -53,6 +53,7 @@ from app.services.worker_monitor import WORKER_STALE_SECONDS, prune_worker_heart
 from app.services.worker_tools import make_worker_tool_resolver
 from app.services.tool_environments import prepare_next_tool_environment
 from app.services.tool_resources import prune_tool_resources
+from app.services.knowledge_jobs import process_next_knowledge_job, prune_deleted_knowledge_blobs
 
 DEFAULT_CHECKPOINT_PATH = Path(__file__).resolve().parents[2] / ".run-private" / "checkpoints.sqlite"
 HEARTBEAT_PRUNE_INTERVAL_SECONDS = 3600
@@ -97,6 +98,21 @@ async def _tool_resource_loop() -> None:
         await asyncio.sleep(get_config().TOOL_RESOURCE_RECONCILE_SECONDS)
 
 
+async def _knowledge_loop(idle_seconds: float) -> None:
+    """独立处理知识索引与已删除原文，不阻塞对话调度和进程心跳。"""
+    while True:
+        try:
+            await prune_deleted_knowledge_blobs(AsyncSessionLocal)
+            processed = await process_next_knowledge_job(AsyncSessionLocal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("知识索引调度失败：{}", type(exc).__name__)
+            processed = False
+        if not processed:
+            await asyncio.sleep(idle_seconds)
+
+
 async def run_worker(
     checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5, artifact_path: Path | None = None
 ) -> None:
@@ -109,11 +125,13 @@ async def run_worker(
     heartbeat_task = None
     environment_task = None
     resource_task = None
+    knowledge_task = None
     if worker_id is not None:
         async with AsyncSessionLocal.begin() as db:
             await register_worker(db, worker_id)
         heartbeat_task = asyncio.create_task(_heartbeat_loop(worker_id, heartbeat_seconds))
         resource_task = asyncio.create_task(_tool_resource_loop())
+        knowledge_task = asyncio.create_task(_knowledge_loop(idle_seconds))
     try:
         last_prune_at = None
         while True:
@@ -121,6 +139,8 @@ async def run_worker(
                 reconciled = await reconcile_expired_runs(AsyncSessionLocal, checkpoint_path)
                 if once:
                     await prepare_next_tool_environment(AsyncSessionLocal)
+                    await prune_deleted_knowledge_blobs(AsyncSessionLocal)
+                    await process_next_knowledge_job(AsyncSessionLocal)
                 elif environment_task is None:
                     environment_task = asyncio.create_task(_tool_environment_loop(idle_seconds))
                 prune_due = last_prune_at is None or time.monotonic() - last_prune_at >= HEARTBEAT_PRUNE_INTERVAL_SECONDS
@@ -171,6 +191,10 @@ async def run_worker(
             if run is None:
                 await asyncio.sleep(idle_seconds)
     finally:
+        if knowledge_task is not None:
+            knowledge_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await knowledge_task
         if resource_task is not None:
             resource_task.cancel()
             with suppress(asyncio.CancelledError):

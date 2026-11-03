@@ -12,7 +12,14 @@ from app.core.enums import ModelCapability, ProviderKind
 
 
 Capability = ModelCapability
-ProbeCapability = ModelCapability
+ProbeCapability = Literal[
+    ModelCapability.TEXT,
+    ModelCapability.VISION,
+    ModelCapability.TOOLS,
+    ModelCapability.STREAMING,
+    ModelCapability.STRUCTURED_OUTPUT,
+    ModelCapability.REASONING_SUMMARY,
+]
 ConnectionName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 BaseUrl = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
 ExternalModelId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
@@ -126,6 +133,7 @@ class ModelOut(BaseModel):
     capabilities: list[Capability] = Field(description="模型支持的能力", examples=[["text", "streaming"]])
     verified_capabilities: list[Capability] = Field(description="实际探测通过的模型能力", examples=[["text"]])
     capabilities_verified: bool = Field(description="能力是否已验证", examples=[False])
+    embedding_dimensions: int | None = Field(default=None, description="独立嵌入探测通过的实际向量维度", examples=[768])
     context_window: int | None = Field(description="上下文窗口大小（令牌数）", examples=[128000])
     input_price: Decimal | None = Field(description="输入价格", examples=["0.000150"])
     output_price: Decimal | None = Field(description="输出价格", examples=["0.000600"])

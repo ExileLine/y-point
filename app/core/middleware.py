@@ -38,6 +38,9 @@ SENSITIVE_FIELDS = {
     "oldpassword",
     "passwordconfirmation",
     "files",
+    "query",
+    "extractedtext",
+    "evidencereference",
 }
 
 
@@ -55,12 +58,16 @@ class ArtifactUploadLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """拒绝超限请求，包括未声明 Content-Length 的流式上传。"""
-        if scope["type"] != "http" or scope.get("path") != "/api/v1/artifacts/uploads" or scope.get("method") != "POST":
+        path, method = scope.get("path", ""), scope.get("method")
+        knowledge_upload = path.startswith("/api/v1/knowledge-bases/") and "/documents" in path and method in ("POST", "PUT")
+        artifact_upload = path == "/api/v1/artifacts/uploads" and method == "POST"
+        if scope["type"] != "http" or not (artifact_upload or knowledge_upload):
             await self.app(scope, receive, send)
             return
         headers = _decode_headers(scope.get("headers", []))
         content_length = headers.get("content-length")
-        if content_length and content_length.isdecimal() and int(content_length) > self.max_bytes:
+        request_limit = min(self.max_bytes, 11 * 1024 * 1024) if knowledge_upload else self.max_bytes
+        if content_length and content_length.isdecimal() and int(content_length) > request_limit:
             await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
             return
         received = 0
@@ -71,14 +78,27 @@ class ArtifactUploadLimitMiddleware:
             message = await receive()
             if message.get("type") == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
+                if received > request_limit:
                     raise UploadTooLargeError()
             return message
 
+        limit_sent = False
+
+        async def limited_send(message: dict) -> None:
+            """multipart 解析器可能转译异常，仍按实际接收量统一返回 413。"""
+            nonlocal limit_sent
+            if received > request_limit:
+                if not limit_sent:
+                    limit_sent = True
+                    await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
+                return
+            await send(message)
+
         try:
-            await self.app(scope, limited_receive, send)
+            await self.app(scope, limited_receive, limited_send)
         except UploadTooLargeError:
-            await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
+            if not limit_sent:
+                await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
 
 
 def _is_sensitive_field(key: str, sensitive_headers: set) -> bool:

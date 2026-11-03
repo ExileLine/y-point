@@ -17,11 +17,14 @@ class RunWorkerHeartbeat(CustomBaseModel):
     """记录一次 worker 启动周期的最后存活时间。"""
 
     __table_name__ = "run_worker_heartbeat"
+    __table_args__ = (
+        {
+            "comment": "运行执行器心跳表",
+        },
+    )
+
     __enable_auto_id__ = False
     __enable_audit_columns__ = False
-    __table_args__ = {
-        "comment": "运行执行器心跳表",
-    }
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, comment="执行器启动实例 ID")
     started_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="执行器启动时间")

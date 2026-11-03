@@ -47,6 +47,7 @@ from app.services.message_attachments import (
 )
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
 from app.services.skills import snapshot_run_skills
+from app.services.knowledge import snapshot_run_knowledge
 from app.services.user_tools import snapshot_run_tools
 
 
@@ -372,6 +373,7 @@ async def submit_session_run(
         run = await create_run(db, owner_id, **options)
         await snapshot_run_skills(db, run.id, agent_id, owner_id)
         await snapshot_run_tools(db, run.id, agent_id, owner_id)
+        await snapshot_run_knowledge(db, run.id, agent_id, owner_id)
         if artifacts:
             message_id = await db.scalar(
                 select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER)
