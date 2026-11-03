@@ -61,6 +61,7 @@ from app.services.run_manager import (
     request_cancel,
 )
 from app.services.worker_monitor import inspect_worker_status
+from app.services.run_calls import load_run_calls
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -222,6 +223,16 @@ async def submit_approval_decision(
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail=str(exc)) from None
     return api_response(data=await _approval_data(db, approval, actor.id), datetime_format=False)
+
+
+@router.get("/{run_id}/calls", summary="读取本轮实际调用名称与执行状态")
+async def read_run_calls(run_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """复核运行和 Agent 当前权限，仅公开调用类型、名称和事件确认的状态。"""
+    await _owned_run(db, run_id, actor.id)
+    calls = await load_run_calls(db, actor.id, [run_id])
+    response = api_response(data=[call.model_dump(mode="json") for call in calls.get(run_id, [])], is_pop=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/{run_id}/events", summary="回放文本运行事件")

@@ -140,6 +140,23 @@ class ModelCapability(StrEnum):
     REASONING_SUMMARY = "reasoning_summary"
 
 
+class RunCallKind(StrEnum):
+    """公开调用摘要的资源类型。"""
+
+    SKILL = "skill"
+    TOOL = "tool"
+    KNOWLEDGE = "knowledge"
+
+
+class RunCallStatus(StrEnum):
+    """调用事件确认的执行状态，终态缺失时不推断执行结果。"""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 class RunEventType(StrEnum):
     """平台公开运行事件类型。"""
 

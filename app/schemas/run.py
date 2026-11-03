@@ -10,7 +10,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import ApprovalDecision, ApprovalState, MessageRole, RunState
+from app.core.enums import ApprovalDecision, ApprovalState, MessageRole, RunCallKind, RunCallStatus, RunState
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
@@ -78,6 +78,16 @@ class RunOut(BaseModel):
     failure_code: str | None = Field(description="脱敏故障类别", examples=["model_error"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-22T22:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-22T22:00:00"])
+
+
+class RunCallOut(BaseModel):
+    """只公开调用名称、类型和结果，不含参数、正文或内部执行数据。"""
+
+    call_id: str = Field(description="本轮调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    kind: RunCallKind = Field(description="调用类型", examples=["skill"])
+    name: str = Field(description="公开调用名称；知识库名称按当前权限过滤", examples=["travel-policy@v1"])
+    status: RunCallStatus = Field(description="单次调用状态，不等同于整轮运行状态", examples=["succeeded"])
+    sequence: int = Field(description="本次调用首次公开事件的序号", examples=[3])
 
 
 class RunEventOut(BaseModel):

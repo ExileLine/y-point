@@ -46,6 +46,7 @@ from app.services.message_attachments import (
     load_message_attachments,
 )
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
+from app.services.run_calls import load_run_calls
 from app.services.skills import snapshot_run_skills
 from app.services.knowledge import snapshot_run_knowledge
 from app.services.user_tools import snapshot_run_tools
@@ -455,10 +456,12 @@ async def list_session_messages(
     messages = (await db.scalars(statement)).all()
     by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
     by_artifact = await load_message_artifacts(db, actor.id, messages)
+    calls = await load_run_calls(db, actor.id, list({item.run_id for item in messages}))
     result = []
     for item in messages:
         data = SessionMessageOut.model_validate(item).model_dump(mode="json")
         data["attachments"] = by_message.get(item.id, [])
         data["artifacts"] = by_artifact.get(item.id, [])
+        data["calls"] = [call.model_dump(mode="json") for call in calls.get(item.run_id, [])]
         result.append(data)
     return api_response(data=result, is_pop=False)

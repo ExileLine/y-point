@@ -153,6 +153,16 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 生成产物单文件最多 10 MiB、每轮最多 5 个；HTML 下载使用附件方式，不作为站内可信页面执行。Agent 会话中，用户明确要求生成或导出文件时，worker 在完成前核对本轮模型工具暂存的产物；若指定 TXT、Markdown、HTML、JSON、CSV、DOCX、PDF 或 XLSX，还会核对格式。首次只有文字且剩余预算足以调用生成工具并回复时，运行时在同一 Run 内最多补一次内部纠正回合；这会增加模型调用与用量，内部提示只保存在检查点，不成为业务消息。校验前不公开本轮文字增量；最终缺失或格式不符则返回 `failed/artifact_required`，不追加助手最终消息，失败后同一会话仍可继续提交。该判定基于明确的文字指令，不能覆盖所有含糊表达；也不会把 `publish_answer_artifact` 的异步 TXT 回答导出当作模型生成的文件。前端仅在助手消息的 `artifacts` 非空时展示产物，并以授权下载接口确认当前可用性。生成文件的实际类型由服务端校验，不能只依据扩展名展示预览。
 
+### 对话中的 Skill、Tool 与知识库调用状态
+
+会话助手回复在正文上方展示本轮实际调用的类型、名称与状态。名称和结果来自已持久化的 `tool_started/tool_completed/tool_failed` 事件，不依据回答文字或 Agent 关联配置推断。Skill 展示事件中的名称及版本，用户 Tool 展示调用时名称；知识库检索展示本轮固定且有索引的检索目标名称，按当前权限过滤，已删除或撤权的名称替换为不可用提示。知识库名称使用当前可访问名称，不是调用时名称的历史快照。
+
+`GET /api/v1/runs/{run_id}/calls` 返回按首次事件顺序排列的 `call_id/kind/name/status/sequence`，每次复核运行所有权与 Agent 当前访问权。会话 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` 的每条消息同时携带所属运行的 `calls` 数组，按页批量查询，不逐条回放完整文本事件；用户消息也携带该摘要，以便没有最终助手回答的失败轮次恢复调用记录。前端仅在助手一侧展示，运行时由工具事件触发重读并定时补齐，完成后以消息内摘要恢复历史。同名工具的多次调用按关联 ID 分别保留，不混并成功和失败。
+
+调用摘要按需读取既有 `yp_agent_run_event`、`yp_agent_run` 及本轮知识库关联和当前授权资源，不新增摘要表，也不需要数据库迁移。没有可汇总调用事件的运行返回 `data: []`，会话消息对应 `calls: []`；旧运行仅能恢复已保存的事件，不补造历史调用。独立摘要接口使用 `Cache-Control: no-store`；运行不存在、跨所有者或 Agent 当前授权已撤销时返回 HTTP 404。
+
+状态为 `running`（执行中）、`succeeded`（成功）、`failed`（失败）和 `interrupted`（结果未确认）。只有开始事件而运行已终结时显示结果未确认，不能据整轮成功或失败猜测调用结果；已成功工具不会因后续模型失败而改为失败。Skill 成功表示对应文件读取完成；知识库成功表示检索调用完成，无命中仍可成功，也不证明最终回答使用了检索片段。摘要不返回工具参数、工具结果、查询正文、文档原文或凭据；原有知识引用详情仍通过独立授权接口查看。
+
 ## Skill 管理与运行时授权
 
 用户通过 `POST /api/v1/skills` 提交相对路径到 UTF-8 文本内容的 `files` 映射，包根目录必须包含带 YAML frontmatter 的 `SKILL.md`，其中 `name` 和 `description` 为必填项。可选 `category` 和 `visibility`（`private`/`public`，默认私有）。`GET /api/v1/skills` 列出本人 Skill 与其他用户已启用的公开 Skill；`GET/PUT/DELETE /api/v1/skills/{skill_id}` 管理详情、版本和逻辑删除。只有所有者可读取 API 返回的完整 `files`、编辑或删除；其他用户只能读取公开元数据和下载已启用公开 Skill 的当前版本。修改内容或设置会创建新版本，更新需传 `expected_version`。
