@@ -34,7 +34,8 @@ async function fixture(page, refreshAllowed = true) {
     const req = route.request(), path = new URL(req.url()).pathname;
     calls.push({ path, auth: req.headers().authorization });
     let data;
-    if (path === '/api/v1/auth/me') data = { id: 1, username: 'tester', role: 'user' };
+    if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
+    else if (path === '/api/v1/auth/me') data = { id: 1, username: 'tester', role: 'user' };
     else if (path === '/api/v1/auth/refresh') {
       assert.equal(req.postDataJSON().refresh_token, 'refresh-fixture'); assertions++;
       if (!refreshAllowed) return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ code: 10001, message: '登录已过期' }) });

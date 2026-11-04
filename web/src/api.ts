@@ -399,6 +399,7 @@ export type AgentSession = {
   id: string;
   agent_id: number;
   thread_id: string;
+  model_id: number | null;
   title: string;
   archived: boolean;
   version: number;
@@ -427,7 +428,14 @@ export type RunCall = {
   status: "running" | "succeeded" | "failed" | "interrupted";
   sequence: number;
 };
+export type SessionModelOption = {
+  id: number; display_name: string; provider_name: string; verified_capabilities: string[];
+  context_window: number | null; selectable: boolean; reason: string | null; notice: string | null;
+};
 export type SessionMessage = {
+  model_id?: number | null;
+  model_name?: string | null;
+  provider_name?: string | null;
   id: number;
   run_id: string;
   role: "user" | "assistant";
@@ -437,11 +445,11 @@ export type SessionMessage = {
   artifacts: MessageArtifact[];
   calls?: RunCall[];
 };
-export type SessionRun = { id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type SessionRun = { model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
 export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null };
 export type RunSnapshot = { run: SessionRun; events: RunStreamEvent[]; latest_sequence: number; next_after: number; has_more: boolean };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
-export type SessionRunDraft = { input_text: string; request_key: string; publish_answer_artifact: boolean; artifact_ids: string[]; context_artifact_ids: string[] };
+export type SessionRunDraft = { model_id?: number; expected_session_version?: number; input_text: string; request_key: string; publish_answer_artifact: boolean; artifact_ids: string[]; context_artifact_ids: string[] };
 
 function sessionPath(agentId: number, sessionId?: string): string {
   return `/agents/${agentId}/sessions${sessionId ? `/${encodeURIComponent(sessionId)}` : ""}`;
@@ -454,7 +462,9 @@ export function listAgentSessions(agentId: number, page: number, archived: boole
 }
 export const createAgentSession = (agentId: number, title: string): Promise<AgentSession> => request(sessionPath(agentId), { method: "POST", body: JSON.stringify({ title }) });
 export const getAgentSession = (agentId: number, sessionId: string): Promise<AgentSession> => request(sessionPath(agentId, sessionId));
-export const updateAgentSession = (agentId: number, session: AgentSession, changes: { title?: string; archived?: boolean }): Promise<AgentSession> => request(sessionPath(agentId, session.id), { method: "PUT", body: JSON.stringify({ ...changes, expected_version: session.version }) });
+export const listSessionModels = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionModelOption[]> =>
+  request(`${sessionPath(agentId, sessionId)}/models`, { signal });
+export const updateAgentSession = (agentId: number, session: AgentSession, changes: { title?: string; archived?: boolean; model_id?: number }): Promise<AgentSession> => request(sessionPath(agentId, session.id), { method: "PUT", body: JSON.stringify({ ...changes, expected_version: session.version }) });
 export const deleteAgentSession = (agentId: number, sessionId: string): Promise<void> => request(sessionPath(agentId, sessionId), { method: "DELETE" });
 export const listSessionMessages = (agentId: number, sessionId: string, after: number, limit = 100): Promise<SessionMessage[]> => request(`${sessionPath(agentId, sessionId)}/messages?after=${after}&limit=${limit}`);
 export const listSessionRuns = (agentId: number, sessionId: string): Promise<SessionRunPage> => request(`${sessionPath(agentId, sessionId)}/runs?page=1&page_size=20`);

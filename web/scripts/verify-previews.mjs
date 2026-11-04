@@ -41,6 +41,7 @@ try {
       if (path === '/api/v1/auth/refresh') return send({ access_token: 'renewed', refresh_token: 'fixture-refresh', expires_in: 3600 });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '预览验证', enabled: true, default_model_id: 1 });
       if (path === '/api/v1/agents/11/sessions') return send({ items: [session], total: 1, page: 1, page_size: 20 });
+      if (/\/sessions\/[^/]+\/models$/.test(path)) return send([]);
       if (path.endsWith('/sessions/preview')) return send(session);
       if (path.endsWith('/preview/runs')) return send({ items: [], total: 0, page: 1, page_size: 20 });
       if (path.endsWith('/preview/messages')) return send([

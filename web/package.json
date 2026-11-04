@@ -16,7 +16,8 @@
     "verify:chat": "node scripts/verify-chat.mjs",
     "verify:artifacts": "node scripts/verify-artifacts.mjs",
     "verify:previews": "node scripts/verify-previews.mjs",
-    "verify:calls": "node scripts/verify-calls.mjs"
+    "verify:calls": "node scripts/verify-calls.mjs",
+    "verify:session-models": "node scripts/verify-session-models.mjs"
   },
   "dependencies": {
     "antd": "^5.29.1",

@@ -136,3 +136,18 @@
 
 .session-file-info { flex: 1; }
 .session-file-actions { display: flex; flex: none; align-items: center; }
+
+/* 会话模型选择不改变消息区高度与滚动位置。 */
+.sessions-model-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--yp-space-2); margin-bottom: var(--yp-space-2); }
+.sessions-model-bar label, .sessions-model-hint { color: var(--yp-color-text-muted); font-size: 12px; }
+.sessions-model-select { width: 250px; max-width: 100%; }
+.sessions-model-option { display: inline-flex; flex-direction: column; max-width: min(440px, 75vw); }
+.sessions-model-option > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions-model-option small { color: var(--yp-color-text-muted); white-space: normal; line-height: 1.5; }
+.sessions-model-select .ant-select-selection-item .sessions-model-option small { display: none; }
+.session-message-model { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--yp-color-text-muted); font-size: 12px; }
+@media (max-width: 767px) {
+  .sessions-model-select { flex: 1; min-width: 0; width: auto; }
+  .sessions-model-hint { flex-basis: 100%; }
+  .session-message-model { max-width: 110px; }
+}

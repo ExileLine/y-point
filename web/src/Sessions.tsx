@@ -1,12 +1,12 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import { Archive, ArrowDown, ArrowLeft, Bot, MessageSquareText, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, SendHorizontal, Square, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   ApiError, cancelRun, createAgentSession, deleteAgentSession, getAgent, getAgentSession, getRun, getRunSnapshot, getSharedAgent,
-  issueRunStreamTicket, listAgentSessions, listSessionMessages, listSessionRuns, runStreamUrl, submitSessionRun, updateAgentSession,
+  issueRunStreamTicket, listAgentSessions, listSessionMessages, listSessionModels, listSessionRuns, runStreamUrl, submitSessionRun, updateAgentSession,
   type Agent, type AgentSession, type AgentSessionPage, type SessionMessage, type SessionRun,
-  type RunStreamEvent, type SessionRunDraft, type SharedAgent,
+  type RunStreamEvent, type SessionRunDraft, type SharedAgent, type SessionModelOption,
 } from "./api";
 import { MessageContent } from "./components/MessageContent";
 import MessageActions from "./components/MessageActions";
@@ -22,6 +22,9 @@ const stateLabels: Record<string, string> = {
   completed: "已完成", failed: "运行失败", cancelled: "已取消", timed_out: "已超时",
 };
 const failureLabels: Record<string, string> = {
+  provider_timeout: "模型供应商响应超时，可稍后重新发送；持续超时请检查供应商超时设置或切换模型",
+  execution_timeout: "本轮已达到执行时限，可重新发送或调整智能体的模型超时预算",
+  model_error: "模型请求失败，可重新发送或切换模型；如持续失败请检查供应商连接",
   summary_error: "上下文摘要失败", checkpoint_mismatch: "会话状态不一致", attachment_unavailable: "附件不可用",
   artifact_required: "需要文件", context_window_exceeded: "超出模型上下文窗口",
 };
@@ -48,7 +51,7 @@ const MessageHistory = memo(function MessageHistory({ items, pendingRunId }: { i
     {items.map((item) => <Fragment key={item.id}><div className={`session-message session-message-${item.role}`} data-message-id={item.id}>
       <div className="session-message-avatar">{item.role === "assistant" ? <Bot size={18} /> : "我"}</div>
       <div className="session-message-main">
-        <div className="session-message-meta"><strong>{item.role === "assistant" ? "Agent" : "我"}</strong><time dateTime={item.create_time}>{displayTime(item.create_time)}</time></div>
+        <div className="session-message-meta"><strong>{item.role === "assistant" ? "Agent" : "我"}</strong>{item.role === "assistant" && item.model_id && <Tooltip title={[item.provider_name, item.model_name || `模型 #${item.model_id}`].filter(Boolean).join(" · ")}><span className="session-message-model">{item.model_name || `模型 #${item.model_id}`}</span></Tooltip>}<time dateTime={item.create_time}>{displayTime(item.create_time)}</time></div>
         {item.role === "assistant" && <RunCalls calls={item.calls || []} />}
         <div className="session-message-content">{item.role === "assistant" ? <MessageContent text={item.content} /> : item.content}</div>
         <MessageActions text={item.content} assistant={item.role === "assistant"} />
@@ -100,6 +103,13 @@ export default function Sessions() {
   const [pendingDraft, setPendingDraft] = useState<SessionRunDraft | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [models, setModels] = useState<SessionModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState("");
+  const [modelsRevision, setModelsRevision] = useState(0);
+  const [modelTarget, setModelTarget] = useState<number | null>(null);
+  const [switchingModel, setSwitchingModel] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
   const [renameTarget, setRenameTarget] = useState<AgentSession | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<AgentSession | null>(null);
@@ -221,6 +231,19 @@ export default function Sessions() {
     return () => { active = false; };
   }, [agentId, selected?.id, sessionId, messageRevision]);
 
+  useEffect(() => {
+    setModelTarget(null);
+    setModels([]);
+    setModelsError("");
+    if (!selected?.id) return;
+    const controller = new AbortController();
+    setModelsLoading(true);
+    listSessionModels(agentId, selected.id, controller.signal).then(items => { if (!controller.signal.aborted) setModels(items); }).catch((failure) => {
+      if (!controller.signal.aborted) setModelsError(errorText(failure));
+    }).finally(() => { if (!controller.signal.aborted) setModelsLoading(false); });
+    return () => controller.abort();
+  }, [agentId, selected?.id, modelsRevision]);
+
   useLayoutEffect(() => {
     followingRef.current = true;
     setFollowing(true);
@@ -239,6 +262,7 @@ export default function Sessions() {
   useEffect(() => {
     if (!selected || !sessionId) return;
     let active = true;
+    setRunsLoading(true);
     listSessionRuns(agentId, sessionId).then((result) => {
       if (!active) return;
       const running = result.items.find((item) => !terminalStates.has(item.state));
@@ -247,7 +271,7 @@ export default function Sessions() {
     }).catch((failure) => { if (active) {
       setRunError(errorText(failure));
       if (failure instanceof ApiError && failure.status === 404) { setMessages([]); setSelected(null); setSelectedError("会话不可访问，请返回列表刷新"); }
-    } });
+    } }).finally(() => { if (active) setRunsLoading(false); });
     return () => { active = false; };
   }, [agentId, selected?.id, sessionId]);
 
@@ -374,7 +398,7 @@ export default function Sessions() {
   const currentRun = activeRun || lastRun;
   const preview = streamText && (activeRun?.id === streamText.runId || (lastRun?.id === streamText.runId && lastRun.state === "completed")) && !messages.some((item) => item.role === "assistant" && item.run_id === streamText.runId) ? streamText : null;
   const pendingRunId = preview?.runId || (activeRun && !messages.some(item => item.role === "assistant" && item.run_id === activeRun.id) ? activeRun.id : null);
-  const canSend = Boolean(selected && agent?.enabled && !selected.archived && !activeRun && !submitting && !pendingDraft);
+  const canSend = Boolean(selected && !selected.archived && agent?.enabled && !activeRun && !submitting && !pendingDraft && !switchingModel && modelTarget === null && !runsLoading);
 
   function refresh() { setRevision((value) => value + 1); }
 
@@ -433,10 +457,38 @@ export default function Sessions() {
     finally { setBusy(false); }
   }
 
+  async function switchModel() {
+    if (!selected || modelTarget === null || activeRun || pendingDraft || switchingModel || runsLoading) return;
+    const targetSessionId = selected.id;
+    setSwitchingModel(true);
+    setRunError("");
+    try {
+      const updated = await updateAgentSession(agentId, selected, { model_id: modelTarget });
+      if (currentSessionId.current !== targetSessionId) return;
+      setSelected(updated);
+      setModelTarget(null);
+      refresh();
+      message.success("模型已切换，从下一条消息开始使用");
+    } catch (failure) {
+      if (currentSessionId.current !== targetSessionId) return;
+      setRunError(errorText(failure));
+      setModelTarget(null);
+      setModelsRevision(value => value + 1);
+      await Promise.allSettled([
+        getAgentSession(agentId, targetSessionId).then(current => { if (currentSessionId.current === targetSessionId) setSelected(current); }),
+        listSessionRuns(agentId, targetSessionId).then(result => {
+          if (currentSessionId.current !== targetSessionId) return;
+          setActiveRun(result.items.find(item => !terminalStates.has(item.state)) || null);
+          setLastRun(result.items[0] || null);
+        }),
+      ]);
+    } finally { setSwitchingModel(false); }
+  }
+
   async function send(draft?: SessionRunDraft) {
     if (!selected) return;
     const targetSessionId = selected.id;
-    const next = draft || { input_text: composer.trim(), request_key: crypto.randomUUID(), publish_answer_artifact: false, artifact_ids: [], context_artifact_ids: [] };
+    const next = draft || { input_text: composer.trim(), request_key: crypto.randomUUID(), publish_answer_artifact: false, artifact_ids: [], context_artifact_ids: [], model_id: selected.model_id ?? undefined, expected_session_version: selected.version };
     if (!next.input_text) return;
     followLatest();
     setPendingDraft(next);
@@ -527,13 +579,27 @@ export default function Sessions() {
             {isMobile && directoryError && <Alert className="sessions-alert" type="error" showIcon message={directoryError} action={<Button size="small" onClick={refresh}>重试</Button>} />}
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
             {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
-            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong></div><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={followContent} /> : <MessageContent text={preview.text} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}</div></div></div>}
+            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={followContent} /> : <MessageContent text={preview.text} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}</div></div></div>}
             {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
-            {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} action={runError.includes("已有对话的会话不能切换模型") ? <Button size="small" onClick={() => setNewOpen(true)}>新建会话</Button> : undefined} />}
+            {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
             </div>
           </div>
           {!following && <div className="sessions-jump"><Button icon={<ArrowDown size={16} />} onClick={followLatest}>回到最新消息</Button></div>}
           <div className="sessions-composer">
+            <div className="sessions-model-bar">
+              <label htmlFor="session-model">当前模型</label>
+              <Select id="session-model" aria-label="当前对话模型" className="sessions-model-select" showSearch optionFilterProp="searchText"
+                loading={modelsLoading} value={selected.model_id ?? undefined} placeholder="选择模型" popupMatchSelectWidth={false}
+                disabled={selected.archived || !agent?.enabled || Boolean(activeRun) || submitting || busy || switchingModel || Boolean(pendingDraft) || runsLoading}
+                onChange={(value: number) => { if (value !== selected.model_id) setModelTarget(value); }}
+                options={[
+                  ...(selected.model_id && !models.some(item => item.id === selected.model_id) ? [{ value: selected.model_id, label: `模型 #${selected.model_id}（目录不可用）`, disabled: true, searchText: "" }] : []),
+                  ...models.map(item => ({ value: item.id, disabled: !item.selectable, searchText: `${item.provider_name} ${item.display_name}`,
+                    label: <Tooltip title={item.notice || `${item.provider_name} · ${item.verified_capabilities.join(" / ")}`}><span className="sessions-model-option"><span>{item.display_name}</span><small>{item.provider_name}{item.notice ? ` · ${item.notice}` : ""}</small></span></Tooltip> })),
+                ]} />
+              <span className="sessions-model-hint">{activeRun ? "本轮结束后可切换" : "切换从下一条消息生效"}</span>
+              {modelsError && <Tooltip title={modelsError}><Button size="small" onClick={() => setModelsRevision(value => value + 1)}>重试模型目录</Button></Tooltip>}
+            </div>
             {pendingDraft && <div className="sessions-retry"><Button size="small" loading={submitting} onClick={() => void send(pendingDraft)}>重试提交</Button><Button size="small" onClick={() => { setPendingDraft(null); setRunError(""); }}>放弃重试</Button></div>}
             <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息"} rows={3} maxLength={32768} disabled={!canSend} />
             <div className="sessions-composer-footer"><span>{selected.archived ? "已归档" : activeRun ? <RunStateLabel state={activeRun.state} /> : ""}</span><Button type="primary" icon={<SendHorizontal size={17} />} loading={submitting} disabled={!canSend || !composer.trim()} onClick={() => void send()}>发送</Button></div>
@@ -541,6 +607,13 @@ export default function Sessions() {
         </>}
       </section>
     </div>}
+    <Modal title="切换当前对话模型" open={modelTarget !== null} onCancel={() => { if (!switchingModel) setModelTarget(null); }}
+      onOk={() => void switchModel()} okText="切换模型" cancelText="取消" confirmLoading={switchingModel}
+      okButtonProps={{ disabled: Boolean(activeRun) || runsLoading || switchingModel }} cancelButtonProps={{ disabled: switchingModel }} closable={!switchingModel} maskClosable={!switchingModel}>
+      <p>后续消息将使用 <strong>{models.find(item => item.id === modelTarget)?.display_name || `模型 #${modelTarget}`}</strong>，此选择只影响当前对话。</p>
+      <p>新模型将收到已完成轮次的文字历史。跨供应商切换时，历史文字会发送给目标供应商；较长历史会摘要或仅携带最近部分。</p>
+      <p>历史附件正文、图片和工具内部状态不会自动迁移。需要文件内容时请重新附加，或让模型使用文件工具读取已有产物。</p>
+    </Modal>
     <Modal title="新建会话" open={newOpen} onCancel={() => setNewOpen(false)} onOk={() => void createSession()} okText="创建" okButtonProps={{ loading: busy }} cancelText="取消"><Input aria-label="会话标题" placeholder="新对话" maxLength={128} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} onPressEnter={() => void createSession()} /></Modal>
     <Modal title="重命名会话" open={Boolean(renameTarget)} onCancel={() => setRenameTarget(null)} onOk={() => void renameSession()} okText="保存" okButtonProps={{ loading: busy, disabled: !renameTitle.trim() }} cancelText="取消"><Input aria-label="新标题" maxLength={128} value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} onPressEnter={() => void renameSession()} /></Modal>
     <Modal title={`删除 ${deleteTarget?.title || "会话"}？`} open={Boolean(deleteTarget)} onCancel={() => setDeleteTarget(null)} onOk={() => void removeSession()} okText="删除" okButtonProps={{ danger: true, loading: busy }} cancelText="取消"><Typography.Text type="secondary">删除后会话不再显示，运行中的会话无法删除。</Typography.Text></Modal>

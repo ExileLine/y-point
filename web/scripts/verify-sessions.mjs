@@ -29,7 +29,8 @@ function fixture(page, shared = false, options = {}) {
     calls.push({ path, method, body, search: url.search });
     let data = null;
     let status = 200;
-    if (path.startsWith("/api/v1/runs/") && path.endsWith("/calls")) data = [];
+    if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
+    else if (path.startsWith("/api/v1/runs/") && path.endsWith("/calls")) data = [];
     else if (path === "/api/v1/auth/me") data = { id: 1, username: "tester", nickname: "测试用户", role: "user" };
     else if (path === "/api/v1/agents/11" && method === "GET") {
       if (shared) status = 404;
@@ -63,7 +64,7 @@ function fixture(page, shared = false, options = {}) {
     else if (path.endsWith("/runs") && method === "POST") {
       submitAttempts += 1;
       if (options.failFirstSubmit && submitAttempts === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: 503, message: "暂时不可用" }) });
-      if (options.modelSwitchConflict) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: 10005, message: "已有对话的会话不能切换模型，请创建新会话" }) });
+      if (options.modelSwitchConflict) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: 10005, message: "会话模型已变化，请刷新后重试", data: { reason: "session_model_changed" } }) });
       run = { id: "run-new", agent_id: 11, session_id: path.split("/").at(-2), state: "queued", failure_code: null, create_time: now, update_time: now };
       const item = sessions.find((entry) => entry.id === run.session_id);
       if (item) item.version += 1;
@@ -215,10 +216,10 @@ try {
   await conflictPage.goto(`${baseURL}/agents/11/sessions/session-a`, { waitUntil: "networkidle" });
   await conflictPage.getByRole("textbox", { name: "消息内容" }).fill("使用新模型继续");
   await conflictPage.getByRole("button", { name: "发送" }).click();
-  await conflictPage.getByRole("button", { name: "新建会话" }).last().click();
-  await conflictPage.getByRole("dialog", { name: "新建会话" }).waitFor();
+  await conflictPage.getByText("会话模型已变化，请刷新后重试", { exact: true }).waitFor();
+  assert.equal(await conflictPage.getByRole("dialog").count(), 0);
   assert.equal(await conflictPage.getByRole("button", { name: "重试提交" }).count(), 0);
-  console.log("model switch: create session action passed");
+  console.log("model selection conflict: refresh and preserve draft passed");
   await conflictPage.close();
 
   const switchPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });

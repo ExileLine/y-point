@@ -23,7 +23,8 @@ async function fixture(page) {
   await page.route('**/api/v1/**',async route=>{
     const req=route.request(), url=new URL(req.url()),path=url.pathname,method=req.method();calls.push({path,method});
     let data;
-    if(path==='/api/v1/auth/me')data={id:1,username:'tester',role:'user'};
+    if(/\/sessions\/[^/]+\/models$/.test(path)) data=[];
+    else if(path==='/api/v1/auth/me')data={id:1,username:'tester',role:'user'};
     else if(path==='/api/v1/agents/11')data={id:11,name:'体验验证助手',description:'测试',enabled:true,default_model_id:1,welcome_message:'欢迎'};
     else if(path==='/api/v1/agents/11/sessions')data={items:[session],total:1,page:1,page_size:20};
     else if(path==='/api/v1/agents/11/sessions/session-a')data=session;

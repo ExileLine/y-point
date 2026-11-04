@@ -95,6 +95,7 @@ async function fixture(page, opts = {}) {
     if (path === "/knowledge-bases/jobs/3/retry") { retryOn = true; cancelOn = false; return send(null); }
     const session = { id: "session-a", agent_id: 11, thread_id: "thread-a", title: "制度问答", archived: false, version: 1, create_time: now, update_time: now };
     if (path === "/agents/11/sessions") return send({ items: [session], total: 1, page: 1, page_size: 20 });
+    if (/\/sessions\/[^/]+\/models$/.test(path)) return send([]);
     if (path === "/agents/11/sessions/session-a") return send(session);
     if (path === "/agents/11/sessions/session-a/messages") return send([{ id: 1, role: "assistant", run_id: "run-kb", content: "请在 15 个工作日内提交，参考 kb:1:i:2:c:16。", create_time: now, attachments: [], artifacts: [] }]);
     if (path === "/agents/11/sessions/session-a/runs") return send({ items: [], total: 0, page: 1, page_size: 20 });
