@@ -15,6 +15,7 @@
     "verify:resources": "node scripts/verify-resources.mjs",
     "verify:chat": "node scripts/verify-chat.mjs",
     "verify:artifacts": "node scripts/verify-artifacts.mjs",
+    "verify:previews": "node scripts/verify-previews.mjs",
     "verify:calls": "node scripts/verify-calls.mjs"
   },
   "dependencies": {

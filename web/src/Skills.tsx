@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Switch, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, Typography, Upload, message } from "antd";
 import { Download, FileArchive, FilePlus2, Pencil, Plus, RefreshCw, Search, Trash2, Upload as UploadIcon } from "lucide-react";
 import { createSkill, deleteSkill, downloadSkill, getSkill, importSkill, listSkills, updateSkill, type Skill } from "./api";
 
@@ -99,14 +99,18 @@ export default function Skills({ userId }: { userId: number }) {
         <Select aria-label="Skill 分组" value={group} onChange={setGroup} options={[{ value: "all", label: "全部分组" }, ...groups.map((value) => ({ value, label: value }))]} />
       </div><Space><span className="resource-count">{filtered.length} / {items.length} 个 Skill</span><Button icon={<RefreshCw size={16} />} loading={loading} aria-label="刷新" onClick={() => void reload()} /></Space></div>
       {error && <Alert className="resource-alert" type="error" showIcon message={error} action={<Button size="small" onClick={() => void reload()}>重试</Button>} />}
-      {(!error || items.length > 0) && <ResourceCollection items={filtered} rowKey="id" loading={loading} empty={<Empty description={items.length ? "没有匹配的 Skill，请调整筛选条件" : "创建或导入第一个 Skill，让 Agent 复用你的经验"} />}
+      {(!error || items.length > 0) && <ResourceCollection items={filtered} rowKey="id" loading={loading} scrollX={1240} empty={<Empty description={items.length ? "没有匹配的 Skill，请调整筛选条件" : "创建或导入第一个 Skill，让 Agent 复用你的经验"} />}
         columns={[
-          { title: "名称", dataIndex: "name", render: (name: string) => <span className="resource-title-cell"><FileArchive size={18} /><strong>{name}</strong></span> },
-          { title: "描述", dataIndex: "description", ellipsis: true },
-          { title: "分组", dataIndex: "category", render: (value: string | null) => value || "未分组" },
-          { title: "状态", render: (_: unknown, item: Skill) => <div className="resource-tags">{tags(item)}</div> },
-          { title: "版本", dataIndex: "current_version", render: (value: number) => `v${value}` },
-          { title: "操作", render: (_: unknown, item: Skill) => actions(item) },
+          { title: "名称", dataIndex: "name", width: 220, ellipsis: true, render: (name: string) => <span className="resource-title-cell"><FileArchive size={18} /><strong>{name}</strong></span> },
+          { title: "描述", dataIndex: "description", width: 320, ellipsis: { showTitle: false },
+            render: (description: string) => description ? <Tooltip title={description} trigger={["hover", "focus"]}
+              styles={{ root: { maxWidth: "min(480px, calc(100vw - 32px))" }, body: { maxHeight: "60vh", overflowY: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }}>
+              <span tabIndex={0} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{description}</span>
+            </Tooltip> : "暂无用途说明" },
+          { title: "分组", dataIndex: "category", width: 120, ellipsis: true, render: (value: string | null) => value || "未分组" },
+          { title: "状态", width: 180, render: (_: unknown, item: Skill) => <div className="resource-tags">{tags(item)}</div> },
+          { title: "版本", dataIndex: "current_version", width: 80, render: (value: number) => `v${value}` },
+          { title: "操作", width: 320, fixed: "right", render: (_: unknown, item: Skill) => actions(item) },
         ]} renderCard={(item) => <ResourceCard icon={<FileArchive size={20} />} title={item.name} description={item.description} tags={tags(item)} meta={`${item.category || "未分组"} · v${item.current_version} · ${item.owner_id === userId ? "由我创建" : "他人公开"}`} actions={actions(item)} />} />}
     </section>
     <Drawer title={editing === "new" ? "新建 Skill" : "编辑 Skill"} rootClassName="resource-editor" width="min(100vw, var(--yp-editor-width))" open={editing !== null} onClose={() => { if (!busy) setEditing(null); }}

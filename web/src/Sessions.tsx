@@ -18,13 +18,20 @@ import "./styles/sessions.css";
 
 const terminalStates = new Set(["completed", "failed", "cancelled", "timed_out"]);
 const stateLabels: Record<string, string> = {
-  queued: "排队中", running: "运行中", waiting_for_approval: "等待审批", cancel_requested: "取消中",
+  queued: "等待回复", running: "运行中", waiting_for_approval: "等待审批", cancel_requested: "取消中",
   completed: "已完成", failed: "运行失败", cancelled: "已取消", timed_out: "已超时",
 };
 const failureLabels: Record<string, string> = {
   summary_error: "上下文摘要失败", checkpoint_mismatch: "会话状态不一致", attachment_unavailable: "附件不可用",
   artifact_required: "需要文件", context_window_exceeded: "超出模型上下文窗口",
 };
+
+function RunStateLabel({ state }: { state: string }) {
+  if (state === "queued") return <span className="sessions-queue-loading" role="status" aria-label="等待回复">
+    <span aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+  </span>;
+  return <>{stateLabels[state] || state}</>;
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "操作失败";
@@ -521,7 +528,7 @@ export default function Sessions() {
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
             {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
             {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong></div><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={followContent} /> : <MessageContent text={preview.text} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}</div></div></div>}
-            {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}>{stateLabels[currentRun.state] || currentRun.state}</Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
+            {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
             {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} action={runError.includes("已有对话的会话不能切换模型") ? <Button size="small" onClick={() => setNewOpen(true)}>新建会话</Button> : undefined} />}
             </div>
           </div>
@@ -529,7 +536,7 @@ export default function Sessions() {
           <div className="sessions-composer">
             {pendingDraft && <div className="sessions-retry"><Button size="small" loading={submitting} onClick={() => void send(pendingDraft)}>重试提交</Button><Button size="small" onClick={() => { setPendingDraft(null); setRunError(""); }}>放弃重试</Button></div>}
             <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息"} rows={3} maxLength={32768} disabled={!canSend} />
-            <div className="sessions-composer-footer"><span>{selected.archived ? "已归档" : activeRun ? stateLabels[activeRun.state] || activeRun.state : ""}</span><Button type="primary" icon={<SendHorizontal size={17} />} loading={submitting} disabled={!canSend || !composer.trim()} onClick={() => void send()}>发送</Button></div>
+            <div className="sessions-composer-footer"><span>{selected.archived ? "已归档" : activeRun ? <RunStateLabel state={activeRun.state} /> : ""}</span><Button type="primary" icon={<SendHorizontal size={17} />} loading={submitting} disabled={!canSend || !composer.trim()} onClick={() => void send()}>发送</Button></div>
           </div>
         </>}
       </section>

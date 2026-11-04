@@ -1,9 +1,12 @@
-import { useRef, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import { Button, Tooltip, message } from "antd";
-import { Download, FileText } from "lucide-react";
+import { Download, Eye, FileText } from "lucide-react";
 import { downloadArtifact, type MessageArtifact } from "../api";
 
+const ArtifactPreview = lazy(() => import("./ArtifactPreview"));
+
 function FileItem({ file, generated }: { file: MessageArtifact; generated: boolean }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const inFlight = useRef(false);
   async function download() {
@@ -26,10 +29,18 @@ function FileItem({ file, generated }: { file: MessageArtifact; generated: boole
       <span className="session-file-name">{file.filename}</span>
       <small>{generated ? "模型生成" : "附件"}{!file.available ? " · 不可用" : file.included_in_context ? " · 已提供给模型" : ""}</small>
     </div>
+    <div className="session-file-actions">
+    {generated && <Tooltip title={file.available ? "预览" : "文件不可用，无法预览"} trigger={["hover", "focus"]}>
+      <Button type="text" className="session-file-download" icon={<Eye size={16} />} aria-label={`预览 ${file.filename}`}
+        disabled={!file.available} onClick={() => setPreviewOpen(true)} />
+    </Tooltip>}
     <Tooltip title={label} trigger={["hover", "focus"]}>
       <Button type="text" className="session-file-download" icon={<Download size={16} />} aria-label={label}
         disabled={!file.available} loading={downloading} onClick={() => void download()} />
     </Tooltip>
+    </div>
+    {previewOpen && <Suspense fallback={null}><ArtifactPreview file={file} onClose={() => setPreviewOpen(false)}
+      onDownload={() => void download()} downloading={downloading} /></Suspense>}
   </div>;
 }
 

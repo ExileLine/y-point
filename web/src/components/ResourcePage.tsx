@@ -16,12 +16,12 @@ export function ResourceCard({ icon, title, description, tags, meta, actions }: 
   </Card>;
 }
 
-export function ResourceCollection<T extends object>({ items, columns, renderCard, rowKey, loading, empty }: {
-  items: T[]; columns: ColumnsType<T>; renderCard: (item: T) => ReactNode; rowKey: keyof T; loading: boolean; empty: ReactNode;
+export function ResourceCollection<T extends object>({ items, columns, renderCard, rowKey, loading, empty, scrollX = "max-content" }: {
+  items: T[]; columns: ColumnsType<T>; renderCard: (item: T) => ReactNode; rowKey: keyof T; loading: boolean; empty: ReactNode; scrollX?: number | string;
 }) {
   const screens = Grid.useBreakpoint();
   if (loading) return <div className="resource-loading" aria-label="正在加载资源" aria-busy="true"><Skeleton active paragraph={{ rows: 5 }} /></div>;
-  if (screens.md) return <Table rowKey={String(rowKey)} columns={columns} dataSource={items} pagination={items.length > 20 ? { pageSize: 20, showSizeChanger: false } : false} locale={{ emptyText: empty }} scroll={{ x: "max-content" }} />;
+  if (screens.md) return <Table rowKey={String(rowKey)} columns={columns} dataSource={items} pagination={items.length > 20 ? { pageSize: 20, showSizeChanger: false } : false} locale={{ emptyText: empty }} scroll={{ x: scrollX }} />;
   return <List className="resource-mobile-list" dataSource={items} rowKey={(item) => String(item[rowKey])} locale={{ emptyText: empty }} pagination={items.length > 20 ? { pageSize: 20, showSizeChanger: false, simple: true } : false}
     renderItem={(item) => <List.Item>{renderCard(item)}</List.Item>} />;
 }

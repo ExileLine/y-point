@@ -119,3 +119,20 @@
 .run-call-running { color: var(--yp-color-info-text); }
 .run-call-interrupted { color: var(--yp-color-warning-text); }
 .run-calls-error { display: flex; align-items: center; gap: var(--yp-space-1); color: var(--yp-color-text-muted); font-size: var(--yp-font-size-xs); }
+
+/* 排队时以固定宽度的动态省略号提示，避免状态变化引起布局跳动。 */
+.sessions-queue-loading { display: inline-flex; align-items: center; min-width: 20px; vertical-align: middle; }
+.sessions-queue-loading > span { display: inline-flex; gap: 2px; }
+.sessions-queue-loading > span > span { display: inline-block; font-weight: 700; animation: session-queue-dot 1.2s ease-in-out infinite; }
+.sessions-queue-loading > span > span:nth-child(2) { animation-delay: 0.15s; }
+.sessions-queue-loading > span > span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes session-queue-dot {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sessions-queue-loading > span > span { animation: none; opacity: 0.7; }
+}
+
+.session-file-info { flex: 1; }
+.session-file-actions { display: flex; flex: none; align-items: center; }

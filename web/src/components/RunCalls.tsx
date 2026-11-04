@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
 import { BookOpen, CheckCircle2, CircleDashed, CircleHelp, Puzzle, Wrench, XCircle } from "lucide-react";
 import { ApiError, getRunCalls, type RunCall } from "../api";
@@ -34,11 +34,33 @@ export function ActiveRunCalls({ runId, refreshKey, active }: { runId: string; r
   const [calls, setCalls] = useState<RunCall[]>([]);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const refresh = useRef<((polling: boolean) => void) | null>(null);
   useEffect(() => {
     let current = true;
-    let timer: number;
+    let polling = false;
+    let inFlight = false;
+    let queued = false;
+    let timer: number | undefined;
     const controller = new AbortController();
+    setCalls([]);
+    setError("");
+
+    function schedule(delay = 120) {
+      window.clearTimeout(timer);
+      if (inFlight) { queued = true; return; }
+      timer = window.setTimeout(() => void load(), delay);
+    }
+    function poll() {
+      timer = window.setTimeout(() => {
+        if (!current || !polling) return;
+        if (document.visibilityState === "visible") void load();
+        else poll();
+      }, 2500);
+    }
     async function load() {
+      if (!current) return;
+      inFlight = true;
+      queued = false;
       let denied = false;
       try {
         const rows = await getRunCalls(runId, controller.signal);
@@ -50,15 +72,24 @@ export function ActiveRunCalls({ runId, refreshKey, active }: { runId: string; r
           setError(denied ? "调用记录不可访问" : "调用状态暂时无法同步");
         }
       } finally {
-        if (current && active && !denied) timer = window.setTimeout(() => {
-          if (document.visibilityState === "visible") void load();
-          else timer = window.setTimeout(() => void load(), 2500);
-        }, 2500);
+        inFlight = false;
+        if (current && !denied) {
+          if (queued) schedule();
+          else if (polling) poll();
+        }
       }
     }
-    // 合并短时间内连续到达的工具事件，定时重读用于补齐断线期间或未收到完成通知的状态。
-    timer = window.setTimeout(() => void load(), 120);
-    return () => { current = false; window.clearTimeout(timer); controller.abort(); };
+    // 同一 Run 的刷新顺序执行；在途期间的工具事件合并为随后的一次补读。
+    refresh.current = shouldPoll => { polling = shouldPoll; schedule(); };
+    return () => {
+      current = false;
+      refresh.current = null;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [runId]);
+  useEffect(() => {
+    refresh.current?.(active);
   }, [runId, refreshKey, active, retry]);
   return <>
     <RunCalls calls={calls} />

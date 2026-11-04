@@ -406,6 +406,19 @@ export type AgentSession = {
   update_time: string;
 };
 export type AgentSessionPage = { items: AgentSession[]; total: number; page: number; page_size: number };
+export type ArtifactPreview = {
+  artifact_id: string;
+  filename: string;
+  media_type: string;
+  kind: "text" | "markdown" | "html" | "sheets";
+  content: string;
+  sheets: { name: string; rows: string[][] }[];
+  truncated: boolean;
+  notice: string | null;
+};
+export const getArtifactPreview = (artifactId: string, signal?: AbortSignal): Promise<ArtifactPreview> =>
+  request(`/artifacts/${encodeURIComponent(artifactId)}/preview`, { signal, cache: "no-store" });
+
 export type MessageArtifact = { artifact_id: string; filename: string; available: boolean; included_in_context?: boolean };
 export type RunCall = {
   call_id: string;
