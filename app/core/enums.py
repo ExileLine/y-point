@@ -137,6 +137,27 @@ class ProviderKind(StrEnum):
     BEDROCK = "bedrock"
 
 
+class RunTimeoutReason(StrEnum):
+    """运行超时的机器可读原因，区分上游请求与执行预算。"""
+
+    EXECUTION = "execution_timeout"
+    PROVIDER = "provider_timeout"
+    TOOL = "tool_execution_timeout"
+
+
+class SessionModelReason(StrEnum):
+    """会话模型选择失败的机器可读原因。"""
+
+    UNAVAILABLE = "model_unavailable"
+    CAPABILITY = "model_capability_mismatch"
+    CONTEXT = "model_context_insufficient"
+    PRICING = "model_pricing_missing"
+    BUSY = "session_busy"
+    ARCHIVED = "session_archived"
+    VERSION = "session_version_changed"
+    SELECTION = "session_model_changed"
+
+
 class ModelCapability(StrEnum):
     """模型声明或实际验证的能力。"""
 

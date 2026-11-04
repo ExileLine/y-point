@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from app.core.enums import MessageRole
+from app.core.enums import MessageRole, ModelCapability, SessionModelReason
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 from app.schemas.run import RunCallOut, RunOut
 
@@ -32,6 +32,7 @@ class SessionUpdateIn(BaseModel):
     expected_version: int = Field(ge=1, description="本次修改读取到的版本号", examples=[1])
     title: SessionTitle | None = Field(default=None, description="新会话标题", examples=["需求评审"])
     archived: bool | None = Field(default=None, description="是否归档；可取消归档", examples=[True])
+    model_id: int | None = Field(default=None, gt=0, description="切换会话后续轮次使用的模型；不修改 Agent 默认模型", examples=[2])
 
 
 class SessionOut(BaseModel):
@@ -40,11 +41,23 @@ class SessionOut(BaseModel):
     id: str = Field(description="会话 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     agent_id: int = Field(description="所属智能体 ID", examples=[1])
     thread_id: str = Field(description="专属检查点线程 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    model_id: int | None = Field(description="会话当前模型 ID；新会话继承 Agent 默认模型", examples=[1])
     title: str = Field(description="会话标题", examples=["产品需求讨论"])
     archived: bool = Field(description="是否已归档", examples=[False])
     version: int = Field(description="会话版本号", examples=[1])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-26T22:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-26T22:00:00"])
+
+
+class SessionModelOptionOut(BaseModel):
+    id: int = Field(description="模型 ID", examples=[1])
+    display_name: str = Field(description="模型名称", examples=["本地对话模型"])
+    provider_name: str = Field(description="供应商名称", examples=["本地 Ollama"])
+    verified_capabilities: list[ModelCapability] = Field(description="已验证的模型能力", examples=[["text", "tools"]])
+    context_window: int | None = Field(description="模型上下文窗口", examples=[32768])
+    selectable: bool = Field(description="是否满足当前 Agent 的能力、窗口与预算要求", examples=[True])
+    reason: SessionModelReason | None = Field(description="不可选原因码", examples=[None])
+    notice: str | None = Field(description="不可选原因说明", examples=[None])
 
 
 class SessionPageOut(BaseModel):
@@ -57,6 +70,10 @@ class SessionPageOut(BaseModel):
 class SessionRunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    model_id: int | None = Field(default=None, gt=0, description="预期会话模型；只校验选择，切换请使用修改会话接口", examples=[1])
+    expected_session_version: int | None = Field(
+        default=None, ge=1, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1]
+    )
     input_text: str = Field(min_length=1, max_length=32768, description="本轮用户输入", examples=["请总结需求"])
     request_key: str = Field(min_length=1, max_length=128, description="本轮提交幂等键", examples=["session-001"])
     publish_answer_artifact: bool = Field(default=False, description="是否将本轮最终回答发布为可下载的 TXT 产物", examples=[False])
@@ -86,6 +103,9 @@ class SessionMessageOut(BaseModel):
 
     id: int = Field(description="消息游标 ID", examples=[1])
     run_id: str = Field(description="所属运行 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    model_id: int | None = Field(default=None, description="该消息所属运行实际使用的模型 ID", examples=[1])
+    model_name: str | None = Field(default=None, description="模型当前目录名称；目录不存在时仅保留 ID", examples=["本地模型"])
+    provider_name: str | None = Field(default=None, description="模型供应商当前名称", examples=["本地 Ollama"])
     role: MessageRole = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="消息正文", examples=["已整理需求"])
     calls: list[RunCallOut] = Field(

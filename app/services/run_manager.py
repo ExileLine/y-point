@@ -21,6 +21,7 @@ from app.core.enums import (
     MessageRole,
     RunEventType,
     RunState,
+    RunTimeoutReason,
     ToolInvocationState,
 )
 from app.core.config import get_config
@@ -174,7 +175,10 @@ async def create_run(
         raise ValueError("启用成本预算前必须配置模型输入、输出价格和币种")
     if thread_id is not None:
         session = await db.scalar(select(AgentSession).where(AgentSession.thread_id == thread_id))
-        if session_id is None and session is not None:
+        historical_session = await db.scalar(
+            select(AgentRun.session_id).where(AgentRun.thread_id == thread_id, AgentRun.session_id.is_not(None)).limit(1)
+        )
+        if session_id is None and (session is not None or historical_session is not None):
             raise RunConflictError("会话线程只能通过会话接口提交")
         if session_id is not None and (
             session is None
@@ -680,9 +684,9 @@ async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code
     )
 
 
-async def timeout_run(db: AsyncSession, run_id: str, lease_token: str, failure_code: str = "execution_timeout") -> AgentRun:
+async def timeout_run(db: AsyncSession, run_id: str, lease_token: str, failure_code: str = RunTimeoutReason.EXECUTION) -> AgentRun:
     """由持有租约的执行器在超时取消完成后标记终态。"""
-    if failure_code not in {"execution_timeout", "tool_execution_timeout"}:
+    if failure_code not in set(RunTimeoutReason):
         raise ValueError("不允许的超时故障类别")
     run = await db.get(AgentRun, run_id)
     if run is None:

@@ -9,7 +9,7 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | 业务环节 | 当前能力 |
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
-| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
+| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
 | Skill | 私有或公开的说明型 Skill；版本化文本包、ZIP 导入导出、Agent 多选关联及 Run 版本固定；运行时按需读取并复核权限，支持关联 Tool 的自然名称映射。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
@@ -83,13 +83,13 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 | `app/core/enums.py` | 跨模块业务类型、状态、角色、可见性和策略的统一枚举。 |
 | `app/models`、`app/db`、`migrations/versions` | 业务表、数据库连接及 Alembic 迁移。 |
 
-业务库保存用户、Agent、会话、Run、可见消息、事件和文件元数据。Checkpointer 按 `thread_id` 保存 LangGraph 状态，可能包含历史消息和工具结果；它与业务库不是同一个事务，也不能用可见消息表直接重建。文件正文在私有本地目录或 S3，不放入消息表或 SSE。进程心跳与 Run 租约心跳分别记录；反向代理和进程管理器应分别监测 API 与 worker。
+业务库保存用户、Agent、会话、Run、可见消息、事件和文件元数据。Checkpointer 按 `thread_id` 保存 LangGraph 状态，可能包含历史消息和工具结果；它与业务库不是同一个事务；可见消息只能重建受限的文字上下文，不能还原完整执行状态。文件正文在私有本地目录或 S3，不放入消息表或 SSE。进程心跳与 Run 租约心跳分别记录；反向代理和进程管理器应分别监测 API 与 worker。
 
 ### 核心业务关系
 
 | 对象 | 关系与用途 |
 | --- | --- |
-| Agent、共享、会话 | Agent 归创建者所有；`yp_agent_share` 只授权指定用户使用配置。被授权用户创建并拥有自己的会话、Run 和文件，不继承 Agent 所有者的会话或文件。会话通常沿用同一个 `thread_id`；若从未完成过回答且所有历史 Run 均已终结、未调用工具，下一轮可切换新线程，旧 Run 与检查点保留。 |
+| Agent、共享、会话 | Agent 归创建者所有；`yp_agent_share` 只授权指定用户使用配置。被授权用户创建并拥有自己的会话、Run 和文件，不继承 Agent 所有者的会话或文件。新会话继承 Agent 默认模型，之后独立保存当前模型；显式切换时更换 `thread_id` 并携带已完成文字历史。当前线程尚未完成过回答且其中历史 Run 均已终结、未调用工具时，下一轮也可更换线程恢复；旧 Run 与检查点保留。 |
 | Run、消息 | 每次发送创建一个 Run 和一条用户消息；Run 保存提交时的 Agent 配置快照、状态和预算。完成后追加助手消息。会话消息接口按消息 ID 顺序组成前端对话列表，单轮消息接口只查看指定 Run。 |
 | 事件、检查点 | Run 事件按 Run 内序号记录排队、运行、文本增量、工具和终态，供快照与 SSE 恢复；Checkpointer 保存模型内部状态。事件流不替代最终消息。 |
 | 上传附件 | 上传文件先写入 `yp_artifact` 和私有存储；提交 Run 时，用户消息通过 `yp_agent_message_attachment` 保存有序引用及是否进入模型上下文。前端从用户消息的 `attachments` 展示原文件。 |
@@ -139,7 +139,7 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 长会话使用模型目录的 `context_window` 和 Agent 的 `max_output_tokens` 计算输入预算，并预留系统指令及工具描述空间；接近阈值时由 DeepAgents 将较早历史压缩为摘要，最近消息继续保留。摘要模型调用同样计入 Run 的调用次数、Token 和估算成本，受模型超时与预算限制。摘要只改变后续模型看到的检查点上下文，业务库中的用户和助手消息保持原文，可继续供前端按游标读取；压缩后的历史可能丢失细节，文件仍可按需重新读取。图片按每张额外预留约 2048 个输入 Token，摘要提示仅保留图片旁的文字，不重新发送内嵌图片。窗口不足以容纳输出上限及最低输入空间时，Agent 配置返回 409；旧配置、直接 Run 或单轮输入估算超过可用空间时以 `context_window_exceeded` 失败。Token 估算和固定开销不是供应商实际计数的保证。未配置 `context_window` 时仍依赖框架默认摘要阈值，应在模型目录填入经验证的窗口大小。
 
-摘要或普通模型调用失败时，公开消息不追加助手回答。上一轮存在已完成检查点时，若失败 Run 未调用工具，或仅完成当前授权 Skill 的文件读取，下一轮可从该已确认检查点继续；其他工具调用及失败的 Skill 读取不自动回退。从未完成过回答且历史 Run 都已终结、未调用工具的会话，则在下一次提交时切换新检查点线程。切换只影响后续 Run 的模型上下文，会话 ID 与历史消息保持不变，失败轮的输入不会自动带入新线程。无法证明检查点归属或工具副作用安全时仍返回 `checkpoint_mismatch`，需要核对后创建新会话。失败 Run 中已发生的模型调用仍计入预算。
+摘要或普通模型调用失败时，公开消息不追加助手回答。上一轮存在已完成检查点时，若失败 Run 未调用工具，或仅完成当前授权 Skill 的文件读取，下一轮可从该已确认检查点继续；其他工具调用及失败的 Skill 读取不自动回退。当前执行线程尚未完成过回答且其中历史 Run 都已终结、未调用工具时，下一次提交会更换检查点线程；若会话在其他线程已有成功轮次，仍按模型切换规则携带可见文字历史。切换只影响后续 Run 的模型上下文，会话 ID 与历史消息保持不变，失败轮的输入不会自动带入新线程。无法证明检查点归属或工具副作用安全时仍返回 `checkpoint_mismatch`，需要核对后创建新会话。失败 Run 中已发生的模型调用仍计入预算。
 
 工具事件 `tool_started`、`tool_completed`、`tool_failed` 只公开工具名和关联 ID，不把参数、结果、异常正文或文件内容塞进 SSE。文本文件读取工具只有在 Run 开启且模型工具能力已验证时才可用；`list_text_artifacts` 返回授权文件摘要，`read_text_artifact` 需要所有者审批，执行时再次检查文件和权限。具备工具能力的模型可自行调用生成工具，无需前端传 `publish_answer_artifact`；生成文件先暂存，Run 完成时与助手消息一同发布并写入 `artifact_published`。审批入口为 `GET /api/v1/runs/{run_id}/approval` 与 `POST /api/v1/runs/{run_id}/approval/decision`；拒绝会取消 Run，同意只保存决定，worker 才会根据检查点恢复执行。产物也可用 `GET /api/v1/artifacts?run_id={run_id}` 查询，下载仍走授权文件接口。
 
@@ -152,6 +152,41 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 | `create_spreadsheet_artifact` | `.xlsx` | 模型提供有名称和二维 `rows` 的工作表，最多 5 表、每表 1000 行、总计 10000 个单元格；字符串不作为公式执行，保存后重新打开校验。 |
 
 生成产物单文件最多 10 MiB、每轮最多 5 个；HTML 下载使用附件方式，不作为站内可信页面执行。Agent 会话中，用户明确要求生成或导出文件时，worker 在完成前核对本轮模型工具暂存的产物；若指定 TXT、Markdown、HTML、JSON、CSV、DOCX、PDF 或 XLSX，还会核对格式。首次只有文字且剩余预算足以调用生成工具并回复时，运行时在同一 Run 内最多补一次内部纠正回合；这会增加模型调用与用量，内部提示只保存在检查点，不成为业务消息。校验前不公开本轮文字增量；最终缺失或格式不符则返回 `failed/artifact_required`，不追加助手最终消息，失败后同一会话仍可继续提交。该判定基于明确的文字指令，不能覆盖所有含糊表达；也不会把 `publish_answer_artifact` 的异步 TXT 回答导出当作模型生成的文件。前端仅在助手消息的 `artifacts` 非空时展示产物，并以授权下载接口确认当前可用性。生成文件的实际类型由服务端校验，不能只依据扩展名展示预览。
+
+### 会话内模型切换
+
+Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_session.model_id` 保存当前会话的选择，`yp_agent_run.model_id` 固定每轮实际使用的模型。修改 Agent 默认模型不会改变旧会话。用户在输入框上方选择模型，确认后从下一条消息开始持续生效；历史助手回复继续标明所属 Run 的模型。目录名称与供应商名称取当前目录，模型 ID 来自历史 Run，名称不是不可变快照。
+
+历史会话的模型字段为空时，服务端按“最近完成 Run 的模型 → 最近 Run 的模型 → Agent 默认模型”解析；只读查询不回写数据库，新提交会固定解析出的会话模型。部署时先执行 `uv run alembic upgrade head`，再确保 API 与 worker 加载同一版本代码并沿用原检查点存储。
+
+| 接口 | 模型选择契约 |
+| --- | --- |
+| `GET /api/v1/agents/{agent_id}/sessions/{session_id}` | 返回会话当前 `model_id` 与 `version`。 |
+| `GET /api/v1/agents/{agent_id}/sessions/{session_id}/models` | 返回已验证文本模型的名称、供应商、已验证能力、窗口，以及 `selectable/reason/notice`；不返回凭据或连接配置。 |
+| `PUT /api/v1/agents/{agent_id}/sessions/{session_id}` | 提交 `expected_version` 和 `model_id`；只修改本人的当前会话，不修改 Agent 或历史 Run。 |
+| `POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs` | 使用会话当前模型；可携带 `model_id`、`expected_session_version` 防止过期页面误用模型。这两个参数用于校验，不执行切换。 |
+| `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` | 每条消息附带所属 Run 的 `model_id` 及当前目录的 `model_name/provider_name`；目录缺失时保留 Run 模型 ID。 |
+
+切换请求示例：
+
+```json
+{
+  "expected_version": 3,
+  "model_id": 2
+}
+```
+
+会话有排队、执行、等待审批或取消中的 Run 时禁止切换；归档会话和停用 Agent 同样不可切换。服务端复核使用者对 Agent 的访问权、会话所有权、模型及供应商状态、文本能力、窗口与成本价格；配置了 Tool、Skill 或知识库时还要求已验证工具调用能力。当前模型失效时明确报错，用户可选择其他可用模型，不自动回退到 Agent 默认模型。本轮附件仍按目标模型的视觉能力及既有格式、大小规则校验。
+
+显式切换到不同模型时，业务事务更新会话模型、版本和执行线程，保留会话 ID、历史消息、旧 Run 与检查点。新线程首次运行时，`session_models.handoff_messages()` 从同一用户、Agent 和会话中读取本轮之前已完成的可见文字消息，转换为新的用户/助手消息，再交给运行时。迁移最多携带最近 100 个完成轮次、262144 个字符，按完整轮次从最近向前保留；超过容量时向模型加入省略说明，后续仍受目标模型窗口、摘要和预算限制，不能保证保留全部早期细节。
+
+每轮构建运行时时，系统提示都会补入当前 Run 模型的 ID、目录名称和上游 `external_id`，并提示模型不要沿用历史助手的自我介绍。该提示同样作用于已经切换过的现有线程，保留 Agent 的业务角色和原有消息。目录名称表示平台接入配置，不能作为底层训练身份的独立认证；模型回答“我是谁”也不能证明路由。核对切换是否生效，应关联 `yp_agent_run.model_id`、`yp_model_call_record` 中同一 `run_id` 的 `provider_id/external_id`，必要时核对检查点响应元数据或供应商日志。
+
+历史附件正文、图片、工具原始结果、供应商专用状态和旧审批不自动迁移；失败或取消轮次的输入也不导入。需要文件时重新附加，或让具备工具能力的模型通过现有会话文件工具重新授权读取旧产物。知识库使用本轮快照与当前授权重新检索，历史工具动作不会因切换重放。跨供应商切换会把保留的文字历史发送给目标供应商，界面确认框会事先说明。
+
+会话更新与提交均使用版本比较，所有线程中的活动 Run 都阻止切换；当前及历史会话线程不能通过独立 `POST /runs` 复用。相同提交键和相同请求重试优先返回原 Run，即使之后会话已切换模型；若显式携带的模型与原 Run 不一致，则返回 409。原有客户端不传新增校验字段时仍可提交，但会话仍使用自身保存的模型。
+
+冲突保留 HTTP 409 和业务码 `10005`，并以 `data.reason` 区分 `session_busy`、`session_archived`、`session_version_changed`、`session_model_changed`、`model_unavailable`、`model_capability_mismatch`、`model_context_insufficient` 和 `model_pricing_missing`。收到版本或选择冲突后应刷新会话与运行状态，保留输入草稿后再提交。
 
 ### 对话产物内容预览
 
@@ -660,6 +695,8 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 ### 失败轮次后的继续对话
 
 已有成功回答的会话在后续 Run 失败、取消或超时后，可以使用新的 `request_key` 提交下一轮。若最新检查点属于同一用户、Agent、会话和线程中已终结的轮次，且该轮没有工具调用，或全部已计数调用均可由只读 Skill 文件开始事件证明，worker 会从更早的已确认检查点分支继续；Skill 读取失败或中断后未写入结束事件也适用。此前已完成的对话上下文保留，失败轮次不会自动重放，旧 Run、事件与检查点保留用于核对。
+
+供应商连接的 `timeout_seconds` 控制 SDK 请求等待，Agent 的 `model_timeout_seconds` 控制本轮执行预算；供应商设置较短时，即使 Agent 预算较长也会提前中断。OpenAI/Anthropic SDK 和 HTTPX 明确报告的请求超时归为 `timed_out/provider_timeout`，执行预算耗尽为 `timed_out/execution_timeout`，工具执行超时为 `timed_out/tool_execution_timeout`；Run、状态事件与调用记录同步保存原因，页面展示可操作的提示。其他模型错误仍为 `failed/model_error`，不向响应暴露原始 SDK 异常、请求头或凭据。连续失败时先查上游响应、供应商超时和 Agent 预算；失败后新一轮使用新 `request_key`，沿用旧键只会返回原失败 Run，不会重新执行。平台不会为超时自动切换模型或重放工具。
 
 普通工具调用、缺失开始事件、重复调用 ID、结束事件不匹配、检查点归属不明或缺少可用的已确认检查点，不适用上述自动回退；无法通过其他既有恢复路径时仍返回 `checkpoint_mismatch`。该故障码不应通过把旧 Run 改回排队或删除检查点来绕过。尚无成功回答且全部历史轮次已终结、没有工具调用的会话，仍按既有规则在新提交时切换检查点线程；已发生或结果未知的外部写入不会因继续对话而自动撤销。
 

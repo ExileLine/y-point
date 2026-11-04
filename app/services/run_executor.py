@@ -16,6 +16,10 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from anthropic import APITimeoutError as AnthropicTimeoutError
+from httpx import TimeoutException as HttpTimeoutError
+from openai import APITimeoutError as OpenAITimeoutError
+
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -36,6 +40,7 @@ from app.core.enums import (
     ModelCapability,
     RunEventType,
     RunState,
+    RunTimeoutReason,
     ToolInvocationState,
     ToolEffect,
     ToolLeaseKind,
@@ -77,6 +82,7 @@ from app.services.run_manager import (
     resume_approved_run,
     timeout_run,
 )
+from app.services.session_models import handoff_messages
 from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
 from app.services.tool_registry import RESERVED_TOOL_NAMES
@@ -616,7 +622,7 @@ async def _finish_interrupted(
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
                     return result
                 if run.state == RunState.RUNNING and run.lease_token == lease_token:
-                    if failure_code in {"execution_timeout", "tool_execution_timeout"}:
+                    if failure_code in set(RunTimeoutReason):
                         result = await timeout_run(db, run_id, lease_token, failure_code)
                     else:
                         result = await fail_run(db, run_id, lease_token, failure_code)
@@ -759,7 +765,11 @@ async def execute_text_run(
 
     assert model is not None
     runtime_config = RuntimeRunConfig.from_run(
-        run, tools, context_window=catalog_model.context_window if catalog_model is not None else None
+        run,
+        tools,
+        context_window=catalog_model.context_window if catalog_model is not None else None,
+        model_name=catalog_model.display_name if catalog_model is not None else None,
+        model_external_id=catalog_model.external_id if catalog_model is not None else None,
     )
     try:
         input_budget = runtime_config.input_budget()
@@ -890,7 +900,11 @@ async def execute_text_run(
                 checkpoint_valid = actual_checkpoint_id == expected_checkpoint_id
             if not checkpoint_valid:
                 return await _finish_interrupted(sessions, run_id, lease_token, "checkpoint_mismatch")
-            previous_message_count = len(snapshot.values.get("messages", []))
+            history_seed = []
+            if not resume and actual_checkpoint_id is None and expected_run is None:
+                async with sessions() as db:
+                    history_seed = await handoff_messages(db, run)
+            previous_message_count = len(snapshot.values.get("messages", [])) + len(history_seed)
             invocation = (
                 Command(
                     resume={
@@ -905,10 +919,8 @@ async def execute_text_run(
                 if resume
                 else {
                     "messages": [
-                        {
-                            "role": MessageRole.USER.value,
-                            "content": input_content,
-                        }
+                        *history_seed,
+                        HumanMessage(content=input_content),
                     ],
                 }
             )
@@ -1092,14 +1104,20 @@ async def execute_text_run(
             sessions,
             run_id,
             lease_token,
-            "tool_execution_timeout",
+            RunTimeoutReason.TOOL,
             catalog_model=catalog_model,
             started=started,
         )
     except LeaseMonitorError:
         return await _finish_interrupted(sessions, run_id, lease_token, "lease_monitor_error", catalog_model=catalog_model, started=started)
+    except (OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError):
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, RunTimeoutReason.PROVIDER, catalog_model=catalog_model, started=started
+        )
     except TimeoutError:
-        return await _finish_interrupted(sessions, run_id, lease_token, "execution_timeout", catalog_model=catalog_model, started=started)
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, RunTimeoutReason.EXECUTION, catalog_model=catalog_model, started=started
+        )
     except asyncio.CancelledError:
         async with sessions() as db:
             run = await db.get(AgentRun, run_id)

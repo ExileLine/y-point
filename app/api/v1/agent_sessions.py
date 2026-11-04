@@ -12,8 +12,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, ModelCapability, RunState
-from app.api.v1.agents import _available_text_model, _check_cost_pricing
+from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, ModelCapability, RunState, SessionModelReason
+from app.api.v1.agents import _check_cost_pricing
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -26,6 +26,8 @@ from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_session import AgentSession
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
+from app.models.model_catalog import ModelCatalog
+from app.models.provider_connection import ProviderConnection
 from app.services.agent_access import can_use_agent
 from app.schemas.agent_session import (
     SessionCreateIn,
@@ -50,6 +52,7 @@ from app.services.run_calls import load_run_calls
 from app.services.skills import snapshot_run_skills
 from app.services.knowledge import snapshot_run_knowledge
 from app.services.user_tools import snapshot_run_tools
+from app.services.session_models import effective_session_model, session_model_conflict, session_model_options, validate_session_model
 
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["agent-sessions"])
@@ -79,6 +82,15 @@ async def _session(db: AsyncSession, agent_id: int, session_id: str, owner_id: i
     return session
 
 
+async def _session_out(db: AsyncSession, session: AgentSession) -> SessionOut:
+    """为迁移前遗留空值返回有效模型，不在只读接口中修改会话。"""
+    result = SessionOut.model_validate(session)
+    if result.model_id is None:
+        agent = await db.get(AgentConfig, session.agent_id)
+        result.model_id = await effective_session_model(db, session, agent)
+    return result
+
+
 def _run_response(run: AgentRun):
     """将会话提交的 Run 转为公开结构。"""
     return api_response(http_code=201, code=201, data=RunOut.model_validate(run).model_dump(mode="json"), datetime_format=False)
@@ -105,13 +117,15 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
     saved_context = {item.artifact_id for item in saved_references if item.included_in_context}
     if (
         run.session_id != session_id
+        or body.model_id is not None
+        and run.model_id != body.model_id
         or message is None
         or message.content != body.input_text
         or run.publish_answer_artifact != body.publish_answer_artifact
         or saved_artifacts != body.artifact_ids
         or saved_context != set(body.context_artifact_ids)
     ):
-        raise CustomException(status_code=409, custom_code=10005, detail="同一提交键的会话、输入、附件或产物设置不一致")
+        raise CustomException(status_code=409, custom_code=10005, detail="同一提交键的会话、模型、输入、附件或产物设置不一致")
     return run
 
 
@@ -144,10 +158,10 @@ async def _uploaded_artifacts(db: AsyncSession, owner_id: int, artifact_ids: lis
 
 
 async def _ensure_idle(db: AsyncSession, session: AgentSession) -> None:
-    """归档或删除前拒绝仍有未结束 Run 的会话。"""
+    """切换、归档或删除前拒绝仍有未结束 Run 的会话。"""
     active = await db.scalar(select(AgentRun.id).where(AgentRun.session_id == session.id, AgentRun.state.not_in(TERMINAL_STATES)).limit(1))
     if active is not None:
-        raise CustomException(status_code=409, custom_code=10005, detail="会话仍有未结束的运行")
+        raise session_model_conflict(SessionModelReason.BUSY, "会话仍有未结束的运行，请等待本轮结束后操作")
 
 
 @router.post("", summary="创建智能体会话")
@@ -167,6 +181,7 @@ async def create_session(
         owner_id=actor.id,
         agent_id=agent_id,
         thread_id=str(uuid4()),
+        model_id=agent.default_model_id,
         title=body.title,
         archived=False,
         version=1,
@@ -177,7 +192,7 @@ async def create_session(
     audit(db, "session.created", actor_id=actor.id, target_id=agent_id, subject=session.id)
     await db.commit()
     await db.refresh(session)
-    return api_response(http_code=201, code=201, data=SessionOut.model_validate(session).model_dump(mode="json"), datetime_format=False)
+    return api_response(http_code=201, code=201, data=(await _session_out(db, session)).model_dump(mode="json"), datetime_format=False)
 
 
 @router.get("", summary="分页查询智能体会话")
@@ -207,7 +222,7 @@ async def list_sessions(
             .limit(page_size)
         )
     ).all()
-    result = SessionPageOut(items=[SessionOut.model_validate(item) for item in items], total=total or 0, page=page, page_size=page_size)
+    result = SessionPageOut(items=[await _session_out(db, item) for item in items], total=total or 0, page=page, page_size=page_size)
     return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
 
@@ -215,12 +230,23 @@ async def list_sessions(
 async def get_session(
     agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
 ):
-    """返回当前用户拥有的会话及固定线程 ID。"""
+    """返回当前用户拥有的会话、当前模型及执行线程 ID。"""
     session = await _session(db, agent_id, session_id, actor.id)
-    return api_response(data=SessionOut.model_validate(session).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=(await _session_out(db, session)).model_dump(mode="json"), datetime_format=False)
 
 
-@router.put("/{session_id}", summary="修改或归档智能体会话")
+@router.get("/{session_id}/models", summary="查询会话可切换模型")
+async def list_session_models(
+    agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+):
+    """向会话所有者展示已验证文本模型和当前配置下的不可选原因。"""
+    await _session(db, agent_id, session_id, actor.id)
+    agent = await _agent(db, agent_id, actor.id)
+    options = await session_model_options(db, agent)
+    return api_response(data=[item.model_dump(mode="json") for item in options], is_pop=False)
+
+
+@router.put("/{session_id}", summary="修改、归档或切换智能体会话模型")
 async def update_session(
     agent_id: int,
     session_id: str,
@@ -228,11 +254,28 @@ async def update_session(
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """按版本修改标题或归档状态，归档期间禁止新运行。"""
+    """按版本更新空闲会话；切换模型创建新线程，保留同一会话的历史。"""
     session = await _session(db, agent_id, session_id, actor.id)
+    # 与提交接口按同一顺序锁定 Agent，避免切换检查后又插入旧线程运行。
+    agent = await db.scalar(
+        select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True)
+    )
+    if agent is None or not await can_use_agent(db, agent_id, actor.id):
+        raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
     if any(value is None for value in changes.values()):
-        raise CustomException(status_code=400, custom_code=10005, detail="会话标题和归档状态不能为空")
+        raise CustomException(status_code=400, custom_code=10006, detail="会话标题、归档状态和模型不能为空")
+    if session.version != body.expected_version:
+        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
+    if "model_id" in changes:
+        await _ensure_idle(db, session)
+        if session.archived or changes.get("archived") is True or agent.is_deleted != 0 or not agent.enabled:
+            raise session_model_conflict(SessionModelReason.ARCHIVED, "会话已归档或智能体不可用，不能切换模型")
+        current_model_id = await effective_session_model(db, session, agent)
+        await validate_session_model(db, agent, body.model_id)
+        if current_model_id != body.model_id:
+            changes["thread_id"] = str(uuid4())
+            audit(db, "session.model_changed", actor_id=actor.id, target_id=agent_id, subject=session_id)
     if changes.get("archived") is True:
         await _ensure_idle(db, session)
     if changes:
@@ -249,13 +292,11 @@ async def update_session(
         )
         if result.rowcount != 1:
             await db.rollback()
-            raise CustomException(status_code=409, custom_code=10005, detail="会话版本已变化")
+            raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
         audit(db, "session.updated", actor_id=actor.id, target_id=agent_id, subject=session_id)
         await db.commit()
         await db.refresh(session)
-    elif session.version != body.expected_version:
-        raise CustomException(status_code=409, custom_code=10005, detail="会话版本已变化")
-    return api_response(data=SessionOut.model_validate(session).model_dump(mode="json"), datetime_format=False)
+    return api_response(data=(await _session_out(db, session)).model_dump(mode="json"), datetime_format=False)
 
 
 @router.delete("/{session_id}", summary="删除智能体会话")
@@ -308,18 +349,33 @@ async def submit_session_run(
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     if session.archived or agent.is_deleted != 0 or not agent.enabled:
         raise CustomException(status_code=409, custom_code=10005, detail="会话或智能体不可用")
-    model = await _available_text_model(db, agent.default_model_id, agent.max_output_tokens)
+    await _ensure_idle(db, session)
+    if body.expected_session_version is not None and session.version != body.expected_session_version:
+        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
+    model_id = await effective_session_model(db, session, agent)
+    if body.model_id is not None and body.model_id != model_id:
+        raise session_model_conflict(SessionModelReason.SELECTION, "会话模型已变化，请刷新后重试")
+    model = await validate_session_model(db, agent, model_id)
     _check_cost_pricing(model, agent.max_estimated_cost)
     previous_model_id = await db.scalar(
         select(AgentRun.model_id)
-        .where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.state == RunState.COMPLETED)
+        .where(
+            AgentRun.session_id == session_id,
+            AgentRun.owner_id == owner_id,
+            AgentRun.thread_id == session.thread_id,
+            AgentRun.state == RunState.COMPLETED,
+        )
         .order_by(AgentRun.create_time.desc(), AgentRun.id.desc())
         .limit(1)
     )
-    if previous_model_id is not None and previous_model_id != model.id:
-        raise CustomException(status_code=409, custom_code=10005, detail="已有对话的会话不能切换模型，请创建新会话")
     prior_runs = (
-        (await db.scalars(select(AgentRun).where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id))).all()
+        (
+            await db.scalars(
+                select(AgentRun).where(
+                    AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.thread_id == session.thread_id
+                )
+            )
+        ).all()
         if previous_model_id is None
         else []
     )
@@ -331,7 +387,7 @@ async def submit_session_run(
     if any(item.media_type not in CONTEXT_MEDIA_TYPES | IMAGE_CONTEXT_MEDIA_TYPES for item in context_artifacts):
         raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型上下文")
     if image_artifacts and ModelCapability.VISION not in (model.verified_capabilities or []):
-        raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过视觉能力验证")
+        raise CustomException(status_code=409, custom_code=10005, detail="会话模型尚未通过视觉能力验证")
     if len(image_artifacts) > 2:
         raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
     if sum(item.byte_size for item in context_artifacts if item.media_type == "text/plain") > MAX_CONTEXT_ATTACHMENT_BYTES:
@@ -340,7 +396,7 @@ async def submit_session_run(
         agent_id=agent_id,
         session_id=session_id,
         thread_id=thread_id,
-        model_id=agent.default_model_id,
+        model_id=model.id,
         input_text=body.input_text,
         request_key=body.request_key,
         publish_answer_artifact=body.publish_answer_artifact,
@@ -366,7 +422,7 @@ async def submit_session_run(
                 AgentSession.archived.is_(False),
                 AgentSession.version == session.version,
             )
-            .values(version=AgentSession.version + 1, thread_id=thread_id)
+            .values(version=AgentSession.version + 1, thread_id=thread_id, model_id=model.id)
             .execution_options(synchronize_session=False)
         )
         if claim.rowcount != 1:
@@ -457,9 +513,20 @@ async def list_session_messages(
     by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
     by_artifact = await load_message_artifacts(db, actor.id, messages)
     calls = await load_run_calls(db, actor.id, list({item.run_id for item in messages}))
+    model_rows = await db.execute(
+        select(AgentRun.id, AgentRun.model_id, ModelCatalog.display_name, ProviderConnection.name)
+        .outerjoin(ModelCatalog, ModelCatalog.id == AgentRun.model_id)
+        .outerjoin(ProviderConnection, ProviderConnection.id == ModelCatalog.provider_id)
+        .where(AgentRun.id.in_({item.run_id for item in messages}))
+    )
+    model_labels = {row.id: row for row in model_rows}
     result = []
     for item in messages:
         data = SessionMessageOut.model_validate(item).model_dump(mode="json")
+        label = model_labels.get(item.run_id)
+        data["model_id"] = label.model_id if label else None
+        data["model_name"] = label.display_name if label else None
+        data["provider_name"] = label.name if label else None
         data["attachments"] = by_message.get(item.id, [])
         data["artifacts"] = by_artifact.get(item.id, [])
         data["calls"] = [call.model_dump(mode="json") for call in calls.get(item.run_id, [])]

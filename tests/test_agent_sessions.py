@@ -686,7 +686,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
 
                     completed = await dispatch_next_run(sessions, tmp_path / "checkpoint.db", resolve_model=model_one)
                     assert completed is not None and completed.id == first_run_id and completed.state == "completed"
-                    assert prompts[-1] == "只回答需求问题"
+                    assert prompts[-1].startswith("只回答需求问题\n")
+                    assert '"external_id": "session-model"' in prompts[-1]
                     assert "first attachment" in SessionModel.seen_inputs[-1]
                     assert "second attachment" not in SessionModel.seen_inputs[-1]
                     assert generation_settings[-1] == (Decimal("1.00"), 4096)
@@ -827,11 +828,11 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
 
                     second_done = await dispatch_next_run(sessions, tmp_path / "checkpoint.db", resolve_model=model_two)
                     assert second_done is not None and second_done.id == next_run.json()["data"]["id"]
-                    assert second_done.state == "completed" and prompts[-1] == "使用新版指令"
+                    assert second_done.state == "completed" and prompts[-1].startswith("使用新版指令\n")
                     assert generation_settings[-1] == (Decimal("0.25"), 2048)
                     other_done = await dispatch_next_run(sessions, tmp_path / "checkpoint.db", resolve_model=model_two)
                     assert other_done is not None and other_done.id == other_run.json()["data"]["id"]
-                    assert other_done.state == "completed" and prompts[-1] == "使用新版指令"
+                    assert other_done.state == "completed" and prompts[-1].startswith("使用新版指令\n")
                     doomed_upload = await client.post(
                         "/api/v1/artifacts/uploads", headers=alice, files=[("files", ("doomed.txt", b"must not reach model", "text/plain"))]
                     )
@@ -980,8 +981,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                             "input_text": "继续旧会话",
                         },
                     )
-                    assert incompatible.status_code == 409
-                    assert "创建新会话" in incompatible.json()["message"]
+                    assert incompatible.status_code == 201, incompatible.text
+                    assert incompatible.json()["data"]["model_id"] == 1
                     fresh = await client.post(
                         base,
                         headers=alice,
