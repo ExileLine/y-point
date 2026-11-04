@@ -95,6 +95,15 @@ class ArtifactState(StrEnum):
     DELETED = "deleted"
 
 
+class ArtifactPreviewKind(StrEnum):
+    """私有文件内容预览的展示方式。"""
+
+    TEXT = "text"
+    MARKDOWN = "markdown"
+    HTML = "html"
+    SHEETS = "sheets"
+
+
 class ArtifactOrigin(StrEnum):
     """文件进入平台的来源。"""
 

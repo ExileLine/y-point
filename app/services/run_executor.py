@@ -633,7 +633,7 @@ async def _finish_interrupted(
 
 
 async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
-    """仅在失败轮次没有外部副作用或只完成了 Skill 文件读取时允许回退。"""
+    """失败轮次无工具调用或仅读取 Skill 文件时，允许从已确认检查点开始新一轮。"""
     if failed_run.tool_call_count == 0:
         return True
     if not await db.scalar(select(RunSkill.id).where(RunSkill.run_id == failed_run.id).limit(1)):
@@ -648,22 +648,24 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
             .order_by(AgentRunEvent.sequence)
         )
     ).all()
-    if len(events) != failed_run.tool_call_count * 2:
-        return False
     started: dict[str, str] = {}
+    seen: set[str] = set()
     for event in events:
         if not event.tool_call_id or not event.tool_name or not event.tool_name.startswith("skill:"):
             return False
         if event.event_type == RunEventType.TOOL_STARTED:
-            if event.tool_call_id in started:
+            if event.tool_call_id in seen:
                 return False
+            seen.add(event.tool_call_id)
             started[event.tool_call_id] = event.tool_name
-        elif event.event_type == RunEventType.TOOL_COMPLETED:
+        elif event.event_type in (RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED):
             if started.pop(event.tool_call_id, None) != event.tool_name:
                 return False
         else:
             return False
-    return not started
+    # Skill read_file 只读本轮固定文件；worker 中断可能来不及保存结束事件。
+    # 核对全部已计数调用均有只读开始事件，后续从成功检查点分支，不重放失败轮次。
+    return len(seen) == failed_run.tool_call_count
 
 
 async def execute_text_run(

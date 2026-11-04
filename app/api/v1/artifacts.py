@@ -5,6 +5,7 @@
 
 """提供私有附件上传、查询与授权下载。"""
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
@@ -36,6 +37,7 @@ from app.services.artifact_store import (
     storage_path,
 )
 from app.services.artifact_sources import load_read_source_artifact_ids
+from app.services.artifact_preview import PREVIEW_MEDIA_TYPES, build_artifact_preview
 from app.services.message_attachments import load_run_context_artifact_ids
 from app.services.private_blob_store import delete_blob, read_blob, using_s3
 
@@ -150,6 +152,27 @@ async def list_run_artifacts(run_id: str, actor: Admin = Depends(get_current_adm
         ],
         is_pop=False,
     )
+
+
+@router.get("/{artifact_id}/preview", summary="预览私有文档内容")
+async def preview_artifact(artifact_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """逐次校验文件所有权和有效期，返回有界静态内容，不执行脚本或公式。"""
+    item = await _owned_artifact(db, artifact_id, actor.id)
+    if item.media_type not in PREVIEW_MEDIA_TYPES:
+        raise CustomException(status_code=415, custom_code=10006, detail="暂不支持该类型的预览，请下载原件查看")
+    try:
+        content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
+    except (OSError, ValueError, BotoCoreError, ClientError):
+        raise CustomException(status_code=404, custom_code=10002, detail="文件不存在") from None
+    try:
+        preview = await asyncio.to_thread(build_artifact_preview, item.id, item.filename, item.media_type, content)
+    except Exception as exc:
+        logger.warning("文件预览解析失败：{}", type(exc).__name__)
+        raise CustomException(status_code=422, custom_code=10006, detail="文件内容无法预览，请下载原件查看") from None
+    response = api_response(data=preview.model_dump(mode="json"), is_pop=False)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @router.get("/{artifact_id}/download", summary="下载私有文件")

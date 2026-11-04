@@ -7,7 +7,7 @@
 
 from datetime import datetime
 
-from app.core.enums import ArtifactOrigin, ArtifactState
+from app.core.enums import ArtifactOrigin, ArtifactPreviewKind, ArtifactState
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,3 +66,23 @@ class GeneratedArtifactReferenceOut(BaseModel):
     read_source_artifact_ids: list[str] = Field(
         default_factory=list, description="生成前成功读取的旧产物 ID；不证明实际引用", examples=[["550e8400-e29b-41d4-a716-446655440001"]]
     )
+
+
+class ArtifactPreviewSheet(BaseModel):
+    """预览中的有界工作表，不计算公式或读取外部链接。"""
+
+    name: str = Field(description="工作表名称", examples=["销售统计"])
+    rows: list[list[str]] = Field(description="按行排列的展示文本", examples=[[["月份", "金额"], ["十一月", "100"]]])
+
+
+class ArtifactPreviewOut(BaseModel):
+    """实时授权后的文件内容预览，不公开存储键或路径。"""
+
+    artifact_id: str = Field(description="文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
+    filename: str = Field(description="服务端记录的文件名", examples=["差旅报告.docx"])
+    media_type: str = Field(description="服务端核验的原文件类型", examples=["application/pdf"])
+    kind: ArtifactPreviewKind = Field(description="内容展示方式", examples=["html"])
+    content: str = Field(default="", description="文本、Markdown 或已清洗的静态 HTML", examples=["差旅报告正文"])
+    sheets: list[ArtifactPreviewSheet] = Field(default_factory=list, description="CSV 或 XLSX 的有界表格内容", examples=[[]])
+    truncated: bool = Field(default=False, description="是否因预览限额只显示了部分内容", examples=[False])
+    notice: str | None = Field(default=None, description="格式与版式的预览限制说明", examples=["内容预览不保留原文件的完整排版"])

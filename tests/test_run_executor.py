@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1.runs import stream_events
 from app.core.config import get_config
+from app.core.enums import RunEventType
 from app.core.password import hash_password
 from app.db.session import get_db_session
 from app.main import app
@@ -38,6 +39,7 @@ from app.models.agent_config import AgentConfig
 from app.models.agent_share import AgentShare
 from app.models.agent_session import AgentSession
 from app.models.agent_run import AgentRun
+from app.models.agent_run_event import AgentRunEvent
 from app.models.artifact import Artifact
 from app.models.base import Base, shanghai_now
 from app.models.model_call_record import ModelCallRecord
@@ -2297,7 +2299,85 @@ def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> 
     asyncio.run(exercise())
 
 
-def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("events", "tool_count", "expected"),
+    [
+        ([("tool_started", "read", "skill:status@v1")], 1, True),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_failed", "read", "skill:status@v1")], 1, True),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_started", "other", "skill:status@v1")], 2, True),
+        ([], 1, False),
+        ([("tool_completed", "read", "skill:status@v1")], 1, False),
+        ([("tool_started", "read", "skill:status@v1")], 2, False),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_started", "read", "skill:status@v1")], 2, False),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_completed", "other", "skill:status@v1")], 1, False),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_completed", "read", "skill:other@v1")], 1, False),
+        (
+            [
+                ("tool_started", "read", "skill:status@v1"),
+                ("tool_completed", "read", "skill:status@v1"),
+                ("tool_completed", "read", "skill:status@v1"),
+            ],
+            1,
+            False,
+        ),
+        ([("tool_started", "read", "read_file")], 1, False),
+        ([("tool_started", "read", "skill:status@v1"), ("tool_started", "external", "user_tool_1")], 2, False),
+    ],
+    ids=[
+        "interrupted-read",
+        "failed-read",
+        "parallel-reads",
+        "missing-start",
+        "orphan-completion",
+        "count-mismatch",
+        "duplicate-start",
+        "wrong-call-id",
+        "wrong-skill",
+        "duplicate-completion",
+        "unverified-read",
+        "external-tool",
+    ],
+)
+def test_skill_rewind_requires_complete_read_only_call_accounting(
+    tmp_path: Path, events: list[tuple[str, str, str]], tool_count: int, expected: bool
+) -> None:
+    """允许只读中断，但事件缺失、损坏或含外部工具时继续拦截。"""
+
+    async def exercise() -> None:
+        """用持久化事件验证恢复策略的只读边界。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rewind-policy.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                run = await create_run(db, 1, input_text="read status")
+                run.state = "failed"
+                run.tool_call_count = tool_count
+                db.add(RunSkill(run_id=run.id, skill_id=1, skill_version=1))
+                for sequence, (event_type, call_id, name) in enumerate(events, start=2):
+                    db.add(
+                        AgentRunEvent(
+                            run_id=run.id,
+                            sequence=sequence,
+                            event_type=event_type,
+                            state="running",
+                            tool_call_id=call_id,
+                            tool_name=name,
+                        )
+                    )
+                await db.flush()
+                assert await run_executor_module._can_rewind_failed_run(db, run) is expected
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("interrupt_skill_read", [False, True], ids=["completed-read", "lease-expired-read"])
+def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt_skill_read: bool
+) -> None:
     """失败轮次只读 Skill 后，后续轮次仍可从已确认检查点继续。"""
 
     async def exercise() -> None:
@@ -2365,30 +2445,65 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path
             async with sessions.begin() as db:
                 failed_run = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="use status")
                 db.add(RunSkill(run_id=failed_run.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
-            failed = await execute_text_run(
-                sessions,
-                failed_run.id,
-                FailingAfterSkillRead(
-                    responses=[
-                        AIMessage(
-                            content="",
-                            tool_calls=[
-                                {
-                                    "name": "read_file",
-                                    "args": {
-                                        "file_path": "/skills/status/SKILL.md",
-                                    },
-                                    "id": "skill-read",
-                                }
-                            ],
+            original_append_tool_event = run_executor_module.append_tool_event
+
+            async def crash_before_skill_read_completion(db, run_id, lease_token, event_type, *args):
+                """模拟 Skill 已开始但完成事件尚未提交时 worker 退出。"""
+                if interrupt_skill_read and event_type == RunEventType.TOOL_COMPLETED:
+                    raise SimulatedProcessCrash()
+                return await original_append_tool_event(db, run_id, lease_token, event_type, *args)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(run_executor_module, "append_tool_event", crash_before_skill_read_completion)
+                execution = execute_text_run(
+                    sessions,
+                    failed_run.id,
+                    FailingAfterSkillRead(
+                        responses=[
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "read_file",
+                                        "args": {
+                                            "file_path": "/skills/status/SKILL.md",
+                                        },
+                                        "id": "skill-read",
+                                    }
+                                ],
+                            )
+                        ]
+                    ),
+                    checkpoint,
+                    lease_seconds=2,
+                    poll_seconds=0.1,
+                )
+                if interrupt_skill_read:
+                    with pytest.raises(SimulatedProcessCrash):
+                        await execution
+                    async with sessions.begin() as db:
+                        await db.execute(
+                            update(AgentRun)
+                            .where(AgentRun.id == failed_run.id)
+                            .values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
                         )
-                    ]
-                ),
-                checkpoint,
-                lease_seconds=2,
-                poll_seconds=0.1,
-            )
-            assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 1
+                        assert await recover_expired_runs(db) == 1
+                    async with sessions() as db:
+                        failed = await db.get(AgentRun, failed_run.id)
+                        events = (
+                            await db.scalars(
+                                select(AgentRunEvent).where(
+                                    AgentRunEvent.run_id == failed_run.id,
+                                    AgentRunEvent.event_type != RunEventType.STATE,
+                                )
+                            )
+                        ).all()
+                        assert [event.event_type for event in events] == [RunEventType.TOOL_STARTED]
+                    assert failed.failure_code == "lease_expired"
+                else:
+                    failed = await execution
+                    assert failed.failure_code == "model_error"
+            assert failed.state == "failed" and failed.tool_call_count == 1
             async with sessions.begin() as db:
                 followup = await create_run(db, 1, agent_id=3, thread_id=first.thread_id, input_text="continue")
                 db.add(RunSkill(run_id=followup.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
