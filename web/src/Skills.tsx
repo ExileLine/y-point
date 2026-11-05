@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, Typography, Upload, message } from "antd";
 import { Download, FileArchive, FilePlus2, Pencil, Plus, RefreshCw, Search, Trash2, Upload as UploadIcon } from "lucide-react";
-import { createSkill, deleteSkill, downloadSkill, getSkill, importSkill, listSkills, updateSkill, type Skill } from "./api";
+import { downloadArtifact, publishSkillTemplates, createSkill, deleteSkill, downloadSkill, getSkill, importSkill, listSkills, updateSkill, type Skill } from "./api";
 
 import { PageHeader, ResourceCard, ResourceCollection } from "./components/ResourcePage";
+
+const defaultFieldsSchema = JSON.stringify({ type: "object", properties: { title: { type: "string" }, summary: { type: "string" } }, required: ["title", "summary"] }, null, 2);
+type TemplateDraft = { id: string; file: File; schema: string };
+const templateKey = (name: string) => name.normalize("NFC").toLowerCase();
+const templatesOf = (skill: Skill) => skill.report_templates || (skill.report_template ? [skill.report_template] : []);
 
 const starter = "---\nname: my-skill\ndescription: 简要说明何时使用这个 Skill\n---\n\n# 操作说明\n\n";
 
@@ -17,6 +22,7 @@ export default function Skills({ userId }: { userId: number }) {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Skill | null | "new">(null);
   const [content, setContent] = useState(starter);
+  const [templateDrafts, setTemplateDrafts] = useState<TemplateDraft[]>([]);
   const [category, setCategory] = useState("");
   const [visibility, setVisibility] = useState<"private" | "public">("private");
   const [enabled, setEnabled] = useState(true);
@@ -34,7 +40,7 @@ export default function Skills({ userId }: { userId: number }) {
   useEffect(() => { void reload(); }, []);
 
   async function openEditor(item: Skill | "new") {
-    setEditorError("");
+    setEditorError(""); setTemplateDrafts([]);
     if (item === "new") {
       setEditing("new"); setContent(starter); setCategory(""); setVisibility("private"); setEnabled(true);
       return;
@@ -53,13 +59,47 @@ export default function Skills({ userId }: { userId: number }) {
       if (editing === "new") {
         await createSkill({ files: { "SKILL.md": content }, category: category || null, visibility });
       } else {
-        await updateSkill(editing.id, { expected_version: editing.current_version,
+        const saved = await updateSkill(editing.id, { expected_version: editing.current_version,
           files: { ...editing.files, "SKILL.md": content }, category: category || null, visibility, enabled });
+        if (templateDrafts.length) { setEditing(saved); message.success("Skill 正文已保存，可继续发布所选模板"); await reload(); return; }
       }
       message.success("Skill 已保存"); setEditing(null); await reload();
     } catch (failure) { setEditorError(failure instanceof Error ? failure.message : "保存失败"); }
     finally { setBusy(false); }
   }
+
+  async function publishTemplate() {
+    if (!editing || editing === "new" || !templateDrafts.length) return;
+    setBusy(true); setEditorError("");
+    try {
+      const templates = templateDrafts.map(item => {
+        try { return { file: item.file, schema: JSON.parse(item.schema) as Record<string, unknown> }; }
+        catch { throw new Error(`${item.file.name} 的报告字段 JSON 格式不正确`); }
+      });
+      const updated = await publishSkillTemplates(editing.id, editing.current_version, templates);
+      setEditing(updated); setTemplateDrafts([]);
+      message.success(`${templates.length} 个模板已发布为 v${updated.current_version}，请在 Agent 中重新关联此 Skill 以使用新版`);
+      await reload();
+    } catch (failure) { setEditorError(failure instanceof Error ? failure.message : "模板发布失败"); }
+    finally { setBusy(false); }
+  }
+
+  function addTemplates(incoming: File[]) {
+    const existing = editing && editing !== "new" ? templatesOf(editing) : [];
+    const next = [...templateDrafts];
+    for (const file of incoming) {
+      const key = templateKey(file.name);
+      if (!key.endsWith(".docx") || file.size > 2 * 1024 * 1024) { message.error(`${file.name}：请选择不超过 2 MiB 的 DOCX 模板`); continue; }
+      if (next.some(item => templateKey(item.file.name) === key)) { message.warning(`${file.name} 已在待发布列表中`); continue; }
+      if (new Set([...existing.map(item => templateKey(item.filename)), ...next.map(item => templateKey(item.file.name)), key]).size > 10) {
+        message.error("每个 Skill 最多 10 个模板"); continue;
+      }
+      const previous = existing.find(item => templateKey(item.filename) === key);
+      next.push({ id: crypto.randomUUID(), file, schema: previous ? JSON.stringify(previous.fields_schema, null, 2) : defaultFieldsSchema });
+    }
+    setTemplateDrafts(next);
+  }
+  const unsaved = editing && editing !== "new" && (content !== editing.files?.["SKILL.md"] || category !== (editing.category || "") || visibility !== editing.visibility || enabled !== editing.enabled);
 
   async function doImport(file: File) {
     setBusy(true);
@@ -122,6 +162,33 @@ export default function Skills({ userId }: { userId: number }) {
         <label>可见性<Select aria-label="可见性" style={{ width: "100%" }} value={visibility} onChange={setVisibility} options={[{ value: "private", label: "私有" }, { value: "public", label: "公开" }]} /></label>
         {editing !== "new" && <label className="resource-switch-row">启用<Switch aria-label="启用 Skill" checked={enabled} onChange={setEnabled} /></label>}
         <label htmlFor="skill-content">SKILL.md<Input.TextArea id="skill-content" aria-label="SKILL.md" value={content} rows={19} spellCheck={false} className="resource-code" onChange={(event) => setContent(event.target.value)} /></label>
+        {editing && editing !== "new" ? <section className="skill-report-template" aria-label="报告模板">
+          <Typography.Title level={5}>Skill 产物模板</Typography.Title>
+          <Alert type="info" showIcon message="由 Skill 正文说明何时使用模板" description="例如：先调用 func1 工具获取数据，再按照 xxx_template.docx 生成报告。请上传正文引用的 DOCX 模板并定义报告字段；模型读取 Skill 时会同时获得模板文件名和字段契约，对话中无需选择报告模式。上传或替换会发布新版本，需在 Agent 中重新关联 Skill；文字 ZIP 不包含模板。" />
+          <Typography.Paragraph type="secondary">每个 Skill 最多 10 个 DOCX 模板，每个最多 2 MiB。可一次选择多个，逐个设置字段；同名文件替换当前模板，其他文件保留。多模板时，Skill 正文应明确使用哪个模板或说明选择规则。</Typography.Paragraph>
+          <div className="skill-template-list">
+            {templatesOf(editing).map(item => <div className="skill-template-card" key={item.artifact_id}>
+              <div className="skill-template-head"><Typography.Text ellipsis title={item.filename}>{item.filename}</Typography.Text><Tag color="green">已发布</Tag>
+                <Button icon={<Download size={16} />} aria-label={`下载模板 ${item.filename}`} onClick={() => { void downloadArtifact(item.artifact_id, item.filename).catch(failure => message.error(failure instanceof Error ? failure.message : "下载失败")); }}>下载模板</Button></div>
+              <Typography.Text type="secondary">字段：{Object.keys((item.fields_schema.properties || {}) as Record<string, unknown>).join("、") || "未定义"}</Typography.Text>
+            </div>)}
+          </div>
+          <Upload accept=".docx" multiple fileList={[]} beforeUpload={(file, incoming) => { if (file.uid === incoming[0]?.uid) addTemplates(incoming); return false; }} disabled={busy}>
+            <Button icon={<UploadIcon size={16} />} disabled={busy}>选择 DOCX 模板（可多选）</Button>
+          </Upload>
+          <Typography.Paragraph type="secondary">在 Word 中使用 {"{{ title }}"}、{"{{ summary }}"} 等字段，可使用条件和单层列表循环。支持正文、表格及页眉页脚；不允许宏、嵌入对象或外部资源。</Typography.Paragraph>
+          <div className="skill-template-list">
+            {templateDrafts.map(item => <div className="skill-template-card" key={item.id}>
+              <div className="skill-template-head"><Typography.Text ellipsis title={item.file.name}>{item.file.name}</Typography.Text>
+                <Tag color={templatesOf(editing).some(previous => templateKey(previous.filename) === templateKey(item.file.name)) ? "orange" : "blue"}>{templatesOf(editing).some(previous => templateKey(previous.filename) === templateKey(item.file.name)) ? "替换同名模板" : "新增模板"}</Tag>
+                <Button type="text" danger icon={<Trash2 size={15} />} aria-label={`移除待发布模板 ${item.file.name}`} disabled={busy} onClick={() => setTemplateDrafts(current => current.filter(entry => entry.id !== item.id))} />
+              </div>
+              <label htmlFor={`template-schema-${item.id}`}>报告字段 JSON Schema<Input.TextArea id={`template-schema-${item.id}`} aria-label={`报告字段 JSON Schema ${item.file.name}`} className="resource-code" value={item.schema} rows={7} onChange={event => setTemplateDrafts(current => current.map(entry => entry.id === item.id ? { ...entry, schema: event.target.value } : entry))} disabled={busy} /></label>
+            </div>)}
+          </div>
+          {unsaved && <Typography.Paragraph type="warning">请先保存 Skill 正文与设置，再发布模板；已选文件与字段会保留。</Typography.Paragraph>}
+          <Button type="primary" loading={busy} disabled={!templateDrafts.length || Boolean(unsaved)} onClick={() => void publishTemplate()}>发布模板新版本{templateDrafts.length ? `（${templateDrafts.length} 个）` : ""}</Button>
+        </section> : <Typography.Paragraph type="secondary">保存 Skill 后可上传 DOCX 报告模板。</Typography.Paragraph>}
         {editing && editing !== "new" && Object.keys(editing.files || {}).length > 1 && <Typography.Text type="secondary">附加文件保留在当前包中。</Typography.Text>}
       </Space>
     </Drawer>

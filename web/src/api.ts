@@ -318,10 +318,13 @@ export const testUserTool = (id: number, args: Record<string, unknown>): Promise
 export const discoverMcpTools = (url: string, bearerToken?: string): Promise<DiscoveredTool[]> =>
   request("/tools/mcp/discover", { method: "POST", body: JSON.stringify({ url, bearer_token: bearerToken || null }) });
 
+export type SkillReportTemplate = { template_key?: string; artifact_id: string; filename: string; sha256: string; fields_schema: Record<string, unknown> };
 export type Skill = {
   id: number; owner_id: number; name: string; description: string; category: string | null;
   visibility: "private" | "public"; enabled: boolean; current_version: number;
   files?: Record<string, string>; manifest?: { path: string; bytes: number; sha256: string }[];
+  report_templates?: SkillReportTemplate[];
+  report_template?: SkillReportTemplate | null;
 };
 export const listSkills = (): Promise<Skill[]> => request("/skills");
 export const getSkill = (id: number): Promise<Skill> => request(`/skills/${id}`);
@@ -420,7 +423,7 @@ export type ArtifactPreview = {
 export const getArtifactPreview = (artifactId: string, signal?: AbortSignal): Promise<ArtifactPreview> =>
   request(`/artifacts/${encodeURIComponent(artifactId)}/preview`, { signal, cache: "no-store" });
 
-export type MessageArtifact = { artifact_id: string; filename: string; available: boolean; included_in_context?: boolean };
+export type MessageArtifact = { artifact_id: string; filename: string; available: boolean; included_in_context?: boolean; template_source?: { skill_id: number; skill_name?: string; skill_version: number; template_name?: string } | null };
 export type RunCall = {
   call_id: string;
   kind: "skill" | "tool" | "knowledge";
@@ -485,4 +488,24 @@ export function updateAgent(id: number, version: number, draft: Partial<AgentDra
     method: "PUT",
     body: JSON.stringify({ ...draft, expected_version: version }),
   });
+}
+
+
+export type UploadedArtifact = { id: string; filename: string; media_type: string; byte_size: number };
+export async function uploadChatFile(file: File): Promise<UploadedArtifact> {
+  const form = new FormData(); form.append("files", file);
+  const items = await request<UploadedArtifact[]>("/artifacts/uploads", { method: "POST", body: form });
+  return items[0];
+}
+export const checkSessionAttachments = (agentId: number, sessionId: string, draft: Pick<SessionRunDraft, "artifact_ids" | "context_artifact_ids">): Promise<{ valid: boolean; context_bytes: number }> =>
+  request(`${sessionPath(agentId, sessionId)}/attachments/check`, {
+    method: "POST",
+    body: JSON.stringify({ artifact_ids: draft.artifact_ids, context_artifact_ids: draft.context_artifact_ids }),
+  });
+export async function publishSkillTemplates(id: number, version: number, templates: { file: File; schema: Record<string, unknown> }[]): Promise<Skill> {
+  const form = new FormData();
+  form.append("expected_version", String(version));
+  form.append("fields_schema", JSON.stringify(Object.fromEntries(templates.map(item => [item.file.name, item.schema]))));
+  for (const item of templates) form.append("files", item.file);
+  return request(`/skills/${id}/templates`, { method: "POST", body: form });
 }

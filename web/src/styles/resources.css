@@ -48,3 +48,10 @@
   .resource-page .ant-btn, .resource-editor .ant-btn { min-height: var(--yp-touch-target); }
   .resource-form-pair { grid-template-columns: 1fr; }
 }
+
+.skill-report-template { display: grid; gap: 12px; }
+
+.skill-template-list { display: flex; flex-direction: column; gap: 12px; }
+.skill-template-card { border: 1px solid var(--yp-color-border); border-radius: 10px; padding: 12px; min-width: 0; }
+.skill-template-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.skill-template-head > .ant-typography { flex: 1; min-width: 100px; }

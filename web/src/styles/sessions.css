@@ -151,3 +151,18 @@
   .sessions-model-hint { flex-basis: 100%; }
   .session-message-model { max-width: 110px; }
 }
+
+.chat-attachments { margin: 10px 0; }
+.chat-attachments .ant-upload-drag .ant-upload-btn { padding: 8px 12px; }
+.chat-upload-label { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.chat-upload-label small, .chat-file-notice, .chat-file-info small { color: var(--yp-text-secondary, #6b7280); font-size: 12px; }
+.chat-file { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-top: 6px; border: 1px solid var(--yp-border, #dbe4ee); border-radius: 9px; background: var(--yp-surface, #fff); }
+.chat-file-info { flex: 1; min-width: 0; }
+.chat-file-info strong { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-file-info small { display: block; overflow-wrap: anywhere; }
+.chat-file-notice { margin: 6px 0 0; }
+@media (max-width: 600px) { .chat-file { flex-wrap: wrap; } .chat-file-info { min-width: 55%; } .chat-file .ant-checkbox-wrapper { margin-left: 25px; } .chat-file .ant-btn { min-height: 40px; min-width: 40px; } }
+
+.sessions-composer { flex-shrink: 0; max-height: 70%; overflow-y: auto; overscroll-behavior: contain; }
+.chat-file-list { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 600px) { .sessions-composer { max-height: 70%; } .chat-file-list { max-height: 160px; } }
