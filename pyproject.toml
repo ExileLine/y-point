@@ -45,6 +45,7 @@ dependencies = [
   "mcp>=1.30.0,<2",
   "jsonschema>=4.0,<5",
   "packaging>=24,<27",
+  "docxtpl>=0.20,<0.21",
 ]
 
 [dependency-groups]

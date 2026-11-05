@@ -5,6 +5,8 @@
 
 """私有 Agent 的会话、运行提交和消息历史接口。"""
 
+import asyncio
+
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query
@@ -31,6 +33,7 @@ from app.models.provider_connection import ProviderConnection
 from app.services.agent_access import can_use_agent
 from app.schemas.agent_session import (
     SessionCreateIn,
+    SessionAttachmentCheckIn,
     SessionMessageOut,
     SessionOut,
     SessionPageOut,
@@ -43,6 +46,7 @@ from app.services.identity import audit
 from app.services.attachment_text import CONTEXT_MEDIA_TYPES
 from app.services.message_attachments import (
     IMAGE_CONTEXT_MEDIA_TYPES,
+    build_attachment_context,
     MAX_CONTEXT_ATTACHMENT_BYTES,
     load_message_artifacts,
     load_message_attachments,
@@ -325,6 +329,53 @@ async def delete_session(
     return api_response(message="会话已删除")
 
 
+async def _check_context_files(artifacts: list[Artifact], context_ids: set[str], model: ModelCatalog) -> int:
+    """在提交前复用完整文本提取预算；图片能力与格式分别核对。"""
+    context = [item for item in artifacts if item.id in context_ids]
+    images = [item for item in context if item.media_type in IMAGE_CONTEXT_MEDIA_TYPES]
+    if any(item.media_type not in CONTEXT_MEDIA_TYPES | IMAGE_CONTEXT_MEDIA_TYPES for item in context):
+        raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型上下文")
+    if images and ModelCapability.VISION not in (model.verified_capabilities or []):
+        raise CustomException(status_code=409, custom_code=10005, detail="当前模型未验证视觉能力，请切换模型或取消图片上下文")
+    if len(images) > 2:
+        raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
+    if sum(item.byte_size for item in context if item.media_type in {"text/plain", "text/markdown"}) > MAX_CONTEXT_ATTACHMENT_BYTES:
+        raise CustomException(status_code=413, custom_code=10005, detail="文本上下文附件超过 16 KiB 限制")
+    try:
+        text = await asyncio.wait_for(
+            build_attachment_context([item for item in context if item.media_type in CONTEXT_MEDIA_TYPES]), timeout=10
+        )
+    except (ValueError, TimeoutError) as exc:
+        raise CustomException(status_code=400, custom_code=10006, detail="附件正文无法读取或超过 16 KiB，请拆分文档或改用知识库") from exc
+    return len((text or "").encode())
+
+
+@router.post("/{session_id}/attachments/check", summary="检查本轮附件能否进入当前模型上下文")
+async def check_attachments(
+    agent_id: int,
+    session_id: str,
+    body: SessionAttachmentCheckIn,
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """检查所有权、有效期、提取预算和视觉能力，不创建 Run 或调用模型。"""
+    session = await _session(db, agent_id, session_id, actor.id)
+    agent = await _agent(db, agent_id, actor.id)
+    context_ids = set(body.context_artifact_ids)
+    if len(context_ids) != len(body.context_artifact_ids) or not context_ids <= set(body.artifact_ids):
+        raise CustomException(status_code=400, custom_code=10006, detail="上下文文件须属于消息附件且不可重复")
+    model = await validate_session_model(db, agent, await effective_session_model(db, session, agent))
+    items = await _uploaded_artifacts(db, actor.id, body.artifact_ids)
+    size = await _check_context_files(items, context_ids, model)
+    return api_response(
+        data={
+            "valid": True,
+            "context_bytes": size,
+            "max_context_bytes": MAX_CONTEXT_ATTACHMENT_BYTES,
+        }
+    )
+
+
 @router.post("/{session_id}/runs", summary="在智能体会话中提交文本运行")
 async def submit_session_run(
     agent_id: int,
@@ -382,16 +433,8 @@ async def submit_session_run(
     reset_thread = bool(prior_runs) and all(item.state in TERMINAL_STATES and item.tool_call_count == 0 for item in prior_runs)
     thread_id = str(uuid4()) if reset_thread else session.thread_id
     artifacts = await _uploaded_artifacts(db, owner_id, body.artifact_ids)
-    context_artifacts = [item for item in artifacts if item.id in context_ids]
-    image_artifacts = [item for item in context_artifacts if item.media_type in IMAGE_CONTEXT_MEDIA_TYPES]
-    if any(item.media_type not in CONTEXT_MEDIA_TYPES | IMAGE_CONTEXT_MEDIA_TYPES for item in context_artifacts):
-        raise CustomException(status_code=400, custom_code=10006, detail="附件格式不能进入模型上下文")
-    if image_artifacts and ModelCapability.VISION not in (model.verified_capabilities or []):
-        raise CustomException(status_code=409, custom_code=10005, detail="会话模型尚未通过视觉能力验证")
-    if len(image_artifacts) > 2:
-        raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
-    if sum(item.byte_size for item in context_artifacts if item.media_type == "text/plain") > MAX_CONTEXT_ATTACHMENT_BYTES:
-        raise CustomException(status_code=413, custom_code=10005, detail="TXT 上下文附件超过 16 KiB 限制")
+    if artifacts:
+        await _check_context_files(artifacts, context_ids, model)
     options = dict(
         agent_id=agent_id,
         session_id=session_id,

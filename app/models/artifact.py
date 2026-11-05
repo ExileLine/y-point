@@ -7,7 +7,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel, ShanghaiDateTime
@@ -39,3 +39,5 @@ class Artifact(CustomBaseModel):
     source: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件来源：upload 或 generated")
     state: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件状态：pending、ready 或 deleted")
     expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="文件到期时间")
+
+    template_source: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="生成报告固定的 Skill 与模板来源快照")

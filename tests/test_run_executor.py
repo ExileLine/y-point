@@ -3116,6 +3116,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         {
                             "artifact_id": artifacts[0].id,
                             "filename": "夷陵之战摘要.txt",
+                            "template_source": None,
                             "media_type": "text/plain",
                             "byte_size": len("夷陵之战摘要\n蜀汉战败。".encode()),
                             "available": True,

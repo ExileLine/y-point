@@ -209,6 +209,8 @@ async def download_artifact(artifact_id: str, actor: Admin = Depends(get_current
 async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """先撤销访问，再尽力移除私有文件正文。"""
     item = await _owned_artifact(db, artifact_id, actor.id)
+    if item.source == ArtifactOrigin.SKILL_RESOURCE:
+        raise CustomException(status_code=409, custom_code=10005, detail="Skill 模板是不可变版本资源，不能单独删除")
     knowledge_version = await db.scalar(
         select(KnowledgeDocumentVersion.id).where(KnowledgeDocumentVersion.artifact_id == artifact_id).limit(1)
     )

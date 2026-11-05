@@ -384,6 +384,29 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         staged=True,
                     )
                 )
+        if run.session_id is not None and model is not None and ModelCapability.TOOLS in (model.verified_capabilities or []):
+            from app.models.skill import RunSkill
+            from app.models.skill_template import SkillTemplate
+            from app.services.skill_reports import skill_document_tool
+
+            has_template = await db.scalar(
+                select(SkillTemplate.id)
+                .join(RunSkill, ((RunSkill.skill_id == SkillTemplate.skill_id) & (RunSkill.skill_version == SkillTemplate.skill_version)))
+                .where(RunSkill.run_id == run.id)
+                .limit(1)
+            )
+            if has_template:
+                registry.register(
+                    ToolSpec(
+                        name="render_skill_document",
+                        factory=skill_document_tool,
+                        enabled=lambda current: current.session_id is not None,
+                        requires_approval=False,
+                        effect=ToolEffect.WRITE,
+                        recovery=RecoveryPolicy.IDEMPOTENT,
+                        staged=True,
+                    )
+                )
         builtins, approvals = await registry.resolve(db, run, sessions)
         user_tools = await load_run_tools(db, run.id, run.owner_id)
         for definition, version in user_tools:

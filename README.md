@@ -10,7 +10,7 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
 | Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
-| Skill | 私有或公开的说明型 Skill；版本化文本包、ZIP 导入导出、Agent 多选关联及 Run 版本固定；运行时按需读取并复核权限，支持关联 Tool 的自然名称映射。 |
+| Skill | 私有或公开的说明型 Skill；版本化文本包、文字 ZIP 导入导出、Agent/Run 版本固定及授权加载；支持绑定多个 DOCX 报告模板、各自字段契约、结构化填充和报告来源记录。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
 | 知识库 | 私有或指定只读共享；文档版本、后台索引、关键词/向量混合检索及固定引用；Agent 检索使用实际用户权限，支持撤权、删除、取消与恢复。 |
@@ -125,7 +125,7 @@ uv run python -m app.cli.create_admin admin --mail admin@example.com
 
 ## 文件存储
 
-`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、每个最多 10 MiB。支持 UTF-8 TXT、PDF、DOCX、XLSX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
+`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、每个最多 10 MiB。支持 UTF-8 TXT/Markdown、PDF、DOCX、XLSX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
 
 默认文件正文位于 Git 忽略的 `.run-private/artifacts`，可通过 `ARTIFACT_STORAGE_DIR` 指向私有目录；元数据位于 `yp_artifact`。设置 `ARTIFACT_STORAGE_BACKEND=s3`、`ARTIFACT_S3_BUCKET` 及对应的 endpoint、region、凭据后可使用私有 S3 兼容桶；`ARTIFACT_STORAGE_DIR` 此时仍用于临时校验文件。切换存储后端不会自动迁移已有正文。停写并备份后可用 `uv run python -m app.cli.migrate_artifacts_to_s3` 复制和校验现有文件，再让 API 与 worker 同时切换配置。上传配额由 `ARTIFACT_OWNER_MAX_BYTES` 和 `ARTIFACT_OWNER_MAX_FILES` 控制；部署时应配置代理上传上限、恶意软件扫描与备份/孤儿文件清理策略。
 
@@ -150,6 +150,7 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 | `create_text_artifact` | `.txt`、`.md`、`.html`、`.json`、`.csv` | TXT/Markdown 保留 UTF-8 正文；HTML 由 Markdown 转换并清洗活动标签；JSON 解析后保存；CSV 限制行列并把公式样式的单元格转为文本。 |
 | `create_document_artifact` | `.docx`、`.pdf` | 从 Markdown 风格正文生成标题、段落和列表；输出后重新打开校验。当前不保留复杂表格、图片、模板或精细分页。 |
 | `create_spreadsheet_artifact` | `.xlsx` | 模型提供有名称和二维 `rows` 的工作表，最多 5 表、每表 1000 行、总计 10000 个单元格；字符串不作为公式执行，保存后重新打开校验。 |
+| `render_skill_document` | `.docx` | 按本轮固定 Skill 版本的模板及独立字段契约渲染；有多个模板时必须指定 `template_name`。适用流程、模板发布和版本规则见下文“对话附件与 Skill 固定模板产物”。 |
 
 生成产物单文件最多 10 MiB、每轮最多 5 个；HTML 下载使用附件方式，不作为站内可信页面执行。Agent 会话中，用户明确要求生成或导出文件时，worker 在完成前核对本轮模型工具暂存的产物；若指定 TXT、Markdown、HTML、JSON、CSV、DOCX、PDF 或 XLSX，还会核对格式。首次只有文字且剩余预算足以调用生成工具并回复时，运行时在同一 Run 内最多补一次内部纠正回合；这会增加模型调用与用量，内部提示只保存在检查点，不成为业务消息。校验前不公开本轮文字增量；最终缺失或格式不符则返回 `failed/artifact_required`，不追加助手最终消息，失败后同一会话仍可继续提交。该判定基于明确的文字指令，不能覆盖所有含糊表达；也不会把 `publish_answer_artifact` 的异步 TXT 回答导出当作模型生成的文件。前端仅在助手消息的 `artifacts` 非空时展示产物，并以授权下载接口确认当前可用性。生成文件的实际类型由服务端校验，不能只依据扩展名展示预览。
 
@@ -219,15 +220,84 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 用户通过 `POST /api/v1/skills` 提交相对路径到 UTF-8 文本内容的 `files` 映射，包根目录必须包含带 YAML frontmatter 的 `SKILL.md`，其中 `name` 和 `description` 为必填项。可选 `category` 和 `visibility`（`private`/`public`，默认私有）。`GET /api/v1/skills` 列出本人 Skill 与其他用户已启用的公开 Skill；`GET/PUT/DELETE /api/v1/skills/{skill_id}` 管理详情、版本和逻辑删除。只有所有者可读取 API 返回的完整 `files`、编辑或删除；其他用户只能读取公开元数据和下载已启用公开 Skill 的当前版本。修改内容或设置会创建新版本，更新需传 `expected_version`。
 
-`GET /api/v1/skills/template` 下载标准 ZIP 模板，`POST /api/v1/skills/import` 导入 ZIP；导入同名的本人 Skill 会创建新版本，未指定 `visibility` 时保留原可见性。`GET /api/v1/skills/{skill_id}/export` 导出当前版本。导入限制 ZIP 为 1 MiB、最多 32 个文本文件、单文件 128 KiB、总解压量 512 KiB，并拒绝非法路径、重复路径、软链接和特殊文件。响应中的 `manifest` 是每个文件的相对路径、UTF-8 字节数与 SHA-256；`content_hash` 是整个文件映射的摘要。Skill 内容和清单分别保存在业务数据库 `yp_skill_version.files` 与 `manifest` 的 JSON 字段，创建时不在服务器磁盘生成同名实体文件；ZIP 仅在导入导出时生成或读取。
+`GET /api/v1/skills/template` 下载标准 ZIP 模板，`POST /api/v1/skills/import` 导入 ZIP；导入同名的本人 Skill 会创建新版本，未指定 `visibility` 时保留原可见性。`GET /api/v1/skills/{skill_id}/export` 导出当前版本。导入限制 ZIP 为 1 MiB、最多 32 个文本文件、单文件 128 KiB、总解压量 512 KiB，并拒绝非法路径、重复路径、软链接和特殊文件。响应中的 `manifest` 是每个文件的相对路径、UTF-8 字节数与 SHA-256；无报告模板时 `content_hash` 是整个文件映射的摘要；含模板时同时纳入模板正文摘要及字段契约，`manifest` 额外记录二进制模板元数据。Skill 内容和清单分别保存在业务数据库 `yp_skill_version.files` 与 `manifest` 的 JSON 字段，创建时不在服务器磁盘生成同名实体文件；ZIP 仅在导入导出时生成或读取。
 
 创建或更新 Agent 时可传 `skill_ids`，最多关联 16 个可见、已启用且名称不冲突的 Skill。关联记录固定版本；编辑 Skill 后需重新保存 Agent 关联才能选用新版本。会话提交时再固定一次 Run 所用版本，并按实际使用者复核访问权；worker 装载前和每次读取前继续复核。DeepAgents 只在该 Run 内把已授权文本映射为 `/skills/{name}/{path}` 虚拟文件，并向模型提供 Skill 元数据和受限 `read_file`；新一轮会话会清理旧 Skill 虚拟文件。Skill 读取事件包含名称和版本，不公开文件正文。禁用、删除或转私有后，失去访问权的用户不能在新 Run 中使用该 Skill。
 
-当前 Skill 是说明和静态文本资源，`allowed-tools`、`Bash(...)` 和 `!` 命令替换不会执行，也不会授予服务器命令权限。Skill 可以说明何时使用已授权 Tool，但创建 Agent 时仍须分别关联 Skill 和 Tool。仅在正文提及 `scripts/example.py` 不会创建或执行脚本；需要执行时，应将源码创建为脚本 Tool，并在 Skill 中使用创建时填写的工具名称（如 `get_time`）指导调用。模型读取未打包或未授权的 Skill 路径时会收到 `read_file` 错误消息，且不读取该路径；模型可继续调用合法工具并完成本轮对话。真实权限撤销、运行授权失效或其他检查点异常仍按各自校验规则处理。
+Skill 正文与静态文本资源不执行代码；DOCX 模板另由受控渲染工具使用。`allowed-tools`、`Bash(...)` 和 `!` 命令替换不会执行，也不会授予服务器命令权限。Skill 可以说明何时使用已授权 Tool，但创建 Agent 时仍须分别关联 Skill 和 Tool。仅在正文提及 `scripts/example.py` 不会创建或执行脚本；需要执行时，应将源码创建为脚本 Tool，并在 Skill 中使用创建时填写的工具名称（如 `get_time`）指导调用。模型读取未打包或未授权的 Skill 路径时会收到 `read_file` 错误消息，且不读取该路径；模型可继续调用合法工具并完成本轮对话。真实权限撤销、运行授权失效或其他检查点异常仍按各自校验规则处理。
 
 例如，已关联 Tool 的名称为 `get_time`，且输入结构不接受参数时，可在 Skill 正文写“需要当前时间时调用 `get_time`，参数为 `{}`，依据工具结果回答”。这是模型按需选择的调用指引，不是命中文本后必然执行。模型无需先加载 Skill，也可直接调用 Agent 已关联且当前用户有权使用的 Tool。
 
 运行时会在已关联 Skill 的 `SKILL.md` 虚拟内容末尾附加本轮可用工具目录，将用户名称、Tool ID、所有者与内部模型名称对应起来；数据库中的原始 Skill 文件和版本摘要不变。模型返回自然名称时，执行器只对本轮授权集合中唯一且不与内置工具、保留名称或其他工具内部名称冲突的名称进行转换，再以内部名称进入审批、执行及审计。两个同名 Tool 不会自动择一，需在 Skill 或对话中明确目标 Tool ID/所有者；未关联或无权访问的 Tool 不会因为正文提及而获得授权。旧 `user_tool_{id}_{name}` 写法仍兼容。`get_time.py` 等文件名可以在 Skill 说明中使用，平台映射会引导模型调用已关联的 `get_time` Tool；正文中的任意 Shell 命令不会被自动解析执行。
+
+### 对话附件与 Skill 固定模板产物
+
+Skill 正文定义何时使用、取数步骤和产物要求；模板是该 Skill 不可变版本中的资源。用户在对话中提出任务，模型根据任务读取对应 Skill，再调用正文指定的业务工具获取数据或读取用户材料，最后按模板生成文件。对话页面无需选择报告 Skill，关联但未使用的 Skill 不强制生成产物。
+
+使用流程：
+
+1. 在 Skill 页面编写适用场景、取数步骤、模板文件名、字段含义及缺失信息处理规则。例如正文写明“调用 func1 工具获取数据，按照 xxx_template.docx 模板生成报告”。
+2. 保存后，在该 Skill 的“Skill 产物模板”中上传实际的 `xxx_template.docx`，支持一次选择多个 DOCX，并为每个模板分别填写报告字段 JSON Schema。每个版本最多 10 个模板、单个最多 2 MiB；不同文件名新增，同名文件在新版本中替换且保留其他模板。Word 模板使用 `{{ title }}`、`{{ summary }}` 等占位符；模板发布会创建新 Skill 版本。仅在正文中写文件名不会自动读取服务器本地文件或外部 URL。
+3. 在 Agent 中重新保存该 Skill 关联，固定包含模板的版本，并关联正文需要的业务工具；选择已验证 `tools` 能力的模型。之后更新正文或模板，已有 Agent 绑定和已提交 Run 继续使用原版本。
+4. 用户正常发送业务任务。若任务需要本地材料，可在输入区添加或拖入文件，勾选“供模型读取”；支持 TXT、Markdown、PDF、DOCX、XLSX、PNG/JPEG，每轮最多 5 个、单个最多 10 MiB。若数据来自业务工具，则无需上传附件。
+5. worker 固定本轮 Skill 版本，模型按任务读取 `SKILL.md`。正文附带该版本所有模板文件名、Skill ID、各自字段契约及受控生成方式；模型按正文的适用条件选取模板，调用实际授权的业务工具或读取材料，组织所选模板的报告字段。上传多个模板不代表每次任务都要生成全部模板。
+6. 模型调用 `render_skill_document(skill_id, report_data, filename, template_name="xxx_template.docx")`；有多个模板时必须提供 `template_name`，单模板可省略。服务端核对本轮绑定版本及当前授权，校验结构化字段，使用私有模板填充 DOCX，保留正文、表格、页眉页脚及样式。
+7. 成功读取模板 Skill 正文后，运行会登记该 Skill 的模板交付要求。每个已执行模板 Skill 至少须交付一个来源匹配的 DOCX；具体需生成哪些报告由正文和任务要求决定。文字、通用 DOCX 和其他版本模板不能替代。缺少产物时在预算内进行一次纠正尝试，仍未交付则明确失败。完成后发布文件，助手消息提供来源、预览和下载。
+
+Skill 正文示例（`func1` 应是已关联且可用的业务工具名称；运行时会提供实际调用名称）：
+
+```markdown
+## 适用场景
+用户要求生成合同审查报告时使用。
+
+## 执行步骤
+1. 调用 func1 获取合同数据；用户已上传合同时，结合其提供的材料核对事实。
+2. 合同审查使用 xxx_template.docx，title 为报告标题，summary 为审查结论，findings 为逐条发现。若另有上传的其他模板，写明各自用途和选择条件；生成时通过 template_name 指定对应文件名。
+3. 缺失数据明确标注“待补充”，不得编造事实。报告完成后返回可下载文件。
+```
+
+模板字段契约示例：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "maxLength": 100 },
+    "summary": { "type": "string", "maxLength": 2000 },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "note": { "type": "string", "maxLength": 500 }
+        },
+        "required": ["note"]
+      }
+    }
+  },
+  "required": ["title", "summary", "findings"]
+}
+```
+
+模板支持字段替换、条件和单层数组循环，可保留模板原有的正文、表格、页眉页脚和样式。表格行可使用 docxtpl 的 `{%tr for item in findings %}` / `{%tr endfor %}` 控制行，内容行填入 `{{ item.note }}`；控制标记分别放在独立行。模板最多 2 MiB，拒绝宏、活动/嵌入对象和外部资源；正文、页眉、页脚执行表达式白名单、单层循环和 XML 输出预算检查。字段契约不接受远程引用和任意复杂规则；数组最多 100 项、单个字符串最多 8000 字符，结构化报告数据最多 64 KiB。用户须按实际报告设置更小的字段上限；复杂 Word 排版仍需用自己的真实模板验收。
+
+当前模板校验尚未覆盖渲染器处理的文档属性和脚注，这些部件中的表达式可能绕过上述语法及输出预算限制，因此不能将现有沙箱视为完整的模板资源安全边界。模板上传的单文件/数量限制也在 multipart 解析后执行，尚未接入解析前的请求总量门禁；用户文件配额不足时，模板接口目前可能返回 500，待转换为明确业务错误。这三项缺口的修正与验收记录见服务端开发清单。
+
+| 操作 | 接口与契约 |
+| --- | --- |
+| 批量发布模板 | `POST /api/v1/skills/{skill_id}/templates`，multipart 字段为 `expected_version`、重复的 DOCX `files` 与 JSON 字符串 `fields_schema`。后者以原始文件名为键、独立 JSON Schema 为值，例如 `{"A_template.docx": {...}, "B_template.docx": {...}}`。先校验整批再原子发布；任一文件或字段无效则整批失败。仅所有者可发布，版本冲突 409。 |
+| 兼容单模板接口 | `POST /api/v1/skills/{skill_id}/template` 继续接受 `expected_version`、单个 JSON Schema `fields_schema` 和 DOCX `file`，保留旧替换语义。版本已有多个模板时返回 409，须改用批量接口，避免误删其他模板。 |
+| 获取模板信息 | 所有者读取 `GET /api/v1/skills/{skill_id}` 的 `report_templates` 列表，每项包含 `template_key`、文件 ID、名称、SHA-256 和独立字段契约；仅有一个模板时仍提供兼容字段 `report_template`。原始模板通过现有文件下载接口授权下载。 |
+| 上传与发送前检查 | 先 `POST /api/v1/artifacts/uploads`，再 `POST /api/v1/agents/{agent_id}/sessions/{session_id}/attachments/check`。检查请求仅接受 `artifact_ids` / `context_artifact_ids` 两个列表，上下文 ID 必须属于消息附件且不重复；核对所有权、有效期、当前会话模型能力、完整文本可读性及总字节预算。成功返回 `valid`、`context_bytes`、`max_context_bytes`，不创建 Run 或调用模型。 |
+| 提交任务 | 使用原会话 `/runs` 提交消息、模型预期值及可选附件，服务端固定 Skill 版本。模型按需读取 Skill 后自动登记模板交付要求；重试仍比较原始消息、模型、附件和产物设置，不将运行中新增的交付要求作为用户提交参数。 |
+| 报告预览与下载 | 完成后从消息 `artifacts` 取 ID，使用现有 `/artifacts/{id}/preview` 和 `/download`；预览是正文展示，下载保留生成文件原件。 |
+
+附件预检查只说明当前状态允许提交；实际 `/runs` 仍接收完整消息、模型、幂等键和附件参数，并再次强制校验，worker 执行前继续检查内容与授权。不能将预检查响应作为绕过正式提交校验的凭据。图片上下文最多两张，要求当前模型已验证视觉能力。
+
+数据链路为：`SkillVersion` → `yp_skill_template(skill_id, skill_version, template_key, artifact_id, fields_schema)` → 本轮 `yp_run_skill` 版本快照 → 模型读取正文并登记 `required_report` → 业务工具取数/可选用户材料 → 字段校验/沙箱渲染 → `yp_artifact` 暂存 → Run 完成发布 → 助手消息。模板正文沿用私有文件存储，`yp_artifact.source=skill_resource`，不随普通上传保留期过期，受所有者文件配额约束；历史版本资源不能通过通用文件删除接口单独移除。文字版本更新沿用全部模板关联，替换模板创建新资源。文件名按 Unicode NFC 和不区分大小写规范化，每个版本内唯一，禁止使用目录路径；多个模板未指定名称或名称不存在时明确报错，不自动猜测。模板报告在 `yp_artifact.template_source` 保存 Skill 名称/ID/版本、模板文件名/键、模板文件 ID/摘要和结构化数据摘要；消息中的 `context_artifact_ids` 继续记录本轮提供的材料。这些是生成来源记录，不代表模型已正确审查全部事实或实际引用每一段材料。
+
+当前文本上下文提取后的正文连同文件标识合计最多 **16 KiB**；发送前与 worker 使用同一提取预算，超限明确拒绝，不静默截断。长材料需拆分或使用知识库；知识库检索只召回相关片段，也不能等同于逐页全文审查。扫描 PDF 的 OCR、长文档分段读取与覆盖证明、完整 Word 分页版式预览尚未提供。现有 Skill ZIP 仍仅导入导出 UTF-8 文字资源；DOCX 模板与字段契约通过模板管理单独维护，跨环境迁移时需分别复制并重新发布。
 
 ## Tool 管理与沙箱
 
@@ -715,7 +785,7 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 | 场景 | 接口与前端处理 | 业务数据落库和流转 |
 | --- | --- | --- |
-| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT、PDF、DOCX、XLSX 文本；单轮提取后连同文件标识最多 16 KiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且默认模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT 原文件在提交时另受 16 KiB 限制；未选中的附件只供展示和下载。 |
+| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT/Markdown、PDF、DOCX、XLSX 文本；单轮提取后连同文件标识最多 16 KiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且本轮会话模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT 原文件在提交时另受 16 KiB 限制；未选中的附件只供展示和下载。 |
 | 根据附件生成文件 | 本轮上传文件 ID 同时放入 `artifact_ids` 与 `context_artifact_ids`，`input_text` 写明所需格式；完成后读取会话 `messages`，从助手消息的 `artifacts` 获取生成文件 ID、`context_artifact_ids` 和 `read_source_artifact_ids`。Agent 的 `max_model_calls` 至少预留 2 次供工具调用与最终回复；需要首次未生成时自动纠正，则至少预留 3 次。 | 用户上传文件始终在用户消息的 `attachments`；模型生成文件写入私有存储，先记为 `pending`，完成时改为 `ready` 并与助手消息、事件同事务提交。产物列表和详情也返回本轮参考文件 ID，历史引用在原文件失效后保留。失败或取消后暂存文件不可下载，过期由清理任务回收。模型未调用工具时不会凭代码块自动生成文件。 |
 | 继续使用本会话产物 | 用户说“修改刚才生成的文件”时无需把产物 ID 填入 `context_artifact_ids`；模型可先列出本会话产物，再按需读取目标。前端仍可从历史助手消息取得产物 ID，供用户明确指定。 | 产物仍存于私有文件存储，读取工具只访问同一用户、同一会话中已完成 Run 的有效产物，不把全部产物自动加入每轮上下文。成功读取记录在 `yp_run_artifact_read`；其后生成新文件时，将此前读取的旧产物 ID 固定在 `yp_artifact_source`。生成产物 ID 目前不能作为上传附件传给会话提交接口；模型未调用读取工具时，下一轮仅沿用原有检查点历史。 |
 | 删除附件 | `DELETE /api/v1/artifacts/{artifact_id}` 后重新读取消息；下载仍用 `GET /api/v1/artifacts/{artifact_id}/download`。 | 文件状态变为 `deleted`，私有正文尽力清理；历史附件快照仍保留，动态 `available=false`，下载及新 Run 引用返回 404。已进入旧检查点的内容不会自动抹除。 |

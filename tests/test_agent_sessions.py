@@ -425,10 +425,9 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                             "context_artifact_ids": [pdf_id],
                         },
                     )
-                    assert corrupt_run.status_code == 201
-                    corrupt_done = await dispatch_next_run(sessions, tmp_path / "checkpoint.db")
-                    assert corrupt_done.id == corrupt_run.json()["data"]["id"]
-                    assert corrupt_done.state == "failed" and corrupt_done.failure_code == "attachment_unavailable"
+                    # 损坏文档现在在提交前拒绝，不创建必然失败的 Run。
+                    assert corrupt_run.status_code == 400
+                    assert "附件正文" in corrupt_run.json()["message"]
                     office_upload = await client.post(
                         "/api/v1/artifacts/uploads",
                         headers=alice,

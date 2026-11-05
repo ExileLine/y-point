@@ -114,3 +114,11 @@ class SessionMessageOut(BaseModel):
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-26T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])
     artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物", examples=[[]])
+
+
+class SessionAttachmentCheckIn(BaseModel):
+    """提交前按当前会话模型校验本轮附件。"""
+
+    model_config = ConfigDict(extra="forbid")
+    artifact_ids: list[ArtifactId] = Field(max_length=5, description="已上传的消息附件 ID", examples=[[]])
+    context_artifact_ids: list[ArtifactId] = Field(max_length=5, description="进入模型上下文的附件 ID", examples=[[]])

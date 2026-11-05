@@ -405,7 +405,15 @@ async def stage_generated_text_artifact(
 
 
 async def stage_generated_artifact(
-    sessions: async_sessionmaker[AsyncSession], run_id: str, owner_id: int, lease_token: str, filename: str, data: bytes, root: Path
+    sessions: async_sessionmaker[AsyncSession],
+    run_id: str,
+    owner_id: int,
+    lease_token: str,
+    filename: str,
+    data: bytes,
+    root: Path,
+    *,
+    template_source: dict | None = None,
 ) -> Artifact:
     """幂等暂存已生成文件；Run 完成前不公开下载。"""
     suffix = Path(filename).suffix.lower()
@@ -424,7 +432,12 @@ async def stage_generated_artifact(
 
     existing = await existing_artifact()
     if existing is not None:
-        if existing.sha256 != digest or existing.filename != filename or existing.state != ArtifactState.PENDING:
+        if (
+            existing.sha256 != digest
+            or existing.filename != filename
+            or existing.state != ArtifactState.PENDING
+            or existing.template_source != template_source
+        ):
             raise ArtifactValidationError("同名生成文件内容冲突")
         return existing
 
@@ -481,6 +494,7 @@ async def stage_generated_artifact(
                 byte_size=len(data),
                 sha256=digest,
                 storage_key=key,
+                template_source=template_source,
                 source=ArtifactOrigin.GENERATED,
                 state=ArtifactState.PENDING,
                 expires_at=now + timedelta(hours=1),
@@ -501,7 +515,13 @@ async def stage_generated_artifact(
     except IntegrityError:
         await _cleanup_uncommitted_blob(root, key, remote_attempted=remote_attempted)
         existing = await existing_artifact()
-        if existing is not None and existing.sha256 == digest and existing.filename == filename and existing.state == ArtifactState.PENDING:
+        if (
+            existing is not None
+            and existing.sha256 == digest
+            and existing.filename == filename
+            and existing.state == ArtifactState.PENDING
+            and existing.template_source == template_source
+        ):
             return existing
         raise ArtifactValidationError("同名生成文件内容冲突") from None
     except BaseException:

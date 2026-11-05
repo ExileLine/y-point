@@ -34,6 +34,7 @@ class ArtifactOut(BaseModel):
     read_source_artifact_ids: list[str] = Field(
         default_factory=list, description="生成前成功读取的旧产物 ID；不证明实际引用", examples=[["550e8400-e29b-41d4-a716-446655440001"]]
     )
+    template_source: dict | None = Field(default=None, description="报告使用的 Skill 版本及模板摘要，不含存储路径", examples=[None])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])
 
 
@@ -50,6 +51,8 @@ class ArtifactReferenceOut(BaseModel):
 
 class GeneratedArtifactReferenceOut(BaseModel):
     """助手消息关联的生成产物；下载仍需逐次授权。"""
+
+    template_source: dict | None = Field(default=None, description="报告使用的固定 Skill 版本及模板摘要", examples=[None])
 
     artifact_id: str = Field(description="生成产物 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     filename: str = Field(description="产物文件名", examples=["报告.docx"])

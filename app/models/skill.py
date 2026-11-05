@@ -68,6 +68,9 @@ class RunSkill(CustomBaseModel):
         },
     )
 
+    required_report: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", comment="是否要求按本 Skill 模板交付报告"
+    )
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="运行 ID")
     skill_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="Skill ID")
     skill_version: Mapped[int] = mapped_column(Integer, nullable=False, comment="运行固定版本号")

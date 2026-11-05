@@ -72,11 +72,19 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
     by_id = {item.id: item for item in items}
     if len(by_id) != len(references):
         raise AttachmentContextUnavailable("模型上下文附件不可用")
-    chunks = []
     for reference in references:
         item = by_id[reference.artifact_id]
         if item.byte_size != reference.byte_size or item.filename != reference.filename or item.media_type != reference.media_type:
             raise AttachmentContextUnavailable("模型上下文附件已变化")
+    return await build_attachment_context([by_id[reference.artifact_id] for reference in references])
+
+
+async def build_attachment_context(items: list[Artifact]) -> str | None:
+    """对已授权文件执行与 worker 一致的完整文本提取、摘要校验和总预算核对。"""
+    if not items:
+        return None
+    chunks = []
+    for item in items:
         try:
             content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
             if len(content) != item.byte_size or hashlib.sha256(content).hexdigest() != item.sha256:
@@ -89,9 +97,9 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
         chunks.append(
             json.dumps(
                 {
-                    "artifact_id": reference.artifact_id,
-                    "filename": reference.filename,
-                    "media_type": reference.media_type,
+                    "artifact_id": item.id,
+                    "filename": item.filename,
+                    "media_type": item.media_type,
                     "content": decoded,
                 },
                 ensure_ascii=False,
@@ -274,6 +282,7 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
                 "byte_size": item.byte_size,
                 "context_artifact_ids": context_by_run.get(item.run_id, []),
                 "read_source_artifact_ids": read_sources.get(item.id, []),
+                "template_source": item.template_source,
                 "available": item.state == ArtifactState.READY
                 and item.is_deleted == 0
                 and item.status == 1

@@ -7,7 +7,7 @@
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +39,18 @@ def _output(skill: Skill, version: SkillVersion | None = None) -> dict:
     }
     if version is not None:
         result.update(files=version.files, manifest=version.manifest, content_hash=version.content_hash)
+        from app.services.skill_reports import template_key
+
+        templates = [
+            {
+                **entry,
+                "template_key": entry.get("template_key") or template_key(entry["filename"]),
+            }
+            for entry in version.manifest
+            if entry.get("report_template") is True
+        ]
+        result["report_templates"] = templates
+        result["report_template"] = templates[0] if len(templates) == 1 else None
     return result
 
 
@@ -186,6 +198,7 @@ async def update_skill(
     item = await _owned(db, skill_id, actor.id, lock=True)
     if item.current_version != body.expected_version:
         raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本已变化")
+    previous = await _version(db, item)
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
     if any(changes.get(key) is None for key in ("visibility", "enabled") if key in changes):
         raise CustomException(status_code=400, custom_code=10005, detail="必填设置不能为空")
@@ -198,23 +211,49 @@ async def update_skill(
             raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
         if name != item.name:
             raise CustomException(status_code=400, custom_code=10005, detail="Skill 名称不可修改")
-        item.description = description
+        # 描述随正文版本在下方比较并交换事务中更新。
         files = changes["files"]
     else:
         previous = await _version(db, item)
         files, manifest, digest = previous.files, previous.manifest, previous.content_hash
-    for key in ("category", "visibility", "enabled"):
-        if key in changes:
-            setattr(item, key, changes[key])
     if changes:
-        item.current_version += 1
+        from app.services.skill_reports import copy_template, report_package_hash
+
+        template_entries = [entry for entry in previous.manifest if entry.get("report_template") is True]
+        if template_entries:
+            manifest = [entry for entry in manifest if entry.get("report_template") is not True] + template_entries
+            digest = report_package_hash(files, template_entries)
+        settings = {key: changes[key] for key in ("category", "visibility", "enabled") if key in changes}
+        if "files" in changes:
+            settings["description"] = description
+        result = await db.execute(
+            update(Skill)
+            .where(
+                Skill.id == item.id,
+                Skill.current_version == body.expected_version,
+                Skill.is_deleted == 0,
+            )
+            .values(**settings, current_version=body.expected_version + 1)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await db.rollback()
+            raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本已变化")
+        await copy_template(db, item.id, body.expected_version, body.expected_version + 1)
         db.add(
             SkillVersion(
-                skill_id=item.id, version=item.current_version, files=files, manifest=manifest, content_hash=digest, is_deleted=0, status=1
+                skill_id=item.id,
+                version=body.expected_version + 1,
+                files=files,
+                manifest=manifest,
+                content_hash=digest,
+                is_deleted=0,
+                status=1,
             )
         )
     audit(db, "skill.updated", actor_id=actor.id, target_id=item.id)
     await db.commit()
+    await db.refresh(item)
     return api_response(data=_output(item, await _version(db, item)), datetime_format=False)
 
 

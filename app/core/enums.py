@@ -108,6 +108,7 @@ class ArtifactOrigin(StrEnum):
     """文件进入平台的来源。"""
 
     UPLOAD = "upload"
+    SKILL_RESOURCE = "skill_resource"
     GENERATED = "generated"
 
 

@@ -322,6 +322,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         event_name = tool_name
         invocation_id = None
         invocation_effect = ToolEffect.READ
+        activated_skill_id = None
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
@@ -334,12 +335,14 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if path not in current_files:
                     raise PermissionError("Skill 文件授权已失效")
                 skill_name = path.split("/")[2]
-                skill_version = await db.scalar(
-                    select(RunSkill.skill_version)
+                fixed_skill = await db.scalar(
+                    select(RunSkill)
                     .join(Skill, Skill.id == RunSkill.skill_id)
                     .where(RunSkill.run_id == self.run_id, Skill.name == skill_name)
                 )
-                event_name = f"skill:{skill_name}@v{skill_version}"
+                event_name = f"skill:{skill_name}@v{fixed_skill.skill_version}"
+                if path.endswith("/SKILL.md"):
+                    activated_skill_id = fixed_skill.skill_id
             elif tool_name.startswith("user_tool_"):
                 try:
                     available = await load_run_tools(db, self.run_id, run.owner_id)
@@ -397,6 +400,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         )
         async with self.sessions.begin() as db:
             await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
+            if activated_skill_id is not None and event_type == RunEventType.TOOL_COMPLETED:
+                from app.services.skill_reports import activate_skill_report
+
+                await activate_skill_report(db, self.run_id, activated_skill_id)
             if invocation_id is not None:
                 invocation = await db.scalar(
                     select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
@@ -508,8 +515,11 @@ async def _stream_model_text(
     lease_token: str,
     *,
     publish_text: bool = True,
+    check_skill_reports: bool = False,
 ) -> None:
-    """从模型节点提取可见文本；预算运行在用量核实后统一发布。"""
+    """提取可见文本；预算或已执行模板 Skill 的最终回复经交付校验后发布。"""
+    from app.services.skill_reports import required_report_skill_ids
+
     async for mode, payload in runtime.events(invocation):
         if mode != "messages" or not publish_text:
             continue
@@ -519,6 +529,8 @@ async def _stream_model_text(
         content = str(message.text)
         for offset in range(0, len(content), 2048):
             async with sessions.begin() as db:
+                if check_skill_reports and await required_report_skill_ids(db, run_id):
+                    continue
                 await append_text_delta(db, run_id, lease_token, content[offset : offset + 2048])
 
 
@@ -714,7 +726,12 @@ async def execute_text_run(
         )
         if input_text is None:
             return await fail_run(db, run_id, lease_token, "runtime_error")
+        from app.services.skill_reports import required_report_delivered, required_report_skill_ids
+
+        required_report_ids = await required_report_skill_ids(db, run_id)
         required_artifact_suffixes = requested_artifact_suffixes(input_text) if run.session_id is not None else None
+        if required_report_ids:
+            required_artifact_suffixes = (required_artifact_suffixes or frozenset()) | {".docx"}
         image_blocks: list[dict] = []
         if not resume:
             try:
@@ -944,6 +961,7 @@ async def execute_text_run(
                         publish_text=(
                             run.max_total_tokens is None and run.max_estimated_cost is None and (required_artifact_suffixes is None)
                         ),
+                        check_skill_reports=any(tool.name == "render_skill_document" for tool in tools),
                     )
                 )
                 watcher = asyncio.create_task(
@@ -975,9 +993,15 @@ async def execute_text_run(
                         await create_approval_request(db, run_id, lease_token, checkpoint_id, actions)
                         _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
                         return await db.get(AgentRun, run_id)
+                async with sessions() as db:
+                    required_report_ids = await required_report_skill_ids(db, run_id)
+                if required_report_ids:
+                    required_artifact_suffixes = (required_artifact_suffixes or frozenset()) | {".docx"}
                 if attempt == 0 and not resume and required_artifact_suffixes is not None:
                     async with sessions() as db:
-                        delivered = await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes)
+                        delivered = await _has_required_artifacts(
+                            db, run_id, run.owner_id, required_artifact_suffixes
+                        ) and await required_report_delivered(db, run_id)
                         current = await db.get(AgentRun, run_id)
                     can_retry = (
                         not delivered
@@ -995,8 +1019,13 @@ async def execute_text_run(
                                 {
                                     "role": MessageRole.USER.value,
                                     "content": (
-                                        "系统内部纠正提示（不是新的用户消息）：上一轮只有文字，尚未交付用户要求的文件。"
+                                        "系统内部纠正提示（不是新的用户消息）：上一轮尚未交付满足本轮要求的文件。"
                                         f"请调用文件生成工具交付 {formats} 文件，再给出最终回复；代码块不能代替文件。"
+                                        + (
+                                            f"必须调用 render_skill_document，逐一交付 Skill {required_report_ids} 的模板报告。"
+                                            if required_report_ids
+                                            else ""
+                                        )
                                     ),
                                 }
                             ],
@@ -1024,7 +1053,9 @@ async def execute_text_run(
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled", messages=new_messages)
                     return result
                 if required_artifact_suffixes is not None:
-                    if not await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes):
+                    if not await _has_required_artifacts(
+                        db, run_id, run.owner_id, required_artifact_suffixes
+                    ) or not await required_report_delivered(db, run_id):
                         result = await fail_run(db, run_id, lease_token, "artifact_required", checkpoint_id=checkpoint_id)
                         _record_runtime_call(db, run, catalog_model, started, failure="artifact_required", messages=new_messages)
                         return result

@@ -19,6 +19,7 @@ MAX_CONTEXT_ATTACHMENT_BYTES = 16 * 1024
 CONTEXT_MEDIA_TYPES = frozenset(
     {
         "text/plain",
+        "text/markdown",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

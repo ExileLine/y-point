@@ -165,6 +165,13 @@ class DeepAgentsRuntimeAdapter:
                 "XLSX 使用 create_spreadsheet_artifact。工具成功后再回复用户。"
                 "Markdown 代码块不能代替文件产物。"
             )
+        if "render_skill_document" in config.tool_names:
+            system_prompt += (
+                "\n若 Skill 定义了 DOCX 报告模板，先读取该 Skill 的 SKILL.md 及字段契约，"
+                "按 Skill 正文中的流程调用业务工具获取数据，或读取用户提供的材料，再用 render_skill_document 生成模板产物。"
+                "由任务决定使用哪个 Skill，不要求用户选择报告模式；未使用的 Skill 不要求生成文件。"
+                "不能用通用文档工具替代固定模板；资料缺少事实时应标明缺失，不能编造。"
+            )
         if "list_session_artifacts" in config.tool_names:
             system_prompt += (
                 "\n当用户要求继续修改、分析或引用本会话先前生成的文件时，先用 list_session_artifacts 查找文件，"

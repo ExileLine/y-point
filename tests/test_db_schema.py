@@ -8,6 +8,7 @@
 import asyncio
 import os
 import subprocess
+import sqlite3
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -209,7 +210,7 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "043"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "045"
                 await connection.run_sync(check_mapped_schema)
             await _assert_tool_slot_processes(engine.url)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -430,3 +431,63 @@ def test_postgres_m3_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             "postgres", make_url(get_config().pg_async_url), "postgres", "POSTGRESQL_DATABASE", tmp_path, monkeypatch
         )
     )
+
+
+def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path: Path) -> None:
+    """历史文件名回填不改资源引用，多模板降级必须拒绝静默丢数据。"""
+    database = tmp_path / "multi-template-migration.db"
+    env = os.environ.copy()
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(*args: str, check: bool = True):
+        """在临时数据库执行迁移，并捕获可预期的降级拒绝。"""
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=root,
+            env=env,
+            check=check,
+            capture_output=True,
+            text=True,
+        )
+
+    migrate("upgrade", "044")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO yp_artifact "
+            "(id, owner_id, filename, media_type, byte_size, sha256, storage_key, source, state, "
+            "create_time, update_time, create_timestamp, update_timestamp) "
+            "VALUES ('legacy', 1, '报告模板.DOCX', 'application/octet-stream', 1, 'hash', 'legacy', 'skill_resource', 'ready', "
+            "'2026-11-05', '2026-11-05', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO yp_skill_template "
+            "(skill_id, skill_version, artifact_id, fields_schema, create_time, update_time, create_timestamp, update_timestamp) "
+            "VALUES (1, 2, 'legacy', '{}', '2026-11-05', '2026-11-05', 1, 1)"
+        )
+    migrate("upgrade", "head")
+    migrate("check")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT template_key, artifact_id FROM yp_skill_template").fetchall() == [("报告模板.docx", "legacy")]
+        connection.execute(
+            "INSERT INTO yp_skill_template "
+            "(skill_id, skill_version, template_key, artifact_id, fields_schema, "
+            "create_time, update_time, create_timestamp, update_timestamp) "
+            "VALUES (1, 2, 'other.docx', 'other', '{}', '2026-11-05', '2026-11-05', 1, 1)"
+        )
+    rejected = migrate("downgrade", "044", check=False)
+    assert rejected.returncode != 0 and "不能无损降级" in rejected.stderr
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM yp_skill_template").fetchone()[0] == 2
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "045"
+        connection.execute("DELETE FROM yp_skill_template WHERE template_key = 'other.docx'")
+    migrate("downgrade", "044")
+    migrate("upgrade", "head")
+    migrate("check")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT template_key, artifact_id FROM yp_skill_template").fetchall() == [("报告模板.docx", "legacy")]
