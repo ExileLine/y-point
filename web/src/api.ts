@@ -509,3 +509,38 @@ export async function publishSkillTemplates(id: number, version: number, templat
   for (const item of templates) form.append("files", item.file);
   return request(`/skills/${id}/templates`, { method: "POST", body: form });
 }
+
+export type SkillFile = { path: string; artifact_id?: string; bytes: number; sha256: string; media_type?: string; is_text?: boolean; kind?: string; package_file?: boolean };
+export type SkillDraft = { revision: number; base_version: number; content_hash: string; files: SkillFile[]; settings: { category: string | null; visibility: "private" | "public"; enabled: boolean } };
+export type SkillWorkspaceData = { skill: Skill; draft: SkillDraft | null; readonly: boolean; versions: { version: number; content_hash: string; create_time: string; manifest: SkillFile[] }[] };
+export type SkillValidation = { revision: number; valid: boolean; errors: string[]; warnings: string[]; content_hash: string; config: { templates?: Record<string, string>; scripts?: Record<string, { description?: string; input_schema?: Record<string, unknown>; requirements?: string[]; requires_approval?: boolean }>; required_tools?: string[] }; scripts?: { path: string; verified: boolean; environment: { state: string; message?: string | null } | null }[] };
+export const createSkillPackage = (name: string, description: string): Promise<Skill> => request("/skills/packages", { method: "POST", body: JSON.stringify({ name, description }) });
+export const getSkillWorkspace = (id: number): Promise<SkillWorkspaceData> => request(`/skills/${id}/workspace`);
+export const startSkillDraft = (id: number, fromVersion?: number, expectedRevision?: number): Promise<SkillDraft> => request(`/skills/${id}/draft`, { method: "POST", body: JSON.stringify({ from_version: fromVersion, expected_revision: expectedRevision }) });
+export const saveSkillDraft = (id: number, body: { expected_revision: number; files?: Record<string, string>; renames?: Record<string, string>; delete_paths?: string[]; category?: string | null; visibility?: "private" | "public"; enabled?: boolean }): Promise<SkillDraft> => request(`/skills/${id}/draft`, { method: "PUT", body: JSON.stringify(body) });
+export const validateSkillDraft = (id: number, revision: number): Promise<SkillValidation> => request(`/skills/${id}/draft/validate`, { method: "POST", body: JSON.stringify({ expected_revision: revision }) });
+export const publishSkillDraft = (id: number, revision: number): Promise<Skill> => request(`/skills/${id}/draft/publish`, { method: "POST", body: JSON.stringify({ expected_revision: revision }) });
+export async function importSkillPackage(file: File, id?: number, revision?: number): Promise<Skill | SkillDraft> {
+  const form = new FormData(); form.append("file", file);
+  if (revision !== undefined) form.append("expected_revision", String(revision));
+  return readResponse(await fileRequest(id ? `/skills/${id}/draft/import` : "/skills/packages/import", { method: "POST", body: form }));
+}
+export async function uploadSkillFiles(id: number, revision: number, files: { path: string; file: File }[]): Promise<SkillDraft> {
+  const form = new FormData(); form.append("expected_revision", String(revision)); form.append("paths", JSON.stringify(files.map((item) => item.path)));
+  files.forEach((item) => form.append("files", item.file));
+  return readResponse(await fileRequest(`/skills/${id}/draft/files`, { method: "POST", body: form }));
+}
+export async function readSkillFile(id: number, path: string, version?: number): Promise<Blob> {
+  const params = new URLSearchParams({ path }); if (version !== undefined) params.set("version", String(version));
+  return (await fileRequest(`/skills/${id}/files?${params}`)).blob();
+}
+export async function downloadSkillFile(id: number, path: string, version?: number): Promise<void> {
+  const params = new URLSearchParams({ path, download: "true" }); if (version !== undefined) params.set("version", String(version));
+  await saveFileResponse(await fileRequest(`/skills/${id}/files?${params}`), path.split("/").pop() || "resource");
+}
+export async function exportSkillVersion(id: number, version: number): Promise<void> {
+  await saveFileResponse(await fileRequest(`/skills/${id}/versions/${version}/export`), `skill-${id}-v${version}.zip`);
+}
+export const testSkillScript = (id: number, revision: number, path: string, args: Record<string, unknown>, prepare = false): Promise<{ path: string; verified: boolean; result?: string; environment?: { state: string; message?: string | null } }> => request(`/skills/${id}/draft/scripts/${prepare ? "prepare" : "test"}`, { method: "POST", body: JSON.stringify({ expected_revision: revision, path, arguments: args }) });
+
+export const previewSkillFile = (id: number, path: string, version?: number): Promise<ArtifactPreview> => request(`/skills/${id}/files/preview?${new URLSearchParams({ path, ...(version === undefined ? {} : { version: String(version) }) })}`);

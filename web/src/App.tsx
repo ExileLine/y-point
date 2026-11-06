@@ -23,6 +23,7 @@ const Agents = lazy(() => import("./Agents"));
 const ModelCatalog = lazy(() => import("./ModelCatalog"));
 const Sessions = lazy(() => import("./Sessions"));
 const Skills = lazy(() => import("./Skills"));
+const SkillWorkspace = lazy(() => import("./SkillWorkspace"));
 const Tools = lazy(() => import("./Tools"));
 const Knowledge = lazy(() => import("./Knowledge"));
 
@@ -122,6 +123,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
               <Route path="/knowledge-bases" element={<Knowledge user={user} />} />
               <Route path="/knowledge-bases/:knowledgeId" element={<Knowledge user={user} />} />
               <Route path="/skills" element={<Skills userId={user.id} />} />
+              <Route path="/skills/:skillId" element={<SkillWorkspace />} />
               <Route path="/tools" element={<Tools userId={user.id} />} />
               <Route path="*" element={<Navigate to="/agents" replace />} />
             </Routes>

@@ -18,7 +18,8 @@
     "verify:previews": "node scripts/verify-previews.mjs",
     "verify:calls": "node scripts/verify-calls.mjs",
     "verify:session-models": "node scripts/verify-session-models.mjs",
-    "verify:uploads": "node scripts/verify-chat-uploads.mjs"
+    "verify:uploads": "node scripts/verify-chat-uploads.mjs",
+    "verify:skills": "node scripts/verify-skill-workspace.mjs"
   },
   "dependencies": {
     "antd": "^5.29.1",

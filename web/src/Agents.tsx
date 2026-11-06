@@ -256,8 +256,8 @@ function AgentEditor({
         ) : agent && <Form.Item label="默认模型"><Typography.Text>{modelLabel(agent.default_model_id, models)}</Typography.Text></Form.Item>}
         <Form.Item name="system_prompt" label="系统指令"><Input.TextArea rows={5} maxLength={32768} /></Form.Item>
         <Form.Item name="skill_ids" label="Skill">
-          <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择已创建的 Skill"
-            options={skills.filter((item) => item.enabled).map((item) => ({ value: item.id, label: `${item.name} · ${item.description}` }))} />
+          <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择已发布的 Skill（关联固定版本）"
+            options={skills.filter((item) => item.enabled && item.current_version > 0).map((item) => ({ value: item.id, label: `${item.name} · v${item.current_version} · ${item.description}` }))} />
         </Form.Item>
         <Form.Item name="tool_ids" label="Tool">
           <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择可用 Tool"

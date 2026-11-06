@@ -28,7 +28,7 @@ function htmlDocument(content: string): string {
 <style>body{margin:24px;color:#182230;font:16px/1.75 system-ui,sans-serif;overflow-wrap:anywhere}h1,h2,h3{line-height:1.4}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}table{border-collapse:collapse;display:block;max-width:100%;overflow:auto}td,th{border:1px solid #d0d5dd;padding:8px;white-space:pre-wrap}a{color:inherit}blockquote{border-left:3px solid #d0d5dd;margin:16px 0;padding-left:16px}</style></head><body>${content}</body></html>`;
 }
 
-function PreviewContent({ preview }: { preview: Preview }) {
+export function PreviewContent({ preview }: { preview: Preview }) {
   if (preview.kind === "html") return <iframe className="artifact-preview-html" title="文档内容预览" sandbox="" referrerPolicy="no-referrer" srcDoc={htmlDocument(preview.content)} />;
   if (preview.kind === "sheets") return preview.sheets.length ? <Tabs className="artifact-preview-sheets" items={preview.sheets.map((sheet, index) => ({ key: String(index), label: sheet.name, children: <Sheet rows={sheet.rows} /> }))} /> : <Empty description="暂无表格内容" />;
   if (!preview.content) return <Empty description="文档暂无可预览内容" />;
