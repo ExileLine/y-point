@@ -182,6 +182,7 @@ async def selected_tools(db: AsyncSession, tool_ids: list[int], actor_id: int) -
     )
     if len(items) != len(tool_ids) or any(
         item.is_deleted != 0
+        or item.skill_id is not None
         or not item.enabled
         or (item.id, item.current_version) not in verified_versions
         or (item.owner_id != actor_id and item.visibility != Visibility.PUBLIC)
@@ -206,6 +207,7 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
             select(UserTool).where(
                 UserTool.id.in_([row.tool_id for row in rows]),
                 UserTool.is_deleted == 0,
+                UserTool.skill_id.is_(None),
                 UserTool.enabled.is_(True),
                 or_(UserTool.owner_id == actor_id, UserTool.visibility == Visibility.PUBLIC),
             )
@@ -257,6 +259,10 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
             or version.content_hash != row.content_hash
         ):
             raise CustomException(status_code=409, custom_code=10005, detail="Tool 授权或版本已失效")
+        if tool.skill_id is not None:
+            from app.services.skill_package_runtime import managed_script_resources
+
+            await managed_script_resources(db, run_id, actor_id, tool, version, read_files=False)
         result.append((tool, version))
     return result
 

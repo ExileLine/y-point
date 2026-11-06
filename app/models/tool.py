@@ -23,6 +23,7 @@ class UserTool(CustomBaseModel):
         },
     )
 
+    skill_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="所属 Skill ID，空表示独立 Tool")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="创建用户 ID")
     name: Mapped[str] = mapped_column(String(64), nullable=False, comment="创建者范围内的 Tool 名称")
     description: Mapped[str] = mapped_column(String(1024), nullable=False, comment="模型可见的 Tool 用途说明")

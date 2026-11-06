@@ -55,7 +55,14 @@ async def _remove_container(name: str) -> None:
 
 
 async def run_script(
-    language: str, source: str, arguments: dict, timeout_seconds: int, *, environment: ScriptEnvironment | None = None
+    language: str,
+    source: str,
+    arguments: dict,
+    timeout_seconds: int,
+    *,
+    environment: ScriptEnvironment | None = None,
+    package_files: dict[str, bytes] | None = None,
+    entrypoint: str | None = None,
 ) -> str:
     """在无网络、只读、非特权容器中执行脚本并返回有界 JSON 结果。"""
     if language not in ScriptLanguage or timeout_seconds <= 0:
@@ -67,9 +74,26 @@ async def run_script(
     filename = "main.py" if language == ScriptLanguage.PYTHON else "main.sh"
     container_name = f"yp-tool-{uuid4().hex}"
     with managed_workspace(SANDBOX_ROOT, "run-", timeout_seconds) as directory:
-        script = Path(directory) / filename
-        script.write_text(source, encoding="utf-8")
-        os.chmod(script, 0o644)
+        mount = f"type=bind,src={Path(directory) / filename},dst=/app/{filename},readonly"
+        if package_files is not None:
+            from app.services.skill_packages import MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, package_path
+
+            filename = package_path(entrypoint)
+            if not filename.startswith("scripts/") or package_files.get(filename) != source.encode("utf-8"):
+                raise ValueError("包内脚本入口与固定版本不一致")
+            if len(package_files) > MAX_PACKAGE_FILES or sum(map(len, package_files.values())) > MAX_PACKAGE_BYTES:
+                raise ValueError("脚本资源包超过限制")
+            os.chmod(directory, 0o755)
+            for path, raw in package_files.items():
+                target = Path(directory) / package_path(path)
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+                target.write_bytes(raw)
+                os.chmod(target, 0o644)
+            mount = f"type=bind,src={directory},dst=/app,readonly"
+        else:
+            script = Path(directory) / filename
+            script.write_text(source, encoding="utf-8")
+            os.chmod(script, 0o644)
         interpreter = (
             [ScriptLanguage.PYTHON, "-B", f"/app/{filename}"]
             if language == ScriptLanguage.PYTHON
@@ -89,7 +113,9 @@ async def run_script(
                 "python",
                 "-B",
                 "-c",
-                "import site, runpy; site.addsitedir('/opt/tool-deps'); runpy.run_path('/app/main.py', run_name='__main__')",
+                "import site, runpy, sys; site.addsitedir('/opt/tool-deps'); "
+                f"sys.path.insert(0, {str(Path('/app') / filename).rsplit('/', 1)[0]!r}); "
+                f"runpy.run_path({str(Path('/app') / filename)!r}, run_name='__main__')",
             ]
         command = ["timeout", "-s", "KILL", str(timeout_seconds + 2), *interpreter]
         process = await asyncio.create_subprocess_exec(
@@ -111,7 +137,7 @@ async def run_script(
             "--user=65534:65534",
             "--tmpfs=/tmp:rw,nosuid,nodev,size=8m",
             "--mount",
-            f"type=bind,src={script},dst=/app/{filename},readonly",
+            mount,
             "--workdir=/app",
             *dependency_mounts,
             environment.image if environment is not None else get_config().SCRIPT_SANDBOX_IMAGE,

@@ -15,6 +15,7 @@ from app.api.v1.artifacts import router as artifacts_router
 from app.api.v1.agents import router as agents_router
 from app.api.v1.agent_sessions import router as agent_sessions_router
 from app.api.v1.skills import router as skills_router
+from app.api.v1.skill_packages import router as skill_packages_router
 from app.api.v1.skill_templates import router as skill_templates_router
 from app.api.v1.tools import router as tools_router
 from app.api.v1.knowledge import router as knowledge_router, embedding_router, retrieval_router
@@ -29,6 +30,7 @@ api_router.include_router(runs_router)
 api_router.include_router(artifacts_router)
 api_router.include_router(agents_router)
 api_router.include_router(agent_sessions_router)
+api_router.include_router(skill_packages_router)
 api_router.include_router(skills_router)
 api_router.include_router(skill_templates_router)
 api_router.include_router(tools_router)

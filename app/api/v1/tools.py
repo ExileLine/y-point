@@ -91,7 +91,9 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
 
 async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = False) -> UserTool:
     """查找由当前用户创建且尚未删除的 Tool。"""
-    statement = select(UserTool).where(UserTool.id == tool_id, UserTool.owner_id == actor_id, UserTool.is_deleted == 0)
+    statement = select(UserTool).where(
+        UserTool.id == tool_id, UserTool.owner_id == actor_id, UserTool.is_deleted == 0, UserTool.skill_id.is_(None)
+    )
     tool = await db.scalar(statement.with_for_update() if lock else statement)
     if tool is None:
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
@@ -136,6 +138,7 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
             select(UserTool)
             .where(
                 UserTool.is_deleted == 0,
+                UserTool.skill_id.is_(None),
                 or_(UserTool.owner_id == actor.id, (UserTool.visibility == Visibility.PUBLIC) & UserTool.enabled.is_(True)),
             )
             .order_by(UserTool.id.desc())
@@ -247,7 +250,13 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
 async def get_tool(tool_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """公开 Tool 对所有用户可见，但源码和连接配置仅返回创建者。"""
     tool = await db.get(UserTool, tool_id)
-    if tool is None or tool.is_deleted != 0 or tool.owner_id != actor.id and (tool.visibility != Visibility.PUBLIC or not tool.enabled):
+    if (
+        tool is None
+        or tool.skill_id is not None
+        or tool.is_deleted != 0
+        or tool.owner_id != actor.id
+        and (tool.visibility != Visibility.PUBLIC or not tool.enabled)
+    ):
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
     return api_response(data=_output(tool, await _version(db, tool) if tool.owner_id == actor.id else None), datetime_format=False)
 

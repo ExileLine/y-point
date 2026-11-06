@@ -10,10 +10,14 @@ import re
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import RunCallKind, RunCallStatus, RunEventType
+from app.core.enums import RunCallKind, RunCallStatus, RunEventType, Visibility
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.knowledge import KnowledgeBase, RunKnowledgeBase
+from app.models.skill import Skill, RunSkill
+from app.models.skill_package import SkillScript
+from app.models.tool import RunTool, UserTool
+from app.services.user_tools import model_tool_name
 from app.schemas.run import RunCallOut
 from app.services.knowledge import knowledge_access
 from app.services.run_manager import TERMINAL_STATES
@@ -54,6 +58,22 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
         ).all()
         for run_id, name in targets:
             knowledge_names.setdefault(run_id, []).append(name or "知识库（已不可用）")
+    script_names = {}
+    managed = (
+        await db.execute(
+            select(RunTool, UserTool, SkillScript, Skill, RunSkill.skill_version)
+            .join(UserTool, UserTool.id == RunTool.tool_id)
+            .join(SkillScript, and_(SkillScript.tool_id == RunTool.tool_id, SkillScript.package_hash == RunTool.content_hash))
+            .join(Skill, Skill.id == SkillScript.skill_id)
+            .join(RunSkill, and_(RunSkill.run_id == RunTool.run_id, RunSkill.skill_id == Skill.id))
+            .where(RunTool.run_id.in_(run_ids))
+        )
+    ).all()
+    for fixed, tool, binding, skill, version in managed:
+        visible = not skill.is_deleted and skill.enabled and (skill.owner_id == owner_id or skill.visibility == Visibility.PUBLIC)
+        script_names[(fixed.run_id, model_tool_name(tool))] = (
+            f"{skill.name}@v{version} / {binding.path}" if visible else "Skill 脚本（已不可用）"
+        )
     grouped: dict[str, dict[str, RunCallOut]] = {}
     for event, run_state in rows:
         calls = grouped.setdefault(event.run_id, {})
@@ -66,7 +86,7 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                 kind = RunCallKind.KNOWLEDGE
                 name = "、".join(knowledge_names.get(event.run_id, [])) or "知识库检索"
             else:
-                kind, name = RunCallKind.TOOL, re.sub(r"^user_tool_\d+_", "", tool_name)
+                kind, name = RunCallKind.TOOL, script_names.get((event.run_id, tool_name), re.sub(r"^user_tool_\d+_", "", tool_name))
             call = RunCallOut(
                 call_id=event.tool_call_id,
                 kind=kind,

@@ -290,3 +290,15 @@ class KnowledgeRerank(StrEnum):
 
     NONE = "none"
     COVERAGE = "coverage"
+
+
+class SkillFileKind(StrEnum):
+    """Skill 文件包中用于界面和能力校验的资源类别。"""
+
+    INSTRUCTION = "instruction"
+    REFERENCE = "reference"
+    SCRIPT = "script"
+    TEMPLATE = "template"
+    SCHEMA = "schema"
+    ASSET = "asset"
+    TEXT = "text"

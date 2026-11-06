@@ -451,6 +451,11 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     else:
                         language, source = selected_version.script_language, selected_version.source_code
                         environment = await require_script_environment(selected_version)
+                        package_options = {}
+                        if selected.skill_id is not None:
+                            from app.services.skill_package_runtime import managed_script_resources
+
+                            package_options = await managed_script_resources(current_db, run.id, run.owner_id, selected, selected_version)
                     Draft202012Validator(selected_version.input_schema).validate(arguments)
                 if selected.kind == ToolKind.SCRIPT:
                     options = (
@@ -460,7 +465,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         if environment is not None
                         else {}
                     )
-                    return await run_script(language, source, arguments, timeout, **options)
+                    return await run_script(language, source, arguments, timeout, **options, **package_options)
                 return await invoke_mcp_tool(
                     url,
                     remote_name,

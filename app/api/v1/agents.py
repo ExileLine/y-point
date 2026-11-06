@@ -22,7 +22,7 @@ from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_share import AgentShare
 from app.models.skill import AgentSkill
-from app.models.tool import AgentTool
+from app.models.tool import AgentTool, UserTool
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
@@ -31,6 +31,7 @@ from app.services.identity import audit
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 from app.services.skills import agent_skill_rows, selected_skills
+from app.services.skill_package_runtime import check_agent_dependencies
 from app.services.user_tools import agent_tool_rows, selected_tools
 
 
@@ -102,6 +103,7 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     _check_cost_pricing(model, body.max_estimated_cost)
     skills = await selected_skills(db, body.skill_ids, actor.id)
     tools = await selected_tools(db, body.tool_ids, actor.id)
+    await check_agent_dependencies(db, skills, tools)
     knowledge = await selected_knowledge_bases(db, body.knowledge_base_ids, actor.id)
     if (tools or knowledge) and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
@@ -303,6 +305,13 @@ async def update_agent(
         )
         _check_cost_pricing(model, changes.get("max_estimated_cost", agent.max_estimated_cost))
     linked_tools = selected_user_tools if selected_user_tools is not None else await agent_tool_rows(db, agent_id)
+    linked_skills = selected if selected is not None else await agent_skill_rows(db, agent_id)
+    dependency_tools = (
+        list(await db.scalars(select(UserTool).where(UserTool.id.in_([row.tool_id for row in linked_tools]))))
+        if selected_user_tools is None
+        else selected_user_tools
+    )
+    await check_agent_dependencies(db, linked_skills, dependency_tools)
     linked_knowledge = knowledge if knowledge is not None else await agent_knowledge_ids(db, agent_id)
     if linked_tools or linked_knowledge:
         current_model = await db.get(ModelCatalog, changes.get("default_model_id", agent.default_model_id))

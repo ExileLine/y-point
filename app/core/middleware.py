@@ -61,12 +61,16 @@ class ArtifactUploadLimitMiddleware:
         path, method = scope.get("path", ""), scope.get("method")
         knowledge_upload = path.startswith("/api/v1/knowledge-bases/") and "/documents" in path and method in ("POST", "PUT")
         artifact_upload = path == "/api/v1/artifacts/uploads" and method == "POST"
-        if scope["type"] != "http" or not (artifact_upload or knowledge_upload):
+        skill_upload = path.startswith("/api/v1/skills/") and method in ("POST", "PUT")
+        if scope["type"] != "http" or not (artifact_upload or knowledge_upload or skill_upload):
             await self.app(scope, receive, send)
             return
         headers = _decode_headers(scope.get("headers", []))
         content_length = headers.get("content-length")
         request_limit = min(self.max_bytes, 11 * 1024 * 1024) if knowledge_upload else self.max_bytes
+        if skill_upload:
+            single_template = path.endswith(("/template", "/templates"))
+            request_limit = min(self.max_bytes, (21 if single_template else 33) * 1024 * 1024)
         if content_length and content_length.isdecimal() and int(content_length) > request_limit:
             await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
             return

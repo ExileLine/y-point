@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import io
 import json
+import re
 import zipfile
 import unicodedata
 from copy import deepcopy
@@ -155,6 +156,12 @@ def validate_docx_template(data: bytes, schema: dict) -> None:
                     raise ValueError("模板包含活动文档内容")
             if name.endswith((".xml", ".rels")) and b"<!" in archive.read(item):
                 raise ValueError("模板不允许 XML 声明实体或 DTD")
+            supported = name == "word/document.xml" or re.fullmatch(r"word/(?:header|footer)\d+\.xml", name) is not None
+            if name.endswith(".xml") and not supported:
+                xml = archive.read(item).decode("utf-8")
+                text = "".join(ElementTree.fromstring(xml).itertext())
+                if any(marker in xml or marker in text for marker in ("{{", "{%", "{#")):
+                    raise ValueError("文档属性、脚注及其他部件不支持模板语法，请仅在正文、页眉或页脚设置字段")
             if name.endswith(".rels"):
                 relations = ElementTree.fromstring(archive.read(item))
                 if any(relation.attrib.get("TargetMode", "").lower() == "external" for relation in relations):
@@ -260,8 +267,16 @@ async def template_for_version(db: AsyncSession, skill_id: int, version: int, te
     """按文件名选择固定模板；旧单模板可省略名称，多模板禁止猜测。"""
     templates = await templates_for_version(db, skill_id, version)
     if template_name is not None:
-        key = template_key(template_name)
-        return next((item for item in templates if item.template_key == key), None)
+        from app.services.skill_packages import package_path
+
+        key = package_path(template_name).casefold()
+        exact = next((item for item in templates if item.template_key == key), None)
+        if exact is not None:
+            return exact
+        matches = [item for item in templates if item.template_key.rsplit("/", 1)[-1] == key]
+        if len(matches) > 1:
+            raise ValueError("模板文件名重复，请指定完整的 assets/templates/ 路径")
+        return matches[0] if matches else None
     if len(templates) > 1:
         raise ValueError("此 Skill 有多个模板，请按 SKILL.md 指定 template_name")
     return templates[0] if templates else None

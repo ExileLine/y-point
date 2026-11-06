@@ -118,7 +118,14 @@ async def download_template(actor: Admin = Depends(get_current_admin)):
     return Response(
         export_zip(
             {
-                "SKILL.md": TEMPLATE,
+                "SKILL.md": TEMPLATE + "\n参考资料见 [设计说明](references/architecture.md)。产物与脚本执行约定见 README.md。\n",
+                "references/architecture.md": "# 参考资料\n\n在此记录任务需要读取的规范、材料或接口说明。\n",
+                "scripts/validate.py": 'import json, sys\nprint(json.dumps({"valid": bool(json.load(sys.stdin))}))\n',
+                "assets/templates/README.md": "# 产物模板\n\n上传 DOCX 后，在 y-point.yaml 中关联此路径与 assets/schemas 中的字段契约。\n",
+                "assets/schemas/report.schema.json": '{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}',
+                "assets/examples/report.json": '{"title":"示例报告"}',
+                "y-point.yaml": "templates: {}\nscripts: {}\nrequired_tools: []\n",
+                "README.md": "# Skill 使用说明\n\n先编写 SKILL.md，再添加资料、模板和字段契约。脚本声明后必须试运行再发布。\n",
             }
         ),
         media_type="application/zip",
@@ -181,6 +188,12 @@ async def download_skill(skill_id: int, actor: Admin = Depends(get_current_admin
     if item is None or item.is_deleted != 0 or (item.owner_id != actor.id and (item.visibility != Visibility.PUBLIC or not item.enabled)):
         raise CustomException(status_code=404, custom_code=10002, detail="Skill 不存在")
     version = await _version(db, item)
+    if version is None:
+        raise CustomException(status_code=409, custom_code=10005, detail="请先在工作区发布 Skill")
+    if any(entry.get("package_file") for entry in version.manifest):
+        from app.api.v1.skill_packages import export_package
+
+        return await export_package(skill_id, item.current_version, actor, db)
     return Response(
         export_zip(version.files),
         media_type="application/zip",
@@ -199,6 +212,8 @@ async def update_skill(
     if item.current_version != body.expected_version:
         raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本已变化")
     previous = await _version(db, item)
+    if previous is None or any(entry.get("package_file") for entry in previous.manifest):
+        raise CustomException(status_code=409, custom_code=10005, detail="文件包请在 Skill 工作区编辑草稿并发布")
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
     if any(changes.get(key) is None for key in ("visibility", "enabled") if key in changes):
         raise CustomException(status_code=400, custom_code=10005, detail="必填设置不能为空")

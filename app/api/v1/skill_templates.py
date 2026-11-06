@@ -21,7 +21,7 @@ from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.skill import Skill, SkillVersion
 from app.models.skill_template import SkillTemplate
-from app.services.artifact_store import artifact_root, save_upload, enforce_owner_quota
+from app.services.artifact_store import ArtifactValidationError, artifact_root, save_upload, enforce_owner_quota
 from app.services.identity import audit
 from app.services.skill_reports import (
     MAX_SKILL_TEMPLATES,
@@ -50,6 +50,8 @@ async def _publish_templates(
     if item.current_version != expected_version:
         raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本已变化")
     previous = await _version(db, item)
+    if previous is None or any(entry.get("package_file") for entry in previous.manifest):
+        raise CustomException(status_code=409, custom_code=10005, detail="文件包模板请在工作区修改并与草稿一起发布")
     existing = [entry for entry in previous.manifest if entry.get("report_template") is True]
     if legacy_single and len(existing) > 1:
         raise CustomException(status_code=409, custom_code=10005, detail="此 Skill 已有多个模板，请使用批量模板接口")
@@ -142,6 +144,10 @@ async def _publish_templates(
         )
         audit(db, "skill.templates_published", actor_id=actor.id, target_id=skill_id)
         await db.commit()
+    except ArtifactValidationError as exc:
+        await db.rollback()
+        await _cleanup_failed_uploads(saved, root)
+        raise CustomException(status_code=400, custom_code=10006, detail=str(exc)) from None
     except BaseException:
         await db.rollback()
         await _cleanup_failed_uploads(saved, root)

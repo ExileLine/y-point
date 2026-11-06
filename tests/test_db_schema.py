@@ -210,7 +210,7 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "045"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "046"
                 await connection.run_sync(check_mapped_schema)
             await _assert_tool_slot_processes(engine.url)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -491,3 +491,38 @@ def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path
     migrate("check")
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT template_key, artifact_id FROM yp_skill_template").fetchall() == [("报告模板.docx", "legacy")]
+
+
+def test_skill_package_migration_guards_downgrade(tmp_path: Path) -> None:
+    """新增包关联可检查一致性，存在草稿时不能降级丢弃用户文件索引。"""
+    database = tmp_path / "skill-package-migration.db"
+    env = os.environ.copy()
+    env.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        }
+    )
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(*args: str, check: bool = True):
+        """只在隔离数据库上运行迁移命令。"""
+        return subprocess.run([sys.executable, "-m", "alembic", *args], cwd=root, env=env, check=check, capture_output=True, text=True)
+
+    migrate("upgrade", "head")
+    migrate("check")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO yp_skill_draft "
+            "(skill_id,revision,base_version,files,settings,create_time,update_time,create_timestamp,update_timestamp) "
+            "VALUES (1,1,0,'{}','{}','2026-11-06','2026-11-06',1,1)"
+        )
+    rejected = migrate("downgrade", "045", check=False)
+    assert rejected.returncode != 0 and "不能无损降级" in rejected.stderr
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM yp_skill_draft").fetchone()[0] == 1
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "046"
+        connection.execute("DELETE FROM yp_skill_draft")
+    migrate("downgrade", "045")
+    migrate("upgrade", "head")
+    migrate("check")

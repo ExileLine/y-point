@@ -829,3 +829,40 @@ def test_required_reports_cover_all_activated_skills() -> None:
             await engine.dispose()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("part", ["docProps/core.xml", "word/footnotes.xml", "word/endnotes.xml"])
+def test_template_rejects_dynamic_content_outside_validated_parts(part: str) -> None:
+    """属性、脚注与尾注的动态语法一律拒绝，防止绕过 AST 与输出预算。"""
+    import zipfile
+
+    raw = template_bytes()
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        parts = {item.filename: archive.read(item) for item in archive.infolist()}
+    for payload in ("{{ title }}", "{{ title.upper() }}", "{% for item in findings %}{{ item.note }}{% endfor %}"):
+        parts[part] = f"<root><text>{payload}</text></root>".encode()
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            for name, content in parts.items():
+                archive.writestr(name, content)
+        with pytest.raises(ValueError, match="其他部件不支持模板语法"):
+            skill_reports.validate_docx_template(output.getvalue(), skill_reports.validate_fields_schema(SCHEMA))
+    parts[part] = b"<root><text>{</text><text>{ title }}</text></root>"
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for name, content in parts.items():
+            archive.writestr(name, content)
+    with pytest.raises(ValueError, match="其他部件不支持模板语法"):
+        skill_reports.validate_docx_template(output.getvalue(), skill_reports.validate_fields_schema(SCHEMA))
+
+
+def test_template_allows_static_footnotes() -> None:
+    """静态脚注允许保留，禁用范围仅针对未受校验的动态模板语法。"""
+    import zipfile
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(template_bytes())) as source, zipfile.ZipFile(output, "w") as target:
+        for entry in source.infolist():
+            target.writestr(entry, source.read(entry))
+        target.writestr("word/footnotes.xml", "<root><text>静态脚注说明</text></root>")
+    skill_reports.validate_docx_template(output.getvalue(), skill_reports.validate_fields_schema(SCHEMA))
