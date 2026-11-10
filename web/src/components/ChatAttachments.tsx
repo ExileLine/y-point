@@ -1,6 +1,8 @@
-import { Button, Checkbox, Spin, Tag, Tooltip, Upload, message } from "antd";
+import { Alert, Button, Checkbox, Spin, Tag, Tooltip, Upload, message } from "antd";
 import { FilePlus2, Paperclip, RotateCcw, X } from "lucide-react";
 import { uploadChatFile, type UploadedArtifact } from "../api";
+
+import { formatMiB, useRuntimeLimits } from "../runtime-limits";
 
 export type ChatFile = { key: string; file: File; state: "uploading" | "ready" | "failed"; started?: boolean; artifact?: UploadedArtifact; context: boolean; error?: string };
 const contextTypes = new Set(["text/plain", "text/markdown", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "image/png", "image/jpeg"]);
@@ -8,6 +10,7 @@ const contextTypes = new Set(["text/plain", "text/markdown", "application/pdf", 
 export default function ChatAttachments({ items, onChange, disabled }: {
   items: ChatFile[]; onChange: (update: (items: ChatFile[]) => ChatFile[]) => void; disabled: boolean;
 }) {
+  const { limits, error: limitsError, retry } = useRuntimeLimits();
   async function upload(item: ChatFile) {
     onChange(current => current.map(entry => entry.key === item.key ? { ...entry, state: "uploading", started: true, error: undefined } : entry));
     try {
@@ -18,16 +21,18 @@ export default function ChatAttachments({ items, onChange, disabled }: {
     }
   }
   return <div className="chat-attachments">
-    <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled}
+    {limitsError && <Alert type="error" showIcon message={`附件限制加载失败：${limitsError}`} action={<Button size="small" onClick={retry}>重试</Button>} />}
+    <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled || !limits}
       beforeUpload={(file, batch) => {
-        if (items.length + batch.indexOf(file) >= 5) { if (items.length + batch.indexOf(file) === 5) message.warning("本轮最多附加 5 个文件"); return false; }
-        if (file.size > 10 * 1024 * 1024) { message.error("每个文件最多 10 MiB"); return false; }
+        if (!limits) return false;
+        if (items.length + batch.indexOf(file) >= limits.max_files) { if (items.length + batch.indexOf(file) === limits.max_files) message.warning(`本轮最多附加 ${limits.max_files} 个文件`); return false; }
+        if (file.size > limits.upload_max_bytes) { message.error(`每个文件最多 ${formatMiB(limits.upload_max_bytes)}`); return false; }
         const item: ChatFile = { key: crypto.randomUUID(), file, state: "uploading", context: true };
         // 同一批多选使用函数更新核对总数，避免连续选择绕过五个文件上限。
-        onChange(current => current.length < 5 ? [...current, item] : current);
+        onChange(current => current.length < limits.max_files ? [...current, item] : current);
         return false;
       }}>
-      <span className="chat-upload-label"><Paperclip size={16} /> 添加文件，或拖拽到这里 <small>最多 5 个 · 每个 10 MiB</small></span>
+      <span className="chat-upload-label"><Paperclip size={16} /> 添加文件，或拖拽到这里 <small>{limits ? `最多 ${limits.max_files} 个 · 每个 ${formatMiB(limits.upload_max_bytes)}` : "正在加载上传限制…"}</small></span>
     </Upload.Dragger>
     <UploadQueue items={items} start={upload} />
     <div className="chat-file-list" aria-label="本轮附件">{items.map(item => <div className="chat-file" key={item.key}>
@@ -38,7 +43,7 @@ export default function ChatAttachments({ items, onChange, disabled }: {
         contextTypes.has(item.artifact?.media_type || "") ? <Checkbox checked={item.context} disabled={disabled} onChange={event => onChange(current => current.map(entry => entry.key === item.key ? { ...entry, context: event.target.checked } : entry))}>供模型读取</Checkbox> : <Tag>仅附加</Tag>}
       <Tooltip title="移除附件"><Button type="text" aria-label={`移除 ${item.file.name}`} icon={<X size={16} />} disabled={disabled} onClick={() => onChange(current => current.filter(entry => entry.key !== item.key))} /></Tooltip>
     </div>)}</div>
-    {items.length > 0 && <p className="chat-file-notice">文本提取合计最多 16 KiB；图片需要视觉模型。文件仅供本轮读取，长文档请拆分或导入知识库。</p>}
+    {items.length > 0 && <p className="chat-file-notice">文本提取合计上限：{limits ? formatMiB(limits.context_max_bytes) : "加载中…"}；图片需要视觉模型。文件仅供本轮读取，长文档请拆分或导入知识库。</p>}
   </div>;
 }
 

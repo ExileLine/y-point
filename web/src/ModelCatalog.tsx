@@ -1,3 +1,4 @@
+import { useRuntimeLimits } from "./runtime-limits";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Select, Skeleton, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -42,6 +43,7 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
   open: boolean; provider: Provider | null; kinds: ProviderKind[]; onClose: () => void; onSaved: () => void;
 }) {
   const [form] = Form.useForm<ProviderValues>();
+  const { limits, error: limitsError, retry: retryLimits } = useRuntimeLimits(open);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const kind = Form.useWatch("kind", form);
@@ -103,7 +105,7 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
   function field(name: string) {
     const required = spec?.required_fields.includes(name) && !(provider && name === "api_key" && provider.has_api_key);
     if (name === "status") return <Form.Item key={name} name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>;
-    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={[{ required: true }]}><InputNumber min={1} max={120} className="catalog-full-input" /></Form.Item>;
+    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} className="catalog-full-input" /></Form.Item>;
     if (name === "remark") return <Form.Item key={name} name={name} label={fieldLabels[name]}><Input.TextArea rows={2} maxLength={512} /></Form.Item>;
     if (name === "custom_headers") return <Form.Item key={name} name="custom_headers_text" label={fieldLabels[name]} extra={provider?.has_custom_headers ? "已配置；留空保留原值" : "JSON 对象，例如 {\"X-Tenant\":\"tenant\"}"}><Input.TextArea rows={3} /></Form.Item>;
     return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={required ? [{ required: true, whitespace: true, message: `请输入${fieldLabels[name]}` }] : undefined} extra={name === "api_key" && provider?.has_api_key ? "已配置；留空保留原值" : undefined}>
@@ -112,7 +114,8 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
   }
 
   const fields = [...new Set([...(spec?.required_fields || []), ...(spec?.optional_fields || [])])].filter((name) => name !== "kind");
-  return <Drawer title={provider ? "编辑供应商连接" : "新建供应商连接"} open={open} onClose={onClose} width="min(100vw, var(--yp-detail-width))" extra={<Button type="primary" loading={saving} onClick={() => form.submit()}>保存</Button>}>
+  return <Drawer title={provider ? "编辑供应商连接" : "新建供应商连接"} open={open} onClose={onClose} width="min(100vw, var(--yp-detail-width))" extra={<Button type="primary" disabled={!limits} loading={saving} onClick={() => form.submit()}>保存</Button>}>
+    {limitsError && <Alert type="error" showIcon message={`运行配置加载失败：${limitsError}`} action={<Button size="small" onClick={retryLimits}>重试</Button>} />}
     {error && <Alert className="catalog-alert" type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void save(values)}>
       <Form.Item name="kind" label="供应商类型" rules={[{ required: true }]}><Select disabled={Boolean(provider)} options={kinds.map((item) => ({ value: item.kind, label: item.display_name }))} onChange={(value) => { if (!provider) form.setFieldValue("base_url", kinds.find((item) => item.kind === value)?.suggested_base_url || undefined); }} /></Form.Item>

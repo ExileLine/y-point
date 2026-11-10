@@ -11,6 +11,8 @@ export type User = {
   role: string;
 };
 
+export type ModelThinkingMode = "auto" | "enabled" | "disabled";
+
 export type Agent = {
   id: number;
   name: string;
@@ -21,6 +23,7 @@ export type Agent = {
   default_model_id: number;
   temperature: string;
   max_output_tokens: number;
+  thinking_mode: ModelThinkingMode;
   model_timeout_seconds: number;
   tool_timeout_seconds: number;
   max_model_calls: number | null;
@@ -265,6 +268,7 @@ export type AgentDraft = {
   default_model_id?: number;
   temperature?: string;
   max_output_tokens?: number;
+  thinking_mode?: ModelThinkingMode;
   model_timeout_seconds?: number;
   tool_timeout_seconds?: number;
   max_model_calls?: number | null;

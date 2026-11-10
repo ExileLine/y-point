@@ -24,7 +24,12 @@ const stateLabels: Record<string, string> = {
 };
 const failureLabels: Record<string, string> = {
   provider_timeout: "模型供应商响应超时，可稍后重新发送；持续超时请检查供应商超时设置或切换模型",
-  execution_timeout: "本轮已达到执行时限，可重新发送或调整智能体的模型超时预算",
+  model_execution_timeout: "本次模型调用超时，可调整智能体的单次模型超时或切换模型后重试",
+  execution_timeout: "运行被执行调用方的时限保护中断，可检查任务记录后重试",
+  tool_execution_timeout: "单次工具调用超时，请检查 Tool、MCP、知识检索或脚本的对应超时配置",
+  graph_step_limit_exceeded: "本次执行已达到图步数上限，请检查模型是否重复调用工具，或联系管理员调整步数限制",
+  model_output_limit_exceeded: "模型已耗尽本次输出额度，回答或工具参数可能未完成。请提高智能体的单次最大输出 Token；思考模型可能在正文前耗尽额度，必要时分批审查或切换模型",
+  empty_response: "模型未返回可展示的正文，请重新发送或切换模型",
   model_error: "模型请求失败，可重新发送或切换模型；如持续失败请检查供应商连接",
   summary_error: "上下文摘要失败", checkpoint_mismatch: "会话状态不一致", attachment_unavailable: "附件不可用",
   artifact_required: "需要文件", context_window_exceeded: "超出模型上下文窗口",

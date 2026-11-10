@@ -1,3 +1,4 @@
+import { useRuntimeLimits } from "./runtime-limits";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -125,6 +126,7 @@ function AgentEditor({
   onSaved: () => void;
 }) {
   const [form] = Form.useForm<AgentDraft>();
+  const { limits, error: limitsError, retry: retryLimits } = useRuntimeLimits(open);
   const [saving, setSaving] = useState(false);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [tools, setTools] = useState<UserTool[]>([]);
@@ -140,7 +142,7 @@ function AgentEditor({
     : [];
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !limits) return;
     let active = true;
     setKnowledgeLoading(true); setKnowledgeError("");
     listAllKnowledgeBases().then((rows) => { if (active) setKnowledgeBases(rows); }).catch((failure: unknown) => {
@@ -157,6 +159,7 @@ function AgentEditor({
       default_model_id: agent.default_model_id,
       temperature: agent.temperature,
       max_output_tokens: agent.max_output_tokens,
+      thinking_mode: agent.thinking_mode,
       model_timeout_seconds: agent.model_timeout_seconds,
       tool_timeout_seconds: agent.tool_timeout_seconds,
       max_model_calls: agent.max_model_calls,
@@ -174,9 +177,10 @@ function AgentEditor({
       welcome_message: null,
       default_model_id: undefined,
       temperature: "1",
-      max_output_tokens: 4096,
-      model_timeout_seconds: 120,
-      tool_timeout_seconds: 120,
+      max_output_tokens: limits.default_max_output_tokens,
+      thinking_mode: "auto",
+      model_timeout_seconds: limits.default_model_timeout_seconds,
+      tool_timeout_seconds: limits.default_tool_timeout_seconds,
       max_model_calls: null,
       max_tool_calls: null,
       max_total_tokens: null,
@@ -187,7 +191,7 @@ function AgentEditor({
       knowledge_base_ids: [],
     });
     return () => { active = false; };
-  }, [agent, form, open]);
+  }, [agent, form, open, limits]);
 
   async function save(values: AgentDraft) {
     setSaving(true);
@@ -206,6 +210,7 @@ function AgentEditor({
         if (canSelectModel && values.default_model_id !== agent.default_model_id) changes.default_model_id = values.default_model_id;
         if (Number(values.temperature) !== Number(agent.temperature)) changes.temperature = values.temperature;
         if (values.max_output_tokens !== agent.max_output_tokens) changes.max_output_tokens = values.max_output_tokens;
+        if (values.thinking_mode !== agent.thinking_mode) changes.thinking_mode = values.thinking_mode;
         if (values.model_timeout_seconds !== agent.model_timeout_seconds) changes.model_timeout_seconds = values.model_timeout_seconds;
         if (values.tool_timeout_seconds !== agent.tool_timeout_seconds) changes.tool_timeout_seconds = values.tool_timeout_seconds;
         if ((values.max_model_calls ?? null) !== agent.max_model_calls) changes.max_model_calls = values.max_model_calls ?? null;
@@ -234,13 +239,14 @@ function AgentEditor({
       open={open}
       onClose={onClose}
       width="min(100vw, var(--yp-detail-width))"
-      extra={<Button type="primary" loading={saving} onClick={() => form.submit()}>保存</Button>}
+      extra={<Button type="primary" disabled={!limits} loading={saving} onClick={() => form.submit()}>保存</Button>}
     >
+      {limitsError && <Alert className="drawer-alert" type="error" showIcon message={`运行配置加载失败：${limitsError}`} action={<Button size="small" onClick={retryLimits}>重试</Button>} />}
       {(error || (canSelectModel && modelError)) && <Alert className="drawer-alert" type="error" showIcon message={error || modelError} />}
       {!agent && !modelError && usableModels.length === 0 && (
         <Alert className="drawer-alert" type="info" showIcon message="暂无已验证文本能力的可用模型" />
       )}
-      <Form<AgentDraft> form={form} layout="vertical" onFinish={save} requiredMark={false}>
+      <Form<AgentDraft> form={form} layout="vertical" onFinish={save} requiredMark={false} disabled={!limits}>
         <Form.Item name="name" label="名称" rules={[{ required: true, whitespace: true, message: "请输入名称" }]}>
           <Input maxLength={128} showCount />
         </Form.Item>
@@ -270,18 +276,22 @@ function AgentEditor({
         </Form.Item>
         <Form.Item name="welcome_message" label="欢迎语"><Input.TextArea rows={3} maxLength={2048} /></Form.Item>
         <Collapse ghost items={[{ key: "runtime", label: "运行设置", forceRender: true, children: <>
+          {limits && <p>每次模型与工具调用独立计时，整轮不设总时限。单次工具同时受部署限额约束：MCP {limits.mcp_call_timeout_seconds} 秒、知识库检索 {limits.knowledge_search_timeout_seconds} 秒、脚本 {limits.script_execution_timeout_seconds} 秒。供应商请求超时单独生效；每次执行最多 {limits.recursion_limit} 个图步骤。</p>}
           <Form.Item name="temperature" label="生成温度" rules={[{ required: true }]}><InputNumber min={0} max={2} step={0.1} precision={2} stringMode className="agent-number-input" /></Form.Item>
-          <Form.Item name="max_output_tokens" label="最大输出 Token" rules={[{ required: true, type: "number", min: 1, max: 65536 }, { validator: async (_, value) => {
+          <Form.Item name="max_output_tokens" label="最大输出 Token" extra="单次模型生成的输出额度；思考模型可能在正文或工具参数生成前耗尽额度。长文档审查可按模型能力提高此值，并同步检查单次模型时限。" rules={[{ required: true, type: "number", min: 1, max: limits?.max_output_tokens }, { validator: async (_, value) => {
             if (selectedModel?.context_window && Number(value) + 1024 > selectedModel.context_window) throw new Error("输出上限需为上下文保留至少 1024 Token");
-          } }]}><InputNumber min={1} max={65536} precision={0} className="agent-number-input" /></Form.Item>
+          } }]}><InputNumber min={1} max={limits?.max_output_tokens} precision={0} className="agent-number-input" /></Form.Item>
           <div className="agent-form-pair">
-            <Form.Item name="model_timeout_seconds" label="模型超时（秒）" rules={[{ required: true }]}><InputNumber min={1} max={120} precision={0} className="agent-number-input" /></Form.Item>
-            <Form.Item name="tool_timeout_seconds" label="工具超时（秒）" rules={[{ required: true }]}><InputNumber min={1} max={120} precision={0} className="agent-number-input" /></Form.Item>
+            <Form.Item name="model_timeout_seconds" label="单次模型超时（秒）" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
+            <Form.Item name="tool_timeout_seconds" label="单次工具超时（秒）" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_tool_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
           </div>
           <div className="agent-form-pair">
             <Form.Item name="max_model_calls" label="模型调用上限"><InputNumber min={1} max={100} precision={0} className="agent-number-input" /></Form.Item>
             <Form.Item name="max_tool_calls" label="工具调用上限"><InputNumber min={1} max={100} precision={0} className="agent-number-input" /></Form.Item>
           </div>
+          <Form.Item name="thinking_mode" label="模型思考模式" rules={[{ required: true }]} extra="默认跟随模型。显式启用或关闭要求 OpenAI 兼容服务支持 chat_template_kwargs.enable_thinking；思考和工具参数也可能计入输出额度。">
+            <Select options={[{ value: "auto", label: "跟随模型" }, { value: "enabled", label: "启用思考" }, { value: "disabled", label: "关闭思考" }]} />
+          </Form.Item>
           <Form.Item name="max_total_tokens" label="每轮总 Token 上限"><InputNumber min={1} max={10000000} precision={0} className="agent-number-input" /></Form.Item>
           <Form.Item name="max_estimated_cost" label="每轮估算成本上限" extra="按模型配置的价格估算；未设置价格的模型不能启用此上限"><InputNumber min={0.000001} precision={6} stringMode className="agent-number-input" /></Form.Item>
         </> }]} />
@@ -532,8 +542,9 @@ export default function Agents() {
               { key: "model", label: "默认模型", children: modelLabel(detail.agent.default_model_id, models) },
               { key: "prompt", label: "系统指令", children: <div className="detail-long-text">{detail.agent.system_prompt || "未设置"}</div> },
               { key: "temperature", label: "生成温度", children: detail.agent.temperature ?? "1" },
-              { key: "output", label: "最大输出", children: `${detail.agent.max_output_tokens ?? 4096} Token` },
-              { key: "timeouts", label: "模型 / 工具超时", children: `${detail.agent.model_timeout_seconds ?? 120} / ${detail.agent.tool_timeout_seconds ?? 120} 秒` },
+              { key: "output", label: "最大输出", children: `${detail.agent.max_output_tokens} Token` },
+              { key: "thinking", label: "模型思考", children: detail.agent.thinking_mode === "enabled" ? "启用思考" : detail.agent.thinking_mode === "disabled" ? "关闭思考" : "跟随模型" },
+              { key: "timeouts", label: "模型 / 工具超时", children: `${detail.agent.model_timeout_seconds} / ${detail.agent.tool_timeout_seconds} 秒` },
               { key: "budget", label: "每轮预算", children: `模型 ${detail.agent.max_model_calls ?? "不限"} 次 · 工具 ${detail.agent.max_tool_calls ?? "不限"} 次 · Token ${detail.agent.max_total_tokens ?? "不限"} · 成本 ${detail.agent.max_estimated_cost ?? "不限"}` },
             ] : [{ key: "owner", label: "所有者", children: `用户 #${detail.agent.owner_id}` }]),
             { key: "welcome", label: "欢迎语", children: detail.agent.welcome_message || "未设置" },
