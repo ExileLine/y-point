@@ -391,7 +391,7 @@ def test_zip_and_execution_configuration_reject_unsafe_shapes() -> None:
                         "bytes": 1,
                     }
                     for path in paths
-                }
+                },
             )
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w") as archive:
@@ -411,7 +411,7 @@ def test_zip_and_execution_configuration_reject_unsafe_shapes() -> None:
             packages.execution_config(
                 {
                     "y-point.yaml": config,
-                }
+                },
             )
 
 
@@ -441,13 +441,13 @@ def test_skill_upload_limit_precedes_multipart_parsing() -> None:
                             "type": "http.response.start",
                             "status": 200,
                             "headers": [],
-                        }
+                        },
                     )
                     await send(
                         {
                             "type": "http.response.body",
                             "body": b"ok",
-                        }
+                        },
                     )
 
                 async def receive():
@@ -511,7 +511,7 @@ def test_legacy_resources_convert_only_in_draft_and_quota_failures_are_business_
                         "fields_schema": json.dumps(
                             {
                                 "old.docx": SCHEMA,
-                            }
+                            },
                         ),
                     },
                     files=[("files", ("old.docx", template_bytes()))],
@@ -525,7 +525,7 @@ def test_legacy_resources_convert_only_in_draft_and_quota_failures_are_business_
                     "fields_schema": json.dumps(
                         {
                             "old.docx": SCHEMA,
-                        }
+                        },
                     ),
                 },
                 files=[("files", ("old.docx", template_bytes()))],
@@ -644,7 +644,7 @@ def test_published_package_script_executes_in_real_sandbox_and_records_calls(tmp
                                     "file_path": "/skills/review-package/SKILL.md",
                                 },
                                 "id": "read-skill",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(
@@ -656,11 +656,11 @@ def test_published_package_script_executes_in_real_sandbox_and_records_calls(tmp
                                     "value": 21,
                                 },
                                 "id": "call-script",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="固定包结果为42"),
-                ]
+                ],
             )
             from app.services import worker_tools
 
@@ -687,7 +687,7 @@ def test_published_package_script_executes_in_real_sandbox_and_records_calls(tmp
             assert runtime_results == [
                 {
                     "result": 42,
-                }
+                },
             ]
             async with sessions() as db:
                 invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == run.id))
@@ -712,7 +712,7 @@ def test_required_tools_are_explicit_and_unambiguous() -> None:
             manifest=[
                 {
                     "package_file": True,
-                }
+                },
             ],
         )
         for tools in ([], [UserTool(name="func1"), UserTool(name="func1")]):

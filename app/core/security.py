@@ -94,7 +94,9 @@ def unauthorized() -> CustomException:
 
 
 async def get_current_admin(
-    request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme), db: AsyncSession = Depends(get_db_session)
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db_session),
 ) -> Admin:
     """校验 Bearer 令牌、用户状态及数据库会话，并返回当前用户。"""
     if credentials is None:

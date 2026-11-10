@@ -110,7 +110,7 @@ async def _create_package(db: AsyncSession, owner_id: int, files: dict[str, byte
     name, description, _, _ = validate_package(
         {
             "SKILL.md": files.get("SKILL.md", b"").decode("utf-8"),
-        }
+        },
     )
     async with resource_transaction(db, owner_id) as saved:
         item = Skill(
@@ -138,7 +138,7 @@ async def _create_package(db: AsyncSession, owner_id: int, files: dict[str, byte
                     "visibility": Visibility.PRIVATE,
                     "enabled": True,
                 },
-            )
+            ),
         )
         audit(db, "skill.draft_created", actor_id=owner_id, target_id=item.id)
     return item
@@ -221,9 +221,7 @@ async def workspace(skill_id: int, actor: Admin = Depends(get_current_admin), db
 
 
 @router.post("/{skill_id}/draft", summary="从已发布版本创建或恢复 Skill 草稿")
-async def start_draft(
-    skill_id: int, body: SkillDraftStartIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def start_draft(skill_id: int, body: SkillDraftStartIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """普通打开复用草稿；显式恢复历史必须携带当前草稿修订号。"""
     item = await _owned(db, skill_id, actor.id)
     draft = await db.scalar(select(SkillDraft).where(SkillDraft.skill_id == skill_id))
@@ -254,9 +252,7 @@ async def start_draft(
 
 
 @router.put("/{skill_id}/draft", summary="保存 Skill 文本设置、重命名或删除草稿文件")
-async def save_draft(
-    skill_id: int, body: SkillDraftUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def save_draft(skill_id: int, body: SkillDraftUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """只修改工作区，以修订号保护整批编辑，不改变已发布版本。"""
     item, draft = await _draft(db, skill_id, actor.id, body.expected_revision)
     async with resource_transaction(db, actor.id) as saved:
@@ -382,9 +378,7 @@ async def get_file(
 
 
 @router.post("/{skill_id}/draft/validate", summary="校验完整 Skill 草稿并定位发布阻断")
-async def check_draft(
-    skill_id: int, body: SkillDraftRevisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def check_draft(skill_id: int, body: SkillDraftRevisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """校验结构、资源引用、模板及脚本验证状态，不修改已发布内容。"""
     item, draft = await _draft(db, skill_id, actor.id, body.expected_revision)
     try:
@@ -395,9 +389,7 @@ async def check_draft(
 
 
 @router.post("/{skill_id}/draft/publish", summary="原子发布经过校验的完整 Skill 文件包")
-async def publish_draft(
-    skill_id: int, body: SkillDraftRevisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def publish_draft(skill_id: int, body: SkillDraftRevisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """固定正文、模板和脚本绑定；同时检查草稿修订号与当前发布版本。"""
     item, draft = await _draft(db, skill_id, actor.id, body.expected_revision)
     async with resource_transaction(db, actor.id):
@@ -408,14 +400,14 @@ async def publish_draft(
         name, description, _, _ = validate_package(
             {
                 "SKILL.md": texts["SKILL.md"],
-            }
+            },
         )
         next_version = draft.base_version + 1
         result = await db.execute(
             update(Skill)
             .where(Skill.id == skill_id, Skill.current_version == draft.base_version, Skill.is_deleted == 0)
             .values(**draft.settings, name=name, description=description, current_version=next_version)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             raise CustomException(status_code=409, custom_code=10005, detail="已发布版本发生变化，请基于最新版创建草稿")
@@ -424,11 +416,7 @@ async def publish_draft(
         draft.base_version = next_version
         manifest = [dict(entry, path=path, package_file=True) for path, entry in sorted(draft.files.items())]
         for path, entry in draft.files.items():
-            db.add(
-                SkillVersionFile(
-                    skill_id=skill_id, skill_version=next_version, path=path, artifact_id=entry["artifact_id"], sha256=entry["sha256"]
-                )
-            )
+            db.add(SkillVersionFile(skill_id=skill_id, skill_version=next_version, path=path, artifact_id=entry["artifact_id"], sha256=entry["sha256"]))
         for path, schema_path in report["config"].get("templates", {}).items():
             entry = draft.files[path]
             schema = validate_fields_schema(json.loads(texts[schema_path]))
@@ -442,7 +430,7 @@ async def publish_draft(
                     "template_key": path.casefold(),
                     "artifact_id": entry["artifact_id"],
                     "fields_schema": schema,
-                }
+                },
             )
             db.add(
                 SkillTemplate(
@@ -451,13 +439,9 @@ async def publish_draft(
                     template_key=path.casefold(),
                     artifact_id=entry["artifact_id"],
                     fields_schema=schema,
-                )
+                ),
             )
-        bindings = list(
-            await db.scalars(
-                select(SkillScript).where(SkillScript.skill_id == skill_id, SkillScript.package_hash == report["content_hash"])
-            )
-        )
+        bindings = list(await db.scalars(select(SkillScript).where(SkillScript.skill_id == skill_id, SkillScript.package_hash == report["content_hash"])))
         for binding in bindings:
             tool = await db.get(UserTool, binding.tool_id)
             tool.visibility, tool.enabled = draft.settings["visibility"], True
@@ -470,7 +454,7 @@ async def publish_draft(
                 content_hash=report["content_hash"],
                 status=1,
                 is_deleted=0,
-            )
+            ),
         )
         audit(db, "skill.package_published", actor_id=actor.id, target_id=skill_id)
     await db.refresh(item)
@@ -478,9 +462,7 @@ async def publish_draft(
 
 
 @router.get("/{skill_id}/versions/{version}/export", summary="导出包含二进制资源的完整 Skill 发布版本")
-async def export_package(
-    skill_id: int, version: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def export_package(skill_id: int, version: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """按固定清单输出单根 ZIP，不包含凭据或服务器执行缓存。"""
     owner = await db.scalar(select(Skill.owner_id).where(Skill.id == skill_id))
     item = await _owned(db, skill_id, actor.id) if owner == actor.id else (await selected_skills(db, [skill_id], actor.id))[0]
@@ -518,13 +500,9 @@ async def _script_binding(db: AsyncSession, item: Skill, draft: SkillDraft, path
         raise ValueError("脚本未在 y-point.yaml 中登记")
     fields = script_fields(path, config["scripts"][path], texts)
     digest = package_digest(draft.files)
-    binding = await db.scalar(
-        select(SkillScript).where(SkillScript.skill_id == item.id, SkillScript.package_hash == digest, SkillScript.path == path)
-    )
+    binding = await db.scalar(select(SkillScript).where(SkillScript.skill_id == item.id, SkillScript.package_hash == digest, SkillScript.path == path))
     if binding:
-        version = await db.scalar(
-            select(UserToolVersion).where(UserToolVersion.tool_id == binding.tool_id, UserToolVersion.version == binding.tool_version)
-        )
+        version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == binding.tool_id, UserToolVersion.version == binding.tool_version))
         return binding, version
     tool = UserTool(
         skill_id=item.id,
@@ -561,9 +539,7 @@ async def _script_binding(db: AsyncSession, item: Skill, draft: SkillDraft, path
 
 
 @router.post("/{skill_id}/draft/scripts/prepare", summary="准备当前 Skill 草稿脚本的固定依赖环境")
-async def prepare_script(
-    skill_id: int, body: SkillScriptTestIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def prepare_script(skill_id: int, body: SkillScriptTestIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """把包内脚本接入已有 worker 依赖准备队列，不执行用户代码。"""
     item, draft = await _draft(db, skill_id, actor.id, body.expected_revision)
     try:
@@ -588,9 +564,7 @@ async def prepare_script(
 
 
 @router.post("/{skill_id}/draft/scripts/test", summary="在隔离沙箱中试运行当前 Skill 草稿脚本")
-async def test_script(
-    skill_id: int, body: SkillScriptTestIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def test_script(skill_id: int, body: SkillScriptTestIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """只读挂载精确包资源，参数验证、并发名额和执行上限沿用 Tool 治理。"""
     item, draft = await _draft(db, skill_id, actor.id, body.expected_revision)
     try:

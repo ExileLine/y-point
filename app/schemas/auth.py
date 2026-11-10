@@ -83,8 +83,8 @@ class UserPage(BaseModel):
                     "status": 1,
                     "last_login_at": "2026-10-22T10:00:00",
                     "create_time": "2026-10-21T16:46:46",
-                }
-            ]
+                },
+            ],
         ],
     )
     total: int = Field(description="用户总数", examples=[36])

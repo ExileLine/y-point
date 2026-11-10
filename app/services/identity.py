@@ -30,23 +30,17 @@ def audit(db: AsyncSession, action: str, actor_id: int | None = None, target_id:
             actor_id=actor_id,
             target_id=target_id,
             subject_hash=hashlib.sha256(subject.encode()).hexdigest() if subject else None,
-        )
+        ),
     )
 
 
 async def find_login_user(db: AsyncSession, identifier: str) -> Admin | None:
     """按用户名或邮箱查找未删除用户。"""
     value = identifier.strip().lower()
-    return (
-        await db.scalars(
-            select(Admin).where(or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value), Admin.is_deleted == 0)
-        )
-    ).first()
+    return (await db.scalars(select(Admin).where(or_(func.lower(Admin.username) == value, func.lower(Admin.mail) == value), Admin.is_deleted == 0))).first()
 
 
-async def ensure_unique_identity(
-    db: AsyncSession, *, username: str | None = None, mail: str | None = None, exclude_id: int | None = None
-) -> None:
+async def ensure_unique_identity(db: AsyncSession, *, username: str | None = None, mail: str | None = None, exclude_id: int | None = None) -> None:
     """检查用户名和邮箱未被其他有效用户使用。"""
     values = [value.lower() for value in (username, mail) if value]
     for value in values:
@@ -114,9 +108,7 @@ async def create_session(db: AsyncSession, admin: Admin) -> tuple[AuthSession, s
 async def revoke_sessions(db: AsyncSession, admin: Admin) -> None:
     """递增令牌版本并撤销用户的所有活动会话。"""
     admin.token_version += 1
-    await db.execute(
-        update(AuthSession).where(AuthSession.admin_id == admin.id, AuthSession.revoked_at.is_(None)).values(revoked_at=utc_now())
-    )
+    await db.execute(update(AuthSession).where(AuthSession.admin_id == admin.id, AuthSession.revoked_at.is_(None)).values(revoked_at=utc_now()))
 
 
 def set_user_password(admin: Admin, password: str) -> None:

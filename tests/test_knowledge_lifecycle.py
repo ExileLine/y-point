@@ -67,7 +67,7 @@ def test_pdf_docx_indexing_and_scanned_failure(tmp_path, monkeypatch):
                         select(KnowledgeDocumentVersion).where(
                             KnowledgeDocumentVersion.document_id == hit["document_id"],
                             KnowledgeDocumentVersion.version == hit["document_version"],
-                        )
+                        ),
                     )
                     assert hit["content"] == version.extracted_text[hit["start_offset"] : hit["end_offset"]]
             output, writer = io.BytesIO(), PdfWriter()
@@ -164,10 +164,15 @@ def test_worker_process_restart_and_concurrent_claim(tmp_path, monkeypatch):
                     "    await asyncio.Event().wait()",
                     "knowledge_jobs.parse_knowledge_isolated = waiting",
                     f"asyncio.run(run_worker(Path({str(checkpoint)!r}), once=True))",
-                ]
+                ],
             )
             process = await asyncio.create_subprocess_exec(
-                sys.executable, "-c", script, env=env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                sys.executable,
+                "-c",
+                script,
+                env=env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             try:
                 async with asyncio.timeout(15):
@@ -211,9 +216,7 @@ def test_worker_process_restart_and_concurrent_claim(tmp_path, monkeypatch):
                 job = await db.get(KnowledgeJob, uploaded["job_id"])
                 assert job.state == KnowledgeJobState.COMPLETED and job.attempts == 1
                 index = await db.get(KnowledgeIndex, job.index_id)
-                assert index.chunk_count == await db.scalar(
-                    select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.index_id == index.id)
-                )
+                assert index.chunk_count == await db.scalar(select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.index_id == index.id))
                 assert await db.scalar(select(func.count()).select_from(ToolExecutionLease)) == 0
 
     asyncio.run(exercise())
@@ -344,8 +347,6 @@ def test_graceful_worker_stop_requeues_with_retry_limit(tmp_path, monkeypatch):
                     assert job.state == (KnowledgeJobState.UPLOADED if attempt < 3 else KnowledgeJobState.FAILED)
                     assert await db.scalar(select(func.count()).select_from(ToolExecutionLease)) == 0
             assert not await process_next_knowledge_job(sessions)
-            assert (
-                await client.post(f"/api/v1/knowledge-bases/jobs/{uploaded['job_id']}/retry?expected_attempts=3", headers=owner)
-            ).status_code == 409
+            assert (await client.post(f"/api/v1/knowledge-bases/jobs/{uploaded['job_id']}/retry?expected_attempts=3", headers=owner)).status_code == 409
 
     asyncio.run(exercise())

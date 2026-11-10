@@ -181,7 +181,7 @@ def test_preview_api_authorization_storage_and_errors(tmp_path: Path, monkeypatc
                             state=ArtifactState.PENDING if label == "pending" else ArtifactState.READY,
                             is_deleted=1 if label == "deleted" else 0,
                             expires_at=shanghai_now(naive=True) - timedelta(seconds=1) if label == "expired" else None,
-                        )
+                        ),
                     )
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 url = f"/api/v1/artifacts/{identifiers['ready']}/preview"

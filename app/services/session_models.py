@@ -67,7 +67,10 @@ async def requires_tools(db: AsyncSession, agent_id: int) -> bool:
 
 
 def model_issue(
-    model: ModelCatalog | None, provider: ProviderConnection | None, agent: AgentConfig, needs_tools: bool
+    model: ModelCatalog | None,
+    provider: ProviderConnection | None,
+    agent: AgentConfig,
+    needs_tools: bool,
 ) -> tuple[SessionModelReason, str] | None:
     """统一返回模型不可选原因，目录和写入使用相同规则。"""
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
@@ -105,7 +108,7 @@ async def session_model_options(db: AsyncSession, agent: AgentConfig) -> list[Se
         select(ModelCatalog, ProviderConnection)
         .join(ProviderConnection, ProviderConnection.id == ModelCatalog.provider_id)
         .where(ModelCatalog.is_deleted == 0)
-        .order_by(ProviderConnection.name, ModelCatalog.id)
+        .order_by(ProviderConnection.name, ModelCatalog.id),
     )
     needs_tools = await requires_tools(db, agent.id)
     result = []
@@ -123,7 +126,7 @@ async def session_model_options(db: AsyncSession, agent: AgentConfig) -> list[Se
                 selectable=issue is None,
                 reason=issue[0] if issue else None,
                 notice=issue[1] if issue else None,
-            )
+            ),
         )
     return result
 
@@ -132,9 +135,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
     """新线程只继承已完成轮次文字，不迁移工具调用、附件或供应商私有状态。"""
     if run.session_id is None:
         return []
-    current_message_id = await db.scalar(
-        select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER)
-    )
+    current_message_id = await db.scalar(select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
     if current_message_id is None:
         return []
     previous_runs = (
@@ -151,7 +152,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
                 AgentRun.id != run.id,
             )
             .order_by(AgentRunMessage.id.desc())
-            .limit(MAX_HANDOFF_TURNS + 1)
+            .limit(MAX_HANDOFF_TURNS + 1),
         )
     ).all()
     if not previous_runs:
@@ -165,7 +166,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
                 AgentRunMessage.id < current_message_id,
                 AgentRunMessage.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
             )
-            .order_by(AgentRunMessage.id)
+            .order_by(AgentRunMessage.id),
         )
     ).all()
     # 按整轮从最近向前保留，避免出现缺少用户问题的孤立回答。

@@ -38,32 +38,46 @@ class AgentRun(CustomBaseModel):
     agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
     agent_thinking_mode: Mapped[str] = mapped_column(
-        String(16), nullable=False, default=ModelThinkingMode.AUTO, server_default=ModelThinkingMode.AUTO, comment="提交时模型思考模式快照"
+        String(16),
+        nullable=False,
+        default=ModelThinkingMode.AUTO,
+        server_default=ModelThinkingMode.AUTO,
+        comment="提交时模型思考模式快照",
     )
     model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, comment="单次模型生成超时秒数"
+        Integer,
+        nullable=False,
+        default=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
+        comment="单次模型生成超时秒数",
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, comment="单次工具执行超时秒数"
+        Integer,
+        nullable=False,
+        default=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS,
+        comment="单次工具执行超时秒数",
     )
     max_queue_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="排队等待最长秒数")
     queue_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, index=True, comment="排队等待截止时间")
     enable_text_artifact_tool: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0", comment="是否启用需审批的文本文件读取工具"
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+        comment="是否启用需审批的文本文件读取工具",
     )
-    publish_answer_artifact: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物"
-    )
+    publish_answer_artifact: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0", comment="是否将最终回答发布为文本产物")
     answer_artifact_retry_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="回答产物下次补发时间")
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的模型调用次数上限")
     model_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", comment="已开始的模型调用次数")
     max_total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的上游总 Token 上限")
-    reported_total_tokens: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default="0", comment="本次运行上游已报告的总 Token 数"
-    )
+    reported_total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", comment="本次运行上游已报告的总 Token 数")
     max_estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="本次运行估算成本上限")
     estimated_cost: Mapped[Decimal] = mapped_column(
-        Numeric(24, 12), nullable=False, default=Decimal("0"), server_default="0", comment="启用预算时的累计估算成本"
+        Numeric(24, 12),
+        nullable=False,
+        default=Decimal("0"),
+        server_default="0",
+        comment="启用预算时的累计估算成本",
     )
     cost_input_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格")
     cost_output_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格")

@@ -31,7 +31,7 @@ async def touch_worker(db: AsyncSession, worker_id: str) -> None:
     result = await db.execute(
         update(RunWorkerHeartbeat)
         .where(RunWorkerHeartbeat.id == worker_id, RunWorkerHeartbeat.stopped_at.is_(None))
-        .values(last_seen_at=shanghai_now(naive=True))
+        .values(last_seen_at=shanghai_now(naive=True)),
     )
     if result.rowcount != 1:
         raise RuntimeError("执行器心跳记录不存在或已停止")
@@ -41,14 +41,16 @@ async def stop_worker(db: AsyncSession, worker_id: str) -> None:
     """将正常退出的执行器从存活列表移除。"""
     now = shanghai_now(naive=True)
     await db.execute(
-        update(RunWorkerHeartbeat)
-        .where(RunWorkerHeartbeat.id == worker_id, RunWorkerHeartbeat.stopped_at.is_(None))
-        .values(last_seen_at=now, stopped_at=now)
+        update(RunWorkerHeartbeat).where(RunWorkerHeartbeat.id == worker_id, RunWorkerHeartbeat.stopped_at.is_(None)).values(last_seen_at=now, stopped_at=now),
     )
 
 
 async def prune_worker_heartbeats(
-    db: AsyncSession, *, retention_days: int = WORKER_HEARTBEAT_RETENTION_DAYS, limit: int = 1000, now: datetime | None = None
+    db: AsyncSession,
+    *,
+    retention_days: int = WORKER_HEARTBEAT_RETENTION_DAYS,
+    limit: int = 1000,
+    now: datetime | None = None,
 ) -> int:
     """分批删除保留期外的已停止或失联执行器心跳。"""
     if retention_days <= 0 or not 1 <= limit <= 1000:
@@ -70,7 +72,7 @@ async def worker_available(db: AsyncSession, *, stale_after_seconds: int = WORKE
         raise ValueError("心跳过期时长必须大于零")
     cutoff = shanghai_now(naive=True) - timedelta(seconds=stale_after_seconds)
     worker_id = await db.scalar(
-        select(RunWorkerHeartbeat.id).where(RunWorkerHeartbeat.stopped_at.is_(None), RunWorkerHeartbeat.last_seen_at >= cutoff).limit(1)
+        select(RunWorkerHeartbeat.id).where(RunWorkerHeartbeat.stopped_at.is_(None), RunWorkerHeartbeat.last_seen_at >= cutoff).limit(1),
     )
     return worker_id is not None
 
@@ -82,17 +84,13 @@ async def inspect_worker_status(db: AsyncSession, *, stale_after_seconds: int = 
     now = now or shanghai_now(naive=True)
     cutoff = now - timedelta(seconds=stale_after_seconds)
     active_workers = await db.scalar(
-        select(func.count())
-        .select_from(RunWorkerHeartbeat)
-        .where(RunWorkerHeartbeat.stopped_at.is_(None), RunWorkerHeartbeat.last_seen_at >= cutoff)
+        select(func.count()).select_from(RunWorkerHeartbeat).where(RunWorkerHeartbeat.stopped_at.is_(None), RunWorkerHeartbeat.last_seen_at >= cutoff),
     )
     latest_heartbeat_at = await db.scalar(select(func.max(RunWorkerHeartbeat.last_seen_at)))
     queued_runs = await db.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.state == RunState.QUEUED))
     oldest_queued_at = await db.scalar(select(func.min(AgentRun.create_time)).where(AgentRun.state == RunState.QUEUED))
     expired_running_runs = await db.scalar(
-        select(func.count())
-        .select_from(AgentRun)
-        .where(AgentRun.state.in_((RunState.RUNNING, RunState.CANCEL_REQUESTED)), AgentRun.lease_expires_at <= now)
+        select(func.count()).select_from(AgentRun).where(AgentRun.state.in_((RunState.RUNNING, RunState.CANCEL_REQUESTED)), AgentRun.lease_expires_at <= now),
     )
     oldest_queued_seconds = None
     if oldest_queued_at is not None:

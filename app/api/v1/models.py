@@ -74,11 +74,7 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
     external_ids = [item.external_id for item in body.models]
     if len(external_ids) != len(set(external_ids)):
         raise CustomException(status_code=400, custom_code=10005, detail="请求中包含重复模型 ID")
-    existing = (
-        await db.scalars(
-            select(ModelCatalog).where(ModelCatalog.provider_id == body.provider_id, ModelCatalog.external_id.in_(external_ids))
-        )
-    ).all()
+    existing = (await db.scalars(select(ModelCatalog).where(ModelCatalog.provider_id == body.provider_id, ModelCatalog.external_id.in_(external_ids)))).all()
     existing_by_id = {model.external_id: model for model in existing}
     created: list[ModelCatalog] = []
     skipped_existing: list[str] = []
@@ -116,9 +112,7 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
 
 
 @router.get("", summary="查询可选模型列表")
-async def list_models(
-    provider_id: int | None = Query(default=None, gt=0), actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_models(provider_id: int | None = Query(default=None, gt=0), actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """列出未删除模型，可按供应商连接筛选。"""
     query = select(ModelCatalog).where(ModelCatalog.is_deleted == 0)
     if provider_id is not None:
@@ -140,13 +134,12 @@ async def list_available_models(actor: Admin = Depends(get_current_admin), db: A
             ProviderConnection.is_deleted == 0,
             ProviderConnection.status == 1,
         )
-        .order_by(ModelCatalog.is_default.desc(), ModelCatalog.id)
+        .order_by(ModelCatalog.is_default.desc(), ModelCatalog.id),
     )
     data = [
         AgentModelOptionOut(id=model.id, display_name=model.display_name, context_window=model.context_window).model_dump(mode="json")
         for model, _provider in rows
-        if ModelCapability.TEXT in (model.verified_capabilities or [])
-        and (model.context_window is None or model.context_window >= minimum_context_window)
+        if ModelCapability.TEXT in (model.verified_capabilities or []) and (model.context_window is None or model.context_window >= minimum_context_window)
     ]
     return api_response(data=data, is_pop=False)
 
@@ -190,9 +183,7 @@ async def test_model(model_id: int, actor: Admin = Depends(require_admin), db: A
 
 
 @router.post("/{model_id}/capabilities/test", summary="验证模型的指定能力")
-async def test_model_capability(
-    model_id: int, body: CapabilityTestIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def test_model_capability(model_id: int, body: CapabilityTestIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """执行一次指定能力的实际调用，记录安全结果并维护逐项验证状态。"""
     model = await get_model_or_404(db, model_id)
     provider = await get_provider_or_404(db, model.provider_id)
@@ -257,25 +248,19 @@ async def list_model_calls(
         raise CustomException(status_code=404, custom_code=10002, detail="模型不存在")
     condition = ModelCallRecord.model_id == model_id
     total = await db.scalar(select(func.count()).select_from(ModelCallRecord).where(condition))
-    records = (
-        await db.scalars(select(ModelCallRecord).where(condition).order_by(ModelCallRecord.id.desc()).offset((page - 1) * size).limit(size))
-    ).all()
+    records = (await db.scalars(select(ModelCallRecord).where(condition).order_by(ModelCallRecord.id.desc()).offset((page - 1) * size).limit(size))).all()
     result = ModelCallPageOut(records=[ModelCallOut.model_validate(record) for record in records], page=page, size=size, total=total or 0)
     return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
 
 @router.put("/{model_id}", summary="修改可选模型")
-async def update_model(
-    model_id: int, body: ModelUpdateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def update_model(model_id: int, body: ModelUpdateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """修改模型信息；人工更改能力后重新标为未验证。"""
     await db.scalar(select(ModelCatalog.id).where(ModelCatalog.id == model_id).with_for_update())
     model = await get_model_or_404(db, model_id)
     fields = body.model_fields_set
     if ("status" in fields and body.status == 0) or fields & {"external_id", "capabilities", "context_window"}:
-        linked = await db.scalar(
-            select(AgentConfig.id).where(AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0).limit(1)
-        )
+        linked = await db.scalar(select(AgentConfig.id).where(AgentConfig.default_model_id == model.id, AgentConfig.is_deleted == 0).limit(1))
         if linked is not None:
             raise CustomException(status_code=409, custom_code=10005, detail="模型仍被 Agent 引用，请先更换其默认模型")
     for name in ("external_id", "display_name", "context_window", "input_price", "output_price", "price_currency", "status"):

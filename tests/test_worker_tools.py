@@ -53,7 +53,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -65,7 +65,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                         verified_capabilities=["tools"],
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 owned, _ = await save_upload(UploadFile(file=io.BytesIO(b"owned text"), filename="owned.txt"), 1, root)
                 foreign, _ = await save_upload(UploadFile(file=io.BytesIO(b"foreign text"), filename="foreign.txt"), 2, root)
@@ -89,22 +89,20 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 "create_document_artifact",
                 "create_spreadsheet_artifact",
             }
-            list_tool, read_tool = (
-                next(item for item in tools if item.name == name) for name in ("list_text_artifacts", "read_text_artifact")
-            )
+            list_tool, read_tool = (next(item for item in tools if item.name == name) for name in ("list_text_artifacts", "read_text_artifact"))
             assert json.loads(await list_tool.ainvoke({})) == [
                 {
                     "artifact_id": owned.id,
                     "filename": "owned.txt",
                     "byte_size": 10,
-                }
+                },
             ]
             result = json.loads(
                 await read_tool.ainvoke(
                     {
                         "artifact_id": owned.id,
-                    }
-                )
+                    },
+                ),
             )
             assert result == {
                 "filename": "owned.txt",
@@ -116,8 +114,8 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                     {
                         "filename": "summary.txt",
                         "content": "generated summary",
-                    }
-                )
+                    },
+                ),
             )
             assert (
                 json.loads(
@@ -125,8 +123,8 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                         {
                             "filename": "summary.txt",
                             "content": "generated summary",
-                        }
-                    )
+                        },
+                    ),
                 )
                 == created
             )
@@ -135,7 +133,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                     {
                         "filename": "summary.txt",
                         "content": "different",
-                    }
+                    },
                 )
             async with sessions() as db:
                 staged = await db.get(Artifact, created["artifact_id"])
@@ -147,8 +145,8 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                     {
                         "filename": "summary.pdf",
                         "content": "# Summary\n\nGenerated summary",
-                    }
-                )
+                    },
+                ),
             )
             sheet_tool = next(item for item in tools if item.name == "create_spreadsheet_artifact")
             xlsx = json.loads(
@@ -159,22 +157,20 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                             {
                                 "name": "Summary",
                                 "rows": [["Item", "Value"], ["Result", "generated"]],
-                            }
+                            },
                         ],
-                    }
-                )
+                    },
+                ),
             )
             async with sessions() as db:
                 assert (await db.get(Artifact, pdf["artifact_id"])).media_type == "application/pdf"
-                assert (await db.get(Artifact, xlsx["artifact_id"])).media_type == (
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                assert (await db.get(Artifact, xlsx["artifact_id"])).media_type == ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             for artifact_id in (foreign.id, large.id):
                 with pytest.raises(ValueError, match="文件不可用"):
                     await read_tool.ainvoke(
                         {
                             "artifact_id": artifact_id,
-                        }
+                        },
                     )
             async with sessions.begin() as db:
                 item = await db.get(type(owned), owned.id)
@@ -183,7 +179,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 await read_tool.ainvoke(
                     {
                         "artifact_id": owned.id,
-                    }
+                    },
                 )
             assert json.loads(await list_tool.ainvoke({})) == []
             async with sessions.begin() as db:
@@ -195,7 +191,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 await read_tool.ainvoke(
                     {
                         "artifact_id": owned.id,
-                    }
+                    },
                 )
             with pytest.raises(ValueError, match="工具授权已失效"):
                 await list_tool.ainvoke({})
@@ -204,7 +200,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                     {
                         "filename": "other.txt",
                         "content": "x",
-                    }
+                    },
                 )
             async with sessions.begin() as db:
                 provider = await db.get(ProviderConnection, 1)
@@ -213,7 +209,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 await read_tool.ainvoke(
                     {
                         "artifact_id": owned.id,
-                    }
+                    },
                 )
             with pytest.raises(ValueError, match="工具授权已失效"):
                 await list_tool.ainvoke({})

@@ -80,7 +80,7 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -95,7 +95,7 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
             source = "import json,sys,ypm51demo\nprint(json.dumps({'result': ypm51demo.double(json.load(sys.stdin)['value'])}))\n"
             created = await client.post(
@@ -152,7 +152,7 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
                         "SKILL.md": (
                             "---\nname: m51-double\ndescription: 调用工具计算整数的两倍。\n---\n"
                             "先读取本技能，然后调用 m51_double，参数 value 为用户给出的整数。请报告工具实际返回的 result。"
-                        )
+                        ),
                     },
                 },
             )
@@ -222,9 +222,7 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
                 assert text
                 return calls, text
 
-            base = await create_session(
-                [tool_id], [skill_id], "必须先读取关联的 m51-double Skill，再调用其中的 m51_double 工具。只使用实际工具结果。"
-            )
+            base = await create_session([tool_id], [skill_id], "必须先读取关联的 m51-double Skill，再调用其中的 m51_double 工具。只使用实际工具结果。")
             calls, text = await run_round(base, "请按 m51-double Skill 计算整数 21 的两倍，必须实际调用 m51_double。")
             assert calls[0]["tool_version"] == 2 and "42" in text
             changed = await client.put(

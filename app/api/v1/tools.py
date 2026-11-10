@@ -87,16 +87,14 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
                 "verified": version.verified,
                 "requirements": version.requirements,
                 "environment": environment_output(version),
-            }
+            },
         )
     return data
 
 
 async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = False) -> UserTool:
     """查找由当前用户创建且尚未删除的 Tool。"""
-    statement = select(UserTool).where(
-        UserTool.id == tool_id, UserTool.owner_id == actor_id, UserTool.is_deleted == 0, UserTool.skill_id.is_(None)
-    )
+    statement = select(UserTool).where(UserTool.id == tool_id, UserTool.owner_id == actor_id, UserTool.is_deleted == 0, UserTool.skill_id.is_(None))
     tool = await db.scalar(statement.with_for_update() if lock else statement)
     if tool is None:
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
@@ -144,7 +142,7 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
                 UserTool.skill_id.is_(None),
                 or_(UserTool.owner_id == actor.id, (UserTool.visibility == Visibility.PUBLIC) & UserTool.enabled.is_(True)),
             )
-            .order_by(UserTool.id.desc())
+            .order_by(UserTool.id.desc()),
         )
     ).all()
     builtins = [
@@ -239,7 +237,7 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
                 status=1,
                 **initial_environment_fields(fields["requirements"]),
                 **fields,
-            )
+            ),
         )
         audit(db, "tool.created", actor_id=actor.id, target_id=tool.id)
         await db.commit()
@@ -265,9 +263,7 @@ async def get_tool(tool_id: int, actor: Admin = Depends(get_current_admin), db: 
 
 
 @router.put("/{tool_id}", summary="更新 Tool 并发布新版本")
-async def update_tool(
-    tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def update_tool(tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """使用期望版本保护并发编辑，旧版 Agent 关联保持固定。"""
     tool = await _owned(db, tool_id, actor.id, lock=True)
     if tool.current_version != body.expected_version:
@@ -332,7 +328,7 @@ async def update_tool(
             status=1,
             **initial_environment_fields(fields["requirements"], previous),
             **fields,
-        )
+        ),
     )
     audit(db, "tool.updated", actor_id=actor.id, target_id=tool.id)
     await db.commit()
@@ -374,9 +370,7 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
         sessions = async_sessionmaker(db.bind, expire_on_commit=False)
         timeout = get_config().SCRIPT_TEST_TIMEOUT_SECONDS
         async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, timeout):
-            result = await asyncio.wait_for(
-                run_script(version.script_language, version.source_code, body.arguments, timeout, **options), timeout=timeout
-            )
+            result = await asyncio.wait_for(run_script(version.script_language, version.source_code, body.arguments, timeout, **options), timeout=timeout)
     except ToolCapacityError as exc:
         raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
     except SandboxConfigurationError as exc:
@@ -401,7 +395,10 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
 
 @router.post("/{tool_id}/environment/retry", summary="重试或重新准备我的 Tool 依赖环境")
 async def retry_tool_environment(
-    tool_id: int, body: ToolEnvironmentRetryIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+    tool_id: int,
+    body: ToolEnvironmentRetryIn,
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """失败版本重新排队；已就绪环境通过新版本重建，保留旧版依赖锁。"""
     tool = await _owned(db, tool_id, actor.id, lock=True)
@@ -445,7 +442,10 @@ async def retry_tool_environment(
 
 @router.post("/{tool_id}/credentials/revoke", summary="撤销我的 MCP Tool 历史凭据")
 async def revoke_tool_credentials(
-    tool_id: int, body: ToolCredentialRevokeIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+    tool_id: int,
+    body: ToolCredentialRevokeIn,
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """不访问远端即可禁用凭据并取消关联运行，恢复须显式替换或清除密钥。"""
     tool = await _owned(db, tool_id, actor.id, lock=True)
@@ -470,7 +470,10 @@ async def revoke_tool_credentials(
 
 @router.post("/{tool_id}/write-contract/verify", summary="验收指定版本的外部写恢复契约")
 async def verify_tool_write_contract(
-    tool_id: int, body: ToolWriteContractVerifyIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
+    tool_id: int,
+    body: ToolWriteContractVerifyIn,
+    actor: Admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """管理员核对重复写入与返回丢失证据后，允许该固定版本执行幂等写操作。"""
     tool = await db.scalar(select(UserTool).where(UserTool.id == tool_id, UserTool.is_deleted == 0).with_for_update())

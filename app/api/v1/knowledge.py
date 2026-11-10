@@ -56,7 +56,7 @@ SUPPORTED_KNOWLEDGE_TYPES = frozenset(
         "text/markdown",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    }
+    },
 )
 
 
@@ -74,14 +74,12 @@ async def _cancel_index_jobs(db: AsyncSession, knowledge_base_id: int) -> None:
     await db.execute(
         update(KnowledgeJob)
         .where(KnowledgeJob.index_id.in_(indices), KnowledgeJob.state.not_in(TERMINAL_KNOWLEDGE_JOBS))
-        .values(state=KnowledgeJobState.CANCEL_REQUESTED)
+        .values(state=KnowledgeJobState.CANCEL_REQUESTED),
     )
 
 
 @router.post("", summary="创建私有知识库")
-async def create_knowledge_base(
-    body: KnowledgeCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def create_knowledge_base(body: KnowledgeCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """校验分块和嵌入配置，创建默认私有且尚无索引的知识库。"""
     await validate_knowledge_configuration(db, body.model_dump())
     item = KnowledgeBase(owner_id=actor.id, **body.model_dump())
@@ -103,11 +101,7 @@ async def list_knowledge_bases(
     from sqlalchemy import func
 
     condition = knowledge_access(actor.id)
-    items = (
-        await db.scalars(
-            select(KnowledgeBase).where(condition).order_by(KnowledgeBase.id.desc()).offset((page - 1) * page_size).limit(page_size)
-        )
-    ).all()
+    items = (await db.scalars(select(KnowledgeBase).where(condition).order_by(KnowledgeBase.id.desc()).offset((page - 1) * page_size).limit(page_size))).all()
     total = await db.scalar(select(func.count()).select_from(KnowledgeBase).where(condition))
     return api_response(
         data={
@@ -134,7 +128,7 @@ async def cancel_knowledge_job(job_id: int, actor: Admin = Depends(get_current_a
     await db.execute(
         update(KnowledgeJob)
         .where(KnowledgeJob.id == job_id, KnowledgeJob.state.not_in(TERMINAL_KNOWLEDGE_JOBS))
-        .values(state=KnowledgeJobState.CANCEL_REQUESTED)
+        .values(state=KnowledgeJobState.CANCEL_REQUESTED),
     )
     await db.commit()
     return api_response(message="知识索引任务已请求取消")
@@ -163,7 +157,7 @@ async def retry_knowledge_job(
             KnowledgeJob.state.in_([KnowledgeJobState.FAILED, KnowledgeJobState.CANCELLED]),
             KnowledgeJob.lease_token.is_(None),
         )
-        .values(state=KnowledgeJobState.UPLOADED, failure_code=None)
+        .values(state=KnowledgeJobState.UPLOADED, failure_code=None),
     )
     if result.rowcount != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="任务状态已变化或当前不可重试")
@@ -216,7 +210,7 @@ async def delete_knowledge_base(
     changed = await db.execute(
         update(KnowledgeBase)
         .where(KnowledgeBase.id == item.id, KnowledgeBase.revision == expected_revision)
-        .values(is_deleted=1, revision=expected_revision + 1)
+        .values(is_deleted=1, revision=expected_revision + 1),
     )
     if changed.rowcount != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="知识库版本已变化")
@@ -239,9 +233,7 @@ async def share_knowledge_base(
     user = await db.get(Admin, body.user_id)
     if user is None or user.is_deleted != 0 or user.status != 1 or user.id == actor.id:
         raise CustomException(status_code=400, custom_code=10006, detail="共享用户不可用")
-    existing = await db.scalar(
-        select(KnowledgeShare).where(KnowledgeShare.knowledge_base_id == knowledge_base_id, KnowledgeShare.user_id == body.user_id)
-    )
+    existing = await db.scalar(select(KnowledgeShare).where(KnowledgeShare.knowledge_base_id == knowledge_base_id, KnowledgeShare.user_id == body.user_id))
     if existing is None:
         db.add(KnowledgeShare(knowledge_base_id=knowledge_base_id, user_id=body.user_id))
     audit(db, "knowledge.shared", actor_id=actor.id, target_id=knowledge_base_id)
@@ -250,9 +242,7 @@ async def share_knowledge_base(
 
 
 @router.get("/{knowledge_base_id}/shares", summary="列出知识库指定共享用户")
-async def list_knowledge_shares(
-    knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_knowledge_shares(knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """仅创建者可查看授权名单。"""
     await require_knowledge_base(db, knowledge_base_id, actor.id, manage=True)
     users = list((await db.scalars(select(KnowledgeShare.user_id).where(KnowledgeShare.knowledge_base_id == knowledge_base_id))).all())
@@ -279,9 +269,7 @@ async def revoke_knowledge_share(
     return api_response(message="知识库共享已撤销")
 
 
-async def _upload_knowledge_document(
-    db, actor_id: int, knowledge_base_id: int, file: UploadFile, expected_revision: int, document_id: int | None = None
-):
+async def _upload_knowledge_document(db, actor_id: int, knowledge_base_id: int, file: UploadFile, expected_revision: int, document_id: int | None = None):
     """保存原始文件及上传版本和任务，解析与嵌入完全交给独立 worker。"""
     await require_knowledge_base(db, knowledge_base_id, actor_id, manage=True)
     saved = None
@@ -302,7 +290,7 @@ async def _upload_knowledge_document(
                     KnowledgeDocument.knowledge_base_id == item.id,
                     KnowledgeDocument.filename == artifact.filename,
                     KnowledgeDocument.is_deleted == 0,
-                )
+                ),
             )
             document = duplicate
         if document is not None:
@@ -310,7 +298,7 @@ async def _upload_knowledge_document(
                 select(KnowledgeDocumentVersion).where(
                     KnowledgeDocumentVersion.document_id == document.id,
                     KnowledgeDocumentVersion.version == document.current_version,
-                )
+                ),
             )
             if previous.sha256 == artifact.sha256:
                 await delete_blob(artifact_root(), artifact.storage_key)
@@ -341,7 +329,7 @@ async def _upload_knowledge_document(
                 filename=artifact.filename,
                 media_type=artifact.media_type,
                 byte_size=artifact.byte_size,
-            )
+            ),
         )
         job = await enqueue_knowledge_index(db, item, expected_revision)
         audit(db, "knowledge.document_uploaded", actor_id=actor_id, target_id=document.id)
@@ -391,16 +379,14 @@ async def update_knowledge_document(
 
 
 @router.get("/{knowledge_base_id}/documents", summary="列出知识库文档及当前上传版本")
-async def list_knowledge_documents(
-    knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_knowledge_documents(knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """知识库最多一百份文档，列表不返回原文或内部文件存储键。"""
     await require_knowledge_base(db, knowledge_base_id, actor.id)
     rows = (
         await db.scalars(
             select(KnowledgeDocument)
             .where(KnowledgeDocument.knowledge_base_id == knowledge_base_id, KnowledgeDocument.is_deleted == 0)
-            .order_by(KnowledgeDocument.id)
+            .order_by(KnowledgeDocument.id),
         )
     ).all()
     return api_response(data=[item.to_dict() for item in rows], is_pop=False, datetime_format=False)
@@ -454,15 +440,11 @@ async def rebuild_knowledge_index(
 
 
 @router.get("/{knowledge_base_id}/jobs", summary="列出知识库最近处理任务")
-async def list_knowledge_jobs(
-    knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_knowledge_jobs(knowledge_base_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """只向创建者返回最近五十项脱敏任务状态。"""
     await require_knowledge_base(db, knowledge_base_id, actor.id, manage=True)
     indices = select(KnowledgeIndex.id).where(KnowledgeIndex.knowledge_base_id == knowledge_base_id)
-    jobs = (
-        await db.scalars(select(KnowledgeJob).where(KnowledgeJob.index_id.in_(indices)).order_by(KnowledgeJob.id.desc()).limit(50))
-    ).all()
+    jobs = (await db.scalars(select(KnowledgeJob).where(KnowledgeJob.index_id.in_(indices)).order_by(KnowledgeJob.id.desc()).limit(50))).all()
     return api_response(data=[job.to_dict(exclude={"lease_token"}) for job in jobs], is_pop=False, datetime_format=False)
 
 
@@ -520,18 +502,13 @@ async def test_embedding_model(model_id: int, actor: Admin = Depends(require_adm
         failure = exc.code
     except ToolCapacityError:
         raise CustomException(status_code=429, custom_code=10005, detail="嵌入探测资源并发已满") from None
-    model = await db.scalar(
-        select(ModelCatalog).where(ModelCatalog.id == model_id).with_for_update().execution_options(populate_existing=True)
-    )
+    model = await db.scalar(select(ModelCatalog).where(ModelCatalog.id == model_id).with_for_update().execution_options(populate_existing=True))
     if probed_identity is not None:
         from app.models.provider_connection import ProviderConnection
 
         provider = (
             await db.scalar(
-                select(ProviderConnection)
-                .where(ProviderConnection.id == model.provider_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
+                select(ProviderConnection).where(ProviderConnection.id == model.provider_id).with_for_update().execution_options(populate_existing=True),
             )
             if model is not None
             else None
@@ -591,7 +568,7 @@ async def list_run_knowledge_retrievals(
                 KnowledgeRetrieval.id > after_id,
             )
             .order_by(KnowledgeRetrieval.id)
-            .limit(50)
+            .limit(50),
         )
     ).all()
     return api_response(data=[row.to_dict() for row in rows], is_pop=False, datetime_format=False)

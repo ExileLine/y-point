@@ -51,7 +51,7 @@ class FakeChatModel:
                         "value": "ping",
                     },
                     "id": "call-1",
-                }
+                },
             ]
             if self.bound and self.tool_calls
             else []
@@ -271,8 +271,8 @@ async def exercise_capabilities() -> None:
                 {
                     "message": "secret-response",
                 },
-            )
-        ]
+            ),
+        ],
     )
     assert (await probe_capability(model, provider, "text", google_gateway)).available is True
     assert google_gateway.calls == 2
@@ -292,8 +292,8 @@ async def exercise_capabilities() -> None:
                     },
                 },
                 "Converse",
-            )
-        ]
+            ),
+        ],
     )
     assert (await probe_capability(model, provider, "text", bedrock_gateway)).available is True
     assert bedrock_gateway.calls == 2
@@ -307,9 +307,7 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
     from app.services.provider_credentials import encrypt_credentials
 
     monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    model = ModelCatalog(
-        id=1, provider_id=1, external_id="reasoning-model", input_price=Decimal("2"), output_price=Decimal("4"), price_currency="USD"
-    )
+    model = ModelCatalog(id=1, provider_id=1, external_id="reasoning-model", input_price=Decimal("2"), output_price=Decimal("4"), price_currency="USD")
     provider = ProviderConnection(
         id=1,
         kind="openai",
@@ -333,15 +331,15 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
                             {
                                 "type": "summary_text",
                                 "text": "public summary",
-                            }
+                            },
                         ],
                         "content": [
                             {
                                 "type": "reasoning_text",
                                 "text": "hidden reasoning",
-                            }
+                            },
                         ],
-                    }
+                    },
                 ],
                 "usage": {
                     "input_tokens": 10,
@@ -379,7 +377,7 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
                             {
                                 "type": "reasoning_text",
                                 "text": "hidden reasoning",
-                            }
+                            },
                         ],
                     },
                     {
@@ -388,7 +386,7 @@ async def exercise_reasoning_summary(monkeypatch) -> None:
                             {
                                 "type": "output_text",
                                 "text": "normal answer",
-                            }
+                            },
                         ],
                     },
                 ],

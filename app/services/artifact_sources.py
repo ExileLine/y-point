@@ -19,7 +19,7 @@ async def load_read_source_artifact_ids(db: AsyncSession, owner_id: int, target_
         await db.execute(
             select(ArtifactSource.target_artifact_id, ArtifactSource.source_artifact_id)
             .where(ArtifactSource.target_artifact_id.in_(target_ids), ArtifactSource.owner_id == owner_id)
-            .order_by(ArtifactSource.target_artifact_id, ArtifactSource.position)
+            .order_by(ArtifactSource.target_artifact_id, ArtifactSource.position),
         )
     ).all()
     by_target: dict[str, list[str]] = {}

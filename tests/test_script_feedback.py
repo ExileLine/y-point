@@ -78,7 +78,7 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
                         visibility=Visibility.PRIVATE,
                         enabled=True,
                         current_version=1,
-                    )
+                    ),
                 )
                 db.add(
                     UserToolVersion(
@@ -105,7 +105,7 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
                             },
                             "required": ["summary", "unchecked_scope", "findings"],
                         },
-                    )
+                    ),
                 )
                 db.add(AgentTool(agent_id=1, tool_id=1, tool_version=1))
                 await db.flush()
@@ -117,7 +117,7 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
                 "findings": [
                     {
                         "problem": "示例问题",
-                    }
+                    },
                 ],
             }
             repaired = {
@@ -133,7 +133,7 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
                                 "name": "check_report",
                                 "args": invalid,
                                 "id": "scope-mismatch",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(
@@ -143,11 +143,11 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
                                 "name": "check_report",
                                 "args": repaired,
                                 "id": "scope-repaired",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="报告校验完成"),
-                ]
+                ],
             )
             result = await execute_text_run(
                 sessions,
@@ -163,9 +163,7 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
             assert result.model_call_count == (3 if effect == ToolEffect.READ else 1)
             assert invalid["findings"] == repaired["findings"]
             async with sessions() as db:
-                invocations = list(
-                    await db.scalars(select(ToolInvocation).where(ToolInvocation.run_id == run.id).order_by(ToolInvocation.id))
-                )
+                invocations = list(await db.scalars(select(ToolInvocation).where(ToolInvocation.run_id == run.id).order_by(ToolInvocation.id)))
                 expected = (
                     [(ToolInvocationState.FAILED, "execution_error"), (ToolInvocationState.COMPLETED, None)]
                     if effect == ToolEffect.READ

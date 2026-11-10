@@ -25,7 +25,7 @@ class ToolCreateIn(BaseModel):
         examples=[
             {
                 "type": "object",
-            }
+            },
         ],
     )
     script_language: ScriptLanguage | None = Field(default=None, description="脚本语言 python 或 bash", examples=["python"])
@@ -36,18 +36,18 @@ class ToolCreateIn(BaseModel):
         examples=[["httpx>=0.27,<1"]],
     )
     source_code: str | None = Field(default=None, description="UTF-8 脚本源码", examples=["import json\nprint(json.dumps({'ok': True}))"])
-    mcp_url: str | None = Field(
-        default=None, max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"]
-    )
+    mcp_url: str | None = Field(default=None, max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"])
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="远端 MCP 工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="MCP Bearer 凭据，仅写入时接收", examples=["token-value"])
     share_credentials: bool = Field(default=False, description="公开 MCP 工具时明确允许他人使用该凭据", examples=[False])
     effect: ToolEffect | None = Field(default=None, description="MCP 读写属性；远端未提供声明时仅管理员可确认只读", examples=["read"])
-    recovery_policy: RecoveryPolicy | None = Field(
-        default=None, description="恢复策略，外部写需配置可核对的幂等契约", examples=["idempotent"]
-    )
+    recovery_policy: RecoveryPolicy | None = Field(default=None, description="恢复策略，外部写需配置可核对的幂等契约", examples=["idempotent"])
     idempotency_key_field: str | None = Field(
-        default=None, min_length=1, max_length=128, description="服务端注入幂等键的顶层字符串参数名", examples=["request_id"]
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="服务端注入幂等键的顶层字符串参数名",
+        examples=["request_id"],
     )
 
 
@@ -64,11 +64,14 @@ class ToolUpdateIn(BaseModel):
         examples=[
             {
                 "type": "object",
-            }
+            },
         ],
     )
     requirements: list[str] | None = Field(
-        default=None, max_length=32, description="新版 Python 依赖清单，空列表表示不需要额外依赖", examples=[["httpx==0.28.1"]]
+        default=None,
+        max_length=32,
+        description="新版 Python 依赖清单，空列表表示不需要额外依赖",
+        examples=[["httpx==0.28.1"]],
     )
     source_code: str | None = Field(default=None, description="新版脚本源码", examples=["print('{}')"])
     mcp_url: str | None = Field(default=None, max_length=512, description="新版 MCP 地址", examples=["https://mcp.example.com/mcp"])
@@ -78,9 +81,7 @@ class ToolUpdateIn(BaseModel):
     clear_mcp_credentials: bool = Field(default=False, description="清除新版本凭据并撤销历史凭据版本，与替换密钥互斥", examples=[True])
     effect: ToolEffect | None = Field(default=None, description="新版 MCP 读写属性", examples=["read"])
     recovery_policy: RecoveryPolicy | None = Field(default=None, description="新版调用恢复策略", examples=["idempotent"])
-    idempotency_key_field: str | None = Field(
-        default=None, min_length=1, max_length=128, description="远端幂等键字符串参数名", examples=["request_id"]
-    )
+    idempotency_key_field: str | None = Field(default=None, min_length=1, max_length=128, description="远端幂等键字符串参数名", examples=["request_id"])
 
 
 class ToolTestIn(BaseModel):
@@ -91,7 +92,7 @@ class ToolTestIn(BaseModel):
         examples=[
             {
                 "path": "/",
-            }
+            },
         ],
     )
 

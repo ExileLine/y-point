@@ -111,7 +111,7 @@ def test_mcp_call_deadline_covers_all_phases(monkeypatch: pytest.MonkeyPatch, mo
                 "name": "review",
                 "input_schema": schema,
                 "read_only": True,
-            }
+            },
         ]
 
     monkeypatch.setattr(mcp_tools, "_mcp_connection", connection)
@@ -216,9 +216,7 @@ def test_knowledge_api_and_agent_use_configured_timeout(monkeypatch: pytest.Monk
     async def exercise() -> None:
         """真实路由函数返回 504，Agent 工具传播超时交给统一运行事件处理。"""
         with pytest.raises(CustomException) as failure:
-            await knowledge_api.search_knowledge_base(
-                1, KnowledgeSearchIn(query="审查要求"), actor=SimpleNamespace(id=1), db=SimpleNamespace(bind=None)
-            )
+            await knowledge_api.search_knowledge_base(1, KnowledgeSearchIn(query="审查要求"), actor=SimpleNamespace(id=1), db=SimpleNamespace(bind=None))
         assert failure.value.status_code == 504
         assert leases == [0.03, "released"]
         context = SimpleNamespace(
@@ -232,7 +230,7 @@ def test_knowledge_api_and_agent_use_configured_timeout(monkeypatch: pytest.Monk
             await search.ainvoke(
                 {
                     "query": "审查要求",
-                }
+                },
             )
         assert stopped == [True, True]
 

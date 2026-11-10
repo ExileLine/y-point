@@ -54,9 +54,7 @@ def knowledge_access(actor_id: int):
     )
 
 
-async def require_knowledge_base(
-    db: AsyncSession, identifier: int, actor_id: int, *, manage: bool = False, lock: bool = False
-) -> KnowledgeBase:
+async def require_knowledge_base(db: AsyncSession, identifier: int, actor_id: int, *, manage: bool = False, lock: bool = False) -> KnowledgeBase:
     """不存在、删除和未授权统一隐藏，管理仅允许创建者。"""
     statement = select(KnowledgeBase).where(KnowledgeBase.id == identifier, knowledge_access(actor_id))
     if manage:
@@ -92,7 +90,7 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
         update(KnowledgeBase)
         .where(KnowledgeBase.id == item.id, KnowledgeBase.revision == expected_revision, KnowledgeBase.is_deleted == 0)
         .values(revision=expected_revision + 1)
-        .execution_options(synchronize_session=False)
+        .execution_options(synchronize_session=False),
     )
     if changed.rowcount != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="知识库版本已变化")
@@ -106,7 +104,7 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
                 KnowledgeDocument.is_deleted == 0,
                 KnowledgeDocument.current_version == KnowledgeDocumentVersion.version,
             )
-            .order_by(KnowledgeDocument.id)
+            .order_by(KnowledgeDocument.id),
         )
     ).all()
     if len(versions) > MAX_KNOWLEDGE_DOCUMENTS or sum(version.byte_size for version in versions) > MAX_KNOWLEDGE_BYTES:
@@ -129,7 +127,7 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
             {
                 "stage": KnowledgeJobState.UPLOADED,
                 "time": shanghai_now().isoformat(),
-            }
+            },
         ],
     )
     db.add(job)
@@ -148,11 +146,7 @@ async def selected_knowledge_bases(db: AsyncSession, identifiers: list[int], act
 async def agent_knowledge_ids(db: AsyncSession, agent_id: int) -> list[int]:
     """返回 Agent 关联 ID，不向共享 Agent 使用者授予隐含读取权限。"""
     return list(
-        (
-            await db.scalars(
-                select(AgentKnowledgeBase.knowledge_base_id).where(AgentKnowledgeBase.agent_id == agent_id).order_by(AgentKnowledgeBase.id)
-            )
-        ).all(),
+        (await db.scalars(select(AgentKnowledgeBase.knowledge_base_id).where(AgentKnowledgeBase.agent_id == agent_id).order_by(AgentKnowledgeBase.id))).all(),
     )
 
 
@@ -189,7 +183,7 @@ async def allowed_knowledge_indices(db: AsyncSession, actor_id: int, requested: 
             await db.scalars(
                 select(KnowledgeIndex)
                 .join(KnowledgeBase, KnowledgeBase.id == KnowledgeIndex.knowledge_base_id)
-                .where(KnowledgeIndex.id.in_(requested), KnowledgeIndex.state == KnowledgeIndexState.READY, knowledge_access(actor_id))
+                .where(KnowledgeIndex.id.in_(requested), KnowledgeIndex.state == KnowledgeIndexState.READY, knowledge_access(actor_id)),
             )
         ).all(),
     )
@@ -228,7 +222,7 @@ async def read_knowledge_citation(db: AsyncSession, actor_id: int, knowledge_bas
                 KnowledgeIndex.knowledge_base_id == knowledge_base_id,
                 KnowledgeIndex.state == KnowledgeIndexState.READY,
                 KnowledgeDocument.is_deleted == 0,
-            )
+            ),
         )
     ).first()
     if row is None:
@@ -277,7 +271,7 @@ async def search_knowledge(
                 "dimensions": identity["dimensions"],
                 "tokens": result.tokens,
                 "cost": str(result.cost) if result.cost is not None else None,
-            }
+            },
         )
         async with sessions() as db:
             current = await allowed_knowledge_indices(db, actor_id, group_ids)
@@ -302,9 +296,7 @@ async def search_knowledge(
                     select(KnowledgeChunk, KnowledgeDocumentVersion)
                     .join(KnowledgeDocumentVersion, KnowledgeDocumentVersion.id == KnowledgeChunk.document_version_id)
                     .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
-                    .where(
-                        KnowledgeChunk.id.in_(list(ranks)), KnowledgeChunk.index_id.in_(list(by_index)), KnowledgeDocument.is_deleted == 0
-                    )
+                    .where(KnowledgeChunk.id.in_(list(ranks)), KnowledgeChunk.index_id.in_(list(by_index)), KnowledgeDocument.is_deleted == 0),
                 )
             ).all()
             if ranks
@@ -338,15 +330,12 @@ async def search_knowledge(
                     run_id=run_id,
                     owner_id=actor_id,
                     query_hash=hashlib.sha256(body.query.encode()).hexdigest(),
-                    references=[
-                        {key: hit[key] for key in ("knowledge_base_id", "index_id", "chunk_id", "document_id", "document_version")}
-                        for hit in hits
-                    ],
+                    references=[{key: hit[key] for key in ("knowledge_base_id", "index_id", "chunk_id", "document_id", "document_version")} for hit in hits],
                     embedding_usage=embedding_usage,
                     hit_count=len(hits),
                     byte_count=byte_count,
                     latency_ms=round((time.monotonic() - started) * 1000),
-                )
+                ),
             )
     return {
         "hits": hits,

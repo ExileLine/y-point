@@ -91,15 +91,13 @@ def _shared_data(agent: AgentConfig) -> dict:
             "icon": agent.icon,
             "welcome_message": agent.welcome_message,
             "enabled": agent.enabled,
-        }
+        },
     ).model_dump(
         mode="json",
     )
 
 
-async def _available_text_model(
-    db: AsyncSession, model_id: int, max_output_tokens: int, thinking_mode: str = ModelThinkingMode.AUTO
-) -> ModelCatalog:
+async def _available_text_model(db: AsyncSession, model_id: int, max_output_tokens: int, thinking_mode: str = ModelThinkingMode.AUTO) -> ModelCatalog:
     """确认默认模型及供应商可用，且模型已经通过文本能力验证。"""
     model = await db.get(ModelCatalog, model_id, with_for_update=True)
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
@@ -121,9 +119,7 @@ def _check_cost_pricing(model: ModelCatalog, max_estimated_cost: Decimal | None)
 
 async def _owned_agent(db: AsyncSession, agent_id: int, owner_id: int) -> AgentConfig:
     """只读取当前用户仍有效的 Agent，跨用户访问与不存在统一返回 404。"""
-    agent = await db.scalar(
-        select(AgentConfig).where(AgentConfig.id == agent_id, AgentConfig.owner_id == owner_id, AgentConfig.is_deleted == 0)
-    )
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id, AgentConfig.owner_id == owner_id, AgentConfig.is_deleted == 0))
     if agent is None:
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     return agent
@@ -140,14 +136,10 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     knowledge = await selected_knowledge_bases(db, body.knowledge_base_ids, actor.id)
     if (tools or knowledge) and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
-    agent = AgentConfig(
-        owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids", "knowledge_base_ids"}), version=1, is_deleted=0, status=1
-    )
+    agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids", "knowledge_base_ids"}), version=1, is_deleted=0, status=1)
     db.add(agent)
     await db.flush()
-    db.add_all(
-        [AgentSkill(agent_id=agent.id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in skills]
-    )
+    db.add_all([AgentSkill(agent_id=agent.id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in skills])
     db.add_all([AgentTool(agent_id=agent.id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1) for item in tools])
     db.add_all([AgentKnowledgeBase(agent_id=agent.id, knowledge_base_id=item.id) for item in knowledge])
     audit(db, "agent.created", actor_id=actor.id, target_id=agent.id)
@@ -166,11 +158,7 @@ async def list_agents(
     """仅分页展示当前用户未删除的 Agent 配置。"""
     condition = (AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0)
     total = await db.scalar(select(func.count()).select_from(AgentConfig).where(*condition))
-    items = (
-        await db.scalars(
-            select(AgentConfig).where(*condition).order_by(AgentConfig.id.desc()).offset((page - 1) * page_size).limit(page_size)
-        )
-    ).all()
+    items = (await db.scalars(select(AgentConfig).where(*condition).order_by(AgentConfig.id.desc()).offset((page - 1) * page_size).limit(page_size))).all()
     result = AgentPageOut(items=[AgentOut.model_validate(item) for item in items], total=total or 0, page=page, page_size=page_size)
     data = result.model_dump(mode="json")
     data["items"] = [await _agent_data(db, item) for item in items]
@@ -185,7 +173,7 @@ async def list_shared_agents(actor: Admin = Depends(get_current_admin), db: Asyn
             select(AgentConfig)
             .join(AgentShare, AgentShare.agent_id == AgentConfig.id)
             .where(AgentShare.user_id == actor.id, AgentConfig.is_deleted == 0)
-            .order_by(AgentConfig.id.desc())
+            .order_by(AgentConfig.id.desc()),
         )
     ).all()
     return api_response(data=[_shared_data(agent) for agent in agents], is_pop=False)
@@ -221,7 +209,7 @@ async def search_share_targets(
                 func.lower(Admin.username).startswith(term, autoescape=True),
             )
             .order_by(Admin.username)
-            .limit(20)
+            .limit(20),
         )
     ).all()
     return api_response(data=[AgentShareOut(user_id=user.id, username=user.username).model_dump() for user in users], is_pop=False)
@@ -239,11 +227,7 @@ async def list_agent_shares(agent_id: int, actor: Admin = Depends(get_current_ad
     """向智能体所有者列出显式获授权的用户。"""
     await _owned_agent(db, agent_id, actor.id)
     rows = (
-        (
-            await db.execute(
-                select(Admin).join(AgentShare, AgentShare.user_id == Admin.id).where(AgentShare.agent_id == agent_id).order_by(Admin.id)
-            )
-        )
+        (await db.execute(select(Admin).join(AgentShare, AgentShare.user_id == Admin.id).where(AgentShare.agent_id == agent_id).order_by(Admin.id)))
         .scalars()
         .all()
     )
@@ -251,15 +235,11 @@ async def list_agent_shares(agent_id: int, actor: Admin = Depends(get_current_ad
 
 
 @router.post("/{agent_id}/shares", summary="授权指定用户使用智能体")
-async def grant_agent_share(
-    agent_id: int, body: AgentShareIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def grant_agent_share(agent_id: int, body: AgentShareIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """校验所有权和目标用户状态，幂等授予智能体使用权限并记录审计。"""
     await _owned_agent(db, agent_id, actor.id)
     locked_agent = await db.scalar(
-        select(AgentConfig)
-        .where(AgentConfig.id == agent_id, AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0)
-        .with_for_update()
+        select(AgentConfig).where(AgentConfig.id == agent_id, AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0).with_for_update(),
     )
     if locked_agent is None:
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
@@ -280,9 +260,7 @@ async def grant_agent_share(
 
 
 @router.delete("/{agent_id}/shares/{user_id}", summary="撤销指定用户的智能体授权")
-async def revoke_agent_share(
-    agent_id: int, user_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def revoke_agent_share(agent_id: int, user_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """撤销指定用户的智能体使用权限，并请求取消其未结束运行。"""
     await _owned_agent(db, agent_id, actor.id)
     await db.scalar(select(AgentConfig.id).where(AgentConfig.id == agent_id).with_for_update())
@@ -290,9 +268,7 @@ async def revoke_agent_share(
     if removed.rowcount == 0:
         raise CustomException(status_code=404, custom_code=10002, detail="授权不存在")
     active_ids = (
-        await db.scalars(
-            select(AgentRun.id).where(AgentRun.agent_id == agent_id, AgentRun.owner_id == user_id, AgentRun.state.not_in(TERMINAL_STATES))
-        )
+        await db.scalars(select(AgentRun.id).where(AgentRun.agent_id == agent_id, AgentRun.owner_id == user_id, AgentRun.state.not_in(TERMINAL_STATES)))
     ).all()
     for run_id in active_ids:
         await request_cancel(db, run_id, user_id)
@@ -302,9 +278,7 @@ async def revoke_agent_share(
 
 
 @router.put("/{agent_id}", summary="修改我的智能体")
-async def update_agent(
-    agent_id: int, body: AgentUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """使用期望版本原子更新配置，避免覆盖其他请求的编辑。"""
     agent = await _owned_agent(db, agent_id, actor.id)
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
@@ -364,26 +338,18 @@ async def update_agent(
                 AgentConfig.version == body.expected_version,
             )
             .values(**changes, version=AgentConfig.version + 1)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             await db.rollback()
             raise CustomException(status_code=409, custom_code=10005, detail="智能体配置版本已变化")
         if selected is not None:
             await db.execute(delete(AgentSkill).where(AgentSkill.agent_id == agent_id))
-            db.add_all(
-                [
-                    AgentSkill(agent_id=agent_id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1)
-                    for item in selected
-                ]
-            )
+            db.add_all([AgentSkill(agent_id=agent_id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in selected])
         if selected_user_tools is not None:
             await db.execute(delete(AgentTool).where(AgentTool.agent_id == agent_id))
             db.add_all(
-                [
-                    AgentTool(agent_id=agent_id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1)
-                    for item in selected_user_tools
-                ]
+                [AgentTool(agent_id=agent_id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1) for item in selected_user_tools],
             )
         if knowledge is not None:
             await db.execute(delete(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id))
@@ -402,11 +368,9 @@ async def delete_agent(agent_id: int, actor: Admin = Depends(get_current_admin),
     agent = await _owned_agent(db, agent_id, actor.id)
     result = await db.execute(
         update(AgentConfig)
-        .where(
-            AgentConfig.id == agent_id, AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0, AgentConfig.version == agent.version
-        )
+        .where(AgentConfig.id == agent_id, AgentConfig.owner_id == actor.id, AgentConfig.is_deleted == 0, AgentConfig.version == agent.version)
         .values(is_deleted=1, enabled=False, version=AgentConfig.version + 1)
-        .execution_options(synchronize_session=False)
+        .execution_options(synchronize_session=False),
     )
     if result.rowcount != 1:
         await db.rollback()
@@ -417,8 +381,10 @@ async def delete_agent(agent_id: int, actor: Admin = Depends(get_current_admin),
         active_runs = (
             await db.execute(
                 select(AgentRun.id, AgentRun.owner_id).where(
-                    AgentRun.agent_id == agent_id, AgentRun.owner_id.in_(recipients), AgentRun.state.not_in(TERMINAL_STATES)
-                )
+                    AgentRun.agent_id == agent_id,
+                    AgentRun.owner_id.in_(recipients),
+                    AgentRun.state.not_in(TERMINAL_STATES),
+                ),
             )
         ).all()
         for run_id, owner_id in active_runs:

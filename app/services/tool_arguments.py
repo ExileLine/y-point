@@ -36,9 +36,7 @@ def validate_tool_arguments(schema: dict, arguments: dict) -> None:
             "rule": str(error.validator)[:64],
         }
         if error.validator == "required" and isinstance(error.instance, dict):
-            issue["missing_fields"] = [str(field)[:80] for field in error.validator_value if field not in error.instance][
-                :MAX_ARGUMENT_ISSUES
-            ]
+            issue["missing_fields"] = [str(field)[:80] for field in error.validator_value if field not in error.instance][:MAX_ARGUMENT_ISSUES]
         issues.append(issue)
     raise ToolArgumentsError(
         json.dumps(
@@ -50,7 +48,7 @@ def validate_tool_arguments(schema: dict, arguments: dict) -> None:
                 "truncated": len(errors) > MAX_ARGUMENT_ISSUES,
             },
             ensure_ascii=False,
-        )
+        ),
     )
 
 

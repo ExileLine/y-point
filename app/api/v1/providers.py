@@ -117,9 +117,7 @@ async def create_provider(body: ProviderCreateIn, actor: Admin = Depends(require
 @router.get("", summary="查询模型供应商连接列表")
 async def list_providers(actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """返回未删除的供应商连接，不暴露密钥或自定义请求头。"""
-    providers = (
-        await db.scalars(select(ProviderConnection).where(ProviderConnection.is_deleted == 0).order_by(ProviderConnection.id))
-    ).all()
+    providers = (await db.scalars(select(ProviderConnection).where(ProviderConnection.is_deleted == 0).order_by(ProviderConnection.id))).all()
     data = [ProviderOut.model_validate(provider).model_dump(mode="json") for provider in providers]
     return api_response(data=data, is_pop=False)
 
@@ -132,24 +130,19 @@ async def get_provider(provider_id: int, actor: Admin = Depends(require_admin), 
 
 
 @router.put("/{provider_id}", summary="修改模型供应商连接")
-async def update_provider(
-    provider_id: int, body: ProviderUpdateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def update_provider(provider_id: int, body: ProviderUpdateIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """更新连接配置，未传入的凭据保持原值。"""
     provider = await get_provider_or_404(db, provider_id)
     fields = body.model_fields_set
     if "status" in fields and body.status == 0 or fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
         await db.scalars(
-            select(ModelCatalog.id)
-            .where(ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0)
-            .order_by(ModelCatalog.id)
-            .with_for_update()
+            select(ModelCatalog.id).where(ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0).order_by(ModelCatalog.id).with_for_update(),
         )
         linked = await db.scalar(
             select(AgentConfig.id)
             .join(ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id)
             .where(ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0)
-            .limit(1)
+            .limit(1),
         )
         if linked is not None:
             raise CustomException(status_code=409, custom_code=10005, detail="连接仍被 Agent 引用，请先更换其默认模型")
@@ -179,11 +172,7 @@ async def update_provider(
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     await flush_catalog(db)
     if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
-        await db.execute(
-            update(ModelCatalog)
-            .where(ModelCatalog.provider_id == provider.id)
-            .values(verified_capabilities=[], capabilities_verified=False)
-        )
+        await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(verified_capabilities=[], capabilities_verified=False))
     if provider.status == 0:
         await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(is_default=False, default_slot=None))
     audit(db, "provider.updated", actor_id=actor.id, target_id=provider.id)
@@ -226,9 +215,11 @@ async def discover_provider_models(provider_id: int, actor: Admin = Depends(requ
         existing_ids = set(
             await db.scalars(
                 select(ModelCatalog.external_id).where(
-                    ModelCatalog.provider_id == provider_id, ModelCatalog.external_id.in_(probe.models), ModelCatalog.is_deleted == 0
-                )
-            )
+                    ModelCatalog.provider_id == provider_id,
+                    ModelCatalog.external_id.in_(probe.models),
+                    ModelCatalog.is_deleted == 0,
+                ),
+            ),
         )
     result = ModelDiscoveryOut(
         available=probe.available,
@@ -237,9 +228,7 @@ async def discover_provider_models(provider_id: int, actor: Admin = Depends(requ
         model_count=probe.model_count,
         failure=probe.failure,
         models=[
-            DiscoveredModelOut(
-                external_id=model_id, display_name=probe.model_names.get(model_id, model_id)[:128], already_added=model_id in existing_ids
-            )
+            DiscoveredModelOut(external_id=model_id, display_name=probe.model_names.get(model_id, model_id)[:128], already_added=model_id in existing_ids)
             for model_id in probe.models
         ],
     )

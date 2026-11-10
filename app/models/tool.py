@@ -56,12 +56,8 @@ class UserToolVersion(CustomBaseModel):
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, comment="调用前是否要求审批")
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="当前版本是否通过发布验证")
     requirements: Mapped[list] = mapped_column(JSON, nullable=False, default=list, comment="用户声明的 Python 依赖清单")
-    environment_state: Mapped[str] = mapped_column(
-        String(24), nullable=False, default=ToolEnvironmentState.NOT_REQUIRED, comment="脚本依赖环境准备状态"
-    )
-    environment_spec_hash: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True, comment="依赖声明与基础镜像的准备请求摘要"
-    )
+    environment_state: Mapped[str] = mapped_column(String(24), nullable=False, default=ToolEnvironmentState.NOT_REQUIRED, comment="脚本依赖环境准备状态")
+    environment_spec_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, comment="依赖声明与基础镜像的准备请求摘要")
     environment_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, comment="依赖与基础镜像的环境缓存键")
     environment_image: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="已固定的沙箱基础镜像 ID")
     environment_lock: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="完整依赖版本和 wheel SHA256 清单")

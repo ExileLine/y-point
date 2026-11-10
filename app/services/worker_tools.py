@@ -74,7 +74,7 @@ def _list_text_artifacts(context: ToolContext) -> BaseTool:
                         or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
                     )
                     .order_by(Artifact.create_time.desc(), Artifact.id.desc())
-                    .limit(50)
+                    .limit(50),
                 )
             ).all()
         return json.dumps(
@@ -167,7 +167,7 @@ def _list_session_artifacts(context: ToolContext) -> BaseTool:
                         or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
                     )
                     .order_by(Artifact.create_time.desc(), Artifact.id.desc())
-                    .limit(20)
+                    .limit(20),
                 )
             ).all()
         return json.dumps(
@@ -213,7 +213,7 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
                     AgentRun.owner_id == context.owner_id,
                     AgentRun.state == RunState.COMPLETED,
                     or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
-                )
+                ),
             )
             if item is None:
                 raise ToolException(
@@ -226,7 +226,7 @@ def _read_generated_artifact(context: ToolContext) -> BaseTool:
                             "retryable": True,
                         },
                         ensure_ascii=False,
-                    )
+                    ),
                 )
             key, filename, media_type = item.storage_key, item.filename, item.media_type
             byte_size, expected_hash = item.byte_size, item.sha256
@@ -274,9 +274,7 @@ def _create_text_artifact(context: ToolContext) -> BaseTool:
         async with context.sessions() as db:
             await context.require_active(db, enabled=lambda run: run.model_id is not None)
         data = render_text_artifact(filename, content)
-        artifact = await stage_generated_artifact(
-            context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
-        )
+        artifact = await stage_generated_artifact(context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root())
         return json.dumps(
             {
                 "artifact_id": artifact.id,
@@ -297,9 +295,7 @@ def _create_document_artifact(context: ToolContext) -> BaseTool:
         async with context.sessions() as db:
             await context.require_active(db, enabled=lambda run: run.model_id is not None)
         data = render_document_artifact(filename, content)
-        artifact = await stage_generated_artifact(
-            context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
-        )
+        artifact = await stage_generated_artifact(context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root())
         return json.dumps(
             {
                 "artifact_id": artifact.id,
@@ -322,9 +318,7 @@ def _create_spreadsheet_artifact(context: ToolContext) -> BaseTool:
         async with context.sessions() as db:
             await context.require_active(db, enabled=lambda run: run.model_id is not None)
         data = render_spreadsheet_artifact(sheets)
-        artifact = await stage_generated_artifact(
-            context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root()
-        )
+        artifact = await stage_generated_artifact(context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root())
         return json.dumps(
             {
                 "artifact_id": artifact.id,
@@ -355,7 +349,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     requires_approval=False,
                     effect=ToolEffect.READ,
                     recovery=RecoveryPolicy.SAFE,
-                )
+                ),
             )
         registry.register(
             ToolSpec(
@@ -365,7 +359,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 requires_approval=False,
                 effect=ToolEffect.READ,
                 recovery=RecoveryPolicy.SAFE,
-            )
+            ),
         )
         registry.register(
             ToolSpec(
@@ -375,7 +369,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 requires_approval=True,
                 effect=ToolEffect.READ,
                 recovery=RecoveryPolicy.SAFE,
-            )
+            ),
         )
         model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
         if model is not None and ModelCapability.TOOLS in (model.verified_capabilities or []):
@@ -392,7 +386,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                             requires_approval=False,
                             effect=ToolEffect.READ,
                             recovery=RecoveryPolicy.SAFE,
-                        )
+                        ),
                     )
             for name, factory in (
                 ("create_text_artifact", _create_text_artifact),
@@ -408,7 +402,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         effect=ToolEffect.WRITE,
                         recovery=RecoveryPolicy.IDEMPOTENT,
                         staged=True,
-                    )
+                    ),
                 )
         if run.session_id is not None and model is not None and ModelCapability.TOOLS in (model.verified_capabilities or []):
             from app.models.skill import RunSkill
@@ -419,7 +413,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 select(SkillTemplate.id)
                 .join(RunSkill, ((RunSkill.skill_id == SkillTemplate.skill_id) & (RunSkill.skill_version == SkillTemplate.skill_version)))
                 .where(RunSkill.run_id == run.id)
-                .limit(1)
+                .limit(1),
             )
             if has_template:
                 registry.register(
@@ -431,7 +425,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         effect=ToolEffect.WRITE,
                         recovery=RecoveryPolicy.IDEMPOTENT,
                         staged=True,
-                    )
+                    ),
                 )
         builtins, approvals = await registry.resolve(db, run, sessions)
         user_tools = await load_run_tools(db, run.id, run.owner_id)
@@ -466,11 +460,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                                 selected_version.idempotency_key_field: call_id,
                             }
                         token, _ = decrypt_credentials(selected_version.encrypted_credentials)
-                        if (
-                            selected.owner_id != run.owner_id
-                            and selected_version.encrypted_credentials
-                            and not selected_version.share_credentials
-                        ):
+                        if selected.owner_id != run.owner_id and selected_version.encrypted_credentials and not selected_version.share_credentials:
                             raise ValueError("MCP 凭据未授权共享")
                         url, remote_name = selected_version.mcp_url, selected_version.mcp_tool_name
                         expected_schema = selected_version.input_schema
@@ -507,7 +497,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                                     "使用新的调用 ID 再调用；不要删除真实发现项或编造审核依据。",
                                 },
                                 ensure_ascii=False,
-                            )
+                            ),
                         ) from None
                 return await invoke_mcp_tool(
                     url,
@@ -521,9 +511,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
 
             schema = dict(version.input_schema)
             if version.idempotency_key_field:
-                schema["properties"] = {
-                    key: value for key, value in schema.get("properties", {}).items() if key != version.idempotency_key_field
-                }
+                schema["properties"] = {key: value for key, value in schema.get("properties", {}).items() if key != version.idempotency_key_field}
                 schema["required"] = [key for key in schema.get("required", []) if key != version.idempotency_key_field]
             builtins.append(
                 StructuredTool.from_function(
@@ -532,7 +520,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     description=f"工具名称：{definition.name}。{definition.description}",
                     args_schema=schema,
                     handle_tool_error=tool_argument_error_content,
-                )
+                ),
             )
             if version.requires_approval:
                 approvals[tool_name] = True

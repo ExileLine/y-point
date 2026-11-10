@@ -75,27 +75,21 @@ async def refresh(body: RefreshIn, db: AsyncSession = Depends(get_db_session)):
             AuthSession.revoked_at.is_(None),
             AuthSession.expires_at > utc_now(),
         )
-        .values(refresh_hash=new_hash)
+        .values(refresh_hash=new_hash),
     )
     if result.rowcount != 1:
         await db.rollback()
         raise unauthorized()
     audit(db, "auth.refresh", actor_id=admin.id, target_id=admin.id)
     await db.commit()
-    data = TokenOut(
-        access_token=make_access_token(admin, session_id), refresh_token=f"{session_id}.{new_secret}", expires_in=ACCESS_TOKEN_SECONDS
-    )
+    data = TokenOut(access_token=make_access_token(admin, session_id), refresh_token=f"{session_id}.{new_secret}", expires_in=ACCESS_TOKEN_SECONDS)
     return api_response(data=data.model_dump())
 
 
 @router.post("/logout", summary="退出登录")
 async def logout(request: Request, admin: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """撤销当前访问令牌所属的登录会话。"""
-    await db.execute(
-        update(AuthSession)
-        .where(AuthSession.id == request.state.auth_session_id, AuthSession.admin_id == admin.id)
-        .values(revoked_at=utc_now())
-    )
+    await db.execute(update(AuthSession).where(AuthSession.id == request.state.auth_session_id, AuthSession.admin_id == admin.id).values(revoked_at=utc_now()))
     audit(db, "auth.logout", actor_id=admin.id, target_id=admin.id)
     await db.commit()
     return api_response(message="退出成功")

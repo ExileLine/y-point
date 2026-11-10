@@ -74,7 +74,7 @@ def create_app():
         return api_response(
             data={
                 "status": "ok",
-            }
+            },
         )
 
     if project_config.DOCS_ENABLE:

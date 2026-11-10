@@ -27,7 +27,7 @@ def test_worker_output_keeps_latest_logs_within_limit(tmp_path: Path, preexistin
         {
             "WORKER_LOG_FILE": str(log_path),
             "WORKER_LOG_MAX_BYTES": str(limit),
-        }
+        },
     )
     script = """
 import os
@@ -87,7 +87,7 @@ def test_existing_oversized_worker_log_is_trimmed_at_startup(tmp_path: Path) -> 
         {
             "WORKER_LOG_FILE": str(log_path),
             "WORKER_LOG_MAX_BYTES": "4096",
-        }
+        },
     )
     subprocess.run(
         [sys.executable, "-c", "from app.cli.run_worker import _redirect_output_to_log; _redirect_output_to_log()"],

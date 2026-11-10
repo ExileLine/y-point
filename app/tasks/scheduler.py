@@ -119,9 +119,7 @@ class TaskHandler(TriggerHandler):
         self.get_task_function()
 
         try:
-            scheduler.add_job(
-                self.task_function, trigger=self.trigger, id=self.task_id, args=self.task_function_args, kwargs=self.task_function_kwargs
-            )
+            scheduler.add_job(self.task_function, trigger=self.trigger, id=self.task_id, args=self.task_function_args, kwargs=self.task_function_kwargs)
             return True, f"定时任务: {self.task_id} 新增成功"
         except ConflictingIdError as e:
             return False, f"定时任务: {self.task_id} 已存在: {e}"

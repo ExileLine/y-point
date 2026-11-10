@@ -34,9 +34,7 @@ async def _read_remote(root: Path, artifact: Artifact) -> bytes | None:
         raise
 
 
-async def migrate_local_artifacts_to_s3(
-    sessions: async_sessionmaker[AsyncSession], root: Path, *, batch_size: int = 100
-) -> tuple[int, int]:
+async def migrate_local_artifacts_to_s3(sessions: async_sessionmaker[AsyncSession], root: Path, *, batch_size: int = 100) -> tuple[int, int]:
     """保留本地正文，远端已存在时只验证；首次上传后再次读取核对。"""
     if not using_s3():
         raise ValueError("迁移前必须启用 S3 存储后端")
@@ -56,7 +54,7 @@ async def migrate_local_artifacts_to_s3(
                         or_(Artifact.expires_at.is_(None), Artifact.expires_at > shanghai_now(naive=True)),
                     )
                     .order_by(Artifact.id)
-                    .limit(batch_size)
+                    .limit(batch_size),
                 )
             ).all()
         if not rows:

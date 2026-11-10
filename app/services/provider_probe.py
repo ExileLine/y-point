@@ -63,7 +63,7 @@ def validate_custom_headers(headers: dict[str, str]) -> None:
             httpx.Headers(
                 {
                     name: value,
-                }
+                },
             )
         except (ValueError, TypeError):
             raise CustomException(status_code=400, custom_code=10006, detail="自定义请求头无效") from None
@@ -85,7 +85,7 @@ def provider_request_headers(provider: ProviderConnection) -> dict[str, str]:
             {
                 "x-api-key": api_key,
                 "anthropic-version": provider.api_version or "2023-06-01",
-            }
+            },
         )
     elif provider.kind == ProviderKind.AZURE_OPENAI:
         if not api_key:
@@ -160,9 +160,7 @@ async def probe_provider(provider: ProviderConnection, client: httpx.AsyncClient
                         if "generateContent" not in methods:
                             continue
                     model_ids.append(model_id)
-                    display_name = (
-                        model.get("displayName") if provider.kind == ProviderKind.GEMINI else model.get("display_name") or model.get("name")
-                    )
+                    display_name = model.get("displayName") if provider.kind == ProviderKind.GEMINI else model.get("display_name") or model.get("name")
                     if isinstance(display_name, str) and display_name.strip() and display_name.isprintable():
                         model_names[model_id] = display_name.strip()
                 token = data.get("nextPageToken") if provider.kind == ProviderKind.GEMINI else None

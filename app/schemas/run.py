@@ -23,18 +23,22 @@ class RunCreateIn(BaseModel):
 
     model_id: int = Field(gt=0, description="本次运行使用的可选模型 ID", examples=[1])
     thinking_mode: ModelThinkingMode = Field(
-        default=ModelThinkingMode.AUTO, description="模型思考模式；显式启闭要求兼容服务支持 enable_thinking", examples=["auto"]
+        default=ModelThinkingMode.AUTO,
+        description="模型思考模式；显式启闭要求兼容服务支持 enable_thinking",
+        examples=["auto"],
     )
     model_timeout_seconds: ModelTimeout = Field(
-        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, description="单次模型生成最长秒数", examples=[60]
+        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
+        description="单次模型生成最长秒数",
+        examples=[60],
     )
     tool_timeout_seconds: ToolTimeout = Field(
-        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, description="单次工具执行最长秒数", examples=[30]
+        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS,
+        description="单次工具执行最长秒数",
+        examples=[30],
     )
     max_queue_wait_seconds: int | None = Field(default=None, ge=1, le=86400, description="排队等待最长秒数；为空时不限制", examples=[300])
-    enable_text_artifact_tool: bool = Field(
-        default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False]
-    )
+    enable_text_artifact_tool: bool = Field(default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False])
     publish_answer_artifact: bool = Field(default=False, description="是否将最终回答另存为 TXT 产物", examples=[False])
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="本次运行最多可开始的模型调用次数", examples=[3])
     max_total_tokens: int | None = Field(default=None, ge=1, le=10000000, description="本次运行上游报告的总 Token 上限", examples=[10000])
@@ -48,9 +52,7 @@ class RunCreateIn(BaseModel):
     )
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="本次运行最多可开始的工具调用次数", examples=[5])
     input_text: str = Field(min_length=1, max_length=32768, description="用户输入的文本", examples=["请介绍一下你自己"])
-    request_key: str | None = Field(
-        default=None, min_length=1, max_length=128, description="重复提交时复用运行的幂等键", examples=["chat-001"]
-    )
+    request_key: str | None = Field(default=None, min_length=1, max_length=128, description="重复提交时复用运行的幂等键", examples=["chat-001"])
     thread_id: str | None = Field(
         default=None,
         min_length=1,
@@ -149,7 +151,7 @@ class RunSnapshotOut(BaseModel):
                 "failure_code": None,
                 "create_time": "2026-10-22T22:00:00",
                 "update_time": "2026-10-22T22:01:00",
-            }
+            },
         ],
     )
     events: list[RunEventOut] = Field(description="本页持久化事件", examples=[[]])
@@ -193,8 +195,8 @@ class ApprovalOut(BaseModel):
                 {
                     "name": "web_search",
                     "arguments_hash": "a" * 64,
-                }
-            ]
+                },
+            ],
         ],
     )
     state: ApprovalState = Field(description="审批状态", examples=["pending"])

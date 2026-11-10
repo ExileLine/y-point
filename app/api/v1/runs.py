@@ -213,7 +213,10 @@ async def read_approval(run_id: str, actor: Admin = Depends(get_current_admin), 
 
 @router.post("/{run_id}/approval/decision", summary="决定运行审批请求")
 async def submit_approval_decision(
-    run_id: str, body: ApprovalDecisionIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+    run_id: str,
+    body: ApprovalDecisionIn,
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """只允许所有者对未过期的待处理请求提交一次同意或拒绝。"""
     await _owned_run(db, run_id, actor.id)
@@ -280,15 +283,13 @@ async def read_run_snapshot(
 
 
 @router.post("/{run_id}/stream-ticket", summary="签发浏览器 SSE 订阅凭证")
-async def issue_stream_ticket(
-    run_id: str, request: Request, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def issue_stream_ticket(run_id: str, request: Request, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """用 Bearer 换取仅限当前 Run 的短期 HttpOnly Cookie。"""
     await _owned_run(db, run_id, actor.id)
     response = api_response(
         data={
             "expires_in": STREAM_TICKET_SECONDS,
-        }
+        },
     )
     response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
@@ -357,9 +358,7 @@ async def stream_events(
             if run.state in TERMINAL_STATES and cursor >= run.event_seq:
                 if run.state != RunState.COMPLETED or not run.publish_answer_artifact:
                     break
-                published = await db.scalar(
-                    select(Artifact.id).where(Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1").limit(1)
-                )
+                published = await db.scalar(select(Artifact.id).where(Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1").limit(1))
                 if published is not None:
                     break
             if events:

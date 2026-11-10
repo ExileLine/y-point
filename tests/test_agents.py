@@ -41,7 +41,7 @@ def test_agent_config_migration(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
     for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
@@ -56,14 +56,10 @@ def test_agent_config_migration(tmp_path: Path) -> None:
                 def inspect_schema(sync_connection) -> None:
                     """读取同步 SQLAlchemy Inspector 的表结构。"""
                     schema = inspect(sync_connection)
-                    assert {column.name for column in AgentConfig.__table__.columns} == {
-                        column["name"] for column in schema.get_columns("yp_agent_config")
-                    }
+                    assert {column.name for column in AgentConfig.__table__.columns} == {column["name"] for column in schema.get_columns("yp_agent_config")}
                     assert schema.get_foreign_keys("yp_agent_config") == []
                     assert schema.get_foreign_keys("yp_agent_share") == []
-                    assert {column.name for column in AgentShare.__table__.columns} == {
-                        column["name"] for column in schema.get_columns("yp_agent_share")
-                    }
+                    assert {column.name for column in AgentShare.__table__.columns} == {column["name"] for column in schema.get_columns("yp_agent_share")}
 
                 await connection.run_sync(inspect_schema)
         finally:
@@ -80,7 +76,7 @@ def test_agent_limits_backfill(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "032"], cwd=root, env=env, check=True, capture_output=True, text=True)
@@ -97,7 +93,7 @@ def test_agent_limits_backfill(tmp_path: Path) -> None:
         row = connection.execute(
             """SELECT name, version, model_timeout_seconds, tool_timeout_seconds,
                 max_model_calls, max_tool_calls, max_total_tokens, max_estimated_cost
-                FROM yp_agent_config WHERE id = 1"""
+                FROM yp_agent_config WHERE id = 1""",
         ).fetchone()
     assert row == ("旧配置", 4, 120, 120, None, None, None, None)
 
@@ -115,13 +111,9 @@ def test_private_agent_crud(tmp_path: Path) -> None:
             async with sessions.begin() as db:
                 db.add_all(
                     [
-                        Admin(
-                            id=1, username="agent-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                        ),
+                        Admin(id=1, username="agent-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                         Admin(id=2, username="agent-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                        Admin(
-                            id=3, username="agent-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0
-                        ),
+                        Admin(id=3, username="agent-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
                         ProviderConnection(
                             id=1,
                             name="agent-provider",
@@ -157,7 +149,7 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async def test_session():
@@ -433,7 +425,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     [
                         Admin(id=user_id, username=name, password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0)
                         for user_id, name in ((1, "share-owner"), (2, "share-recipient"), (3, "share-stranger"))
-                    ]
+                    ],
                 )
                 db.add(
                     ProviderConnection(
@@ -445,7 +437,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -460,7 +452,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -500,7 +492,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     {
                         "user_id": 2,
                         "username": "share-recipient",
-                    }
+                    },
                 ]
                 recipient_targets = await client.get(
                     "/api/v1/agents/share-targets",
@@ -579,7 +571,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     {
                         "user_id": 2,
                         "username": "share-recipient",
-                    }
+                    },
                 ]
                 shared = (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"]
                 assert len(shared) == 1 and shared[0]["id"] == agent_id
@@ -635,7 +627,7 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                                 (foreign_artifact_id, 1, "owner.txt"),
                                 (recipient_artifact_id, 2, "recipient.txt"),
                             )
-                        ]
+                        ],
                     )
                 assert (
                     await client.post(

@@ -52,7 +52,7 @@ def test_worker_restart_publishes_pending_answer_once(tmp_path: Path) -> None:
             "SQLITE_DATABASE": str(database),
             "ARTIFACT_STORAGE_DIR": str(artifact_root),
             "CHECKPOINT_BACKEND": "sqlite",
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
     for _ in range(2):

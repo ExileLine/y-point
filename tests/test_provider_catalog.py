@@ -73,7 +73,7 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             [
                 Admin(username="root", password=hash_password(PASSWORD), role="admin", status=1, is_deleted=0),
                 Admin(username="reader", password=hash_password(PASSWORD), role="user", status=1, is_deleted=0),
-            ]
+            ],
         )
         await db.commit()
 
@@ -342,7 +342,7 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                         {
                             "external_id": "model-1",
                             "display_name": "Restored Model",
-                        }
+                        },
                     ],
                 },
             )
@@ -592,7 +592,7 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                     "id": model_id,
                     "display_name": "Chat 1",
                     "context_window": 8192,
-                }
+                },
             ]
             assert "external_id" not in available.text and "api_key" not in available.text
             with monkeypatch.context() as patcher:
@@ -944,7 +944,7 @@ async def exercise_model_probe() -> None:
                         "message": {
                             "content": "pong",
                         },
-                    }
+                    },
                 ],
                 "usage": {
                     "prompt_tokens": 10,
@@ -987,7 +987,7 @@ async def exercise_model_probe() -> None:
                         "message": {
                             "content": "pong",
                         },
-                    }
+                    },
                 ],
             },
         )
@@ -1021,7 +1021,7 @@ async def exercise_model_probe() -> None:
                         "message": {
                             "content": "pong",
                         },
-                    }
+                    },
                 ],
             },
         )
@@ -1050,7 +1050,7 @@ async def exercise_model_probe() -> None:
                     {
                         "type": "text",
                         "text": "pong",
-                    }
+                    },
                 ],
                 "usage": {
                     "input_tokens": 10,
@@ -1139,7 +1139,7 @@ def test_postgres_m2_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
                 {
                     "DB_BACKEND": "postgres",
                     "POSTGRESQL_DATABASE": database_name,
-                }
+                },
             )
             root = Path(__file__).resolve().parents[1]
             for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):

@@ -105,8 +105,8 @@ def mark_resource_directory(directory: Path, timeout_seconds: int, *, reserve_by
                 "deadline": int(time.time()) + timeout_seconds + 30,
                 "reserved_bytes": reserve_bytes,
                 "scope": resource_scope(),
-            }
-        )
+            },
+        ),
     )
 
 
@@ -121,9 +121,7 @@ def managed_workspace(root: Path, prefix: str, timeout_seconds: int, *, reserve_
         fcntl.flock(lock, fcntl.LOCK_EX)
         if reserve_bytes:
             status = storage_status()
-            if status["accounted_bytes"] + reserve_bytes > status["budget_bytes"] or (
-                status["free_bytes"] - reserve_bytes < status["min_free_bytes"]
-            ):
+            if status["accounted_bytes"] + reserve_bytes > status["budget_bytes"] or (status["free_bytes"] - reserve_bytes < status["min_free_bytes"]):
                 logger.warning("工具依赖存储预算或剩余容量不足，拒绝新的准备任务")
                 raise ToolStorageCapacityError("依赖存储容量不足，请联系维护者清理未引用资源或扩容")
         directory = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
@@ -140,9 +138,7 @@ async def _docker_metadata(*arguments: str, missing_ok: bool = False) -> bytes:
 
     process = await asyncio.create_subprocess_exec("docker", *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
-        output, errors, _ = await asyncio.wait_for(
-            asyncio.gather(_read_bounded(process.stdout), _read_bounded(process.stderr), process.wait()), timeout=10
-        )
+        output, errors, _ = await asyncio.wait_for(asyncio.gather(_read_bounded(process.stdout), _read_bounded(process.stderr), process.wait()), timeout=10)
         if process.returncode:
             if missing_ok and any(marker in errors.lower() for marker in (b"no such", b"not found")):
                 return b""
@@ -193,16 +189,12 @@ async def prune_tool_resources(sessions: async_sessionmaker[AsyncSession]) -> di
         "unknown_invocations": 0,
     }
     async with sessions.begin() as db:
-        referenced = set(
-            (await db.scalars(select(UserToolVersion.environment_key).where(UserToolVersion.environment_key.is_not(None)))).all()
-        )
-        ended_runs = select(AgentRun.id).where(
-            AgentRun.state.in_([RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT])
-        )
+        referenced = set((await db.scalars(select(UserToolVersion.environment_key).where(UserToolVersion.environment_key.is_not(None)))).all())
+        ended_runs = select(AgentRun.id).where(AgentRun.state.in_([RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT]))
         result = await db.execute(
             update(ToolInvocation)
             .where(ToolInvocation.state == ToolInvocationState.RUNNING, ToolInvocation.run_id.in_(ended_runs))
-            .values(state=ToolInvocationState.UNKNOWN, failure_code="worker_interrupted")
+            .values(state=ToolInvocationState.UNKNOWN, failure_code="worker_interrupted"),
         )
         removed["unknown_invocations"] = result.rowcount
         building = await db.scalar(select(ToolExecutionLease.id).where(ToolExecutionLease.expires_at > shanghai_now(naive=True)).limit(1))

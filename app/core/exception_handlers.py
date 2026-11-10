@@ -74,7 +74,7 @@ def register_exception_handlers(app: FastAPI, debug: bool):
                         "msg": error.get("msg"),
                         "loc": list(error.get("loc")),
                         "input": error.get("type"),
-                    }
+                    },
                 )
         return _build_response(
             code=400,

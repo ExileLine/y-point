@@ -36,7 +36,12 @@ def custom_http_dict(custom_code):
 
 
 def api_response(
-    http_code: int = 200, code: int = 200, message: str = None, data: Any = None, datetime_format: bool = True, is_pop: bool = True
+    http_code: int = 200,
+    code: int = 200,
+    message: str = None,
+    data: Any = None,
+    datetime_format: bool = True,
+    is_pop: bool = True,
 ) -> JSONResponse:
     """构建统一 JSON 响应，并按选项格式化时间或省略空数据。"""
     if not message:

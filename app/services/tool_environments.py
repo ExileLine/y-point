@@ -94,12 +94,7 @@ def initial_environment_fields(requirements: list[str], previous: UserToolVersio
     """依赖不变时复用已完成的环境，其余版本进入持久化准备队列。"""
     fields = {key: None for key in ENVIRONMENT_FIELDS}
     fields["environment_state"] = ToolEnvironmentState.PENDING if requirements else ToolEnvironmentState.NOT_REQUIRED
-    if (
-        requirements
-        and previous is not None
-        and previous.requirements == requirements
-        and previous.environment_state == ToolEnvironmentState.READY
-    ):
+    if requirements and previous is not None and previous.requirements == requirements and previous.environment_state == ToolEnvironmentState.READY:
         fields.update({key: getattr(previous, key) for key in ENVIRONMENT_FIELDS})
     return fields
 
@@ -147,7 +142,7 @@ def _file_manifest(root: Path) -> list[dict]:
                 "path": path.relative_to(root).as_posix(),
                 "bytes": size,
                 "sha256": digest,
-            }
+            },
         )
     return manifest
 
@@ -180,9 +175,7 @@ async def require_script_environment(version: UserToolVersion) -> ScriptEnvironm
 async def _docker_output(*arguments: str) -> bytes:
     """读取 Docker 元数据，限制输出和执行时限。"""
     try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-        )
+        process = await asyncio.create_subprocess_exec("docker", *arguments, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     except OSError as exc:
         raise EnvironmentBuildError(ToolEnvironmentFailure.IMAGE_UNAVAILABLE) from exc
     try:
@@ -343,9 +336,7 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
     """先获取 wheel，再在禁网容器中按完整哈希锁安装并保存只读缓存。"""
     config = get_config()
     root = environment_root()
-    with managed_workspace(
-        root, "build-", config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS, reserve_bytes=BUILD_RESERVATION_BYTES
-    ) as directory:
+    with managed_workspace(root, "build-", config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS, reserve_bytes=BUILD_RESERVATION_BYTES) as directory:
         stage = Path(directory)
         wheels, site = stage / "wheels", stage / "site"
         wheels.mkdir(mode=0o777)
@@ -374,14 +365,7 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
         ]
         if config.SCRIPT_DEPENDENCY_ALLOW_NETWORK:
             index = urlsplit(config.SCRIPT_DEPENDENCY_INDEX_URL)
-            if (
-                index.scheme != "https"
-                or not index.hostname
-                or index.port not in (None, 443)
-                or index.username
-                or index.password
-                or index.fragment
-            ):
+            if index.scheme != "https" or not index.hostname or index.port not in (None, 443) or index.username or index.password or index.fragment:
                 raise EnvironmentBuildError(ToolEnvironmentFailure.CONFIGURATION_ERROR)
             command.extend(["--index-url", config.SCRIPT_DEPENDENCY_INDEX_URL])
         else:
@@ -411,12 +395,10 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
                     "name": str(name),
                     "version": str(version),
                     "sha256": digest,
-                }
+                },
             )
         locked_request = stage / "locked.txt"
-        locked_request.write_text(
-            "\n".join(f"{item['name']}=={item['version']} --hash=sha256:{item['sha256']}" for item in lock) + "\n", encoding="utf-8"
-        )
+        locked_request.write_text("\n".join(f"{item['name']}=={item['version']} --hash=sha256:{item['sha256']}" for item in lock) + "\n", encoding="utf-8")
         locked_request.chmod(0o644)
         mounts[1] = f"type=bind,src={locked_request},dst=/requirements.txt,readonly"
         mounts.extend(["--mount", f"type=bind,src={site},dst=/site"])
@@ -467,7 +449,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                 environment_error_code=ToolEnvironmentFailure.WORKER_INTERRUPTED,
                 environment_lease_token=None,
                 environment_lease_expires_at=None,
-            )
+            ),
         )
         version = await db.scalar(
             select(UserToolVersion)
@@ -478,7 +460,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                 UserToolVersion.environment_state == ToolEnvironmentState.PENDING,
             )
             .order_by(UserToolVersion.id)
-            .limit(1)
+            .limit(1),
         )
         if version is None:
             return False
@@ -499,7 +481,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                 environment_lease_token=token,
                 environment_lease_expires_at=now + timedelta(seconds=timeout + 30),
                 environment_attempts=UserToolVersion.environment_attempts + 1,
-            )
+            ),
         )
         if claimed.rowcount != 1:
             from app.models.tool_execution import ToolExecutionLease
@@ -528,7 +510,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                         UserToolVersion.environment_spec_hash == spec_hash,
                     )
                     .order_by(UserToolVersion.id.desc())
-                    .limit(1)
+                    .limit(1),
                 )
             if cached is not None:
                 try:
@@ -581,7 +563,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                     UserToolVersion.environment_lease_token == token,
                     UserToolVersion.environment_state == ToolEnvironmentState.BUILDING,
                 )
-                .values(**result, environment_lease_token=None, environment_lease_expires_at=None)
+                .values(**result, environment_lease_token=None, environment_lease_expires_at=None),
             )
         await release_tool_slot(sessions, slot_token)
     return True

@@ -53,12 +53,7 @@ class ToolContext:
             raise ValueError("工具授权已失效")
         if run.model_id is not None:
             model = await db.get(ModelCatalog, run.model_id)
-            if (
-                model is None
-                or model.status != 1
-                or model.is_deleted != 0
-                or ModelCapability.TOOLS not in (model.verified_capabilities or [])
-            ):
+            if model is None or model.status != 1 or model.is_deleted != 0 or ModelCapability.TOOLS not in (model.verified_capabilities or []):
                 raise ValueError("工具授权已失效")
             provider = await db.get(ProviderConnection, model.provider_id)
             if provider is None or provider.status != 1 or provider.is_deleted != 0:
@@ -93,15 +88,12 @@ class ToolRegistry:
         if spec.effect not in ToolEffect or spec.recovery not in RecoveryPolicy:
             raise ValueError("工具副作用或恢复策略无效")
         if spec.effect == ToolEffect.WRITE and (
-            spec.recovery == RecoveryPolicy.SAFE
-            or (not spec.requires_approval and (not (spec.staged and spec.recovery == RecoveryPolicy.IDEMPOTENT)))
+            spec.recovery == RecoveryPolicy.SAFE or (not spec.requires_approval and (not (spec.staged and spec.recovery == RecoveryPolicy.IDEMPOTENT)))
         ):
             raise ValueError("写工具必须经过审批，或仅暂存并具备幂等策略")
         self._specs[spec.name] = spec
 
-    async def resolve(
-        self, db: AsyncSession, run: AgentRun, sessions: async_sessionmaker[AsyncSession]
-    ) -> tuple[list[BaseTool], dict[str, bool]]:
+    async def resolve(self, db: AsyncSession, run: AgentRun, sessions: async_sessionmaker[AsyncSession]) -> tuple[list[BaseTool], dict[str, bool]]:
         """仅实例化当前运行获准使用的工具，并返回审批配置。"""
         selected = [spec for spec in self._specs.values() if spec.enabled(run)]
         if not selected:

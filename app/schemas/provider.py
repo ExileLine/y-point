@@ -31,9 +31,7 @@ DisplayName = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 class ProviderCreateIn(BaseModel):
     name: ConnectionName = Field(description="供应商连接名称", examples=["生产环境 OpenAI"])
     kind: ProviderKind = Field(description="供应商类型", examples=["openai_compatible"])
-    base_url: BaseUrl | None = Field(
-        default=None, description="供应商接口基础地址；Gemini 和 Bedrock 可省略", examples=["https://api.example.com/v1"]
-    )
+    base_url: BaseUrl | None = Field(default=None, description="供应商接口基础地址；Gemini 和 Bedrock 可省略", examples=["https://api.example.com/v1"])
     api_key: SecretStr | None = Field(default=None, description="接口密钥", examples=["sk-example-key"])
     custom_headers: dict[str, SecretStr] | None = Field(
         default=None,
@@ -41,13 +39,15 @@ class ProviderCreateIn(BaseModel):
         examples=[
             {
                 "X-Tenant": "example-tenant",
-            }
+            },
         ],
     )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
     region: str | None = Field(default=None, max_length=64, description="服务区域", examples=["us-east-1"])
     timeout_seconds: ModelTimeout = Field(
-        default_factory=lambda: min(15, get_config().AGENT_MAX_MODEL_TIMEOUT_SECONDS), description="请求超时时间（秒）", examples=[15]
+        default_factory=lambda: min(15, get_config().AGENT_MAX_MODEL_TIMEOUT_SECONDS),
+        description="请求超时时间（秒）",
+        examples=[15],
     )
     remark: str | None = Field(default=None, max_length=512, description="备注", examples=["用于生产环境"])
     status: Literal[0, 1] = Field(default=1, description="状态：1 启用，0 停用", examples=[1])
@@ -56,16 +56,14 @@ class ProviderCreateIn(BaseModel):
 class ProviderUpdateIn(BaseModel):
     name: ConnectionName | None = Field(default=None, description="供应商连接名称", examples=["备用连接"])
     base_url: BaseUrl | None = Field(default=None, description="供应商接口基础地址", examples=["https://api.example.com/v1"])
-    api_key: SecretStr | None = Field(
-        default=None, description="接口密钥；省略时保留原值，传入 null 时清除", examples=["sk-new-example-key"]
-    )
+    api_key: SecretStr | None = Field(default=None, description="接口密钥；省略时保留原值，传入 null 时清除", examples=["sk-new-example-key"])
     custom_headers: dict[str, SecretStr] | None = Field(
         default=None,
         description="自定义请求头；省略时保留原值，传入 null 时清除",
         examples=[
             {
                 "X-Tenant": "new-example-tenant",
-            }
+            },
         ],
     )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
@@ -104,9 +102,7 @@ class ModelCreateIn(BaseModel):
     provider_id: int = Field(gt=0, description="所属供应商连接 ID", examples=[1])
     external_id: ExternalModelId = Field(description="供应商侧模型 ID", examples=["gpt-4o-mini"])
     display_name: DisplayName = Field(description="模型显示名称", examples=["GPT-4o mini"])
-    capabilities: list[Capability] = Field(
-        default_factory=list, description="模型支持的能力，留空表示待配置", examples=[["text", "streaming"]]
-    )
+    capabilities: list[Capability] = Field(default_factory=list, description="模型支持的能力，留空表示待配置", examples=[["text", "streaming"]])
     context_window: int | None = Field(default=None, gt=0, description="上下文窗口大小（令牌数）", examples=[128000])
     input_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=6, description="输入价格", examples=["0.000150"])
     output_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=6, description="输出价格", examples=["0.000600"])
@@ -117,9 +113,7 @@ class ModelCreateIn(BaseModel):
 class ModelUpdateIn(BaseModel):
     external_id: ExternalModelId | None = Field(default=None, description="供应商侧模型 ID", examples=["gpt-4o-mini"])
     display_name: DisplayName | None = Field(default=None, description="模型显示名称", examples=["GPT-4o mini"])
-    capabilities: list[Capability] | None = Field(
-        default=None, description="模型支持的能力，空列表表示待配置", examples=[["text", "tools"]]
-    )
+    capabilities: list[Capability] | None = Field(default=None, description="模型支持的能力，空列表表示待配置", examples=[["text", "tools"]])
     context_window: int | None = Field(default=None, gt=0, description="上下文窗口大小（令牌数）", examples=[128000])
     input_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=6, description="输入价格", examples=["0.000150"])
     output_price: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=6, description="输出价格", examples=["0.000600"])
@@ -174,8 +168,8 @@ class ModelImportIn(BaseModel):
             [
                 {
                     "external_id": "gpt-4o-mini",
-                }
-            ]
+                },
+            ],
         ],
     )
 
@@ -197,9 +191,11 @@ class ModelDiscoveryOut(BaseModel):
     upstream_status_code: int | None = Field(default=None, description="上游 HTTP 状态码", examples=[200])
     model_count: int | None = Field(default=None, description="供应商返回的模型数量", examples=[2])
     models: list[DiscoveredModelOut] = Field(default_factory=list, description="可选择的模型列表", examples=[[]])
-    failure: (
-        Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None
-    ) = Field(default=None, description="模型列表获取失败的原因", examples=["timeout"])
+    failure: Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None = Field(
+        default=None,
+        description="模型列表获取失败的原因",
+        examples=["timeout"],
+    )
 
 
 class ConnectionTestOut(BaseModel):
@@ -214,12 +210,14 @@ class ConnectionTestOut(BaseModel):
         examples=[
             {
                 "gpt-4o-mini": "GPT-4o mini",
-            }
+            },
         ],
     )
-    failure: (
-        Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None
-    ) = Field(default=None, description="连接失败原因", examples=["timeout"])
+    failure: Literal["authentication", "rate_limit", "model_list_unavailable", "timeout", "network", "upstream", "invalid_response"] | None = Field(
+        default=None,
+        description="连接失败原因",
+        examples=["timeout"],
+    )
 
 
 class ModelTestOut(BaseModel):
@@ -263,7 +261,7 @@ class CapabilityTestOut(BaseModel):
                 "external_id": "gpt-4o-mini",
                 "available": True,
                 "latency_ms": 300,
-            }
+            },
         ],
     )
     verified_capabilities: list[Capability] = Field(description="当前已通过探测的能力", examples=[["text", "streaming"]])

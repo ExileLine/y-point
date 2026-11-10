@@ -35,12 +35,10 @@ def create_native_keyword_index(connection) -> None:
     """创建对应方言的全文设施，向量扩展不影响数据库初始化。"""
     dialect = connection.dialect.name
     if dialect == "sqlite":
-        connection.exec_driver_sql(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS yp_knowledge_fts USING fts5(terms, index_id UNINDEXED, chunk_id UNINDEXED)"
-        )
+        connection.exec_driver_sql("CREATE VIRTUAL TABLE IF NOT EXISTS yp_knowledge_fts USING fts5(terms, index_id UNINDEXED, chunk_id UNINDEXED)")
     elif dialect == "postgresql":
         connection.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_yp_knowledge_native_terms ON yp_knowledge_chunk USING gin (to_tsvector('simple', search_terms))"
+            "CREATE INDEX IF NOT EXISTS ix_yp_knowledge_native_terms ON yp_knowledge_chunk USING gin (to_tsvector('simple', search_terms))",
         )
     elif dialect == "mysql":
         connection.exec_driver_sql("CREATE FULLTEXT INDEX ix_yp_knowledge_native_terms ON yp_knowledge_chunk (search_terms)")
@@ -100,7 +98,7 @@ async def keyword_candidates(db: AsyncSession, index_ids: list[int], query: str,
         order = "DESC"
     statement = text(
         f"SELECT c.id, {expression} AS score FROM {source} JOIN yp_knowledge_document d ON d.id = c.document_id "
-        f"WHERE c.index_id IN :index_ids AND d.is_deleted = 0 AND {predicate} ORDER BY score {order}, c.id ASC LIMIT :limit"
+        f"WHERE c.index_id IN :index_ids AND d.is_deleted = 0 AND {predicate} ORDER BY score {order}, c.id ASC LIMIT :limit",
     ).bindparams(bindparam("index_ids", expanding=True))
     rows = (
         await db.execute(
@@ -116,7 +114,12 @@ async def keyword_candidates(db: AsyncSession, index_ids: list[int], query: str,
 
 
 async def vector_candidates(
-    db: AsyncSession, index_ids: list[int], vector: list[float], limit: int, threshold: float, backend: KnowledgeVectorBackend
+    db: AsyncSession,
+    index_ids: list[int],
+    vector: list[float],
+    limit: int,
+    threshold: float,
+    backend: KnowledgeVectorBackend,
 ) -> list[tuple[int, float]]:
     """在授权过滤后计算有界精确余弦，PostgreSQL 可显式使用 pgvector 距离。"""
     if not index_ids:
@@ -128,7 +131,7 @@ async def vector_candidates(
             "SELECT c.id, 1 - (CAST(CAST(c.embedding AS text) AS vector) <=> CAST(:vector AS vector)) AS score "
             "FROM yp_knowledge_chunk c JOIN yp_knowledge_document d ON d.id = c.document_id "
             "WHERE c.index_id IN :index_ids AND d.is_deleted = 0 AND c.embedding IS NOT NULL "
-            "ORDER BY score DESC, c.id ASC LIMIT :limit"
+            "ORDER BY score DESC, c.id ASC LIMIT :limit",
         ).bindparams(bindparam("index_ids", expanding=True))
         import json
 
@@ -148,7 +151,7 @@ async def vector_candidates(
             select(KnowledgeChunk.id, KnowledgeChunk.embedding)
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
             .where(KnowledgeChunk.index_id.in_(index_ids), KnowledgeDocument.is_deleted == 0, KnowledgeChunk.embedding.is_not(None))
-            .limit(16001)
+            .limit(16001),
         )
     ).all()
     if len(rows) > 16000:

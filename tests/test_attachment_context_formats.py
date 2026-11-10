@@ -70,7 +70,7 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
                             included_in_context=position < 3,
                         )
                         for position, item in enumerate(artifacts)
-                    ]
+                    ],
                 )
             async with sessions() as db:
                 context = await load_model_attachment_context(db, run.id, 1)
@@ -98,12 +98,10 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
                         state="ready",
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
             async with sessions() as db:
-                assistant = await db.scalar(
-                    select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "assistant")
-                )
+                assistant = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "assistant"))
                 linked = await load_message_artifacts(db, 1, [assistant])
                 assert linked[assistant.id][0]["context_artifact_ids"] == [item.id for item in artifacts[:3]]
                 assert await load_run_context_artifact_ids(db, 2, [run.id]) == {}
@@ -112,9 +110,7 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
                 source.state = "deleted"
                 source.is_deleted = 1
             async with sessions() as db:
-                assert (await load_message_artifacts(db, 1, [assistant]))[assistant.id][0]["context_artifact_ids"] == [
-                    item.id for item in artifacts[:3]
-                ]
+                assert (await load_message_artifacts(db, 1, [assistant]))[assistant.id][0]["context_artifact_ids"] == [item.id for item in artifacts[:3]]
         finally:
             await engine.dispose()
 

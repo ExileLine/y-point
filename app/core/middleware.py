@@ -113,18 +113,13 @@ class ArtifactUploadLimitMiddleware:
 def _is_sensitive_field(key: str, sensitive_headers: set) -> bool:
     """根据字段名判断是否需要隐藏密码或凭据信息。"""
     normalized = "".join(char for char in key.lower() if char.isalnum())
-    return normalized in SENSITIVE_FIELDS or normalized in {
-        "".join(char for char in header if char.isalnum()) for header in sensitive_headers
-    }
+    return normalized in SENSITIVE_FIELDS or normalized in {"".join(char for char in header if char.isalnum()) for header in sensitive_headers}
 
 
 def _mask_fields(value, sensitive_headers: set):
     """递归屏蔽字典和列表中的敏感字段值。"""
     if isinstance(value, dict):
-        return {
-            key: "***" if _is_sensitive_field(str(key), sensitive_headers) else _mask_fields(item, sensitive_headers)
-            for key, item in value.items()
-        }
+        return {key: "***" if _is_sensitive_field(str(key), sensitive_headers) else _mask_fields(item, sensitive_headers) for key, item in value.items()}
     if isinstance(value, list):
         return [_mask_fields(item, sensitive_headers) for item in value]
     return value
@@ -296,9 +291,7 @@ class RequestLoggingMiddleware:
         finally:
             elapsed_ms = (time.perf_counter() - start) * 1000
             query_params = parse_qsl(query_string, keep_blank_values=True)
-            masked_query = urlencode(
-                [(key, "***" if _is_sensitive_field(key, self.sensitive_headers) else value) for key, value in query_params]
-            )
+            masked_query = urlencode([(key, "***" if _is_sensitive_field(key, self.sensitive_headers) else value) for key, value in query_params])
             full_path = f"{path}?{masked_query}" if query_string else path
             ip = _get_client_ip(headers, client)
             logger.info(f"{method} {full_path} {status_code} {elapsed_ms:.2f}ms ip={ip} rid={request_id}")
@@ -312,9 +305,7 @@ class RequestLoggingMiddleware:
                     except (ValueError, UnicodeDecodeError):
                         body_data = "[invalid JSON omitted]"
                 elif content_type == "application/x-www-form-urlencoded":
-                    body_data = _mask_fields(
-                        parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True), self.sensitive_headers
-                    )
+                    body_data = _mask_fields(parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True), self.sensitive_headers)
                 else:
                     body_data = "[body omitted]"
                 logger.info("body: {}", body_data)

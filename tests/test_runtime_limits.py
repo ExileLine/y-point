@@ -223,13 +223,13 @@ def test_multipart_limit_follows_upload_configuration(monkeypatch: pytest.Monkey
                 "type": "http.response.start",
                 "status": 204,
                 "headers": [],
-            }
+            },
         )
         await send(
             {
                 "type": "http.response.body",
                 "body": b"",
-            }
+            },
         )
 
     async def streamed():
@@ -299,7 +299,7 @@ def test_runtime_default_migration_preserves_rows(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
 
@@ -323,9 +323,7 @@ def test_runtime_default_migration_preserves_rows(tmp_path: Path) -> None:
                     tool_timeout_seconds=30,
                 )
                 db.add(agent)
-                run = await create_run(
-                    db, 1, input_text="保留快照", model_timeout_seconds=75, tool_timeout_seconds=45, agent_max_output_tokens=3072
-                )
+                run = await create_run(db, 1, input_text="保留快照", model_timeout_seconds=75, tool_timeout_seconds=45, agent_max_output_tokens=3072)
                 return agent.id, run.id
         finally:
             await engine.dispose()
@@ -341,12 +339,12 @@ def test_runtime_default_migration_preserves_rows(tmp_path: Path) -> None:
                 assert connection.execute("SELECT agent_thinking_mode FROM yp_agent_run WHERE id=?", (run_id,)).fetchone() == ("auto",)
             for table in ("yp_agent_config", "yp_agent_run"):
                 columns = connection.execute(f"PRAGMA table_info({table})").fetchall()
-                assert {column[4] for column in columns if column[1] in {"model_timeout_seconds", "tool_timeout_seconds"}} == {
-                    expected_default
-                }
+                assert {column[4] for column in columns if column[1] in {"model_timeout_seconds", "tool_timeout_seconds"}} == {expected_default}
             assert connection.execute(
-                "SELECT max_output_tokens, model_timeout_seconds, tool_timeout_seconds FROM yp_agent_config WHERE id=?", (agent_id,)
+                "SELECT max_output_tokens, model_timeout_seconds, tool_timeout_seconds FROM yp_agent_config WHERE id=?",
+                (agent_id,),
             ).fetchone() == (2048, 60, 30)
             assert connection.execute(
-                "SELECT agent_max_output_tokens, model_timeout_seconds, tool_timeout_seconds FROM yp_agent_run WHERE id=?", (run_id,)
+                "SELECT agent_max_output_tokens, model_timeout_seconds, tool_timeout_seconds FROM yp_agent_run WHERE id=?",
+                (run_id,),
             ).fetchone() == (3072, 75, 45)

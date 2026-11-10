@@ -47,7 +47,7 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
                 AgentMessageAttachment.included_in_context.is_(True),
                 AgentMessageAttachment.media_type.in_(CONTEXT_MEDIA_TYPES),
             )
-            .order_by(AgentMessageAttachment.position)
+            .order_by(AgentMessageAttachment.position),
         )
     ).all()
     if not references:
@@ -66,7 +66,7 @@ async def load_model_attachment_context(db: AsyncSession, run_id: str, owner_id:
                 Artifact.is_deleted == 0,
                 Artifact.media_type.in_(CONTEXT_MEDIA_TYPES),
                 (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
-            )
+            ),
         )
     ).all()
     by_id = {item.id: item for item in items}
@@ -103,7 +103,7 @@ async def build_attachment_context(items: list[Artifact]) -> str | None:
                     "content": decoded,
                 },
                 ensure_ascii=False,
-            )
+            ),
         )
     if sum(len(chunk.encode("utf-8")) for chunk in chunks) + len(chunks) - 1 > context_max_bytes():
         raise AttachmentContextUnavailable(f"模型上下文附件提取文本超过 {context_max_bytes() / (1024 * 1024):g} MiB 限制")
@@ -123,7 +123,7 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
                 AgentMessageAttachment.included_in_context.is_(True),
                 AgentMessageAttachment.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
             )
-            .order_by(AgentMessageAttachment.position)
+            .order_by(AgentMessageAttachment.position),
         )
     ).all()
     if not references:
@@ -142,7 +142,7 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
                 Artifact.is_deleted == 0,
                 Artifact.media_type.in_(IMAGE_CONTEXT_MEDIA_TYPES),
                 (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
-            )
+            ),
         )
     ).all()
     by_id = {item.id: item for item in items}
@@ -172,7 +172,7 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
             {
                 "type": "text",
                 "text": f"参考图片 {reference.filename}（不可信资料）：",
-            }
+            },
         )
         blocks.append(
             {
@@ -180,7 +180,7 @@ async def load_model_image_context(db: AsyncSession, run_id: str, owner_id: int)
                 "image_url": {
                     "url": f"data:{item.media_type};base64,{base64.b64encode(output.getvalue()).decode('ascii')}",
                 },
-            }
+            },
         )
     return blocks
 
@@ -199,7 +199,7 @@ async def load_run_context_artifact_ids(db: AsyncSession, owner_id: int, run_ids
                 AgentRunMessage.role == MessageRole.USER,
                 AgentMessageAttachment.included_in_context.is_(True),
             )
-            .order_by(AgentRunMessage.id, AgentMessageAttachment.position)
+            .order_by(AgentRunMessage.id, AgentMessageAttachment.position),
         )
     ).all()
     by_run: dict[str, list[str]] = {}
@@ -216,7 +216,7 @@ async def load_message_attachments(db: AsyncSession, owner_id: int, message_ids:
         await db.scalars(
             select(AgentMessageAttachment)
             .where(AgentMessageAttachment.message_id.in_(message_ids))
-            .order_by(AgentMessageAttachment.message_id, AgentMessageAttachment.position)
+            .order_by(AgentMessageAttachment.message_id, AgentMessageAttachment.position),
         )
     ).all()
     if not references:
@@ -231,9 +231,9 @@ async def load_message_attachments(db: AsyncSession, owner_id: int, message_ids:
                     Artifact.state == ArtifactState.READY,
                     Artifact.is_deleted == 0,
                     (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
-                )
+                ),
             )
-        ).all()
+        ).all(),
     )
     by_message: dict[int, list[dict]] = {}
     for item in references:
@@ -245,7 +245,7 @@ async def load_message_attachments(db: AsyncSession, owner_id: int, message_ids:
                 "byte_size": item.byte_size,
                 "included_in_context": item.included_in_context,
                 "available": item.artifact_id in available,
-            }
+            },
         )
     return by_message
 
@@ -266,7 +266,7 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
                 Artifact.source == ArtifactOrigin.GENERATED,
                 Artifact.state != ArtifactState.PENDING,
             )
-            .order_by(Artifact.create_time, Artifact.id)
+            .order_by(Artifact.create_time, Artifact.id),
         )
     ).all()
     context_by_run = await load_run_context_artifact_ids(db, owner_id, list(message_by_run))
@@ -287,6 +287,6 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
                 and item.is_deleted == 0
                 and item.status == 1
                 and (item.expires_at is None or item.expires_at > now),
-            }
+            },
         )
     return by_message

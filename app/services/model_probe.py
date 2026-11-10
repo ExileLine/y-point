@@ -34,7 +34,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                 {
                     "role": "user",
                     "content": "Hi",
-                }
+                },
             ],
         }
     elif provider.kind == ProviderKind.AZURE_OPENAI:
@@ -44,7 +44,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                 {
                     "role": "user",
                     "content": "Hi",
-                }
+                },
             ],
             "max_tokens": 16,
             "stream": False,
@@ -58,9 +58,9 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                     "parts": [
                         {
                             "text": "Hi",
-                        }
+                        },
                     ],
-                }
+                },
             ],
             "generationConfig": {
                 "maxOutputTokens": 64,
@@ -76,7 +76,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                 {
                     "role": "user",
                     "content": "Hi",
-                }
+                },
             ],
             "stream": False,
         }
@@ -110,13 +110,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
         if failure is None:
             try:
                 data = response.json()
-                key = (
-                    "content"
-                    if provider.kind == ProviderKind.ANTHROPIC
-                    else "candidates"
-                    if provider.kind == ProviderKind.GEMINI
-                    else "choices"
-                )
+                key = "content" if provider.kind == ProviderKind.ANTHROPIC else "candidates" if provider.kind == ProviderKind.GEMINI else "choices"
                 if not isinstance(data, dict) or not isinstance(data.get(key), list) or not data[key]:
                     failure = "invalid_response"
                 elif provider.kind == ProviderKind.ANTHROPIC and not isinstance(data[key][0], dict):
@@ -126,8 +120,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                     or not isinstance(data[key][0].get("content"), dict)
                     or not isinstance(data[key][0]["content"].get("parts"), list)
                     or not any(
-                        isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip()
-                        for part in data[key][0]["content"]["parts"]
+                        isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip() for part in data[key][0]["content"]["parts"]
                     )
                 ):
                     failure = "invalid_response"
@@ -147,12 +140,7 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
                         input_tokens = reported_input
                     if type(reported_output) is int and reported_output >= 0:
                         output_tokens = reported_output
-                    if (
-                        input_tokens is not None
-                        and output_tokens is not None
-                        and model.input_price is not None
-                        and model.output_price is not None
-                    ):
+                    if input_tokens is not None and output_tokens is not None and model.input_price is not None and model.output_price is not None:
                         estimated_cost = (Decimal(input_tokens) * model.input_price + Decimal(output_tokens) * model.output_price) / 1000000
             except (ValueError, TypeError):
                 failure = "invalid_response"

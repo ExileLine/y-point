@@ -192,7 +192,11 @@ class BaseConfig(BaseSettings):
     MCP_RESPONSE_MAX_BYTES: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576])
 
     # 知识库配置参数
-    KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(default=KnowledgeVectorBackend.EXACT, description="知识向量距离后端，pgvector 须在 PostgreSQL 显式安装", examples=["exact"])
+    KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(
+        default=KnowledgeVectorBackend.EXACT,
+        description="知识向量距离后端，pgvector 须在 PostgreSQL 显式安装",
+        examples=["exact"],
+    )
     KNOWLEDGE_SEARCH_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单次知识检索时限，HTTP 与 Agent 共用", examples=[60])
     KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单批嵌入请求时限，检索及索引共用", examples=[60])
 
@@ -202,8 +206,8 @@ class BaseConfig(BaseSettings):
     TOOL_CALL_RUN_LIMIT: int = Field(default=2, ge=1, le=128, description="单 Run 工具调用并发上限", examples=[2])
     TOOL_PREPARATION_GLOBAL_LIMIT: int = Field(default=2, ge=1, le=128, description="全部进程的依赖准备并发上限", examples=[2])
     TOOL_PREPARATION_USER_LIMIT: int = Field(default=1, ge=1, le=128, description="单用户依赖准备并发上限", examples=[1])
-    TOOL_STORAGE_MAX_BYTES: int = Field(default=8 * 1024 ** 3, ge=1024, description="依赖缓存和准备目录的应用容量预算", examples=[8589934592])
-    TOOL_STORAGE_MIN_FREE_BYTES: int = Field(default=1024 ** 3, ge=0, description="准备前必须保留的文件系统可用字节", examples=[1073741824])
+    TOOL_STORAGE_MAX_BYTES: int = Field(default=8 * 1024**3, ge=1024, description="依赖缓存和准备目录的应用容量预算", examples=[8589934592])
+    TOOL_STORAGE_MIN_FREE_BYTES: int = Field(default=1024**3, ge=0, description="准备前必须保留的文件系统可用字节", examples=[1073741824])
     TOOL_RESOURCE_RECONCILE_SECONDS: int = Field(default=60, ge=1, description="工具资源核对间隔秒数", examples=[60])
     TOOL_RESOURCE_GRACE_SECONDS: int = Field(default=300, ge=30, description="过期资源清理宽限秒数", examples=[300])
 

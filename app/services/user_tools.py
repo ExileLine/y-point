@@ -173,7 +173,7 @@ async def selected_tools(db: AsyncSession, tool_ids: list[int], actor_id: int) -
                     select(UserToolVersion).where(
                         UserToolVersion.tool_id.in_(tool_ids),
                         UserToolVersion.verified.is_(True),
-                    )
+                    ),
                 )
             ).all()
         }
@@ -210,16 +210,14 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
                 UserTool.skill_id.is_(None),
                 UserTool.enabled.is_(True),
                 or_(UserTool.owner_id == actor_id, UserTool.visibility == Visibility.PUBLIC),
-            )
+            ),
         )
     ).all()
     by_id = {item.id: item for item in items}
     for row in rows:
         if row.tool_id not in by_id:
             continue
-        version = await db.scalar(
-            select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version)
-        )
+        version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version))
         if version is None or not version.verified:
             continue
         db.add(
@@ -230,7 +228,7 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
                 content_hash=version.content_hash,
                 is_deleted=0,
                 status=1,
-            )
+            ),
         )
 
 
@@ -240,9 +238,7 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
     result = []
     for row in rows:
         tool = await db.get(UserTool, row.tool_id)
-        version = await db.scalar(
-            select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version)
-        )
+        version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version))
         if (
             tool is None
             or tool.is_deleted != 0
@@ -269,9 +265,7 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
 
 async def _credentials_shared(db: AsyncSession, tool: UserTool) -> bool:
     """凭据共享以当前发布规则为准，历史快照不能绕过撤销。"""
-    current = await db.scalar(
-        select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == tool.current_version)
-    )
+    current = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == tool.current_version))
     return current is not None and current.share_credentials
 
 

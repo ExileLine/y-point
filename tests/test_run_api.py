@@ -71,13 +71,9 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
-                db.add(
-                    ModelCatalog(
-                        id=1, provider_id=1, external_id="race-model", display_name="race-model", creator_id=1, status=1, is_deleted=0
-                    )
-                )
+                db.add(ModelCatalog(id=1, provider_id=1, external_id="race-model", display_name="race-model", creator_id=1, status=1, is_deleted=0))
                 existing = await create_run(db, 1, model_id=1, input_text="same", request_key="race")
 
             original = runs_api.create_run
@@ -93,9 +89,7 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
 
             monkeypatch.setattr(runs_api, "create_run", collided)
             async with sessions() as db:
-                response = await runs_api.submit_run(
-                    RunCreateIn(model_id=1, input_text="same", request_key="race"), actor=SimpleNamespace(id=1), db=db
-                )
+                response = await runs_api.submit_run(RunCreateIn(model_id=1, input_text="same", request_key="race"), actor=SimpleNamespace(id=1), db=db)
                 assert response.status_code == 201
                 assert json.loads(response.body)["data"]["id"] == existing.id
             assert attempts == 2
@@ -103,17 +97,13 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
             attempts = 0
             async with sessions() as db:
                 with pytest.raises(CustomException) as error:
-                    await runs_api.submit_run(
-                        RunCreateIn(model_id=1, input_text="different", request_key="race"), actor=SimpleNamespace(id=1), db=db
-                    )
+                    await runs_api.submit_run(RunCreateIn(model_id=1, input_text="different", request_key="race"), actor=SimpleNamespace(id=1), db=db)
                 assert error.value.status_code == 409
 
             attempts = 0
             async with sessions() as db:
                 with pytest.raises(CustomException) as error:
-                    await runs_api.submit_run(
-                        RunCreateIn(model_id=1, input_text="new", request_key="unrelated"), actor=SimpleNamespace(id=1), db=db
-                    )
+                    await runs_api.submit_run(RunCreateIn(model_id=1, input_text="new", request_key="unrelated"), actor=SimpleNamespace(id=1), db=db)
                 assert error.value.status_code == 409
             assert attempts == 1
 
@@ -132,9 +122,7 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
             monkeypatch.setattr(runs_api, "create_run", always_collides)
             async with sessions() as db:
                 with pytest.raises(CustomException) as error:
-                    await runs_api.submit_run(
-                        RunCreateIn(model_id=1, input_text="same", request_key="race"), actor=SimpleNamespace(id=1), db=db
-                    )
+                    await runs_api.submit_run(RunCreateIn(model_id=1, input_text="same", request_key="race"), actor=SimpleNamespace(id=1), db=db)
                 assert error.value.status_code == 409
                 assert "secret_table" not in str(error.value) and "private" not in str(error.value)
         finally:
@@ -160,10 +148,8 @@ async def exercise_run_api(database: Path) -> None:
                     status=1,
                     is_deleted=0,
                 ),
-                Admin(
-                    username="bob", mail="bob@example.com", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                ),
-            ]
+                Admin(username="bob", mail="bob@example.com", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+            ],
         )
         db.add(
             ProviderConnection(
@@ -175,7 +161,7 @@ async def exercise_run_api(database: Path) -> None:
                 creator_id=1,
                 status=1,
                 is_deleted=0,
-            )
+            ),
         )
         await db.flush()
         db.add(
@@ -190,7 +176,7 @@ async def exercise_run_api(database: Path) -> None:
                 creator_id=1,
                 status=1,
                 is_deleted=0,
-            )
+            ),
         )
 
     async def test_session():
@@ -509,9 +495,7 @@ async def exercise_run_api(database: Path) -> None:
                 await complete_run(db, answer_id, claimed.lease_token, final_text="导出的正文")
             artifact_root = database.parent / "answer-output"
             artifact_root.mkdir(mode=0o700)
-            answer_artifact = await publish_generated_artifact(
-                sessions, answer_id, "final-answer-v1", "answer.txt", "导出的正文".encode(), artifact_root
-            )
+            answer_artifact = await publish_generated_artifact(sessions, answer_id, "final-answer-v1", "answer.txt", "导出的正文".encode(), artifact_root)
             answer_events = await client.get(f"/api/v1/runs/{answer_id}/stream", headers=alice)
             assert answer_events.status_code == 200
             assert "event: artifact_published" in answer_events.text
@@ -733,7 +717,7 @@ async def exercise_run_api(database: Path) -> None:
                         {
                             "name": "search",
                             "arguments_hash": "a" * 64,
-                        }
+                        },
                     ],
                 )
             assert (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=bob)).status_code == 404
@@ -753,7 +737,7 @@ async def exercise_run_api(database: Path) -> None:
                     "arguments_hash": "a" * 64,
                     "resource_id": None,
                     "resource_name": None,
-                }
+                },
             ]
             assert "checkpoint_id" not in approval and "owner_id" not in approval
             async with sessions.begin() as db:
@@ -800,7 +784,7 @@ async def exercise_run_api(database: Path) -> None:
                         expires_at=shanghai_now(naive=True) + timedelta(days=1),
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 enabled_id = enabled_tool.json()["data"]["id"]
                 claimed = await claim_run(db, enabled_id)
@@ -814,7 +798,7 @@ async def exercise_run_api(database: Path) -> None:
                             "name": "read_text_artifact",
                             "arguments_hash": "b" * 64,
                             "resource_id": resource_id,
-                        }
+                        },
                     ],
                 )
             preview = (await client.get(f"/api/v1/runs/{enabled_id}/approval", headers=alice)).json()["data"]
@@ -838,16 +822,12 @@ async def exercise_run_api(database: Path) -> None:
                     state=SimpleNamespace(auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=0),
                     is_disconnected=AsyncMock(return_value=False),
                 )
-                expired_stream = await stream_events(
-                    bounded_id, expired_request, after=0, last_event_id=None, actor=stream_actor, db=stream_db
-                )
+                expired_stream = await stream_events(bounded_id, expired_request, after=0, last_event_id=None, actor=stream_actor, db=stream_db)
                 with pytest.raises(StopAsyncIteration):
                     await anext(expired_stream.body_iterator)
 
                 live_request = SimpleNamespace(
-                    state=SimpleNamespace(
-                        auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
-                    ),
+                    state=SimpleNamespace(auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]),
                     is_disconnected=AsyncMock(return_value=False),
                 )
                 live_stream = await stream_events(bounded_id, live_request, after=0, last_event_id=None, actor=stream_actor, db=stream_db)

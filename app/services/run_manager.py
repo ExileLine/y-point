@@ -65,9 +65,7 @@ class ToolCallBudgetExceeded(Exception):
 TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT})
 ALLOWED_TRANSITIONS = {
     RunState.QUEUED: frozenset({RunState.RUNNING, RunState.CANCELLED, RunState.TIMED_OUT}),
-    RunState.RUNNING: frozenset(
-        {RunState.WAITING_FOR_APPROVAL, RunState.COMPLETED, RunState.FAILED, RunState.CANCEL_REQUESTED, RunState.TIMED_OUT}
-    ),
+    RunState.RUNNING: frozenset({RunState.WAITING_FOR_APPROVAL, RunState.COMPLETED, RunState.FAILED, RunState.CANCEL_REQUESTED, RunState.TIMED_OUT}),
     RunState.WAITING_FOR_APPROVAL: frozenset({RunState.RUNNING, RunState.CANCELLED, RunState.TIMED_OUT}),
     RunState.CANCEL_REQUESTED: frozenset({RunState.CANCELLED, RunState.FAILED, RunState.TIMED_OUT}),
 }
@@ -171,7 +169,7 @@ async def create_run(
                 raise RunConflictError("同一提交键的运行配置不一致")
             if input_text is not None:
                 saved_input = await db.scalar(
-                    select(AgentRunMessage.content).where(AgentRunMessage.run_id == existing.id, AgentRunMessage.role == MessageRole.USER)
+                    select(AgentRunMessage.content).where(AgentRunMessage.run_id == existing.id, AgentRunMessage.role == MessageRole.USER),
                 )
                 if saved_input != input_text:
                     raise RunConflictError("同一提交键的用户输入不一致")
@@ -186,9 +184,7 @@ async def create_run(
         raise ValueError("启用成本预算前必须配置模型输入、输出价格和币种")
     if thread_id is not None:
         session = await db.scalar(select(AgentSession).where(AgentSession.thread_id == thread_id))
-        historical_session = await db.scalar(
-            select(AgentRun.session_id).where(AgentRun.thread_id == thread_id, AgentRun.session_id.is_not(None)).limit(1)
-        )
+        historical_session = await db.scalar(select(AgentRun.session_id).where(AgentRun.thread_id == thread_id, AgentRun.session_id.is_not(None)).limit(1))
         if session_id is None and (session is not None or historical_session is not None):
             raise RunConflictError("会话线程只能通过会话接口提交")
         if session_id is not None and (
@@ -205,15 +201,11 @@ async def create_run(
             raise RunConflictError("检查点线程不属于当前用户")
         if session_id is not None:
             other_run = await db.scalar(
-                select(AgentRun.id)
-                .where(AgentRun.thread_id == thread_id, or_(AgentRun.session_id.is_(None), AgentRun.session_id != session_id))
-                .limit(1)
+                select(AgentRun.id).where(AgentRun.thread_id == thread_id, or_(AgentRun.session_id.is_(None), AgentRun.session_id != session_id)).limit(1),
             )
             if other_run is not None:
                 raise RunConflictError("检查点线程不属于当前会话")
-        active_run = await db.scalar(
-            select(AgentRun.id).where(AgentRun.thread_id == thread_id, AgentRun.state.not_in(TERMINAL_STATES)).limit(1)
-        )
+        active_run = await db.scalar(select(AgentRun.id).where(AgentRun.thread_id == thread_id, AgentRun.state.not_in(TERMINAL_STATES)).limit(1))
         if active_run is not None:
             raise RunConflictError("同一检查点线程已有未结束的运行")
     now = shanghai_now(naive=True)
@@ -321,9 +313,7 @@ async def record_model_tokens(db: AsyncSession, run_id: str, lease_token: str, t
     now = shanghai_now(naive=True)
     statement = (
         update(AgentRun)
-        .where(
-            AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now
-        )
+        .where(AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
         .values(reported_total_tokens=AgentRun.reported_total_tokens + tokens)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
@@ -341,9 +331,7 @@ async def record_model_cost(db: AsyncSession, run_id: str, lease_token: str, cos
     now = shanghai_now(naive=True)
     statement = (
         update(AgentRun)
-        .where(
-            AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now
-        )
+        .where(AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
         .values(estimated_cost=AgentRun.estimated_cost + cost)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
@@ -393,9 +381,7 @@ async def get_owned_run(db: AsyncSession, run_id: str, owner_id: int) -> AgentRu
     return run
 
 
-async def replay_events(
-    db: AsyncSession, run_id: str, owner_id: int, *, after: int = 0, limit: int = 100, through: int | None = None
-) -> list[AgentRunEvent]:
+async def replay_events(db: AsyncSession, run_id: str, owner_id: int, *, after: int = 0, limit: int = 100, through: int | None = None) -> list[AgentRunEvent]:
     """按单调序号读取当前用户的运行事件，供断线重连补发。"""
     if after < 0 or not 1 <= limit <= 200 or through is not None and through < 0:
         raise ValueError("无效的事件游标或数量")
@@ -468,7 +454,7 @@ async def _change_state(
         await db.execute(
             update(ToolInvocation)
             .where(ToolInvocation.run_id == run.id, ToolInvocation.state == ToolInvocationState.RUNNING)
-            .values(state=ToolInvocationState.UNKNOWN, failure_code="run_terminated")
+            .values(state=ToolInvocationState.UNKNOWN, failure_code="run_terminated"),
         )
     db.add(
         AgentRunEvent(
@@ -478,7 +464,7 @@ async def _change_state(
             event_type=RunEventType.STATE,
             state=state,
             failure_code=failure_code,
-        )
+        ),
     )
     await db.flush()
     await db.refresh(run)
@@ -490,9 +476,7 @@ async def claim_run(db: AsyncSession, run_id: str, *, lease_seconds: int = 30) -
     run = await db.get(AgentRun, run_id)
     if run is None:
         raise RunNotFoundError("运行不存在")
-    return await _change_state(
-        db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds
-    )
+    return await _change_state(db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
 
 
 async def expire_queued_runs(db: AsyncSession, *, limit: int = 100) -> int:
@@ -523,9 +507,7 @@ async def heartbeat_run(db: AsyncSession, run_id: str, lease_token: str, *, leas
     now = shanghai_now(naive=True)
     statement = (
         update(AgentRun)
-        .where(
-            AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now
-        )
+        .where(AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
         .values(version=AgentRun.version + 1, heartbeat_at=now, lease_expires_at=now + timedelta(seconds=lease_seconds))
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
@@ -543,9 +525,7 @@ async def append_text_delta(db: AsyncSession, run_id: str, lease_token: str, con
     return await _append_running_event(db, run_id, lease_token, RunEventType.TEXT_DELTA, content=content)
 
 
-async def append_tool_event(
-    db: AsyncSession, run_id: str, lease_token: str, event_type: str, tool_call_id: str, tool_name: str
-) -> AgentRunEvent:
+async def append_tool_event(db: AsyncSession, run_id: str, lease_token: str, event_type: str, tool_call_id: str, tool_name: str) -> AgentRunEvent:
     """只持久化已授权工具的名称及服务端关联 ID，不保存参数和结果。"""
     if event_type not in {RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED}:
         raise ValueError("不允许的工具事件类型")
@@ -568,9 +548,7 @@ async def _append_running_event(
     now = shanghai_now(naive=True)
     statement = (
         update(AgentRun)
-        .where(
-            AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now
-        )
+        .where(AgentRun.id == run_id, AgentRun.state == RunState.RUNNING, AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
         .values(version=AgentRun.version + 1, event_seq=AgentRun.event_seq + 1)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
@@ -593,9 +571,7 @@ async def _append_running_event(
     return event
 
 
-async def complete_run(
-    db: AsyncSession, run_id: str, lease_token: str, *, checkpoint_id: str | None = None, final_text: str | None = None
-) -> AgentRun:
+async def complete_run(db: AsyncSession, run_id: str, lease_token: str, *, checkpoint_id: str | None = None, final_text: str | None = None) -> AgentRun:
     """由持有租约的执行器在同一事务保存最终回答和完成状态。"""
     if final_text is not None and (not final_text.strip() or len(final_text) > 262144):
         raise ValueError("最终回答为空或超过长度限制")
@@ -603,7 +579,13 @@ async def complete_run(
     if run is None:
         raise RunNotFoundError("运行不存在")
     completed = await _change_state(
-        db, run, RunState.COMPLETED, now=shanghai_now(naive=True), lease_token=lease_token, checkpoint_id=checkpoint_id, require_lease=True
+        db,
+        run,
+        RunState.COMPLETED,
+        now=shanghai_now(naive=True),
+        lease_token=lease_token,
+        checkpoint_id=checkpoint_id,
+        require_lease=True,
     )
     if final_text is not None:
         db.add(AgentRunMessage(run_id=run_id, owner_id=run.owner_id, role=MessageRole.ASSISTANT, content=final_text))
@@ -612,7 +594,7 @@ async def complete_run(
         await db.scalars(
             select(Artifact)
             .where(Artifact.run_id == run_id, Artifact.source == ArtifactOrigin.GENERATED, Artifact.state == ArtifactState.PENDING)
-            .order_by(Artifact.create_time, Artifact.id)
+            .order_by(Artifact.create_time, Artifact.id),
         )
     ).all()
     if pending:
@@ -631,13 +613,13 @@ async def complete_run(
                     event_type=RunEventType.ARTIFACT_PUBLISHED,
                     state=RunState.COMPLETED,
                     artifact_id=artifact.id,
-                )
+                ),
             )
         await db.execute(
             update(AgentRun)
             .where(AgentRun.id == run_id)
             .values(version=completed.version + len(pending), event_seq=completed.event_seq + len(pending))
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         await db.flush()
         await db.refresh(completed)
@@ -651,9 +633,7 @@ async def complete_expired_run(db: AsyncSession, run_id: str, *, checkpoint_id: 
     run = await db.get(AgentRun, run_id)
     if run is None:
         raise RunNotFoundError("运行不存在")
-    completed = await _change_state(
-        db, run, RunState.COMPLETED, now=shanghai_now(naive=True), checkpoint_id=checkpoint_id, require_expired_lease=True
-    )
+    completed = await _change_state(db, run, RunState.COMPLETED, now=shanghai_now(naive=True), checkpoint_id=checkpoint_id, require_expired_lease=True)
     db.add(AgentRunMessage(run_id=run_id, owner_id=run.owner_id, role=MessageRole.ASSISTANT, content=final_text))
     await db.flush()
     return completed
@@ -732,7 +712,13 @@ async def pause_for_approval(db: AsyncSession, run_id: str, lease_token: str, ch
 
 
 async def create_approval_request(
-    db: AsyncSession, run_id: str, lease_token: str, checkpoint_id: str, actions: list[dict], *, ttl_seconds: int = 3600
+    db: AsyncSession,
+    run_id: str,
+    lease_token: str,
+    checkpoint_id: str,
+    actions: list[dict],
+    *,
+    ttl_seconds: int = 3600,
 ) -> RunApproval:
     """在保存暂停状态的同一事务中记录不含原始工具参数的审批请求。"""
     if not actions or len(actions) > 20 or ttl_seconds <= 0:
@@ -823,7 +809,7 @@ async def expire_approvals(db: AsyncSession, *, limit: int = 100) -> int:
             update(RunApproval)
             .where(RunApproval.id == approval.id, RunApproval.state == ApprovalState.PENDING)
             .values(state=ApprovalState.EXPIRED)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             continue
@@ -842,9 +828,7 @@ async def resume_approved_run(db: AsyncSession, run_id: str, *, lease_seconds: i
     approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id))
     if approval is None or approval.state != ApprovalState.APPROVED:
         raise RunConflictError("审批尚未同意")
-    return await _change_state(
-        db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds
-    )
+    return await _change_state(db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
 
 
 async def request_cancel(db: AsyncSession, run_id: str, owner_id: int) -> AgentRun:
@@ -858,7 +842,7 @@ async def request_cancel(db: AsyncSession, run_id: str, owner_id: int) -> AgentR
                 update(RunApproval)
                 .where(RunApproval.run_id == run_id, RunApproval.state == ApprovalState.PENDING)
                 .values(state=ApprovalState.CANCELLED)
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session=False),
             )
         state = RunState.CANCEL_REQUESTED if run.state == RunState.RUNNING else RunState.CANCELLED
         try:

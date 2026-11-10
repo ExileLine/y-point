@@ -34,9 +34,7 @@ def _audit_columns():
 def upgrade() -> None:
     """扩展用户表并创建无数据库外键的认证和审计表。"""
     with op.batch_alter_table("yp_admin") as batch:
-        batch.add_column(
-            sa.Column("role", sa.String(16), nullable=False, server_default="user", comment="用户角色：admin 管理员，user 普通用户")
-        )
+        batch.add_column(sa.Column("role", sa.String(16), nullable=False, server_default="user", comment="用户角色：admin 管理员，user 普通用户"))
         batch.add_column(sa.Column("token_version", sa.Integer(), nullable=False, server_default="0", comment="令牌版本"))
         batch.add_column(sa.Column("last_login_at", sa.DateTime(timezone=True), comment="最近登录时间"))
         batch.create_index("uq_yp_admin_username", ["username"], unique=True)

@@ -76,7 +76,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

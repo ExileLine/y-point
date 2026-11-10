@@ -176,9 +176,7 @@ async def scan_file(path: Path) -> None:
     if scanner is None:
         raise ArtifactValidationError("文件扫描器不可用")
     try:
-        process = await asyncio.create_subprocess_exec(
-            scanner, "--no-summary", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
+        process = await asyncio.create_subprocess_exec(scanner, "--no-summary", str(path), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     except OSError:
         raise ArtifactValidationError("文件扫描器不可用") from None
     try:
@@ -207,7 +205,7 @@ async def enforce_owner_quota(db: AsyncSession, owner_id: int, *, add_count: int
                 Artifact.state.in_((ArtifactState.READY, ArtifactState.PENDING)),
                 Artifact.is_deleted == 0,
                 or_(Artifact.expires_at.is_(None), Artifact.expires_at > now),
-            )
+            ),
         )
     ).one()
     if count + add_count > config.ARTIFACT_OWNER_MAX_FILES or total + add_bytes > config.ARTIFACT_OWNER_MAX_BYTES:
@@ -374,7 +372,7 @@ async def publish_generated_artifact(
                 update(AgentRun)
                 .where(AgentRun.id == run_id, AgentRun.state == RunState.COMPLETED, AgentRun.version == run.version)
                 .values(version=run.version + 1, event_seq=run.event_seq + 1)
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session=False),
             )
             if result.rowcount != 1:
                 raise ArtifactValidationError("运行状态已变化")
@@ -386,7 +384,7 @@ async def publish_generated_artifact(
                     event_type=RunEventType.ARTIFACT_PUBLISHED,
                     state=RunState.COMPLETED,
                     artifact_id=artifact.id,
-                )
+                ),
             )
             await db.flush()
         return artifact
@@ -409,7 +407,13 @@ async def publish_generated_artifact(
 
 
 async def stage_generated_text_artifact(
-    sessions: async_sessionmaker[AsyncSession], run_id: str, owner_id: int, lease_token: str, filename: str, content: str, root: Path
+    sessions: async_sessionmaker[AsyncSession],
+    run_id: str,
+    owner_id: int,
+    lease_token: str,
+    filename: str,
+    content: str,
+    root: Path,
 ) -> Artifact:
     """保留 TXT 工具的暂存入口与发布键。"""
     if Path(filename).suffix.lower() != ".txt":
@@ -445,12 +449,7 @@ async def stage_generated_artifact(
 
     existing = await existing_artifact()
     if existing is not None:
-        if (
-            existing.sha256 != digest
-            or existing.filename != filename
-            or existing.state != ArtifactState.PENDING
-            or existing.template_source != template_source
-        ):
+        if existing.sha256 != digest or existing.filename != filename or existing.state != ArtifactState.PENDING or existing.template_source != template_source:
             raise ArtifactValidationError("同名生成文件内容冲突")
         return existing
 
@@ -483,8 +482,10 @@ async def stage_generated_artifact(
                 raise ArtifactValidationError("运行授权已失效")
             count = await db.scalar(
                 select(func.count(Artifact.id)).where(
-                    Artifact.run_id == run_id, Artifact.source == ArtifactOrigin.GENERATED, Artifact.state == ArtifactState.PENDING
-                )
+                    Artifact.run_id == run_id,
+                    Artifact.source == ArtifactOrigin.GENERATED,
+                    Artifact.state == ArtifactState.PENDING,
+                ),
             )
             if count >= MAX_FILES:
                 raise ArtifactValidationError("单轮生成文件超过数量限制")
@@ -493,7 +494,7 @@ async def stage_generated_artifact(
                 await db.scalars(
                     select(RunArtifactRead.source_artifact_id)
                     .where(RunArtifactRead.run_id == run_id, RunArtifactRead.owner_id == owner_id)
-                    .order_by(RunArtifactRead.id)
+                    .order_by(RunArtifactRead.id),
                 )
             ).all()
             source_ids = list(dict.fromkeys(reads))
@@ -518,11 +519,9 @@ async def stage_generated_artifact(
             await db.flush()
             db.add_all(
                 [
-                    ArtifactSource(
-                        target_artifact_id=artifact.id, source_artifact_id=source_id, run_id=run_id, owner_id=owner_id, position=position
-                    )
+                    ArtifactSource(target_artifact_id=artifact.id, source_artifact_id=source_id, run_id=run_id, owner_id=owner_id, position=position)
                     for position, source_id in enumerate(source_ids)
-                ]
+                ],
             )
         return artifact
     except IntegrityError:
@@ -564,27 +563,17 @@ async def publish_pending_answers(sessions: async_sessionmaker[AsyncSession], ro
         run_ids = (await db.scalars(statement)).all()
     for run_id in run_ids:
         async with sessions() as db:
-            answer = await db.scalar(
-                select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.ASSISTANT)
-            )
+            answer = await db.scalar(select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.ASSISTANT))
         if answer is None:
             async with sessions.begin() as db:
-                await db.execute(
-                    update(AgentRun)
-                    .where(AgentRun.id == run_id)
-                    .values(answer_artifact_retry_at=shanghai_now(naive=True) + timedelta(hours=1))
-                )
+                await db.execute(update(AgentRun).where(AgentRun.id == run_id).values(answer_artifact_retry_at=shanghai_now(naive=True) + timedelta(hours=1)))
             continue
         try:
             await publish_generated_artifact(sessions, run_id, "final-answer-v1", "answer.txt", answer.encode("utf-8"), root)
         except (ArtifactValidationError, OSError, Boto3Error, BotoCoreError, ClientError) as exc:
             logger.warning("运行 {} 的回答产物未发布：{}", run_id, type(exc).__name__)
             async with sessions.begin() as db:
-                await db.execute(
-                    update(AgentRun)
-                    .where(AgentRun.id == run_id)
-                    .values(answer_artifact_retry_at=shanghai_now(naive=True) + timedelta(hours=1))
-                )
+                await db.execute(update(AgentRun).where(AgentRun.id == run_id).values(answer_artifact_retry_at=shanghai_now(naive=True) + timedelta(hours=1)))
             continue
         published += 1
     return published
@@ -595,13 +584,7 @@ async def _remove_unreferenced_local_files(sessions: async_sessionmaker[AsyncSes
     keys = [path.name for path in paths if not path.name.endswith(".tmp")]
     async with sessions() as db:
         referenced = (
-            set(
-                (
-                    await db.scalars(
-                        select(Artifact.storage_key).where(Artifact.storage_key.in_(keys), Artifact.state == ArtifactState.READY)
-                    )
-                ).all()
-            )
+            set((await db.scalars(select(Artifact.storage_key).where(Artifact.storage_key.in_(keys), Artifact.state == ArtifactState.READY))).all())
             if keys
             else set()
         )
@@ -631,9 +614,9 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
                         Artifact.expires_at <= now,
                     )
                     .order_by(Artifact.expires_at, Artifact.id)
-                    .limit(limit)
+                    .limit(limit),
                 )
-            ).all()
+            ).all(),
         )
         for item in expired:
             item.state = ArtifactState.DELETED
@@ -649,9 +632,7 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
             continue
         name = path.name
         is_key = len(name) == 32 and all(char in "0123456789abcdef" for char in name)
-        is_temporary = (
-            len(name) == 37 and name.startswith(".") and name.endswith(".tmp") and all((char in "0123456789abcdef" for char in name[1:-4]))
-        )
+        is_temporary = len(name) == 37 and name.startswith(".") and name.endswith(".tmp") and all((char in "0123456789abcdef" for char in name[1:-4]))
         if not (is_key or is_temporary):
             continue
         candidates.append(path)
@@ -668,15 +649,7 @@ async def prune_artifacts(sessions: async_sessionmaker[AsyncSession], root: Path
         async for old_keys in old_blob_batches(before=shanghai_now() - timedelta(seconds=ORPHAN_GRACE_SECONDS), batch_size=limit):
             async with sessions() as db:
                 referenced = (
-                    set(
-                        (
-                            await db.scalars(
-                                select(Artifact.storage_key).where(
-                                    Artifact.storage_key.in_(old_keys), Artifact.state == ArtifactState.READY
-                                )
-                            )
-                        ).all()
-                    )
+                    set((await db.scalars(select(Artifact.storage_key).where(Artifact.storage_key.in_(old_keys), Artifact.state == ArtifactState.READY))).all())
                     if old_keys
                     else set()
                 )

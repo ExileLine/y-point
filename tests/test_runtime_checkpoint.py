@@ -53,7 +53,7 @@ def run_phase(phase: str, database_path: Path) -> dict:
                         "text": "hello",
                     },
                     "id": "call-1",
-                }
+                },
             ],
         ),
         "resume": AIMessage(content="finished"),
@@ -82,7 +82,7 @@ def run_phase(phase: str, database_path: Path) -> dict:
                         {
                             "role": "user",
                             "content": "say hello",
-                        }
+                        },
                     ],
                 },
                 config,
@@ -95,9 +95,9 @@ def run_phase(phase: str, database_path: Path) -> dict:
                         "decisions": [
                             {
                                 "type": "approve",
-                            }
+                            },
                         ],
-                    }
+                    },
                 ),
                 config,
             )
@@ -110,12 +110,12 @@ def run_phase(phase: str, database_path: Path) -> dict:
                             {
                                 "role": "user",
                                 "content": "one more",
-                            }
+                            },
                         ],
                     },
                     config,
                     stream_mode=["updates", "messages"],
-                )
+                ),
             )
             assert any(mode == "messages" for mode, _ in events)
         state = agent.get_state(config)
@@ -186,7 +186,7 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
                         "text": "hello",
                     },
                     "id": "call-async",
-                }
+                },
             ],
         )
         async with open_async_sqlite_checkpointer(database_path) as checkpointer:
@@ -204,7 +204,7 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
                         {
                             "role": "user",
                             "content": "say hello",
-                        }
+                        },
                     ],
                 },
                 config,
@@ -225,9 +225,9 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
                         "decisions": [
                             {
                                 "type": "approve",
-                            }
+                            },
                         ],
-                    }
+                    },
                 ),
                 config,
             )
@@ -239,9 +239,7 @@ def test_async_sqlite_checkpoint_recovers_approval(tmp_path: Path) -> None:
 
 def test_postgres_checkpoint_requires_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """配置错误必须在 worker 领取运行前暴露。"""
-    monkeypatch.setattr(
-        runtime_checkpoint, "get_config", lambda: SimpleNamespace(CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN="")
-    )
+    monkeypatch.setattr(runtime_checkpoint, "get_config", lambda: SimpleNamespace(CHECKPOINT_BACKEND="postgres", CHECKPOINT_POSTGRES_DSN=""))
 
     async def exercise() -> None:
         """在隔离环境执行异步场景：配置错误必须在 worker 领取运行前暴露。"""
@@ -277,7 +275,7 @@ def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pyte
                         "text": "hello",
                     },
                     "id": "call-postgres",
-                }
+                },
             ],
         )
         async with open_async_checkpointer(tmp_path / "unused.sqlite") as checkpointer:
@@ -296,7 +294,7 @@ def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pyte
                         {
                             "role": "user",
                             "content": "say hello",
-                        }
+                        },
                     ],
                 },
                 config,
@@ -318,9 +316,9 @@ def test_postgres_checkpoint_recovers_approval(tmp_path: Path, monkeypatch: pyte
                         "decisions": [
                             {
                                 "type": "approve",
-                            }
+                            },
                         ],
-                    }
+                    },
                 ),
                 config,
             )
@@ -362,12 +360,12 @@ def test_live_ollama_deep_agent_tool_stream_and_usage() -> None:
                     {
                         "role": "user",
                         "content": "Use echo now.",
-                    }
+                    },
                 ],
             },
             config,
             stream_mode=["updates", "messages"],
-        )
+        ),
     )
     messages = agent.get_state(config).values["messages"]
 

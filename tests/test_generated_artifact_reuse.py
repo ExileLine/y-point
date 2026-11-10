@@ -47,12 +47,8 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
-            first_session = AgentSession(
-                id="a" * 36, owner_id=1, agent_id=1, thread_id="a" * 35 + "1", title="续编辑", archived=False, version=1
-            )
-            other_session = AgentSession(
-                id="b" * 36, owner_id=1, agent_id=1, thread_id="b" * 35 + "1", title="其他会话", archived=False, version=1
-            )
+            first_session = AgentSession(id="a" * 36, owner_id=1, agent_id=1, thread_id="a" * 35 + "1", title="续编辑", archived=False, version=1)
+            other_session = AgentSession(id="b" * 36, owner_id=1, agent_id=1, thread_id="b" * 35 + "1", title="其他会话", archived=False, version=1)
             async with sessions.begin() as db:
                 db.add(Admin(id=1, username="reuse-owner", password="unused", role="user", status=1, is_deleted=0))
                 db.add(
@@ -68,7 +64,7 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                         version=1,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
                 db.add(
                     ProviderConnection(
@@ -80,7 +76,7 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -92,7 +88,7 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add_all([first_session, other_session])
                 await db.flush()
@@ -103,11 +99,15 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                     agent_max_output_tokens=512,
                     model_id=1,
                 )
-                prior = await create_run(
-                    db, 1, agent_id=1, session_id=first_session.id, thread_id=first_session.thread_id, input_text="生成文件", **snapshot
-                )
+                prior = await create_run(db, 1, agent_id=1, session_id=first_session.id, thread_id=first_session.thread_id, input_text="生成文件", **snapshot)
                 other = await create_run(
-                    db, 1, agent_id=1, session_id=other_session.id, thread_id=other_session.thread_id, input_text="其他会话文件", **snapshot
+                    db,
+                    1,
+                    agent_id=1,
+                    session_id=other_session.id,
+                    thread_id=other_session.thread_id,
+                    input_text="其他会话文件",
+                    **snapshot,
                 )
                 for run in (prior, other):
                     claimed = await claim_run(db, run.id)
@@ -180,8 +180,8 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                     await by_name["read_generated_artifact"].ainvoke(
                         {
                             "artifact_id": artifact_ids[filename],
-                        }
-                    )
+                        },
+                    ),
                 )
                 assert result["artifact_id"] == artifact_ids[filename]
                 assert term in result["content"]
@@ -191,23 +191,23 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                 await by_name["read_generated_artifact"].ainvoke(
                     {
                         "artifact_id": artifact_ids["private.txt"],
-                    }
-                )
+                    },
+                ),
             )
             assert rejected["error"] == "generated_artifact_unavailable"
             assert "content" not in rejected and "private.txt" not in json.dumps(rejected)
             await by_name["read_generated_artifact"].ainvoke(
                 {
                     "artifact_id": artifact_ids["notes.md"],
-                }
+                },
             )
             generated = json.loads(
                 await by_name["create_text_artifact"].ainvoke(
                     {
                         "filename": "merged.txt",
                         "content": "合并后的内容",
-                    }
-                )
+                    },
+                ),
             )
             source_ids = [artifact_ids[filename] for filename in expected]
             async with sessions() as db:
@@ -215,9 +215,7 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                     generated["artifact_id"]: source_ids,
                 }
                 assert await load_read_source_artifact_ids(db, 2, [generated["artifact_id"]]) == {}
-                links = (
-                    await db.scalars(select(ArtifactSource).where(ArtifactSource.target_artifact_id == generated["artifact_id"]))
-                ).all()
+                links = (await db.scalars(select(ArtifactSource).where(ArtifactSource.target_artifact_id == generated["artifact_id"]))).all()
                 assert [link.position for link in links] == list(range(len(source_ids)))
             async with sessions.begin() as db:
                 deleted = await db.get(Artifact, artifact_ids["notes.md"])
@@ -230,15 +228,15 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                     await by_name["read_generated_artifact"].ainvoke(
                         {
                             "artifact_id": artifact_ids[filename],
-                        }
-                    )
+                        },
+                    ),
                 )
                 assert rejected["error"] == "generated_artifact_unavailable" and "content" not in rejected
             with pytest.raises(ValueError, match="产物不可读取"):
                 await by_name["read_generated_artifact"].ainvoke(
                     {
                         "artifact_id": artifact_ids["report.pdf"],
-                    }
+                    },
                 )
             assert len(json.loads(await by_name["list_session_artifacts"].ainvoke({}))) == 3
             async with sessions.begin() as db:

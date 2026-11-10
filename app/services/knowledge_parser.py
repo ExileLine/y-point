@@ -99,7 +99,7 @@ def parse_knowledge(content: bytes, media_type: str) -> ParsedKnowledge:
                     "end": offset,
                     "page": page,
                     "heading": heading,
-                }
+                },
             )
     if not blocks:
         raise KnowledgeProcessingError(KnowledgeFailure.PARSE_FAILED)
@@ -133,7 +133,7 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
                     "end_offset": end,
                     "page": group["page"],
                     "heading": group["heading"],
-                }
+                },
             )
             if end == group["end"]:
                 break
@@ -199,8 +199,8 @@ def main() -> None:
             json.dumps(
                 {
                     "failure": code.value,
-                }
-            )
+                },
+            ),
         )
 
 

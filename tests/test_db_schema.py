@@ -75,7 +75,7 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
 
@@ -108,7 +108,7 @@ def test_active_thread_migration_backfills_only_unfinished_runs(tmp_path: Path) 
                             "(id, owner_id, thread_id, state, version, event_seq, "
                             "create_time, update_time, create_timestamp, update_timestamp) "
                             "VALUES (:id, 1, 'shared-thread', :state, 0, 1, "
-                            "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)"
+                            "'2026-01-01 00:00:00', '2026-01-01 00:00:00', 1, 1)",
                         ),
                         {
                             "id": run_id,
@@ -155,17 +155,19 @@ asyncio.run(exercise())
         "TOOL_CALL_USER_LIMIT": "1",
         "TOOL_CALL_RUN_LIMIT": "1",
     }
-    processes = [
-        subprocess.Popen([sys.executable, "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        for _ in range(2)
-    ]
+    processes = [subprocess.Popen([sys.executable, "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
     results = [await asyncio.to_thread(process.communicate, timeout=30) for process in processes]
     assert all(process.returncode == 0 for process in processes), "独立进程并发验收失败"
     assert sorted(output.strip().splitlines()[-1] for output, _ in results) == ["CLAIMED", "REJECTED"]
 
 
 async def _exercise_isolated_migrations(
-    backend: str, base_url: URL, admin_database: str | None, database_env_key: str, private_root: Path, monkeypatch: pytest.MonkeyPatch
+    backend: str,
+    base_url: URL,
+    admin_database: str | None,
+    database_env_key: str,
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """在隔离数据库验证迁移往返、运行争抢及 HTTP 与 worker 基础流程。"""
     name = f"yp_m3_schema_{uuid4().hex[:12]}"
@@ -185,7 +187,7 @@ async def _exercise_isolated_migrations(
             {
                 "DB_BACKEND": backend,
                 database_env_key: name,
-            }
+            },
         )
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
@@ -259,7 +261,7 @@ async def _exercise_isolated_migrations(
                         state="ready",
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
             async with sessions() as db:
                 artifact = await db.scalar(select(Artifact).where(Artifact.id == artifact_id))
@@ -383,9 +385,7 @@ async def _exercise_isolated_migrations(
                         checkpoint_path = private_root / "checkpoints.sqlite"
                         async with open_async_checkpointer(checkpoint_path) as checkpointer:
                             await checkpointer.setup()
-                        result = await dispatch_next_run(
-                            sessions, checkpoint_path, resolve_model=resolve_model, lease_seconds=2, poll_seconds=0.1
-                        )
+                        result = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, lease_seconds=2, poll_seconds=0.1)
                         assert result is not None and result.id == run_id and result.state == "completed"
                         messages = await client.get(f"/api/v1/runs/{run_id}/messages", headers=owned)
                         assert messages.status_code == 200, messages.text
@@ -418,19 +418,13 @@ async def _exercise_isolated_migrations(
 @pytest.mark.skipif(os.environ.get("YPOINT_TEST_MYSQL_M3") != "1", reason="需显式启用隔离 MySQL 迁移验收")
 def test_mysql_m3_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """在独立 MySQL 库验证迁移、并发领取及基础 HTTP/worker 链路。"""
-    asyncio.run(
-        _exercise_isolated_migrations("mysql", make_url(get_config().mysql_async_url), None, "MYSQL_DATABASE", tmp_path, monkeypatch)
-    )
+    asyncio.run(_exercise_isolated_migrations("mysql", make_url(get_config().mysql_async_url), None, "MYSQL_DATABASE", tmp_path, monkeypatch))
 
 
 @pytest.mark.skipif(os.environ.get("YPOINT_TEST_POSTGRES_M3") != "1", reason="需显式启用隔离 PostgreSQL 迁移验收")
 def test_postgres_m3_migrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """在独立 PostgreSQL 库验证迁移、并发领取及基础 HTTP/worker 链路。"""
-    asyncio.run(
-        _exercise_isolated_migrations(
-            "postgres", make_url(get_config().pg_async_url), "postgres", "POSTGRESQL_DATABASE", tmp_path, monkeypatch
-        )
-    )
+    asyncio.run(_exercise_isolated_migrations("postgres", make_url(get_config().pg_async_url), "postgres", "POSTGRESQL_DATABASE", tmp_path, monkeypatch))
 
 
 def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path: Path) -> None:
@@ -441,7 +435,7 @@ def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
 
@@ -463,12 +457,12 @@ def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path
             "(id, owner_id, filename, media_type, byte_size, sha256, storage_key, source, state, "
             "create_time, update_time, create_timestamp, update_timestamp) "
             "VALUES ('legacy', 1, '报告模板.DOCX', 'application/octet-stream', 1, 'hash', 'legacy', 'skill_resource', 'ready', "
-            "'2026-11-05', '2026-11-05', 1, 1)"
+            "'2026-11-05', '2026-11-05', 1, 1)",
         )
         connection.execute(
             "INSERT INTO yp_skill_template "
             "(skill_id, skill_version, artifact_id, fields_schema, create_time, update_time, create_timestamp, update_timestamp) "
-            "VALUES (1, 2, 'legacy', '{}', '2026-11-05', '2026-11-05', 1, 1)"
+            "VALUES (1, 2, 'legacy', '{}', '2026-11-05', '2026-11-05', 1, 1)",
         )
     migrate("upgrade", "head")
     migrate("check")
@@ -478,7 +472,7 @@ def test_multi_template_migration_preserves_legacy_and_guards_downgrade(tmp_path
             "INSERT INTO yp_skill_template "
             "(skill_id, skill_version, template_key, artifact_id, fields_schema, "
             "create_time, update_time, create_timestamp, update_timestamp) "
-            "VALUES (1, 2, 'other.docx', 'other', '{}', '2026-11-05', '2026-11-05', 1, 1)"
+            "VALUES (1, 2, 'other.docx', 'other', '{}', '2026-11-05', '2026-11-05', 1, 1)",
         )
     rejected = migrate("downgrade", "044", check=False)
     assert rejected.returncode != 0 and "不能无损降级" in rejected.stderr
@@ -501,7 +495,7 @@ def test_skill_package_migration_guards_downgrade(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
 
@@ -515,7 +509,7 @@ def test_skill_package_migration_guards_downgrade(tmp_path: Path) -> None:
         connection.execute(
             "INSERT INTO yp_skill_draft "
             "(skill_id,revision,base_version,files,settings,create_time,update_time,create_timestamp,update_timestamp) "
-            "VALUES (1,1,0,'{}','{}','2026-11-06','2026-11-06',1,1)"
+            "VALUES (1,1,0,'{}','{}','2026-11-06','2026-11-06',1,1)",
         )
     rejected = migrate("downgrade", "045", check=False)
     assert rejected.returncode != 0 and "不能无损降级" in rejected.stderr

@@ -145,7 +145,7 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pyte
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async def session_override():
@@ -284,7 +284,7 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pyte
                                 arguments_hash="a" * 64,
                                 is_deleted=0,
                                 status=1,
-                            )
+                            ),
                         )
                     calls_response = await client.get(f"/api/v1/tools/runs/{audit_run.id}/calls", headers=other)
                     assert calls_response.status_code == 200
@@ -401,7 +401,7 @@ def test_terminal_run_marks_unfinished_tool_call_unknown(tmp_path: Path) -> None
                         arguments_hash="a" * 64,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
             async with sessions.begin() as db:
                 await fail_run(db, run.id, claimed.lease_token, "runtime_error")
@@ -474,7 +474,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
                 await db.flush()
                 run = await create_run(db, 2, input_text="read wiki")
@@ -486,7 +486,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
                         content_hash="a" * 64,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
             async with sessions.begin() as db:
                 claimed = await claim_run(db, run.id)
@@ -496,7 +496,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
             result = await tool.ainvoke(
                 {
                     "repoName": "modelcontextprotocol/python-sdk",
-                }
+                },
             )
             assert result == '{"ok": true}'
         finally:
@@ -557,7 +557,7 @@ def test_script_tool_runs_without_skill(tmp_path: Path, use_skill: bool, short_n
                             is_deleted=0,
                         ),
                         AgentTool(agent_id=3, tool_id=4, tool_version=1, status=1, is_deleted=0),
-                    ]
+                    ],
                 )
                 if use_skill:
                     files = {
@@ -576,7 +576,7 @@ def test_script_tool_runs_without_skill(tmp_path: Path, use_skill: bool, short_n
                             current_version=1,
                             status=1,
                             is_deleted=0,
-                        )
+                        ),
                     )
                     db.add(SkillVersion(skill_id=2, version=1, content_hash=digest, files=files, manifest=manifest, status=1, is_deleted=0))
                     db.add(AgentSkill(agent_id=3, skill_id=2, skill_version=1, status=1, is_deleted=0))
@@ -599,9 +599,9 @@ def test_script_tool_runs_without_skill(tmp_path: Path, use_skill: bool, short_n
                                             "file_path": "/skills/double-number/SKILL.md",
                                         },
                                         "id": "call-read-skill",
-                                    }
+                                    },
                                 ],
-                            )
+                            ),
                         ]
                         if use_skill
                         else []
@@ -615,11 +615,11 @@ def test_script_tool_runs_without_skill(tmp_path: Path, use_skill: bool, short_n
                                     "value": 21,
                                 },
                                 "id": "call-double",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="42"),
-                ]
+                ],
             )
             result = await execute_text_run(
                 sessions,

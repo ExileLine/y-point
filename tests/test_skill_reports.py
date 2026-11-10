@@ -99,7 +99,7 @@ def test_template_rejects_executable_or_unbounded_content() -> None:
             {
                 "type": "object",
                 "$ref": "https://example.com/schema",
-            }
+            },
         )
 
 
@@ -159,7 +159,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async def session_override():
@@ -190,9 +190,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     headers=owner,
                     json={
                         "files": {
-                            "SKILL.md": skill_text(
-                                "contract-review", "审查用户合同；未上传时调用 func1 获取数据，按照 xxx_template.docx 生成报告。"
-                            ),
+                            "SKILL.md": skill_text("contract-review", "审查用户合同；未上传时调用 func1 获取数据，按照 xxx_template.docx 生成报告。"),
                         },
                     },
                 )
@@ -363,7 +361,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     "findings": [
                         {
                             "note": "缺少逾期处理约定 <待补充> & 核实",
-                        }
+                        },
                     ],
                 }
                 model = SkillModel(
@@ -377,7 +375,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "read-review-skill",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -391,7 +389,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "filename": "合同审查报告.docx",
                                     },
                                     "id": "render-review",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -405,11 +403,11 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "filename": "合同审查报告.docx",
                                     },
                                     "id": "render-review-retry",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="已完成审查并生成报告。"),
-                    ]
+                    ],
                 )
                 result = await execute_text_run(
                     sessions,
@@ -427,10 +425,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     files = await skill_reports.required_report_skill_ids(db, run_id)
                     assert files == [skill_id]
                     events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()
-                    assert (
-                        "".join(event.content or "" for event in events if event.event_type == RunEventType.TEXT_DELTA)
-                        == "已完成审查并生成报告。"
-                    )
+                    assert "".join(event.content or "" for event in events if event.event_type == RunEventType.TEXT_DELTA) == "已完成审查并生成报告。"
                 assert (await client.post(path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
                 response = await client.get(path + "/messages", headers=owner)
                 assert response.status_code == 200, response.text
@@ -469,7 +464,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "activate-report-skill",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -482,12 +477,12 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "content": "没有使用固定模板",
                                     },
                                     "id": "wrong-template",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="完成"),
                         AIMessage(content="无法按模板交付"),
-                    ]
+                    ],
                 )
                 failed = await execute_text_run(
                     sessions,
@@ -503,7 +498,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                 assert failed.failure_code == "artifact_required"
                 async with sessions() as db:
                     text_events = await db.scalars(
-                        select(AgentRunEvent).where(AgentRunEvent.run_id == run2, AgentRunEvent.event_type == RunEventType.TEXT_DELTA)
+                        select(AgentRunEvent).where(AgentRunEvent.run_id == run2, AgentRunEvent.event_type == RunEventType.TEXT_DELTA),
                     )
                     assert list(text_events) == []
                 # 模板数据也可来自正文指定的工具，不强制上传附件或指定报告选项。
@@ -545,7 +540,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "read-tool-report-skill",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -555,7 +550,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                     "name": "func1",
                                     "args": {},
                                     "id": "fetch-report-data",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -573,11 +568,11 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "filename": "工具数据报告.docx",
                                     },
                                     "id": "render-tool-report",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="已使用工具数据生成报告。"),
-                    ]
+                    ],
                 )
                 finished = await execute_text_run(
                     sessions,
@@ -701,7 +696,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "read-multiple-templates",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(
@@ -720,11 +715,11 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "filename": "详细报告.docx",
                                     },
                                     "id": "render-selected-template",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="详细报告已生成。"),
-                    ]
+                    ],
                 )
                 multi_result = await execute_text_run(
                     sessions,
@@ -767,13 +762,9 @@ def test_required_reports_cover_all_activated_skills() -> None:
                     [
                         RunSkill(run_id="reports", skill_id=1, skill_version=2),
                         RunSkill(run_id="reports", skill_id=2, skill_version=3),
-                        SkillTemplate(
-                            skill_id=1, skill_version=2, template_key="template-a.docx", artifact_id="template-a", fields_schema=SCHEMA
-                        ),
-                        SkillTemplate(
-                            skill_id=2, skill_version=3, template_key="template-b.docx", artifact_id="template-b", fields_schema=SCHEMA
-                        ),
-                    ]
+                        SkillTemplate(skill_id=1, skill_version=2, template_key="template-a.docx", artifact_id="template-a", fields_schema=SCHEMA),
+                        SkillTemplate(skill_id=2, skill_version=3, template_key="template-b.docx", artifact_id="template-b", fields_schema=SCHEMA),
+                    ],
                 )
             async with sessions.begin() as db:
                 assert await skill_reports.required_report_delivered(db, "reports")

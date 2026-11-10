@@ -62,9 +62,9 @@ class TrackingModel(FakeMessagesListChatModel):
                             "output_tokens": 5,
                             "total_tokens": 25,
                         },
-                    )
-                )
-            ]
+                    ),
+                ),
+            ],
         )
 
 
@@ -179,7 +179,7 @@ def test_tool_history_summary_respects_checkpoint_boundary(tmp_path: Path, failu
                             is_deleted=0,
                         ),
                         AgentSession(id=snapshot["session_id"], owner_id=1, agent_id=1, thread_id=snapshot["thread_id"], title="采购简报"),
-                    ]
+                    ],
                 )
             model = ToolHistoryModel(responses=[AIMessage(content="fallback")])
             first_input = "请读取采购简报并记住项目编号。"
@@ -208,9 +208,7 @@ def test_tool_history_summary_respects_checkpoint_boundary(tmp_path: Path, failu
                 assert ToolHistoryModel.summary_calls >= 1
                 assert any("星河-27" in prompt for prompt in ToolHistoryModel.summary_prompts)
                 async with sessions() as db:
-                    messages = (
-                        await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
-                    ).all()
+                    messages = (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))).all()
                     assert [message.content for message in messages if message.role == "user"] == [first_input, second_input]
                     assert [message.content for message in messages if message.role == "assistant"] == ["星河-27", "星河-27"]
         finally:
@@ -248,7 +246,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
                         version=1,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
                 db.add(
                     ProviderConnection(
@@ -260,7 +258,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -273,7 +271,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 session = AgentSession(id="a" * 36, owner_id=1, agent_id=1, thread_id="b" * 36, title="长对话", archived=False, version=1)
                 db.add(session)
@@ -308,9 +306,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
             assert all(run.reported_total_tokens == run.model_call_count * 25 for run in completed_runs)
             assert all(run.estimated_cost == Decimal(run.model_call_count * 25) / 1_000_000 for run in completed_runs)
             async with sessions() as db:
-                messages = (
-                    await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
-                ).all()
+                messages = (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))).all()
                 assert [message.content for message in messages if message.role == "user"] == inputs
                 assert [message.content for message in messages if message.role == "assistant"] == ["已收到", "已收到"]
             async with sessions.begin() as db:
@@ -382,7 +378,7 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                         version=1,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
                 db.add(
                     ProviderConnection(
@@ -394,7 +390,7 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -407,7 +403,7 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 session = AgentSession(id="c" * 36, owner_id=1, agent_id=1, thread_id="d" * 36, title="摘要失败")
                 db.add(session)
@@ -483,13 +479,9 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
 
 def test_context_window_reserves_space_for_input_and_output() -> None:
     """验证上下文窗口为输入和输出预留空间且拒绝不足预算。"""
-    config = RuntimeRunConfig(
-        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=256
-    )
+    config = RuntimeRunConfig(run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=256)
     assert config.summarization_limits() == (960, 128)
-    too_small = RuntimeRunConfig(
-        run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=1800
-    )
+    too_small = RuntimeRunConfig(run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=2048, max_output_tokens=1800)
     try:
         too_small.summarization_limits()
     except ValueError:
@@ -551,10 +543,8 @@ def test_live_ollama_long_session_summary(tmp_path: Path) -> None:
                             status=1,
                             is_deleted=0,
                         ),
-                        AgentSession(
-                            id="e" * 36, owner_id=1, agent_id=1, thread_id="f" * 36, title="真实长会话", archived=False, version=1
-                        ),
-                    ]
+                        AgentSession(id="e" * 36, owner_id=1, agent_id=1, thread_id="f" * 36, title="真实长会话", archived=False, version=1),
+                    ],
                 )
             async with sessions() as db:
                 model = build_chat_model(await db.get(ModelCatalog, 1), await db.get(ProviderConnection, 1))
@@ -580,9 +570,7 @@ def test_live_ollama_long_session_summary(tmp_path: Path) -> None:
                 runs.append(result)
             assert runs[-1].model_call_count >= 2
             async with sessions() as db:
-                messages = (
-                    await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
-                ).all()
+                messages = (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))).all()
                 assert [item.content for item in messages if item.role == "user"] == [first_input, second_input]
                 assert "ALPHA-42" in [item.content for item in messages if item.role == "assistant"][-1]
         finally:
@@ -656,7 +644,7 @@ def test_live_ollama_tool_history_survives_summary(tmp_path: Path) -> None:
                             is_deleted=0,
                         ),
                         AgentSession(id="c" * 36, owner_id=1, agent_id=1, thread_id="d" * 36, title="采购长会话"),
-                    ]
+                    ],
                 )
             async with sessions() as db:
                 model = build_chat_model(await db.get(ModelCatalog, 1), await db.get(ProviderConnection, 1))
@@ -689,9 +677,7 @@ def test_live_ollama_tool_history_survives_summary(tmp_path: Path) -> None:
             second = await run_turn(second_input)
             assert second.model_call_count >= 2 and tool_reads == 1
             async with sessions() as db:
-                messages = (
-                    await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))
-                ).all()
+                messages = (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.owner_id == 1).order_by(AgentRunMessage.id))).all()
                 assert [message.content for message in messages if message.role == "user"] == [first_input, second_input]
                 assert "XINGHE-27" in [message.content for message in messages if message.role == "assistant"][-1]
         finally:

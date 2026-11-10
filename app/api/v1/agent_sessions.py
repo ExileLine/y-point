@@ -79,7 +79,7 @@ async def _session(db: AsyncSession, agent_id: int, session_id: str, owner_id: i
             AgentSession.agent_id == agent_id,
             AgentSession.owner_id == owner_id,
             AgentSession.is_deleted == 0,
-        )
+        ),
     )
     if session is None:
         raise CustomException(status_code=404, custom_code=10002, detail="会话不存在")
@@ -108,11 +108,7 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
     message = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
     saved_references = (
         (
-            await db.scalars(
-                select(AgentMessageAttachment)
-                .where(AgentMessageAttachment.message_id == message.id)
-                .order_by(AgentMessageAttachment.position)
-            )
+            await db.scalars(select(AgentMessageAttachment).where(AgentMessageAttachment.message_id == message.id).order_by(AgentMessageAttachment.position))
         ).all()
         if message is not None
         else []
@@ -152,7 +148,7 @@ async def _uploaded_artifacts(db: AsyncSession, owner_id: int, artifact_ids: lis
                 Artifact.is_deleted == 0,
                 (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
             )
-            .with_for_update()
+            .with_for_update(),
         )
     ).all()
     by_id = {item.id: item for item in items}
@@ -169,13 +165,9 @@ async def _ensure_idle(db: AsyncSession, session: AgentSession) -> None:
 
 
 @router.post("", summary="创建智能体会话")
-async def create_session(
-    agent_id: int, body: SessionCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def create_session(agent_id: int, body: SessionCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """为当前用户的已启用 Agent 创建独立检查点线程。"""
-    agent = await db.scalar(
-        select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True)
-    )
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True))
     if agent is None or not await can_use_agent(db, agent_id, actor.id):
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     if agent.is_deleted != 0 or not agent.enabled:
@@ -223,7 +215,7 @@ async def list_sessions(
             .where(*conditions)
             .order_by(AgentSession.create_time.desc(), AgentSession.id.desc())
             .offset((page - 1) * page_size)
-            .limit(page_size)
+            .limit(page_size),
         )
     ).all()
     result = SessionPageOut(items=[await _session_out(db, item) for item in items], total=total or 0, page=page, page_size=page_size)
@@ -231,18 +223,14 @@ async def list_sessions(
 
 
 @router.get("/{session_id}", summary="查询智能体会话")
-async def get_session(
-    agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def get_session(agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """返回当前用户拥有的会话、当前模型及执行线程 ID。"""
     session = await _session(db, agent_id, session_id, actor.id)
     return api_response(data=(await _session_out(db, session)).model_dump(mode="json"), datetime_format=False)
 
 
 @router.get("/{session_id}/models", summary="查询会话可切换模型")
-async def list_session_models(
-    agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_session_models(agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """向会话所有者展示已验证文本模型和当前配置下的不可选原因。"""
     await _session(db, agent_id, session_id, actor.id)
     agent = await _agent(db, agent_id, actor.id)
@@ -261,9 +249,7 @@ async def update_session(
     """按版本更新空闲会话；切换模型创建新线程，保留同一会话的历史。"""
     session = await _session(db, agent_id, session_id, actor.id)
     # 与提交接口按同一顺序锁定 Agent，避免切换检查后又插入旧线程运行。
-    agent = await db.scalar(
-        select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True)
-    )
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True))
     if agent is None or not await can_use_agent(db, agent_id, actor.id):
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     changes = body.model_dump(exclude_unset=True, exclude={"expected_version"})
@@ -292,7 +278,7 @@ async def update_session(
                 AgentSession.version == body.expected_version,
             )
             .values(**changes, version=AgentSession.version + 1)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             await db.rollback()
@@ -304,9 +290,7 @@ async def update_session(
 
 
 @router.delete("/{session_id}", summary="删除智能体会话")
-async def delete_session(
-    agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def delete_session(agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """无未结束 Run 时逻辑删除会话，保留历史 Run 以供审计。"""
     session = await _session(db, agent_id, session_id, actor.id)
     await _ensure_idle(db, session)
@@ -319,7 +303,7 @@ async def delete_session(
             AgentSession.version == session.version,
         )
         .values(is_deleted=1, archived=True, version=AgentSession.version + 1)
-        .execution_options(synchronize_session=False)
+        .execution_options(synchronize_session=False),
     )
     if result.rowcount != 1:
         await db.rollback()
@@ -340,13 +324,9 @@ async def _check_context_files(artifacts: list[Artifact], context_ids: set[str],
     if len(images) > 2:
         raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
     if sum(item.byte_size for item in context if item.media_type in {"text/plain", "text/markdown"}) > context_max_bytes():
-        raise CustomException(
-            status_code=413, custom_code=10005, detail=f"文本上下文附件超过 {context_max_bytes() / (1024 * 1024):g} MiB 限制"
-        )
+        raise CustomException(status_code=413, custom_code=10005, detail=f"文本上下文附件超过 {context_max_bytes() / (1024 * 1024):g} MiB 限制")
     try:
-        text = await asyncio.wait_for(
-            build_attachment_context([item for item in context if item.media_type in CONTEXT_MEDIA_TYPES]), timeout=10
-        )
+        text = await asyncio.wait_for(build_attachment_context([item for item in context if item.media_type in CONTEXT_MEDIA_TYPES]), timeout=10)
     except (ValueError, TimeoutError) as exc:
         raise CustomException(
             status_code=400,
@@ -378,7 +358,7 @@ async def check_attachments(
             "valid": True,
             "context_bytes": size,
             "max_context_bytes": context_max_bytes(),
-        }
+        },
     )
 
 
@@ -399,9 +379,7 @@ async def submit_session_run(
     existing = await _matching_retry(db, owner_id, session_id, body)
     if existing is not None:
         return _run_response(existing)
-    agent = await db.scalar(
-        select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True)
-    )
+    agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True))
     if agent is None or not await can_use_agent(db, agent_id, owner_id):
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
     if session.archived or agent.is_deleted != 0 or not agent.enabled:
@@ -423,15 +401,11 @@ async def submit_session_run(
             AgentRun.state == RunState.COMPLETED,
         )
         .order_by(AgentRun.create_time.desc(), AgentRun.id.desc())
-        .limit(1)
+        .limit(1),
     )
     prior_runs = (
         (
-            await db.scalars(
-                select(AgentRun).where(
-                    AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.thread_id == session.thread_id
-                )
-            )
+            await db.scalars(select(AgentRun).where(AgentRun.session_id == session_id, AgentRun.owner_id == owner_id, AgentRun.thread_id == session.thread_id))
         ).all()
         if previous_model_id is None
         else []
@@ -473,7 +447,7 @@ async def submit_session_run(
                 AgentSession.version == session.version,
             )
             .values(version=AgentSession.version + 1, thread_id=thread_id, model_id=model.id)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if claim.rowcount != 1:
             raise RunConflictError("会话已变化")
@@ -482,9 +456,7 @@ async def submit_session_run(
         await snapshot_run_tools(db, run.id, agent_id, owner_id)
         await snapshot_run_knowledge(db, run.id, agent_id, owner_id)
         if artifacts:
-            message_id = await db.scalar(
-                select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER)
-            )
+            message_id = await db.scalar(select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
             db.add_all(
                 [
                     AgentMessageAttachment(
@@ -497,7 +469,7 @@ async def submit_session_run(
                         included_in_context=item.id in context_ids,
                     )
                     for position, item in enumerate(artifacts)
-                ]
+                ],
             )
         await db.commit()
     except (IntegrityError, RunConflictError, ValueError):
@@ -524,11 +496,7 @@ async def list_session_runs(
     total = await db.scalar(select(func.count()).select_from(AgentRun).where(*conditions))
     runs = (
         await db.scalars(
-            select(AgentRun)
-            .where(*conditions)
-            .order_by(AgentRun.create_time.desc(), AgentRun.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+            select(AgentRun).where(*conditions).order_by(AgentRun.create_time.desc(), AgentRun.id.desc()).offset((page - 1) * page_size).limit(page_size),
         )
     ).all()
     result = SessionRunPageOut(items=[RunOut.model_validate(run) for run in runs], total=total or 0, page=page, page_size=page_size)
@@ -567,7 +535,7 @@ async def list_session_messages(
         select(AgentRun.id, AgentRun.model_id, ModelCatalog.display_name, ProviderConnection.name)
         .outerjoin(ModelCatalog, ModelCatalog.id == AgentRun.model_id)
         .outerjoin(ProviderConnection, ProviderConnection.id == ModelCatalog.provider_id)
-        .where(AgentRun.id.in_({item.run_id for item in messages}))
+        .where(AgentRun.id.in_({item.run_id for item in messages})),
     )
     model_labels = {row.id: row for row in model_rows}
     result = []

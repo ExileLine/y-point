@@ -26,9 +26,7 @@ def upgrade() -> None:
     artifacts = sa.table("yp_artifact", sa.column("id"), sa.column("filename"))
     connection = op.get_bind()
     records = connection.execute(
-        sa.select(templates.c.id, artifacts.c.filename).select_from(
-            templates.outerjoin(artifacts, templates.c.artifact_id == artifacts.c.id)
-        )
+        sa.select(templates.c.id, artifacts.c.filename).select_from(templates.outerjoin(artifacts, templates.c.artifact_id == artifacts.c.id)),
     ).all()
     for identifier, filename in records:
         key = unicodedata.normalize("NFC", filename or "report-template.docx").casefold()
@@ -44,7 +42,7 @@ def downgrade() -> None:
     connection = op.get_bind()
     templates = sa.table("yp_skill_template", sa.column("skill_id"), sa.column("skill_version"))
     multiple = connection.execute(
-        sa.select(templates.c.skill_id).group_by(templates.c.skill_id, templates.c.skill_version).having(sa.func.count() > 1).limit(1)
+        sa.select(templates.c.skill_id).group_by(templates.c.skill_id, templates.c.skill_version).having(sa.func.count() > 1).limit(1),
     ).first()
     if multiple is not None:
         raise RuntimeError("存在多模板 Skill 版本，不能无损降级为 044；请保留 045 或恢复升级前备份")

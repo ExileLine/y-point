@@ -41,11 +41,9 @@ def test_initial_migration(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True
-    )
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True)
     subprocess.run([sys.executable, "-m", "alembic", "check"], cwd=PROJECT_ROOT, env=env, check=True, capture_output=True, text=True)
     with sqlite3.connect(database) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}

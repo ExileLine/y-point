@@ -103,6 +103,14 @@ class ArtifactState(StrEnum):
     DELETED = "deleted"
 
 
+class ArtifactCleanupResult(StrEnum):
+    """开发文件清理的逐项物理删除结果。"""
+
+    DELETED = "deleted"
+    ALREADY_MISSING = "already_missing"
+    FAILED = "failed"
+
+
 class ArtifactPreviewKind(StrEnum):
     """私有文件内容预览的展示方式。"""
 

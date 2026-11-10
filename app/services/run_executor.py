@@ -117,8 +117,8 @@ def _summary_messages_without_images(messages: list[BaseMessage]) -> list[BaseMe
                 message.model_copy(
                     update={
                         "content": "\n".join(text_parts),
-                    }
-                )
+                    },
+                ),
             )
         else:
             result.append(message)
@@ -148,9 +148,7 @@ class SummaryModelError(Exception):
 def _reported_model_usage(response: ModelResponse | ExtendedModelResponse | AIMessage) -> tuple[int | None, int | None, int | None]:
     """分别汇总本次响应的总量和可计价的输入、输出 Token。"""
     messages = (
-        [response]
-        if isinstance(response, AIMessage)
-        else (response.model_response.result if isinstance(response, ExtendedModelResponse) else response.result)
+        [response] if isinstance(response, AIMessage) else (response.model_response.result if isinstance(response, ExtendedModelResponse) else response.result)
     )
     total = input_total = output_total = 0
     found = False
@@ -167,9 +165,7 @@ def _reported_model_usage(response: ModelResponse | ExtendedModelResponse | AIMe
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
         combined = (
-            input_tokens + output_tokens
-            if type(input_tokens) is int and input_tokens >= 0 and type(output_tokens) is int and output_tokens >= 0
-            else None
+            input_tokens + output_tokens if type(input_tokens) is int and input_tokens >= 0 and type(output_tokens) is int and output_tokens >= 0 else None
         )
         if combined is not None:
             input_total += input_tokens
@@ -266,18 +262,14 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.run_id = run_id
         self.lease_token = lease_token
         self.tool_timeout_seconds = tool_timeout_seconds
-        self.model_timeout_seconds = (
-            get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
-        )
+        self.model_timeout_seconds = get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
         self.model_usage = model_usage if model_usage is not None else []
         self.max_total_tokens = max_total_tokens
         self.max_estimated_cost = max_estimated_cost
         self.cost_input_price = cost_input_price
         self.cost_output_price = cost_output_price
         self.skill_paths = skill_paths
-        self.tool_aliases = {
-            name: target for name, target in (tool_aliases or {}).items() if target in self.allowed_names and name not in self.allowed_names
-        }
+        self.tool_aliases = {name: target for name, target in (tool_aliases or {}).items() if target in self.allowed_names and name not in self.allowed_names}
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
         """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
@@ -305,7 +297,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 model_response.result[index] = message.model_copy(
                     update={
                         "tool_calls": calls,
-                    }
+                    },
                 )
         await _account_model_response(
             response,
@@ -322,9 +314,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 _check_model_output(message, self.model_usage)
         return response
 
-    async def awrap_tool_call(
-        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
-    ) -> ToolMessage | Command:
+    async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
         """在工具实际执行前领取跨进程名额，审批等待不占用执行资源。"""
         async with self.sessions() as db:
             run = await db.get(AgentRun, self.run_id)
@@ -339,7 +329,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 CURRENT_TOOL_CALL_ID.reset(token)
 
     async def _execute_authorized_tool_call(
-        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         """授权后记录工具开始和结束事件，外部写结果不明时禁止自动重放。"""
         tool_name = request.tool_call["name"]
@@ -373,9 +365,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     raise PermissionError("Skill 文件授权已失效")
                 skill_name = path.split("/")[2]
                 fixed_skill = await db.scalar(
-                    select(RunSkill)
-                    .join(Skill, Skill.id == RunSkill.skill_id)
-                    .where(RunSkill.run_id == self.run_id, Skill.name == skill_name)
+                    select(RunSkill).join(Skill, Skill.id == RunSkill.skill_id).where(RunSkill.run_id == self.run_id, Skill.name == skill_name),
                 )
                 event_name = f"skill:{skill_name}@v{fixed_skill.skill_version}"
                 if path.endswith("/SKILL.md"):
@@ -392,13 +382,11 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 call_timeout = effective_tool_timeout(self.tool_timeout_seconds, kind=item.kind)
                 invocation_id = CURRENT_TOOL_CALL_ID.get()
                 invocation_effect = version.effect
-                existing = await db.scalar(
-                    select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
-                )
+                existing = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
                 if existing is not None:
                     raise PermissionError("该工具调用已有执行记录，禁止自动重放")
                 arguments_hash = hashlib.sha256(
-                    json.dumps(request.tool_call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str).encode()
+                    json.dumps(request.tool_call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str).encode(),
                 ).hexdigest()
                 db.add(
                     ToolInvocation(
@@ -410,7 +398,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                         arguments_hash=arguments_hash,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
             await reserve_tool_call(db, self.run_id, self.lease_token)
             await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
@@ -419,13 +407,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         except BaseException as exc:
             if invocation_id is not None:
                 async with self.sessions.begin() as db:
-                    invocation = await db.scalar(
-                        select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
-                    )
+                    invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
                     if invocation is not None:
-                        invocation.state = (
-                            ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED
-                        )
+                        invocation.state = ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED
                         invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_interrupted"
             with suppress(RunConflictError):
                 async with self.sessions.begin() as db:
@@ -433,9 +417,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
-        event_type = (
-            RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
-        )
+        event_type = RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
         async with self.sessions.begin() as db:
             await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
             if activated_skill_id is not None and event_type == RunEventType.TOOL_COMPLETED:
@@ -443,25 +425,15 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
 
                 await activate_skill_report(db, self.run_id, activated_skill_id)
             if invocation_id is not None:
-                invocation = await db.scalar(
-                    select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
-                )
+                invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
                 argument_error = event_type == RunEventType.TOOL_FAILED and is_tool_argument_error(result.content)
                 invocation.state = (
-                    (
-                        ToolInvocationState.UNKNOWN
-                        if invocation_effect == ToolEffect.WRITE and not argument_error
-                        else ToolInvocationState.FAILED
-                    )
+                    (ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE and not argument_error else ToolInvocationState.FAILED)
                     if event_type == RunEventType.TOOL_FAILED
                     else ToolInvocationState.COMPLETED
                 )
                 invocation.failure_code = (
-                    ToolFeedbackFailure.INVALID_ARGUMENTS
-                    if argument_error
-                    else "execution_error"
-                    if event_type == RunEventType.TOOL_FAILED
-                    else None
+                    ToolFeedbackFailure.INVALID_ARGUMENTS if argument_error else "execution_error" if event_type == RunEventType.TOOL_FAILED else None
                 )
         return result
 
@@ -511,7 +483,7 @@ def _record_runtime_call(
             output_tokens=output_tokens,
             estimated_cost=estimated_cost,
             price_currency=currency if estimated_cost is not None else None,
-        )
+        ),
     )
 
 
@@ -595,7 +567,7 @@ async def _has_required_artifacts(db: AsyncSession, run_id: str, owner_id: int, 
                 Artifact.is_deleted == 0,
                 Artifact.status == 1,
                 Artifact.publication_key.like("model-%"),
-            )
+            ),
         )
     ).all()
     return bool(filenames) and suffixes <= {Path(filename).suffix.lower() for filename in filenames}
@@ -641,12 +613,7 @@ async def _watch_run(
                     should_cancel = True
                 else:
                     user = await db.get(Admin, run.owner_id)
-                    if (
-                        user is None
-                        or user.status != 1
-                        or user.is_deleted != 0
-                        or not await can_access_run_agent(db, run.agent_id, run.owner_id)
-                    ):
+                    if user is None or user.status != 1 or user.is_deleted != 0 or not await can_access_run_agent(db, run.agent_id, run.owner_id):
                         await request_cancel(db, run_id, run.owner_id)
                         should_cancel = True
                     else:
@@ -712,7 +679,7 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
                 AgentRunEvent.run_id == failed_run.id,
                 AgentRunEvent.event_type.in_((RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED)),
             )
-            .order_by(AgentRunEvent.sequence)
+            .order_by(AgentRunEvent.sequence),
         )
     ).all()
     started: dict[str, str] = {}
@@ -758,9 +725,7 @@ async def execute_text_run(
     if resume and resolve_tools is None:
         raise ValueError("恢复审批运行必须重新解析可用工具")
     async with sessions.begin() as db:
-        run = await (
-            resume_approved_run(db, run_id, lease_seconds=lease_seconds) if resume else claim_run(db, run_id, lease_seconds=lease_seconds)
-        )
+        run = await (resume_approved_run(db, run_id, lease_seconds=lease_seconds) if resume else claim_run(db, run_id, lease_seconds=lease_seconds))
         lease_token = run.lease_token
         thread_id = run.thread_id
         user = await db.get(Admin, run.owner_id)
@@ -772,9 +737,7 @@ async def execute_text_run(
             skill_files = await load_run_skill_files(db, run_id, run.owner_id)
         except Exception:
             return await fail_run(db, run_id, lease_token, "skill_access_revoked")
-        input_text = await db.scalar(
-            select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.USER)
-        )
+        input_text = await db.scalar(select(AgentRunMessage.content).where(AgentRunMessage.run_id == run_id, AgentRunMessage.role == MessageRole.USER))
         if input_text is None:
             return await fail_run(db, run_id, lease_token, "runtime_error")
         from app.services.skill_reports import required_report_delivered, required_report_skill_ids
@@ -786,12 +749,8 @@ async def execute_text_run(
         image_blocks: list[dict] = []
         if not resume:
             try:
-                attachment_context = await asyncio.wait_for(
-                    load_model_attachment_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2)
-                )
-                image_blocks = await asyncio.wait_for(
-                    load_model_image_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2)
-                )
+                attachment_context = await asyncio.wait_for(load_model_attachment_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2))
+                image_blocks = await asyncio.wait_for(load_model_image_context(db, run_id, run.owner_id), timeout=min(10, lease_seconds / 2))
             except (AttachmentContextUnavailable, TimeoutError):
                 return await fail_run(db, run_id, lease_token, "attachment_unavailable")
             if attachment_context is not None:
@@ -822,11 +781,7 @@ async def execute_text_run(
         skill_files = {path: content + catalog if path.endswith("/SKILL.md") else content for path, content in skill_files.items()}
         if resume and not tools:
             return await fail_run(db, run_id, lease_token, "runtime_error")
-        approval = (
-            await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id))
-            if resume
-            else None
-        )
+        approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id)) if resume else None
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
         if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
             return await fail_run(db, run_id, lease_token, "attachment_unavailable")
@@ -916,7 +871,7 @@ async def execute_text_run(
                             aliases,
                             model_timeout_seconds=run.model_timeout_seconds,
                             model_usage=model_usage,
-                        )
+                        ),
                     ],
                     summarizer=summarize_history,
                     skill_files=skill_files,
@@ -931,8 +886,7 @@ async def execute_text_run(
                     .where(
                         AgentRun.thread_id == thread_id,
                         AgentRun.owner_id == run.owner_id,
-                        (AgentRun.state == RunState.COMPLETED)
-                        | (AgentRun.state == RunState.FAILED) & (AgentRun.failure_code == "artifact_required"),
+                        (AgentRun.state == RunState.COMPLETED) | (AgentRun.state == RunState.FAILED) & (AgentRun.failure_code == "artifact_required"),
                         AgentRun.checkpoint_id.is_not(None),
                     )
                     .order_by(AgentRun.update_time.desc(), AgentRun.id.desc())
@@ -998,7 +952,7 @@ async def execute_text_run(
                             }
                             for _ in actions
                         ],
-                    }
+                    },
                 )
                 if resume
                 else {
@@ -1025,15 +979,11 @@ async def execute_text_run(
                         sessions,
                         run_id,
                         lease_token,
-                        publish_text=(
-                            run.max_total_tokens is None and run.max_estimated_cost is None and (required_artifact_suffixes is None)
-                        ),
+                        publish_text=(run.max_total_tokens is None and run.max_estimated_cost is None and (required_artifact_suffixes is None)),
                         check_skill_reports=any(tool.name == "render_skill_document" for tool in tools),
-                    )
+                    ),
                 )
-                watcher = asyncio.create_task(
-                    _watch_run(sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds)
-                )
+                watcher = asyncio.create_task(_watch_run(sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds))
                 try:
                     await asyncio.wait_for(task, timeout=max(0, deadline - time.monotonic()) if deadline is not None else None)
                 finally:
@@ -1066,9 +1016,10 @@ async def execute_text_run(
                     required_artifact_suffixes = (required_artifact_suffixes or frozenset()) | {".docx"}
                 if attempt == 0 and not resume and required_artifact_suffixes is not None:
                     async with sessions() as db:
-                        delivered = await _has_required_artifacts(
-                            db, run_id, run.owner_id, required_artifact_suffixes
-                        ) and await required_report_delivered(db, run_id)
+                        delivered = await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes) and await required_report_delivered(
+                            db,
+                            run_id,
+                        )
                         current = await db.get(AgentRun, run_id)
                     can_retry = (
                         not delivered
@@ -1088,13 +1039,9 @@ async def execute_text_run(
                                     "content": (
                                         "系统内部纠正提示（不是新的用户消息）：上一轮尚未交付满足本轮要求的文件。"
                                         f"请调用文件生成工具交付 {formats} 文件，再给出最终回复；代码块不能代替文件。"
-                                        + (
-                                            f"必须调用 render_skill_document，逐一交付 Skill {required_report_ids} 的模板报告。"
-                                            if required_report_ids
-                                            else ""
-                                        )
+                                        + (f"必须调用 render_skill_document，逐一交付 Skill {required_report_ids} 的模板报告。" if required_report_ids else "")
                                     ),
-                                }
+                                },
                             ],
                         }
                         runtime = build_runtime()
@@ -1120,9 +1067,10 @@ async def execute_text_run(
                     _record_runtime_call(db, run, catalog_model, started, failure="cancelled", messages=new_messages)
                     return result
                 if required_artifact_suffixes is not None:
-                    if not await _has_required_artifacts(
-                        db, run_id, run.owner_id, required_artifact_suffixes
-                    ) or not await required_report_delivered(db, run_id):
+                    if not await _has_required_artifacts(db, run_id, run.owner_id, required_artifact_suffixes) or not await required_report_delivered(
+                        db,
+                        run_id,
+                    ):
                         result = await fail_run(db, run_id, lease_token, "artifact_required", checkpoint_id=checkpoint_id)
                         _record_runtime_call(db, run, catalog_model, started, failure="artifact_required", messages=new_messages)
                         return result
@@ -1161,9 +1109,7 @@ async def execute_text_run(
             started=started,
         )
     except SummaryModelError:
-        return await _finish_interrupted(
-            sessions, run_id, lease_token, RunModelFailureReason.SUMMARY, catalog_model=catalog_model, started=started
-        )
+        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.SUMMARY, catalog_model=catalog_model, started=started)
     except TokenBudgetExceeded:
         return await _finish_interrupted(
             sessions,
@@ -1230,9 +1176,7 @@ async def execute_text_run(
     except LeaseMonitorError:
         return await _finish_interrupted(sessions, run_id, lease_token, "lease_monitor_error", catalog_model=catalog_model, started=started)
     except (OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError):
-        return await _finish_interrupted(
-            sessions, run_id, lease_token, RunTimeoutReason.PROVIDER, catalog_model=catalog_model, started=started
-        )
+        return await _finish_interrupted(sessions, run_id, lease_token, RunTimeoutReason.PROVIDER, catalog_model=catalog_model, started=started)
     except ModelExecutionTimeout:
         return await _finish_interrupted(
             sessions,
@@ -1243,9 +1187,7 @@ async def execute_text_run(
             started=started,
         )
     except TimeoutError:
-        return await _finish_interrupted(
-            sessions, run_id, lease_token, RunTimeoutReason.EXECUTION, catalog_model=catalog_model, started=started
-        )
+        return await _finish_interrupted(sessions, run_id, lease_token, RunTimeoutReason.EXECUTION, catalog_model=catalog_model, started=started)
     except asyncio.CancelledError:
         async with sessions() as db:
             run = await db.get(AgentRun, run_id)
@@ -1264,6 +1206,4 @@ async def execute_text_run(
                 return result
             return run
     except Exception:  # noqa: BLE001 - 外部模型和检查点异常统一归类，不保存原始异常信息。
-        return await _finish_interrupted(
-            sessions, run_id, lease_token, RunModelFailureReason.UPSTREAM, catalog_model=catalog_model, started=started
-        )
+        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.UPSTREAM, catalog_model=catalog_model, started=started)

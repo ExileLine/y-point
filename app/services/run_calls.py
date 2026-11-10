@@ -39,7 +39,7 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                 AgentRunEvent.event_type.in_(TOOL_EVENTS),
                 AgentRunEvent.tool_call_id.is_not(None),
             )
-            .order_by(AgentRunEvent.run_id, AgentRunEvent.sequence)
+            .order_by(AgentRunEvent.run_id, AgentRunEvent.sequence),
         )
     ).all()
     knowledge_runs = {event.run_id for event, _ in rows if event.tool_name == "search_knowledge_base"}
@@ -53,7 +53,7 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                     and_(KnowledgeBase.id == RunKnowledgeBase.knowledge_base_id, knowledge_access(owner_id)),
                 )
                 .where(RunKnowledgeBase.run_id.in_(knowledge_runs), RunKnowledgeBase.index_id.is_not(None))
-                .order_by(RunKnowledgeBase.id)
+                .order_by(RunKnowledgeBase.id),
             )
         ).all()
         for run_id, name in targets:
@@ -66,14 +66,12 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
             .join(SkillScript, and_(SkillScript.tool_id == RunTool.tool_id, SkillScript.package_hash == RunTool.content_hash))
             .join(Skill, Skill.id == SkillScript.skill_id)
             .join(RunSkill, and_(RunSkill.run_id == RunTool.run_id, RunSkill.skill_id == Skill.id))
-            .where(RunTool.run_id.in_(run_ids))
+            .where(RunTool.run_id.in_(run_ids)),
         )
     ).all()
     for fixed, tool, binding, skill, version in managed:
         visible = not skill.is_deleted and skill.enabled and (skill.owner_id == owner_id or skill.visibility == Visibility.PUBLIC)
-        script_names[(fixed.run_id, model_tool_name(tool))] = (
-            f"{skill.name}@v{version} / {binding.path}" if visible else "Skill 脚本（已不可用）"
-        )
+        script_names[(fixed.run_id, model_tool_name(tool))] = f"{skill.name}@v{version} / {binding.path}" if visible else "Skill 脚本（已不可用）"
     grouped: dict[str, dict[str, RunCallOut]] = {}
     for event, run_state in rows:
         calls = grouped.setdefault(event.run_id, {})

@@ -170,9 +170,7 @@ async def load_run_skill_files(db: AsyncSession, run_id: str, owner_id: int) -> 
     by_id = {item.id: item for item in skills}
     files = {}
     for row in rows:
-        version = await db.scalar(
-            select(SkillVersion).where(SkillVersion.skill_id == row.skill_id, SkillVersion.version == row.skill_version)
-        )
+        version = await db.scalar(select(SkillVersion).where(SkillVersion.skill_id == row.skill_id, SkillVersion.version == row.skill_version))
         if version is None:
             raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本不可用")
         for path, content in version.files.items():
@@ -188,7 +186,7 @@ async def load_run_skill_files(db: AsyncSession, run_id: str, owner_id: int) -> 
                                 "template_name": template.template_key,
                                 "template_key": template.template_key,
                                 "fields_schema": template.fields_schema,
-                            }
+                            },
                         )
                     content += (
                         f"\n\n## 本 Skill 的固定产物模板（Skill ID {row.skill_id}，版本 {row.skill_version}）\n"

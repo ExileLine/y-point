@@ -19,11 +19,7 @@ depends_on = None
 def upgrade() -> None:
     """保留历史版本摘要，历史外部写调用默认禁止自动重放。"""
     with op.batch_alter_table("yp_user_tool") as batch:
-        batch.add_column(
-            sa.Column(
-                "credentials_revoked_through", sa.Integer(), nullable=False, server_default="0", comment="已撤销凭据的最大 Tool 版本号"
-            )
-        )
+        batch.add_column(sa.Column("credentials_revoked_through", sa.Integer(), nullable=False, server_default="0", comment="已撤销凭据的最大 Tool 版本号"))
     with op.batch_alter_table("yp_user_tool") as batch:
         batch.alter_column("credentials_revoked_through", existing_type=sa.Integer(), server_default=None)
     with op.batch_alter_table("yp_user_tool_version") as batch:
@@ -31,9 +27,7 @@ def upgrade() -> None:
         batch.add_column(sa.Column("idempotency_key_field", sa.String(128), nullable=True, comment="远端幂等键参数名"))
     with op.batch_alter_table("yp_user_tool_version") as batch:
         batch.add_column(
-            sa.Column(
-                "write_contract_verified", sa.Boolean(), nullable=False, server_default=sa.false(), comment="外部写恢复契约是否经管理员验收"
-            )
+            sa.Column("write_contract_verified", sa.Boolean(), nullable=False, server_default=sa.false(), comment="外部写恢复契约是否经管理员验收"),
         )
         batch.add_column(sa.Column("write_contract_evidence_hash", sa.String(64), nullable=True, comment="外部写恢复验收证据引用摘要"))
     with op.batch_alter_table("yp_user_tool_version") as batch:

@@ -133,7 +133,9 @@ async def embed_texts(
     owned = client is None
     if owned:
         client = httpx.AsyncClient(
-            timeout=min(provider.timeout_seconds, get_config().KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS), trust_env=False, follow_redirects=False
+            timeout=min(provider.timeout_seconds, get_config().KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS),
+            trust_env=False,
+            follow_redirects=False,
         )
     try:
         async with asyncio.timeout(min(provider.timeout_seconds, get_config().KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS)):

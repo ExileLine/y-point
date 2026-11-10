@@ -65,21 +65,15 @@ async def exercise_native_knowledge(client, sessions, owner, outsider):
             native = await vector_candidates(db, [hits[0]["index_id"]], [1.0, 0.0], 3, 0.7, KnowledgeVectorBackend.PGVECTOR)
             assert native == exact
     removed = await client.delete(
-        f"/api/v1/knowledge-bases/{kb['id']}/documents/{uploaded['document']['id']}?expected_revision={kb['revision']}", headers=owner
+        f"/api/v1/knowledge-bases/{kb['id']}/documents/{uploaded['document']['id']}?expected_revision={kb['revision']}",
+        headers=owner,
     )
     assert removed.status_code == 200, removed.text
     await _drain(sessions)
     assert await prune_deleted_knowledge_blobs(sessions) == 1
     async with sessions() as db:
-        assert (
-            await db.scalar(
-                select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.document_id == uploaded["document"]["id"])
-            )
-            == 0
-        )
-        version = await db.scalar(
-            select(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.document_id == uploaded["document"]["id"])
-        )
+        assert await db.scalar(select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.document_id == uploaded["document"]["id"])) == 0
+        version = await db.scalar(select(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.document_id == uploaded["document"]["id"]))
         assert version.extracted_text is None and version.blocks is None
 
 
@@ -102,7 +96,7 @@ def test_real_embedding_fixed_set_and_agent_evidence(tmp_path, monkeypatch):
                         external_id=os.environ.get("YPOINT_M6_EMBEDDING_MODEL", "embeddinggemma"),
                         embedding_dimensions=None,
                         verified_capabilities=[],
-                    )
+                    ),
                 )
                 await db.execute(update(ProviderConnection).where(ProviderConnection.id == 1).values(timeout_seconds=60))
             probe = await client.post("/api/v1/models/2/embedding-test", headers=alice)
@@ -120,9 +114,7 @@ def test_real_embedding_fixed_set_and_agent_evidence(tmp_path, monkeypatch):
             await _drain(sessions)
             for case in EVALUATION["questions"]:
                 result = await _search(client, alice, kb["id"], case["query"], top_k=3)
-                assert any(
-                    hit["filename"] == case["expected_document"] and case["expected_text"] in hit["content"] for hit in result["hits"]
-                ), (case, result)
+                assert any(hit["filename"] == case["expected_document"] and case["expected_text"] in hit["content"] for hit in result["hits"]), (case, result)
             for query in EVALUATION["unanswerable"]:
                 assert (await _search(client, alice, kb["id"], query))["no_answer"], query
             created = await client.post(
@@ -154,7 +146,7 @@ def test_real_embedding_fixed_set_and_agent_evidence(tmp_path, monkeypatch):
                         "kb:",
                         "RED-PANDA-7391",
                     ),
-                ]
+                ],
             ):
                 session = await client.post(
                     f"/api/v1/agents/{agent_id}/sessions",
@@ -190,9 +182,7 @@ def test_real_embedding_fixed_set_and_agent_evidence(tmp_path, monkeypatch):
                     assert audits and expected in answer and forbidden not in answer, answer
                     assert all(ref["knowledge_base_id"] == kb["id"] for audit in audits for ref in audit.references)
                     if number == 2:
-                        assert any(ref["document_id"] == document_ids["不可信说明.md"] for audit in audits for ref in audit.references), (
-                            answer
-                        )
+                        assert any(ref["document_id"] == document_ids["不可信说明.md"] for audit in audits for ref in audit.references), answer
                     if number == 0:
                         assert any(ref["index_id"] for audit in audits for ref in audit.references) and "kb:" in answer, answer
             print(

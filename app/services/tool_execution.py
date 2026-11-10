@@ -80,7 +80,7 @@ async def acquire_tool_slot(db: AsyncSession, owner_id: int, run_id: str | None,
             expires_at=now + timedelta(seconds=timeout_seconds + 30),
             is_deleted=0,
             status=1,
-        )
+        ),
     )
     await db.flush()
     return token
@@ -93,9 +93,7 @@ async def release_tool_slot(sessions: async_sessionmaker[AsyncSession], token: s
 
 
 @asynccontextmanager
-async def tool_execution_slot(
-    sessions: async_sessionmaker[AsyncSession], owner_id: int, run_id: str | None, kind: ToolLeaseKind, timeout_seconds: int
-):
+async def tool_execution_slot(sessions: async_sessionmaker[AsyncSession], owner_id: int, run_id: str | None, kind: ToolLeaseKind, timeout_seconds: int):
     """在成功、异常及取消路径释放名额，强杀后依靠持久化到期时间回收。"""
     async with sessions.begin() as db:
         token = await acquire_tool_slot(db, owner_id, run_id, kind, timeout_seconds)

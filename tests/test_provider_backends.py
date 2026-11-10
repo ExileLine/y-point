@@ -52,7 +52,7 @@ async def exercise_http_backends() -> None:
                         "message": {
                             "content": "OK",
                         },
-                    }
+                    },
                 ],
                 "usage": {
                     "prompt_tokens": 8,
@@ -98,7 +98,7 @@ async def exercise_http_backends() -> None:
                             "name": "models/gemini-2.5-flash-lite",
                             "displayName": "Gemini Flash Lite",
                             "supportedGenerationMethods": ["generateContent"],
-                        }
+                        },
                     ],
                 },
             )
@@ -109,7 +109,7 @@ async def exercise_http_backends() -> None:
                     {
                         "name": "models/embedding-001",
                         "supportedGenerationMethods": ["embedContent"],
-                    }
+                    },
                 ],
                 "nextPageToken": "page-2",
             },
@@ -136,10 +136,10 @@ async def exercise_http_backends() -> None:
                             "parts": [
                                 {
                                     "text": "OK",
-                                }
+                                },
                             ],
                         },
-                    }
+                    },
                 ],
                 "usageMetadata": {
                     "promptTokenCount": 8,
@@ -162,7 +162,7 @@ async def exercise_http_backends() -> None:
                         "content": {
                             "parts": [],
                         },
-                    }
+                    },
                 ],
             },
         )
@@ -199,7 +199,7 @@ class FakeBedrockClient:
                 {
                     "modelId": "amazon.nova-micro-v1:0",
                     "modelName": "Nova Micro",
-                }
+                },
             ],
         }
 
@@ -210,7 +210,7 @@ class FakeBedrockClient:
         assert kwargs["messages"][0]["content"] == [
             {
                 "text": "Hi",
-            }
+            },
         ]
         return {
             "ResponseMetadata": {
@@ -221,7 +221,7 @@ class FakeBedrockClient:
                     "content": [
                         {
                             "text": "OK",
-                        }
+                        },
                     ],
                 },
             },
@@ -358,7 +358,7 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
             "region_name": "us-east-1",
             "timeout": 5,
             "max_retries": 0,
-        }
+        },
     ]
     build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
     assert calls[-1]["temperature"] == 0.25 and calls[-1]["max_tokens"] == 2048
@@ -371,9 +371,7 @@ def test_explicit_thinking_mode_reaches_compatible_request(monkeypatch: pytest.M
 
     async def exercise() -> None:
         """模拟上游只对显式禁用思考的请求生成可见正文，不调用真实模型。"""
-        provider = ProviderConnection(
-            id=1, kind="openai_compatible", base_url="https://example.invalid/v1", timeout_seconds=5, status=1, is_deleted=0
-        )
+        provider = ProviderConnection(id=1, kind="openai_compatible", base_url="https://example.invalid/v1", timeout_seconds=5, status=1, is_deleted=0)
         model = ModelCatalog(id=1, provider_id=1, external_id="compatible-model", status=1, is_deleted=0)
         seen = []
 
@@ -401,7 +399,7 @@ def test_explicit_thinking_mode_reaches_compatible_request(monkeypatch: pytest.M
                                 "role": "assistant",
                                 "content": "OK",
                             },
-                        }
+                        },
                     ],
                     "usage": {
                         "prompt_tokens": 19,
@@ -454,9 +452,9 @@ def test_stream_chunk_timeout_follows_provider_budget(monkeypatch: pytest.Monkey
                                     "index": 0,
                                     "delta": delta,
                                     "finish_reason": finish_reason,
-                                }
+                                },
                             ],
-                        }
+                        },
                     )
                     + "\n\n"
                 ).encode()
@@ -465,7 +463,7 @@ def test_stream_chunk_timeout_follows_provider_budget(monkeypatch: pytest.Monkey
                 {
                     "role": "assistant",
                     "content": "",
-                }
+                },
             )
             for _ in range(4):
                 await asyncio.sleep(0.02)
@@ -473,7 +471,7 @@ def test_stream_chunk_timeout_follows_provider_budget(monkeypatch: pytest.Monkey
             yield chunk(
                 {
                     "content": "OK",
-                }
+                },
             )
             yield chunk({}, "stop")
             yield b"data: [DONE]\n\n"

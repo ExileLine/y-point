@@ -75,11 +75,11 @@ async def _execute_dependency_run(sessions, tool_id: int, tmp_path: Path) -> Non
                         "name": "dependency_demo",
                         "args": {},
                         "id": "dependency-call",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="42"),
-        ]
+        ],
     )
     result = await execute_text_run(sessions, run.id, model, tmp_path / "checkpoints.db", resolve_tools=make_worker_tool_resolver(sessions))
     assert result.state == "completed", result.failure_code
@@ -95,9 +95,7 @@ def _wheel(root: Path, name: str, version: str, source: str, dependencies: list[
     files = {
         f"{distribution}.py": source.encode(),
         f"{info}/METADATA": (
-            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-            + "".join(f"Requires-Dist: {item}\n" for item in dependencies or [])
-            + "\n"
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n" + "".join(f"Requires-Dist: {item}\n" for item in dependencies or []) + "\n"
         ).encode(),
         f"{info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: y-point-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
     }
@@ -151,9 +149,7 @@ def sandbox_image() -> None:
         pytest.skip("Build Dockerfile.sandbox before running container integration tests")
 
 
-def test_dependency_api_offline_prepare_test_cache_and_versioning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox_image: None
-) -> None:
+def test_dependency_api_offline_prepare_test_cache_and_versioning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox_image: None) -> None:
     """贯通创建、禁网准备、依赖锁、试运行、发布、缓存复用和依赖变更。"""
     wheels = _offline_config(monkeypatch, tmp_path)
     _wheel(wheels, "yp-leaf", "2.0.0", "VALUE = 42\n")
@@ -171,7 +167,7 @@ def test_dependency_api_offline_prepare_test_cache_and_versioning(
                     [
                         Admin(id=1, username="env-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                         Admin(id=2, username="env-other", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    ]
+                    ],
                 )
 
             async def session_override():
@@ -326,16 +322,12 @@ def test_dependency_api_offline_prepare_test_cache_and_versioning(
                 assert json.loads(tested.json()["data"]["result"])["value"] == 90
                 async with sessions() as db:
                     old = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 1))
-                    current = await db.scalar(
-                        select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 3)
-                    )
+                    current = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 3))
                     assert old.environment_lock != current.environment_lock
                     environment = await require_script_environment(old)
                     assert json.loads(await run_script("python", payload["source_code"], {}, 10, environment=environment))["value"] == 42
                     with pytest.raises(ValueError, match="脚本执行失败"):
-                        await run_script(
-                            "python", "import socket; socket.create_connection(('1.1.1.1',80),timeout=1)", {}, 10, environment=environment
-                        )
+                        await run_script("python", "import socket; socket.create_connection(('1.1.1.1',80),timeout=1)", {}, 10, environment=environment)
                     (environment.site / "yp_demo.py").write_text("VALUE = 123", encoding="utf-8")
                     with pytest.raises(SandboxConfigurationError, match="校验失败"):
                         await require_script_environment(old)
@@ -366,9 +358,7 @@ def test_dependency_api_offline_prepare_test_cache_and_versioning(
                 assert repaired.json()["data"]["environment"]["state"] == "pending"
                 assert await prepare_next_tool_environment(sessions)
                 async with sessions() as db:
-                    previous = await db.scalar(
-                        select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 3)
-                    )
+                    previous = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 3))
                     fixed = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool_id, UserToolVersion.version == 4))
                     assert previous.environment_key == old_key
                     assert previous.environment_lock == old_lock
@@ -414,7 +404,7 @@ def test_dependency_job_lease_and_cancellation(tmp_path: Path, monkeypatch: pyte
                         visibility="private",
                         enabled=False,
                         current_version=1,
-                    )
+                    ),
                 )
                 db.add(
                     UserToolVersion(
@@ -428,7 +418,7 @@ def test_dependency_job_lease_and_cancellation(tmp_path: Path, monkeypatch: pyte
                         requirements=["yp-demo"],
                         environment_state="pending",
                         share_credentials=False,
-                    )
+                    ),
                 )
 
             async def blocked_build(*args, **kwargs):
@@ -445,8 +435,8 @@ def test_dependency_job_lease_and_cancellation(tmp_path: Path, monkeypatch: pyte
                             "Id": "sha256:" + "a" * 64,
                             "Architecture": "amd64",
                             "Os": "linux",
-                        }
-                    ]
+                        },
+                    ],
                 ).encode()
 
             monkeypatch.setattr(tool_environments, "_docker_output", image_metadata)
@@ -484,7 +474,7 @@ def test_environment_migration_preserves_existing_versions(tmp_path: Path) -> No
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
 
     def migrate(*arguments: str) -> None:
@@ -545,9 +535,7 @@ def test_package_proxy_rejects_unapproved_destinations(monkeypatch: pytest.Monke
         thread.join(timeout=3)
 
 
-def test_preparation_cancellation_removes_containers_and_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox_image: None
-) -> None:
+def test_preparation_cancellation_removes_containers_and_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox_image: None) -> None:
     """真实准备任务取消后应清理安装容器、包代理和内部 Docker 网络。"""
     config = get_config()
     monkeypatch.setattr(config, "SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS", 60)

@@ -37,9 +37,7 @@ class ArtifactSheet(BaseModel):
     """一个工作表的名称和按行排列的单元格。"""
 
     name: str = Field(min_length=1, max_length=31, description="工作表名称", examples=["销售统计"])
-    rows: list[list[str | int | float | bool | None]] = Field(
-        description="按行排列的单元格数据", examples=[[["月份", "金额"], ["十月", 100]]]
-    )
+    rows: list[list[str | int | float | bool | None]] = Field(description="按行排列的单元格数据", examples=[[["月份", "金额"], ["十月", 100]]])
 
 
 def _lines(content: str):
@@ -161,9 +159,7 @@ def render_document_artifact(filename: str, content: str) -> bytes:
             style = styles["heading" if kind == "heading" else "list" if kind in {"bullet", "number"} else "paragraph"]
             story.append(Paragraph(prefix + html.escape(value), style))
     output = io.BytesIO()
-    SimpleDocTemplate(output, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=48, title=Path(filename).stem).build(
-        story
-    )
+    SimpleDocTemplate(output, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=48, title=Path(filename).stem).build(story)
     data = output.getvalue()
     reader = PdfReader(io.BytesIO(data))
     if reader.is_encrypted or not reader.pages:

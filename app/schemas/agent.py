@@ -31,7 +31,9 @@ class AgentCreateIn(BaseModel):
     default_model_id: int = Field(gt=0, description="默认模型 ID", examples=[1])
     temperature: Decimal = Field(default=Decimal("1"), ge=0, le=2, decimal_places=2, description="生成温度", examples=["0.70"])
     max_output_tokens: OutputTokens = Field(
-        default_factory=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS, description="单次最大输出 Token 数", examples=[4096]
+        default_factory=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS,
+        description="单次最大输出 Token 数",
+        examples=[4096],
     )
     thinking_mode: ModelThinkingMode = Field(
         default=ModelThinkingMode.AUTO,
@@ -39,10 +41,14 @@ class AgentCreateIn(BaseModel):
         examples=["auto"],
     )
     model_timeout_seconds: ModelTimeout = Field(
-        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, description="单次模型生成超时秒数", examples=[60]
+        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
+        description="单次模型生成超时秒数",
+        examples=[60],
     )
     tool_timeout_seconds: ToolTimeout = Field(
-        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, description="单次工具执行超时秒数", examples=[30]
+        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS,
+        description="单次工具执行超时秒数",
+        examples=[30],
     )
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限", examples=[5])
@@ -59,9 +65,7 @@ class AgentCreateIn(BaseModel):
     skill_ids: list[int] = Field(default_factory=list, max_length=16, description="关联的可见 Skill ID", examples=[[1, 2]])
     tool_ids: list[int] = Field(default_factory=list, max_length=16, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
 
-    knowledge_base_ids: list[int] = Field(
-        default_factory=list, max_length=8, description="关联的授权知识库 ID，不随 Agent 共享权限", examples=[[1, 2]]
-    )
+    knowledge_base_ids: list[int] = Field(default_factory=list, max_length=8, description="关联的授权知识库 ID，不随 Agent 共享权限", examples=[[1, 2]])
 
 
 class AgentUpdateIn(BaseModel):
@@ -77,15 +81,15 @@ class AgentUpdateIn(BaseModel):
     temperature: Decimal | None = Field(default=None, ge=0, le=2, decimal_places=2, description="生成温度", examples=["0.70"])
     max_output_tokens: OutputTokens | None = Field(default=None, description="单次最大输出 Token 数", examples=[4096])
     thinking_mode: ModelThinkingMode | None = Field(
-        default=None, description="思考模式；显式启闭仅支持实现 enable_thinking 的 OpenAI 兼容服务", examples=["disabled"]
+        default=None,
+        description="思考模式；显式启闭仅支持实现 enable_thinking 的 OpenAI 兼容服务",
+        examples=["disabled"],
     )
     model_timeout_seconds: ModelTimeout | None = Field(default=None, description="单次模型生成超时秒数", examples=[60])
     tool_timeout_seconds: ToolTimeout | None = Field(default=None, description="单次工具执行超时秒数", examples=[30])
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限；null 清除上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限；null 清除上限", examples=[5])
-    max_total_tokens: int | None = Field(
-        default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限；null 清除上限", examples=[10000]
-    )
+    max_total_tokens: int | None = Field(default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限；null 清除上限", examples=[10000])
     max_estimated_cost: Decimal | None = Field(
         default=None,
         ge=Decimal("0.000001"),

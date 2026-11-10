@@ -58,7 +58,7 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             [
                 Admin(username="file-alice", mail="file-alice@example.com", password=hash_password("StrongPassword123"), role="user"),
                 Admin(username="file-bob", mail="file-bob@example.com", password=hash_password("StrongPassword123"), role="user"),
-            ]
+            ],
         )
 
     async def test_session():
@@ -199,7 +199,9 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
             )
             assert duplicated.status_code == 400
             too_many = await client.post(
-                "/api/v1/artifacts/uploads", headers=alice, files=[("files", (f"{index}.txt", b"ok", "text/plain")) for index in range(6)]
+                "/api/v1/artifacts/uploads",
+                headers=alice,
+                files=[("files", (f"{index}.txt", b"ok", "text/plain")) for index in range(6)],
             )
             assert too_many.status_code == 400
             oversized = await client.post(
@@ -232,27 +234,25 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 run = await create_run(db, 1, input_text="制作汇总")
                 claimed = await claim_run(db, run.id)
                 await complete_run(db, run.id, claimed.lease_token, checkpoint_id="complete", final_text="汇总完成")
-            generated = await publish_generated_artifact(
-                sessions, run.id, "summary-v1", "summary.txt", b"summary", root, source_artifact_id=artifacts[1]["id"]
-            )
-            repeated = await publish_generated_artifact(
-                sessions, run.id, "summary-v1", "summary.txt", b"summary", root, source_artifact_id=artifacts[1]["id"]
-            )
+            generated = await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"summary", root, source_artifact_id=artifacts[1]["id"])
+            repeated = await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"summary", root, source_artifact_id=artifacts[1]["id"])
             assert repeated.id == generated.id and generated.source == "generated"
             assert generated.source_artifact_id == artifacts[1]["id"]
             with pytest.raises(ArtifactValidationError):
-                await publish_generated_artifact(
-                    sessions, run.id, "summary-v1", "summary.txt", b"changed", root, source_artifact_id=artifacts[1]["id"]
-                )
+                await publish_generated_artifact(sessions, run.id, "summary-v1", "summary.txt", b"changed", root, source_artifact_id=artifacts[1]["id"])
             with pytest.raises(ArtifactValidationError):
                 await publish_generated_artifact(
-                    sessions, run.id, "other", "other.txt", b"content", root, source_artifact_id="00000000-0000-4000-8000-000000000000"
+                    sessions,
+                    run.id,
+                    "other",
+                    "other.txt",
+                    b"content",
+                    root,
+                    source_artifact_id="00000000-0000-4000-8000-000000000000",
                 )
             async with sessions() as db:
                 events = await replay_events(db, run.id, 1)
-                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
-                    ("artifact_published", generated.id)
-                ]
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [("artifact_published", generated.id)]
             listed = await client.get(
                 "/api/v1/artifacts",
                 headers=alice,
@@ -341,7 +341,7 @@ def test_local_orphan_scan_passes_referenced_batches(tmp_path: Path, monkeypatch
                             state="ready",
                             status=1,
                             is_deleted=0,
-                        )
+                        ),
                     )
 
             original_iterdir = Path.iterdir
@@ -416,7 +416,7 @@ def test_mysql_concurrent_artifact_quota(monkeypatch: pytest.MonkeyPatch, max_fi
                             state="ready",
                             status=1,
                             is_deleted=0,
-                        )
+                        ),
                     )
 
             first = asyncio.create_task(upload(1))
@@ -483,9 +483,7 @@ def test_answer_publication_failure_does_not_starve_later_runs(tmp_path: Path, m
                 second = await create_run(db, 1, input_text="second", publish_answer_artifact=True)
                 claimed = await claim_run(db, second.id)
                 await complete_run(db, second.id, claimed.lease_token, final_text="second answer")
-                await db.execute(
-                    update(AgentRun).where(AgentRun.id == first.id).values(update_time=shanghai_now(naive=True) - timedelta(days=1))
-                )
+                await db.execute(update(AgentRun).where(AgentRun.id == first.id).values(update_time=shanghai_now(naive=True) - timedelta(days=1)))
             attempts = []
             unavailable = True
 
@@ -510,7 +508,7 @@ def test_answer_publication_failure_does_not_starve_later_runs(tmp_path: Path, m
                     .values(
                         answer_artifact_retry_at=shanghai_now(naive=True) - timedelta(seconds=1),
                         update_time=shanghai_now(naive=True) - timedelta(days=1),
-                    )
+                    ),
                 )
             assert await publish_pending_answers(sessions, root, limit=1) == 1
             assert attempts == [first.id, second.id, first.id]
@@ -553,9 +551,7 @@ def test_publication_cleanup_failure_preserves_validation_error(tmp_path: Path, 
             monkeypatch.setattr(artifact_store, "using_s3", lambda: True)
             monkeypatch.setattr(artifact_store, "store_blob", fake_store)
             monkeypatch.setattr(artifact_store, "delete_blob", failed_delete)
-            monkeypatch.setattr(
-                artifact_store, "get_config", lambda: SimpleNamespace(ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0)
-            )
+            monkeypatch.setattr(artifact_store, "get_config", lambda: SimpleNamespace(ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0))
             with pytest.raises(ArtifactValidationError, match="保留天数"):
                 await publish_generated_artifact(sessions, run.id, "answer", "answer.txt", b"answer", root)
             assert [kind for kind, _ in attempts] == ["store", "delete"]
@@ -583,7 +579,7 @@ async def exercise_stream_limit() -> None:
                 "body": b"def",
                 "more_body": False,
             },
-        ]
+        ],
     )
     sent = []
 

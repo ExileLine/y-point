@@ -120,7 +120,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                         visibility="private",
                         enabled=True,
                         current_version=1,
-                    )
+                    ),
                 )
                 schema = report_schema()
                 if kind == "mcp":
@@ -144,7 +144,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                         verified=True,
                         script_language="python",
                         source_code="print('{}')",
-                    )
+                    ),
                 )
                 db.add(AgentTool(agent_id=1, tool_id=1, tool_version=1))
                 await db.flush()
@@ -169,7 +169,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                                 "name": "check_report",
                                 "args": invalid,
                                 "id": "missing-fields",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(
@@ -179,11 +179,11 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                                 "name": "check_report",
                                 "args": valid,
                                 "id": "corrected-fields",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="参数已修正且校验完成"),
-                ]
+                ],
             )
             result = await execute_text_run(
                 sessions,
@@ -201,9 +201,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
             assert result.tool_call_count == 2 and result.model_call_count == (2 if execution_fails else 3)
             assert len(executed) == 1 and ArgumentRepairModel.errors
             async with sessions() as db:
-                invocations = (
-                    await db.scalars(select(ToolInvocation).where(ToolInvocation.run_id == run.id).order_by(ToolInvocation.id))
-                ).all()
+                invocations = (await db.scalars(select(ToolInvocation).where(ToolInvocation.run_id == run.id).order_by(ToolInvocation.id))).all()
                 assert [(item.state, item.failure_code) for item in invocations] == [
                     ("failed", "invalid_tool_arguments"),
                     (

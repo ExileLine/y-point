@@ -41,11 +41,11 @@ def tool_model() -> ScriptedModel:
                             "text": "hello",
                         },
                         "id": "call-1",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="finished"),
-        ]
+        ],
     )
 
 
@@ -66,12 +66,12 @@ def test_tool_stream_and_checkpoint() -> None:
                     {
                         "role": "user",
                         "content": "say hello",
-                    }
+                    },
                 ],
             },
             config,
             stream_mode=["updates", "messages"],
-        )
+        ),
     )
     state = agent.get_state(config)
 
@@ -98,7 +98,7 @@ def test_skill_loading() -> None:
                 {
                     "role": "user",
                     "content": "hello",
-                }
+                },
             ],
             "files": {
                 "/skills/example/SKILL.md": create_file_data(skill),
@@ -113,7 +113,9 @@ def test_skill_loading() -> None:
 def test_skill_reload_removes_previous_files() -> None:
     """同一检查点线程新一轮替换 Skill 时，旧文件和元数据均不再可见。"""
     agent = create_deep_agent(
-        model=ScriptedModel(responses=[AIMessage(content="ok"), AIMessage(content="ok")]), skills=["/skills/"], checkpointer=InMemorySaver()
+        model=ScriptedModel(responses=[AIMessage(content="ok"), AIMessage(content="ok")]),
+        skills=["/skills/"],
+        checkpointer=InMemorySaver(),
     )
     config = {
         "configurable": {
@@ -128,7 +130,7 @@ def test_skill_reload_removes_previous_files() -> None:
                 {
                     "role": "user",
                     "content": "one",
-                }
+                },
             ],
             "files": {
                 first: create_file_data("---\nname: first\ndescription: First\n---\n"),
@@ -142,7 +144,7 @@ def test_skill_reload_removes_previous_files() -> None:
                 {
                     "role": "user",
                     "content": "two",
-                }
+                },
             ],
             "files": {
                 first: None,
@@ -180,7 +182,7 @@ def test_approval_resume() -> None:
                 {
                     "role": "user",
                     "content": "say hello",
-                }
+                },
             ],
         },
         config,
@@ -194,9 +196,9 @@ def test_approval_resume() -> None:
                 "decisions": [
                     {
                         "type": "approve",
-                    }
+                    },
                 ],
-            }
+            },
         ),
         config,
     )
@@ -231,11 +233,11 @@ def test_async_cancellation_reaches_tool() -> None:
                             "name": "slow_tool",
                             "args": {},
                             "id": "call-slow",
-                        }
+                        },
                     ],
                 ),
                 AIMessage(content="finished"),
-            ]
+            ],
         )
         agent = create_deep_agent(model=model, tools=[slow_tool], checkpointer=InMemorySaver())
         config = {
@@ -252,7 +254,7 @@ def test_async_cancellation_reaches_tool() -> None:
                         {
                             "role": "user",
                             "content": "wait",
-                        }
+                        },
                     ],
                 },
                 config,

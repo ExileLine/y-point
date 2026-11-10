@@ -74,7 +74,7 @@ class MemoryS3:
                 "Prefix": Prefix,
                 "MaxKeys": MaxKeys,
                 "ContinuationToken": ContinuationToken,
-            }
+            },
         )
         old = datetime.now(timezone.utc) - timedelta(hours=2)
         keys = sorted(key for key in self.objects if key.startswith(Prefix))
@@ -143,9 +143,7 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 patcher.setattr(
                     artifact_store,
                     "get_config",
-                    lambda: SimpleNamespace(
-                        ARTIFACT_UPLOAD_MAX_BYTES=20 * 1024 * 1024, ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0
-                    ),
+                    lambda: SimpleNamespace(ARTIFACT_UPLOAD_MAX_BYTES=20 * 1024 * 1024, ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0),
                 )
                 before = dict(fake.objects)
                 with pytest.raises(artifact_store.ArtifactValidationError, match="保留天数"):
@@ -226,7 +224,7 @@ def test_s3_orphan_scan_paginates(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                             state="ready",
                             status=1,
                             is_deleted=0,
-                        )
+                        ),
                     )
             fake.objects[f"y-point/artifacts/{'0' * 32}"] = b"first"
             fake.objects[f"y-point/artifacts/{'a' * 32}"] = b"second"
@@ -290,7 +288,7 @@ def test_migrate_local_artifacts_is_verified_and_repeatable(tmp_path: Path, monk
                             state="ready",
                             status=1,
                             is_deleted=0,
-                        )
+                        ),
                     )
             (root / second).write_bytes(b"damaged")
             with pytest.raises(artifact_store.ArtifactValidationError, match="本地文件摘要不一致"):

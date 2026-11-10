@@ -19,7 +19,7 @@ def health_check():
     return api_response(
         data={
             "status": "ok",
-        }
+        },
     )
 
 
@@ -39,5 +39,5 @@ async def worker_health(db: AsyncSession = Depends(get_db_session)):
     return api_response(
         data={
             "worker_available": True,
-        }
+        },
     )

@@ -66,12 +66,12 @@ async def _job_stage(sessions, job_id: int, lease: str, state: KnowledgeJobState
                     "stage": state,
                     "skipped": skipped,
                     "time": shanghai_now().isoformat(),
-                }
+                },
             ]
         changed = await db.execute(
             update(KnowledgeJob)
             .where(KnowledgeJob.id == job_id, KnowledgeJob.lease_token == lease, KnowledgeJob.state != KnowledgeJobState.CANCEL_REQUESTED)
-            .values(**values)
+            .values(**values),
         )
         if changed.rowcount != 1:
             raise KnowledgeProcessingError(KnowledgeFailure.CANCELLED)
@@ -110,9 +110,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             parsed = await parse_knowledge_isolated(content, version.media_type)
             async with sessions.begin() as db:
                 await db.execute(
-                    update(KnowledgeDocumentVersion)
-                    .where(KnowledgeDocumentVersion.id == version_id)
-                    .values(extracted_text=parsed.text, blocks=parsed.blocks)
+                    update(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.id == version_id).values(extracted_text=parsed.text, blocks=parsed.blocks),
                 )
         parsed_versions.append((version, parsed))
     await _job_stage(sessions, job_id, lease, KnowledgeJobState.CHUNKING)
@@ -127,7 +125,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                     document_version_id=version.id,
                     search_terms=" ".join(knowledge_tokens(piece["content"])),
                     **piece,
-                )
+                ),
             )
         if len(chunks) > MAX_INDEX_CHUNKS:
             raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
@@ -146,10 +144,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
         if (
             conservative_tokens + reserved > configuration["embedding_token_budget"]
             or budget is not None
-            and (
-                model.input_price is None
-                or Decimal(conservative_tokens + reserved) * model.input_price / Decimal(1000000) > Decimal(budget)
-            )
+            and (model.input_price is None or Decimal(conservative_tokens + reserved) * model.input_price / Decimal(1000000) > Decimal(budget))
         ):
             raise KnowledgeProcessingError(KnowledgeFailure.BUDGET_EXCEEDED)
         for offset in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
@@ -164,7 +159,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                         KnowledgeJob.lease_token == lease,
                         KnowledgeJob.state == KnowledgeJobState.EMBEDDING,
                     )
-                    .values(reserved_tokens=reserved)
+                    .values(reserved_tokens=reserved),
                 )
                 if changed.rowcount != 1:
                     raise KnowledgeProcessingError(KnowledgeFailure.CANCELLED)
@@ -178,7 +173,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                 await db.execute(
                     update(KnowledgeJob)
                     .where(KnowledgeJob.id == job_id, KnowledgeJob.lease_token == lease)
-                    .values(embedding_tokens=tokens, estimated_cost=cost)
+                    .values(embedding_tokens=tokens, estimated_cost=cost),
                 )
             if tokens > configuration["embedding_token_budget"] or budget is not None and cost is not None and cost > Decimal(budget):
                 raise KnowledgeProcessingError(KnowledgeFailure.BUDGET_EXCEEDED)
@@ -211,7 +206,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             {
                 "stage": KnowledgeJobState.COMPLETED,
                 "time": shanghai_now().isoformat(),
-            }
+            },
         ]
         job.lease_token, job.lease_expires_at = None, None
 
@@ -234,7 +229,7 @@ async def _fail_knowledge_job(sessions, job_id: int, lease: str, code: Knowledge
                 "stage": job.state,
                 "failure_code": code,
                 "time": shanghai_now().isoformat(),
-            }
+            },
         ]
         job.lease_token, job.lease_expires_at = None, None
         index.state = KnowledgeIndexState.BUILDING if retry else KnowledgeIndexState.CANCELLED if cancelled else KnowledgeIndexState.FAILED
@@ -246,9 +241,7 @@ async def process_next_knowledge_job(sessions: async_sessionmaker[AsyncSession])
     now = shanghai_now(naive=True)
     async with sessions.begin() as db:
         expired = (
-            await db.scalars(
-                select(KnowledgeJob).where(KnowledgeJob.lease_expires_at <= now, KnowledgeJob.lease_token.is_not(None)).with_for_update()
-            )
+            await db.scalars(select(KnowledgeJob).where(KnowledgeJob.lease_expires_at <= now, KnowledgeJob.lease_token.is_not(None)).with_for_update())
         ).all()
         for previous in expired:
             index = await db.get(KnowledgeIndex, previous.index_id)
@@ -258,15 +251,13 @@ async def process_next_knowledge_job(sessions: async_sessionmaker[AsyncSession])
             previous.failure_code = KnowledgeFailure.CANCELLED if cancelled else KnowledgeFailure.WORKER_INTERRUPTED
             previous.lease_token, previous.lease_expires_at = None, None
             if not retry:
-                index.state = (
-                    KnowledgeIndexState.BUILDING if retry else KnowledgeIndexState.CANCELLED if cancelled else KnowledgeIndexState.FAILED
-                )
+                index.state = KnowledgeIndexState.BUILDING if retry else KnowledgeIndexState.CANCELLED if cancelled else KnowledgeIndexState.FAILED
             previous.progress = list(previous.progress or []) + [
                 {
                     "stage": previous.state,
                     "failure_code": previous.failure_code,
                     "time": shanghai_now().isoformat(),
-                }
+                },
             ]
         await db.flush()
         job = await db.scalar(
@@ -275,10 +266,10 @@ async def process_next_knowledge_job(sessions: async_sessionmaker[AsyncSession])
                 or_(
                     KnowledgeJob.state == KnowledgeJobState.UPLOADED,
                     (KnowledgeJob.state == KnowledgeJobState.CANCEL_REQUESTED) & KnowledgeJob.lease_token.is_(None),
-                )
+                ),
             )
             .order_by(KnowledgeJob.id)
-            .limit(1)
+            .limit(1),
         )
         if job is None:
             return False
@@ -290,9 +281,7 @@ async def process_next_knowledge_job(sessions: async_sessionmaker[AsyncSession])
         claimed = await db.execute(
             update(KnowledgeJob)
             .where(KnowledgeJob.id == job.id, KnowledgeJob.lease_token.is_(None), KnowledgeJob.state == job.state)
-            .values(
-                lease_token=lease, lease_expires_at=now + timedelta(seconds=KNOWLEDGE_JOB_TIMEOUT + 30), attempts=KnowledgeJob.attempts + 1
-            )
+            .values(lease_token=lease, lease_expires_at=now + timedelta(seconds=KNOWLEDGE_JOB_TIMEOUT + 30), attempts=KnowledgeJob.attempts + 1),
         )
         if claimed.rowcount != 1:
             from sqlalchemy import delete
@@ -341,7 +330,7 @@ async def prune_deleted_knowledge_blobs(sessions) -> int:
                 .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeDocumentVersion.document_id)
                 .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
                 .where(or_(KnowledgeDocument.is_deleted != 0, KnowledgeBase.is_deleted != 0), Artifact.state == ArtifactState.READY)
-                .limit(100)
+                .limit(100),
             )
         ).all()
     removed = 0
@@ -369,9 +358,9 @@ async def prune_deleted_knowledge_blobs(sessions) -> int:
                     .where(
                         KnowledgeChunk.document_id.in_(deleted_documents),
                     )
-                    .limit(2000)
+                    .limit(2000),
                 )
-            ).all()
+            ).all(),
         )
         if chunk_ids:
             if db.bind.dialect.name == "sqlite":
@@ -391,14 +380,10 @@ async def prune_deleted_knowledge_blobs(sessions) -> int:
                         KnowledgeDocumentVersion.document_id.in_(deleted_documents),
                         KnowledgeDocumentVersion.extracted_text.is_not(None),
                     )
-                    .limit(100)
+                    .limit(100),
                 )
-            ).all()
+            ).all(),
         )
         if version_ids:
-            await db.execute(
-                update(KnowledgeDocumentVersion)
-                .where(KnowledgeDocumentVersion.id.in_(version_ids))
-                .values(extracted_text=None, blocks=None)
-            )
+            await db.execute(update(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.id.in_(version_ids)).values(extracted_text=None, blocks=None))
     return removed

@@ -207,7 +207,11 @@ async def version_entries(db: AsyncSession, skill: Skill, number: int, saved: li
             }
             schema_path = f"assets/schemas/{PurePosixPath(entry['filename']).stem}.schema.json"
             result[schema_path] = await store_resource(
-                db, skill.owner_id, schema_path, json.dumps(entry["fields_schema"], ensure_ascii=False, indent=2).encode(), saved
+                db,
+                skill.owner_id,
+                schema_path,
+                json.dumps(entry["fields_schema"], ensure_ascii=False, indent=2).encode(),
+                saved,
             )
             template_map[path] = schema_path
     if template_map:
@@ -216,9 +220,7 @@ async def version_entries(db: AsyncSession, skill: Skill, number: int, saved: li
             "scripts": {},
             "required_tools": [],
         }
-        result[CONFIG_PATH] = await store_resource(
-            db, skill.owner_id, CONFIG_PATH, yaml.safe_dump(config, allow_unicode=True).encode(), saved
-        )
+        result[CONFIG_PATH] = await store_resource(db, skill.owner_id, CONFIG_PATH, yaml.safe_dump(config, allow_unicode=True).encode(), saved)
     check_entries(result)
     return result
 
@@ -271,7 +273,7 @@ async def validate_draft(db: AsyncSession, skill: Skill, draft: SkillDraft, *, c
         name, _, _, _ = validate_package(
             {
                 "SKILL.md": texts.get("SKILL.md", ""),
-            }
+            },
         )
         if skill.current_version > 0 and name != skill.name:
             raise ValueError("已发布 Skill 名称不可修改，请复制为新的 Skill")
@@ -298,16 +300,10 @@ async def validate_draft(db: AsyncSession, skill: Skill, draft: SkillDraft, *, c
             script_fields(path, spec, texts)
             if check_scripts:
                 binding = await db.scalar(
-                    select(SkillScript).where(
-                        SkillScript.skill_id == skill.id, SkillScript.package_hash == digest, SkillScript.path == path
-                    )
+                    select(SkillScript).where(SkillScript.skill_id == skill.id, SkillScript.package_hash == digest, SkillScript.path == path),
                 )
                 version = (
-                    await db.scalar(
-                        select(UserToolVersion).where(
-                            UserToolVersion.tool_id == binding.tool_id, UserToolVersion.version == binding.tool_version
-                        )
-                    )
+                    await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == binding.tool_id, UserToolVersion.version == binding.tool_version))
                     if binding
                     else None
                 )
@@ -318,7 +314,7 @@ async def validate_draft(db: AsyncSession, skill: Skill, draft: SkillDraft, *, c
                         "path": path,
                         "verified": bool(version and version.verified),
                         "environment": environment_output(version) if version else None,
-                    }
+                    },
                 )
                 if version is None or not version.verified:
                     raise ValueError("当前文件包内容尚未通过脚本试运行，请准备依赖并重新试运行")
@@ -413,7 +409,7 @@ def unpack_package(data: bytes) -> dict[str, bytes]:
                 "bytes": len(raw),
             }
             for path, raw in result.items()
-        }
+        },
     )
     return result
 
@@ -439,7 +435,7 @@ async def replace_draft(db: AsyncSession, draft: SkillDraft, files: dict, expect
         update(SkillDraft)
         .where(SkillDraft.id == draft.id, SkillDraft.revision == expected_revision)
         .values(**values)
-        .execution_options(synchronize_session=False)
+        .execution_options(synchronize_session=False),
     )
     if result.rowcount != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="Skill 草稿已变化，请刷新后比较修改")

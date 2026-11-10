@@ -61,11 +61,11 @@ def test_runtime_adapter_loads_skill_on_demand() -> None:
                                 "file_path": path,
                             },
                             "id": "skill-read",
-                        }
+                        },
                     ],
                 ),
                 AIMessage(content="done"),
-            ]
+            ],
         )
         config = RuntimeRunConfig("run", 1, "skill-runtime", None, ())
         runtime = DeepAgentsRuntimeAdapter(
@@ -85,13 +85,13 @@ def test_runtime_adapter_loads_skill_on_demand() -> None:
                     {
                         "role": "user",
                         "content": "use sample",
-                    }
+                    },
                 ],
                 "files": {
                     path: create_file_data(skill_text("sample")),
                 },
                 "skills_metadata": None,
-            }
+            },
         ):
             pass
         state = await runtime.state()
@@ -171,7 +171,7 @@ def test_skill_api_and_run_authorization(tmp_path: Path) -> None:
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async def session_override():
@@ -238,7 +238,7 @@ def test_skill_api_and_run_authorization(tmp_path: Path) -> None:
                                 export_zip(
                                     {
                                         "SKILL.md": skill_text("shared", "导入版"),
-                                    }
+                                    },
                                 ),
                                 "application/zip",
                             ),

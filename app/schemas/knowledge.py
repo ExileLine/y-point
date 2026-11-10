@@ -27,7 +27,12 @@ class KnowledgeCreateIn(BaseModel):
     chunk_overlap: int = Field(default=100, ge=0, le=500, description="相邻片段重叠字符数，须小于块大小的一半", examples=[100])
     embedding_token_budget: int = Field(default=200000, ge=1, le=2000000, description="单次索引嵌入输入预算", examples=[200000])
     embedding_cost_budget: Decimal | None = Field(
-        default=None, gt=0, max_digits=18, decimal_places=6, description="模型配置币种下的单次嵌入估算成本上限", examples=["0.100000"]
+        default=None,
+        gt=0,
+        max_digits=18,
+        decimal_places=6,
+        description="模型配置币种下的单次嵌入估算成本上限",
+        examples=["0.100000"],
     )
 
     @model_validator(mode="after")

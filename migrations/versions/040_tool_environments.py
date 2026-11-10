@@ -31,9 +31,7 @@ def upgrade() -> None:
         batch.add_column(sa.Column("environment_lease_token", sa.String(36), nullable=True, comment="环境准备任务租约令牌"))
         batch.add_column(sa.Column("environment_lease_expires_at", ShanghaiDateTime(), nullable=True, comment="环境准备租约到期时间"))
         batch.add_column(sa.Column("environment_attempts", sa.Integer(), nullable=True, comment="环境准备尝试次数"))
-    versions = sa.table(
-        "yp_user_tool_version", sa.column("requirements", sa.JSON()), sa.column("environment_state"), sa.column("environment_attempts")
-    )
+    versions = sa.table("yp_user_tool_version", sa.column("requirements", sa.JSON()), sa.column("environment_state"), sa.column("environment_attempts"))
     op.execute(versions.update().values(requirements=[], environment_state="not_required", environment_attempts=0))
     with op.batch_alter_table("yp_user_tool_version") as batch:
         batch.alter_column("requirements", existing_type=sa.JSON(), nullable=False)

@@ -51,7 +51,7 @@ async def model_environment(tmp_path: Path):
                         role="user",
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ProviderConnection(
@@ -63,7 +63,7 @@ async def model_environment(tmp_path: Path):
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -79,7 +79,7 @@ async def model_environment(tmp_path: Path):
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
             db.add(AgentConfig(id=1, owner_id=1, name="切换助手", default_model_id=1, system_prompt="帮助用户完成任务"))
 
@@ -105,7 +105,7 @@ async def model_environment(tmp_path: Path):
                     headers.append(
                         {
                             "Authorization": f"Bearer {response.json()['data']['access_token']}",
-                        }
+                        },
                     )
                 yield sessions, client, headers[0], headers[1]
         finally:
@@ -149,9 +149,7 @@ def test_switch_preserves_completed_history_and_model_snapshots(tmp_path: Path) 
             response = await submit(client, alice, path, "one", "记住我的项目叫星河", model_id=1, expected_session_version=1)
             assert response.status_code == 201, response.text
             first = response.json()["data"]
-            done = await execute_text_run(
-                sessions, first["id"], SessionModel(responses=[AIMessage(content="已记住星河")]), tmp_path / "cp.db"
-            )
+            done = await execute_text_run(sessions, first["id"], SessionModel(responses=[AIMessage(content="已记住星河")]), tmp_path / "cp.db")
             assert done.state == RunState.COMPLETED
             session = (await client.get(path, headers=alice)).json()["data"]
             switched = await client.put(
@@ -201,9 +199,7 @@ def test_switch_preserves_completed_history_and_model_snapshots(tmp_path: Path) 
             response = await submit(client, alice, path, "two", "项目叫什么？", model_id=2)
             assert response.status_code == 201, response.text
             second = response.json()["data"]
-            done = await execute_text_run(
-                sessions, second["id"], SessionModel(responses=[AIMessage(content="项目叫星河")]), tmp_path / "cp.db"
-            )
+            done = await execute_text_run(sessions, second["id"], SessionModel(responses=[AIMessage(content="项目叫星河")]), tmp_path / "cp.db")
             assert done.state == RunState.COMPLETED
             assert "记住我的项目叫星河" in SessionModel.seen_inputs and "项目叫什么？" in SessionModel.seen_inputs
             assert not SessionModel.seen_tool_results
@@ -224,9 +220,7 @@ def test_switch_preserves_completed_history_and_model_snapshots(tmp_path: Path) 
             third = await submit(client, alice, path, "three", "继续星河项目")
             assert third.status_code == 201
             SessionModel.seen_inputs.clear()
-            done = await execute_text_run(
-                sessions, third.json()["data"]["id"], SessionModel(responses=[AIMessage(content="继续")]), tmp_path / "cp.db"
-            )
+            done = await execute_text_run(sessions, third.json()["data"]["id"], SessionModel(responses=[AIMessage(content="继续")]), tmp_path / "cp.db")
             assert done.state == RunState.COMPLETED
             assert {"记住我的项目叫星河", "项目叫什么？", "继续星河项目"} <= set(SessionModel.seen_inputs)
             async with sessions() as db:
@@ -322,9 +316,7 @@ def test_failed_turn_is_not_imported_and_new_thread_can_retry(tmp_path: Path) ->
             one = (await submit(client, alice, path, "ok", "已完成的事实")).json()["data"]
             await execute_text_run(sessions, one["id"], SessionModel(responses=[AIMessage(content="有效回答")]), tmp_path / "cp.db")
             bad = (await submit(client, alice, path, "bad", "失败轮秘密")).json()["data"]
-            failed = await execute_text_run(
-                sessions, bad["id"], FailingSessionModel(responses=[AIMessage(content="unused")]), tmp_path / "cp.db"
-            )
+            failed = await execute_text_run(sessions, bad["id"], FailingSessionModel(responses=[AIMessage(content="unused")]), tmp_path / "cp.db")
             assert failed.state == RunState.FAILED
             session = (await client.get(path, headers=alice)).json()["data"]
             result = await client.put(
@@ -337,16 +329,12 @@ def test_failed_turn_is_not_imported_and_new_thread_can_retry(tmp_path: Path) ->
             )
             assert result.status_code == 200
             bad2 = (await submit(client, alice, path, "bad2", "新线程失败输入")).json()["data"]
-            failed = await execute_text_run(
-                sessions, bad2["id"], FailingSessionModel(responses=[AIMessage(content="unused")]), tmp_path / "cp.db"
-            )
+            failed = await execute_text_run(sessions, bad2["id"], FailingSessionModel(responses=[AIMessage(content="unused")]), tmp_path / "cp.db")
             assert failed.state == RunState.FAILED
             retry = await submit(client, alice, path, "retry", "正确续聊")
             assert retry.status_code == 201, retry.text
             SessionModel.seen_inputs.clear()
-            done = await execute_text_run(
-                sessions, retry.json()["data"]["id"], SessionModel(responses=[AIMessage(content="继续成功")]), tmp_path / "cp.db"
-            )
+            done = await execute_text_run(sessions, retry.json()["data"]["id"], SessionModel(responses=[AIMessage(content="继续成功")]), tmp_path / "cp.db")
             assert done.state == RunState.COMPLETED
             assert "已完成的事实" in SessionModel.seen_inputs
             assert "失败轮秘密" not in SessionModel.seen_inputs and "新线程失败输入" not in SessionModel.seen_inputs
@@ -414,11 +402,11 @@ def test_switch_does_not_replay_completed_tool_calls(tmp_path: Path) -> None:
                                 "id": "policy-call",
                                 "name": "lookup_trip_policy",
                                 "args": {},
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="十五个工作日内提交。"),
-                ]
+                ],
             )
             completed = await execute_text_run(sessions, one["id"], model, tmp_path / "cp.db", resolve_tools=tools)
             assert completed.state == RunState.COMPLETED and executions == ["called"]
@@ -462,7 +450,7 @@ def test_session_model_migration_backfills_existing_records(tmp_path: Path) -> N
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
 
@@ -495,7 +483,7 @@ def test_session_model_migration_backfills_existing_records(tmp_path: Path) -> N
                             thread_id=f"thread-{session_id}",
                             state=state,
                             create_time=now + timedelta(seconds=offset),
-                        )
+                        ),
                     )
         finally:
             await engine.dispose()
@@ -573,9 +561,7 @@ def test_provider_timeout_does_not_poison_session_history(tmp_path: Path, timeou
         async with model_environment(tmp_path) as (sessions, client, alice, _):
             path, session = await new_session(client, alice)
             first = (await submit(client, alice, path, "remember", "记住项目叫星河")).json()["data"]
-            completed = await execute_text_run(
-                sessions, first["id"], SessionModel(responses=[AIMessage(content="项目叫星河")]), tmp_path / "cp.db"
-            )
+            completed = await execute_text_run(sessions, first["id"], SessionModel(responses=[AIMessage(content="项目叫星河")]), tmp_path / "cp.db")
             assert completed.state == RunState.COMPLETED
             failed = []
             for key, text in [("timeout-one", "调用 current-time"), ("timeout-two", "？？？")]:
@@ -591,9 +577,7 @@ def test_provider_timeout_does_not_poison_session_history(tmp_path: Path, timeou
             SessionModel.seen_inputs.clear()
             response = await submit(client, alice, path, "continue", "项目叫什么？")
             assert response.status_code == 201, response.text
-            recovered = await execute_text_run(
-                sessions, response.json()["data"]["id"], SessionModel(responses=[AIMessage(content="星河")]), tmp_path / "cp.db"
-            )
+            recovered = await execute_text_run(sessions, response.json()["data"]["id"], SessionModel(responses=[AIMessage(content="星河")]), tmp_path / "cp.db")
             assert recovered.state == RunState.COMPLETED, recovered.failure_code
             assert recovered.thread_id == session["thread_id"]
             assert SessionModel.seen_inputs == ["记住项目叫星河", "项目叫什么？"]
@@ -619,9 +603,7 @@ def test_runtime_model_identity_overrides_inherited_assistant_claims(tmp_path: P
         async with model_environment(tmp_path) as (sessions, client, alice, _):
             path, _ = await new_session(client, alice)
             first = (await submit(client, alice, path, "identity-one", "你是谁？")).json()["data"]
-            done = await execute_text_run(
-                sessions, first["id"], SessionModel(responses=[AIMessage(content="我是旧模型 Model 1")]), tmp_path / "cp.db"
-            )
+            done = await execute_text_run(sessions, first["id"], SessionModel(responses=[AIMessage(content="我是旧模型 Model 1")]), tmp_path / "cp.db")
             assert done.state == RunState.COMPLETED
             session = (await client.get(path, headers=alice)).json()["data"]
             response = await client.put(
@@ -695,15 +677,12 @@ def test_stored_model_http_timeout_recovery_and_switch(tmp_path: Path) -> None:
                                 "content": "星河" if len(requests) != 4 else "当前接入 Model 2",
                             },
                             "finish_reason": None,
-                        }
+                        },
                     ],
                 }
                 data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\ndata: [DONE]\n\n".encode()
                 writer.write(
-                    (
-                        f"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n"
-                    ).encode()
-                    + data
+                    (f"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n").encode() + data,
                 )
                 await writer.drain()
             finally:

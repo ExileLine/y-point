@@ -76,7 +76,7 @@ def report_package_hash(files: dict, templates: dict | list[dict]) -> str:
             },
             sort_keys=True,
             ensure_ascii=False,
-        ).encode()
+        ).encode(),
     ).hexdigest()
 
 
@@ -173,9 +173,7 @@ def validate_docx_template(data: bytes, schema: dict) -> None:
     environment = report_environment()
     # 与渲染器使用同一套预处理，兼容 docxtpl 的段落和表格行标记。
     parts = [document.get_xml()]
-    parts.extend(
-        part.blob.decode("utf-8") for part in document.docx.part.package.parts if "/header" in part.partname or "/footer" in part.partname
-    )
+    parts.extend(part.blob.decode("utf-8") for part in document.docx.part.package.parts if "/header" in part.partname or "/footer" in part.partname)
     variables = set()
     from jinja2 import meta
 
@@ -256,10 +254,8 @@ async def templates_for_version(db: AsyncSession, skill_id: int, version: int) -
     """读取精确版本的全部模板，不自动跟随最新版本。"""
     return list(
         await db.scalars(
-            select(SkillTemplate)
-            .where(SkillTemplate.skill_id == skill_id, SkillTemplate.skill_version == version)
-            .order_by(SkillTemplate.template_key)
-        )
+            select(SkillTemplate).where(SkillTemplate.skill_id == skill_id, SkillTemplate.skill_version == version).order_by(SkillTemplate.template_key),
+        ),
     )
 
 
@@ -295,7 +291,7 @@ async def copy_template(db: AsyncSession, skill_id: int, previous_version: int, 
                 fields_schema=item.fields_schema,
             )
             for item in previous
-        ]
+        ],
     )
 
 
@@ -304,7 +300,7 @@ async def activate_skill_report(db: AsyncSession, run_id: str, skill_id: int) ->
     fixed = await db.scalar(
         select(RunSkill)
         .join(SkillTemplate, (RunSkill.skill_id == SkillTemplate.skill_id) & (RunSkill.skill_version == SkillTemplate.skill_version))
-        .where(RunSkill.run_id == run_id, RunSkill.skill_id == skill_id)
+        .where(RunSkill.run_id == run_id, RunSkill.skill_id == skill_id),
     )
     if fixed is not None:
         fixed.required_report = True
@@ -312,11 +308,7 @@ async def activate_skill_report(db: AsyncSession, run_id: str, skill_id: int) ->
 
 async def required_report_skill_ids(db: AsyncSession, run_id: str) -> list[int]:
     """读取本轮实际执行且要求模板交付的 Skill，未使用的绑定不会触发生成。"""
-    return list(
-        await db.scalars(
-            select(RunSkill.skill_id).where(RunSkill.run_id == run_id, RunSkill.required_report.is_(True)).order_by(RunSkill.id)
-        )
-    )
+    return list(await db.scalars(select(RunSkill.skill_id).where(RunSkill.run_id == run_id, RunSkill.required_report.is_(True)).order_by(RunSkill.id)))
 
 
 async def required_report_delivered(db: AsyncSession, run_id: str) -> bool:
@@ -324,10 +316,8 @@ async def required_report_delivered(db: AsyncSession, run_id: str) -> bool:
     required = (
         await db.execute(
             select(RunSkill, SkillTemplate.artifact_id)
-            .outerjoin(
-                SkillTemplate, (RunSkill.skill_id == SkillTemplate.skill_id) & (RunSkill.skill_version == SkillTemplate.skill_version)
-            )
-            .where(RunSkill.run_id == run_id, RunSkill.required_report.is_(True))
+            .outerjoin(SkillTemplate, (RunSkill.skill_id == SkillTemplate.skill_id) & (RunSkill.skill_version == SkillTemplate.skill_version))
+            .where(RunSkill.run_id == run_id, RunSkill.required_report.is_(True)),
         )
     ).all()
     if not required:
@@ -339,7 +329,7 @@ async def required_report_delivered(db: AsyncSession, run_id: str) -> bool:
                 Artifact.source == ArtifactOrigin.GENERATED,
                 Artifact.state == ArtifactState.PENDING,
                 Artifact.is_deleted == 0,
-            )
+            ),
         )
     ).all()
     delivered = {

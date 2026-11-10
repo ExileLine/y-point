@@ -89,9 +89,7 @@ def _failure_for_status(status: int) -> str:
     return "upstream" if status >= 500 else "invalid_response"
 
 
-async def _probe_reasoning_summary(
-    model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None
-) -> ModelTestOut:
+async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None) -> ModelTestOut:
     """请求 Responses API 的公开摘要字段，只记录存在性、用量与脱敏故障。"""
     started = time.perf_counter()
     if provider.kind != ProviderKind.OPENAI:
@@ -136,10 +134,7 @@ async def _probe_reasoning_summary(
                     and item.get("type") == "reasoning"
                     and isinstance(item.get("summary"), list)
                     and any(
-                        isinstance(part, dict)
-                        and part.get("type") == "summary_text"
-                        and isinstance(part.get("text"), str)
-                        and bool(part["text"].strip())
+                        isinstance(part, dict) and part.get("type") == "summary_text" and isinstance(part.get("text"), str) and bool(part["text"].strip())
                         for part in item["summary"]
                     )
                     for item in data["output"]
@@ -210,16 +205,15 @@ async def probe_capability(
                 elif capability == ModelCapability.TOOLS:
                     bound = chat_model.bind_tools([VERIFY_TOOL])
                     message = await bound.ainvoke(
-                        [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")], max_tokens=128
+                        [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")],
+                        max_tokens=128,
                     )
                     usage = message.usage_metadata
                     if not any(call["name"] == "verify_capability" and call["args"].get("value") == "ping" for call in message.tool_calls):
                         failure = "invalid_response"
                 elif capability == ModelCapability.STRUCTURED_OUTPUT:
                     structured = chat_model.with_structured_output(STRUCTURED_SCHEMA, method="function_calling", include_raw=True)
-                    response = await structured.ainvoke(
-                        [HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128
-                    )
+                    response = await structured.ainvoke([HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128)
                     raw = response.get("raw") if isinstance(response, dict) else None
                     usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
                     parsed = response.get("parsed") if isinstance(response, dict) else None
@@ -248,8 +242,8 @@ async def probe_capability(
                                             "url": VISION_IMAGE_URL,
                                         },
                                     },
-                                ]
-                            )
+                                ],
+                            ),
                         ],
                         max_tokens=512,
                     )

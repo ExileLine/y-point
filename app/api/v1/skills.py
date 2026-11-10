@@ -103,10 +103,8 @@ async def list_skills(actor: Admin = Depends(get_current_admin), db: AsyncSessio
     items = (
         await db.scalars(
             select(Skill)
-            .where(
-                Skill.is_deleted == 0, or_(Skill.owner_id == actor.id, (Skill.visibility == Visibility.PUBLIC) & Skill.enabled.is_(True))
-            )
-            .order_by(Skill.id.desc())
+            .where(Skill.is_deleted == 0, or_(Skill.owner_id == actor.id, (Skill.visibility == Visibility.PUBLIC) & Skill.enabled.is_(True)))
+            .order_by(Skill.id.desc()),
         )
     ).all()
     return api_response(data=[_output(item) for item in items], is_pop=False)
@@ -126,7 +124,7 @@ async def download_template(actor: Admin = Depends(get_current_admin)):
                 "assets/examples/report.json": '{"title":"示例报告"}',
                 "y-point.yaml": "templates: {}\nscripts: {}\nrequired_tools: []\n",
                 "README.md": "# Skill 使用说明\n\n先编写 SKILL.md，再添加资料、模板和字段契约。脚本声明后必须试运行再发布。\n",
-            }
+            },
         ),
         media_type="application/zip",
         headers={
@@ -204,9 +202,7 @@ async def download_skill(skill_id: int, actor: Admin = Depends(get_current_admin
 
 
 @router.put("/{skill_id}", summary="更新 Skill")
-async def update_skill(
-    skill_id: int, body: SkillUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def update_skill(skill_id: int, body: SkillUpdateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """修改内容时创建新版本；Agent 已关联的版本保持固定。"""
     item = await _owned(db, skill_id, actor.id, lock=True)
     if item.current_version != body.expected_version:
@@ -249,7 +245,7 @@ async def update_skill(
                 Skill.is_deleted == 0,
             )
             .values(**settings, current_version=body.expected_version + 1)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             await db.rollback()
@@ -264,7 +260,7 @@ async def update_skill(
                 content_hash=digest,
                 is_deleted=0,
                 status=1,
-            )
+            ),
         )
     audit(db, "skill.updated", actor_id=actor.id, target_id=item.id)
     await db.commit()

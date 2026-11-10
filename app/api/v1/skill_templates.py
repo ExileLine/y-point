@@ -110,7 +110,7 @@ async def _publish_templates(
             update(Skill)
             .where(Skill.id == skill_id, Skill.current_version == expected_version, Skill.is_deleted == 0)
             .values(current_version=expected_version + 1)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
         if result.rowcount != 1:
             raise CustomException(status_code=409, custom_code=10005, detail="Skill 版本已变化")
@@ -126,7 +126,7 @@ async def _publish_templates(
                 content_hash=report_package_hash(previous.files, resources),
                 is_deleted=0,
                 status=1,
-            )
+            ),
         )
         db.add_all(
             [
@@ -140,7 +140,7 @@ async def _publish_templates(
                     status=1,
                 )
                 for entry in resources
-            ]
+            ],
         )
         audit(db, "skill.templates_published", actor_id=actor.id, target_id=skill_id)
         await db.commit()

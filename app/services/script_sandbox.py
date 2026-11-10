@@ -50,9 +50,7 @@ async def _read_bounded(stream: asyncio.StreamReader) -> bytes:
 async def _remove_container(name: str) -> None:
     """在超时或取消后强制移除本次容器。"""
     try:
-        cleanup = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
+        cleanup = await asyncio.create_subprocess_exec("docker", "rm", "-f", name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await asyncio.wait_for(cleanup.wait(), timeout=3)
     except (OSError, TimeoutError):
         pass
@@ -98,11 +96,7 @@ async def run_script(
             script = Path(directory) / filename
             script.write_text(source, encoding="utf-8")
             os.chmod(script, 0o644)
-        interpreter = (
-            [ScriptLanguage.PYTHON, "-B", f"/app/{filename}"]
-            if language == ScriptLanguage.PYTHON
-            else [ScriptLanguage.BASH, f"/app/{filename}"]
-        )
+        interpreter = [ScriptLanguage.PYTHON, "-B", f"/app/{filename}"] if language == ScriptLanguage.PYTHON else [ScriptLanguage.BASH, f"/app/{filename}"]
         dependency_mounts = []
         if environment is not None:
             if language != ScriptLanguage.PYTHON:

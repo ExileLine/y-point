@@ -79,9 +79,7 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
             async with sessions.begin() as db:
-                db.add(
-                    Admin(id=1, username="recovery-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0)
-                )
+                db.add(Admin(id=1, username="recovery-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0))
                 db.add(
                     ProviderConnection(
                         id=1,
@@ -92,7 +90,7 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -107,7 +105,7 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(AgentConfig(id=1, owner_id=1, name="恢复助手", default_model_id=1, system_prompt=""))
                 db.add(AgentSession(id="recovery-session", owner_id=1, agent_id=1, thread_id="recovery-thread", title="恢复会话"))
@@ -186,7 +184,7 @@ def test_session_migration(tmp_path: Path) -> None:
         {
             "DB_BACKEND": "sqlite",
             "SQLITE_DATABASE": str(database),
-        }
+        },
     )
     root = Path(__file__).resolve().parents[1]
     for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):
@@ -201,12 +199,8 @@ def test_session_migration(tmp_path: Path) -> None:
                 def inspect_schema(sync_connection) -> None:
                     """读取 Alembic 已创建的会话与 Run 列。"""
                     schema = inspect(sync_connection)
-                    assert {column.name for column in AgentSession.__table__.columns} == {
-                        column["name"] for column in schema.get_columns("yp_agent_session")
-                    }
-                    assert {column.name for column in AgentRun.__table__.columns} == {
-                        column["name"] for column in schema.get_columns("yp_agent_run")
-                    }
+                    assert {column.name for column in AgentSession.__table__.columns} == {column["name"] for column in schema.get_columns("yp_agent_session")}
+                    assert {column.name for column in AgentRun.__table__.columns} == {column["name"] for column in schema.get_columns("yp_agent_run")}
                     assert not schema.get_foreign_keys("yp_agent_session")
                     assert {column.name for column in AgentMessageAttachment.__table__.columns} == {
                         column["name"] for column in schema.get_columns("yp_agent_message_attachment")
@@ -260,12 +254,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
             async with sessions.begin() as db:
                 db.add_all(
                     [
-                        Admin(
-                            id=1, username="session-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                        ),
-                        Admin(
-                            id=2, username="session-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                        ),
+                        Admin(id=1, username="session-alice", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
+                        Admin(id=2, username="session-bob", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                         ProviderConnection(
                             id=1,
                             name="session-provider",
@@ -306,7 +296,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async def test_session():
@@ -401,13 +391,13 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert uploaded.status_code == 201, uploaded.text
                     artifact_ids = [item["id"] for item in uploaded.json()["data"]]
-                    bob_upload = await client.post(
-                        "/api/v1/artifacts/uploads", headers=bob, files=[("files", ("private.txt", b"bob only", "text/plain"))]
-                    )
+                    bob_upload = await client.post("/api/v1/artifacts/uploads", headers=bob, files=[("files", ("private.txt", b"bob only", "text/plain"))])
                     assert bob_upload.status_code == 201
                     bob_artifact = bob_upload.json()["data"][0]["id"]
                     large_upload = await client.post(
-                        "/api/v1/artifacts/uploads", headers=alice, files=[("files", ("large.txt", b"x" * (16 * 1024 + 1), "text/plain"))]
+                        "/api/v1/artifacts/uploads",
+                        headers=alice,
+                        files=[("files", ("large.txt", b"x" * (16 * 1024 + 1), "text/plain"))],
                     )
                     assert large_upload.status_code == 201
                     large_id = large_upload.json()["data"][0]["id"]
@@ -555,7 +545,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                                             "name": "list_session_artifacts",
                                             "args": {},
                                             "id": "reuse-list",
-                                        }
+                                        },
                                     ],
                                 ),
                                 AIMessage(
@@ -567,11 +557,11 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                                                 "artifact_id": office_output_id,
                                             },
                                             "id": "reuse-read",
-                                        }
+                                        },
                                     ],
                                 ),
                                 AIMessage(content="已读取办公文件总结"),
-                            ]
+                            ],
                         )
 
                     reused = await dispatch_next_run(
@@ -789,9 +779,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     run_messages = (await client.get(f"/api/v1/runs/{first_run_id}/messages", headers=alice)).json()["data"]
                     assert [item["artifact_id"] for item in run_messages[0]["attachments"]] == artifact_ids
                     assert run_messages[1]["artifacts"][0]["artifact_id"] == answer_id
-                    assert (await client.get(f"{base}/{first_id}/messages?after={messages[0]['id']}", headers=alice)).json()["data"][0][
-                        "content"
-                    ] == "第一答复"
+                    assert (await client.get(f"{base}/{first_id}/messages?after={messages[0]['id']}", headers=alice)).json()["data"][0]["content"] == "第一答复"
                     assert (await client.get(f"{base}/{first_id}/messages", headers=bob)).status_code == 404
                     assert (await client.get(f"{base}/{second_id}/messages", headers=alice)).json()["data"] == []
                     assert (await client.delete(f"/api/v1/artifacts/{artifact_ids[0]}", headers=alice)).status_code == 200
@@ -880,7 +868,9 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert other_done is not None and other_done.id == other_run.json()["data"]["id"]
                     assert other_done.state == "completed" and prompts[-1].startswith("使用新版指令\n")
                     doomed_upload = await client.post(
-                        "/api/v1/artifacts/uploads", headers=alice, files=[("files", ("doomed.txt", b"must not reach model", "text/plain"))]
+                        "/api/v1/artifacts/uploads",
+                        headers=alice,
+                        files=[("files", ("doomed.txt", b"must not reach model", "text/plain"))],
                     )
                     assert doomed_upload.status_code == 201
                     doomed_id = doomed_upload.json()["data"][0]["id"]
@@ -902,7 +892,9 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert failed.state == "failed" and failed.failure_code == "attachment_unavailable"
                     assert len(SessionModel.seen_inputs) == model_calls
                     tampered_upload = await client.post(
-                        "/api/v1/artifacts/uploads", headers=alice, files=[("files", ("tampered.txt", b"original content", "text/plain"))]
+                        "/api/v1/artifacts/uploads",
+                        headers=alice,
+                        files=[("files", ("tampered.txt", b"original content", "text/plain"))],
                     )
                     assert tampered_upload.status_code == 201
                     tampered_id = tampered_upload.json()["data"][0]["id"]

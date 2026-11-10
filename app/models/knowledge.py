@@ -87,9 +87,7 @@ class KnowledgeDocumentVersion(CustomBaseModel):
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="该上传版本的原始文件名")
     media_type: Mapped[str] = mapped_column(String(128), nullable=False, comment="校验后的原始文件类型")
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False, comment="原始文件字节数")
-    extracted_text: Mapped[str | None] = mapped_column(
-        Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True, comment="规范提取原文，片段位置以此为准"
-    )
+    extracted_text: Mapped[str | None] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True, comment="规范提取原文，片段位置以此为准")
     blocks: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="提取块的页码标题及原文偏移")
 
 

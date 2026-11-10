@@ -71,9 +71,7 @@ class SessionRunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_id: int | None = Field(default=None, gt=0, description="预期会话模型；只校验选择，切换请使用修改会话接口", examples=[1])
-    expected_session_version: int | None = Field(
-        default=None, ge=1, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1]
-    )
+    expected_session_version: int | None = Field(default=None, ge=1, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1])
     input_text: str = Field(min_length=1, max_length=32768, description="本轮用户输入", examples=["请总结需求"])
     request_key: str = Field(min_length=1, max_length=128, description="本轮提交幂等键", examples=["session-001"])
     publish_answer_artifact: bool = Field(default=False, description="是否将本轮最终回答发布为可下载的 TXT 产物", examples=[False])
@@ -108,9 +106,7 @@ class SessionMessageOut(BaseModel):
     provider_name: str | None = Field(default=None, description="模型供应商当前名称", examples=["本地 Ollama"])
     role: MessageRole = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="消息正文", examples=["已整理需求"])
-    calls: list[RunCallOut] = Field(
-        default_factory=list, description="消息所属运行实际调用的脱敏名称和状态；失败轮次可由用户消息恢复调用记录", examples=[[]]
-    )
+    calls: list[RunCallOut] = Field(default_factory=list, description="消息所属运行实际调用的脱敏名称和状态；失败轮次可由用户消息恢复调用记录", examples=[[]])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-26T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])
     artifacts: list[GeneratedArtifactReferenceOut] = Field(default_factory=list, description="助手消息关联的生成产物", examples=[[]])

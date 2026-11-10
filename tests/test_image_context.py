@@ -69,8 +69,8 @@ def test_image_validation_and_summary_redaction(tmp_path: Path) -> None:
                         "url": secret,
                     },
                 },
-            ]
-        )
+            ],
+        ),
     ]
     summary_input = get_buffer_string(_summary_messages_without_images(history))
     assert "Describe the picture" in summary_input
@@ -107,9 +107,7 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
             async with sessions.begin() as db:
                 db.add_all(
                     [
-                        Admin(
-                            id=1, username="vision-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                        ),
+                        Admin(id=1, username="vision-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                         ProviderConnection(
                             id=1,
                             name="vision-provider",
@@ -131,7 +129,7 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
 
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -220,7 +218,7 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                             "configurable": {
                                 "thread_id": session.json()["data"]["thread_id"],
                             },
-                        }
+                        },
                     )
                 assert "messages" in state.values, tuple(state.values)
                 image_urls = [

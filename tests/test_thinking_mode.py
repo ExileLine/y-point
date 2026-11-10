@@ -71,7 +71,7 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                             kind=kind,
                             base_url="https://example.invalid/v1",
                             creator_id=1,
-                        )
+                        ),
                     )
                     db.add(
                         ModelCatalog(
@@ -82,7 +82,7 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                             verified_capabilities=["text", "tools"],
                             context_window=32768,
                             creator_id=1,
-                        )
+                        ),
                     )
             app.dependency_overrides[get_db_session] = database
             app.dependency_overrides[get_current_admin] = current_admin
@@ -132,9 +132,7 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                 options = await client.get(f"{base}/models")
                 assert options.status_code == 200, options.text
                 async with sessions() as db:
-                    issue = model_issue(
-                        await db.get(ModelCatalog, 2), await db.get(ProviderConnection, 2), await db.get(AgentConfig, agent_id), False
-                    )
+                    issue = model_issue(await db.get(ModelCatalog, 2), await db.get(ProviderConnection, 2), await db.get(AgentConfig, agent_id), False)
                     assert issue is not None and issue[0] == SessionModelReason.THINKING
                 submitted = await client.post(
                     f"{base}/runs",
@@ -228,7 +226,7 @@ def test_rewind_readonly_allowlist(tmp_path: Path, tool_name: str, has_skill: bo
                             state="running",
                             tool_call_id="read-call",
                             tool_name=tool_name,
-                        )
+                        ),
                     )
                 await db.flush()
                 assert await _can_rewind_failed_run(db, run) is allow

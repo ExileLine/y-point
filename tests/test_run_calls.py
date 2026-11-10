@@ -41,7 +41,7 @@ def add_event(db, run, call_id: str, name: str, event_type: RunEventType) -> Non
             tool_call_id=call_id,
             tool_name=name,
             content="不应公开的参数和正文",
-        )
+        ),
     )
 
 
@@ -60,7 +60,7 @@ def test_call_summary_status_names_and_permissions(tmp_path: Path) -> None:
                     [
                         Admin(id=1, username="caller", password="unused-test-hash", status=1, is_deleted=0),
                         Admin(id=2, username="other", password="unused-test-hash", status=1, is_deleted=0),
-                    ]
+                    ],
                 )
                 db.add_all(
                     [
@@ -68,7 +68,7 @@ def test_call_summary_status_names_and_permissions(tmp_path: Path) -> None:
                         KnowledgeBase(id=2, owner_id=1, name="没有索引的知识库"),
                         KnowledgeBase(id=3, owner_id=2, name="不得公开的知识库"),
                         KnowledgeBase(id=4, owner_id=2, name="共享规则"),
-                    ]
+                    ],
                 )
                 share = KnowledgeShare(knowledge_base_id=4, user_id=1)
                 db.add(share)
@@ -148,7 +148,7 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                     [
                         Admin(id=1, username="caller", password="unused-test-hash", status=1, is_deleted=0),
                         Admin(id=2, username="other", password="unused-test-hash", status=1, is_deleted=0),
-                    ]
+                    ],
                 )
                 db.add(AgentConfig(id=1, owner_id=2, name="共享助手", default_model_id=1))
                 share = AgentShare(agent_id=1, user_id=1)

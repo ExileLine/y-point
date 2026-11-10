@@ -17,7 +17,7 @@ class SkillCreateIn(BaseModel):
         examples=[
             {
                 "SKILL.md": "---\nname: example\ndescription: 示例\n---\n",
-            }
+            },
         ],
     )
     category: str | None = Field(default=None, max_length=64, description="Skill 分组", examples=["写作"])
@@ -34,7 +34,7 @@ class SkillUpdateIn(BaseModel):
         examples=[
             {
                 "SKILL.md": "---\nname: example\ndescription: 示例\n---\n",
-            }
+            },
         ],
     )
     category: str | None = Field(default=None, max_length=64, description="Skill 分组", examples=["写作"])

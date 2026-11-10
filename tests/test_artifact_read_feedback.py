@@ -81,7 +81,7 @@ def test_uploaded_attachment_wrong_reader_can_recover(tmp_path: Path, monkeypatc
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -93,7 +93,7 @@ def test_uploaded_attachment_wrong_reader_can_recover(tmp_path: Path, monkeypatc
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 session = AgentSession(id="reader-session", owner_id=1, agent_id=1, thread_id="reader-thread", title="审核")
                 db.add(session)
@@ -125,7 +125,7 @@ def test_uploaded_attachment_wrong_reader_can_recover(tmp_path: Path, monkeypatc
                         media_type=artifact.media_type,
                         byte_size=artifact.byte_size,
                         included_in_context=True,
-                    )
+                    ),
                 )
             model = AttachmentReaderModel(
                 responses=[
@@ -138,11 +138,11 @@ def test_uploaded_attachment_wrong_reader_can_recover(tmp_path: Path, monkeypatc
                                     "artifact_id": artifact.id,
                                 },
                                 "id": "wrong-reader",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="已使用消息中的上传附件完成审核"),
-                ]
+                ],
             )
             result = await execute_text_run(
                 sessions,

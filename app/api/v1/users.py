@@ -31,9 +31,7 @@ async def get_user_or_404(db: AsyncSession, user_id: int) -> Admin:
 
 
 @router.get("/audit/events", summary="查询用户操作审计")
-async def list_audit_events(
-    limit: int = Query(50, ge=1, le=200), actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def list_audit_events(limit: int = Query(50, ge=1, le=200), actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """按时间倒序返回管理员可见的审计记录。"""
     events = (await db.scalars(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(limit))).all()
     data = [AuditOut.model_validate(event).model_dump(mode="json") for event in events]
@@ -118,7 +116,7 @@ async def update_user(user_id: int, body: UserUpdateIn, actor: Admin = Depends(r
             raise CustomException(status_code=400, custom_code=10005, detail="角色和状态不能为空")
         if user.role == UserRole.ADMIN and user.status == 1 and (new_role != UserRole.ADMIN or new_status != 1):
             active_admins = await db.scalar(
-                select(func.count()).select_from(Admin).where(Admin.role == UserRole.ADMIN, Admin.status == 1, Admin.is_deleted == 0)
+                select(func.count()).select_from(Admin).where(Admin.role == UserRole.ADMIN, Admin.status == 1, Admin.is_deleted == 0),
             )
             if active_admins <= 1:
                 raise CustomException(status_code=409, custom_code=10005, detail="不能停用或降级最后一位管理员")
@@ -135,9 +133,7 @@ async def update_user(user_id: int, body: UserUpdateIn, actor: Admin = Depends(r
 
 
 @router.post("/{user_id}/reset-password", summary="重置用户密码")
-async def reset_password(
-    user_id: int, body: PasswordResetIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)
-):
+async def reset_password(user_id: int, body: PasswordResetIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
     """由管理员重置目标用户密码并撤销其全部会话。"""
     user = await get_user_or_404(db, user_id)
     set_user_password(user, body.new_password)

@@ -429,7 +429,7 @@ async def exercise_isolated_m1_auth(backend: str, base_url: URL, admin_database:
             {
                 "DB_BACKEND": backend,
                 "POSTGRESQL_DATABASE" if backend == "postgres" else "MYSQL_DATABASE": database_name,
-            }
+            },
         )
         root = Path(__file__).resolve().parents[1]
         for args in (("upgrade", "head"), ("downgrade", "-1"), ("upgrade", "head"), ("check",)):

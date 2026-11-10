@@ -114,7 +114,12 @@ async def _knowledge_loop(idle_seconds: float) -> None:
 
 
 async def run_worker(
-    checkpoint_path: Path, *, once: bool = False, idle_seconds: float = 2, heartbeat_seconds: float = 5, artifact_path: Path | None = None
+    checkpoint_path: Path,
+    *,
+    once: bool = False,
+    idle_seconds: float = 2,
+    heartbeat_seconds: float = 5,
+    artifact_path: Path | None = None,
 ) -> None:
     """循环回收遗留租约并执行最早的排队任务。"""
     if idle_seconds <= 0 or not 0 < heartbeat_seconds < WORKER_STALE_SECONDS / 2:
@@ -170,9 +175,7 @@ async def run_worker(
                             logger.info("已清理 {} 个到期文件及 {} 个孤儿文件", expired_files, orphan_files)
                     except Exception as exc:
                         logger.error("文件清理失败：{}", type(exc).__name__)
-                run = await dispatch_next_run(
-                    AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal)
-                )
+                run = await dispatch_next_run(AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal))
                 if run is not None:
                     logger.info("运行 {} 结束，状态 {}", run.id, run.state)
                 root = artifact_path or artifact_root()

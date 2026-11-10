@@ -113,11 +113,7 @@ async def _seed_models(sessions):
     async with sessions.begin() as db:
         owner = await db.get(Admin, 1)
         owner.role = UserRole.ADMIN
-        db.add(
-            ProviderConnection(
-                id=1, name="m6-local", name_key="m6-local", kind=ProviderKind.OLLAMA, base_url="http://127.0.0.1:11434/v1", creator_id=1
-            )
-        )
+        db.add(ProviderConnection(id=1, name="m6-local", name_key="m6-local", kind=ProviderKind.OLLAMA, base_url="http://127.0.0.1:11434/v1", creator_id=1))
         db.add(
             ModelCatalog(
                 id=1,
@@ -128,7 +124,7 @@ async def _seed_models(sessions):
                 verified_capabilities=[ModelCapability.TEXT, ModelCapability.TOOLS],
                 capabilities_verified=True,
                 creator_id=1,
-            )
+            ),
         )
         db.add(
             ModelCatalog(
@@ -141,7 +137,7 @@ async def _seed_models(sessions):
                 embedding_dimensions=2,
                 capabilities_verified=True,
                 creator_id=1,
-            )
+            ),
         )
 
 
@@ -193,10 +189,7 @@ def test_fixed_chinese_evaluation_permissions_citations_and_budgets(tmp_path, mo
             correct = 0
             for question in EVALUATION["questions"]:
                 result = await _search(client, alice, kb["id"], question["query"], top_k=3)
-                assert any(
-                    hit["filename"] == question["expected_document"] and question["expected_text"] in hit["content"]
-                    for hit in result["hits"]
-                ), question
+                assert any(hit["filename"] == question["expected_document"] and question["expected_text"] in hit["content"] for hit in result["hits"]), question
                 correct += 1
                 async with sessions() as db:
                     for hit in result["hits"]:
@@ -286,14 +279,10 @@ def test_index_update_dedup_failure_retry_delete_and_history(tmp_path, monkeypat
             assert retry.status_code == 200
             await _drain(sessions)
             assert (await client.get(f"/api/v1/knowledge-bases/jobs/{broken['job_id']}", headers=owner)).json()["data"]["attempts"] == 2
-            removed = await client.delete(
-                f"/api/v1/knowledge-bases/{kb['id']}/documents/{document_id}?expected_revision={kb['revision']}", headers=owner
-            )
+            removed = await client.delete(f"/api/v1/knowledge-bases/{kb['id']}/documents/{document_id}?expected_revision={kb['revision']}", headers=owner)
             assert removed.status_code == 200, removed.text
             assert (await _search(client, owner, kb["id"], "报销期限"))["no_answer"]
-            assert (
-                await client.get(f"/api/v1/knowledge-bases/{kb['id']}/citations/{old_hit['chunk_id']}", headers=owner)
-            ).status_code == 404
+            assert (await client.get(f"/api/v1/knowledge-bases/{kb['id']}/citations/{old_hit['chunk_id']}", headers=owner)).status_code == 404
             await _drain(sessions)
             assert await prune_deleted_knowledge_blobs(sessions) == 3
             async with sessions() as db:
@@ -316,9 +305,7 @@ def test_cancel_expired_lease_and_superseded_job(tmp_path, monkeypatch) -> None:
             first = await _upload(client, owner, kb, "规则.txt", "知识租约恢复验证。".encode())
             assert (await client.post(f"/api/v1/knowledge-bases/jobs/{first['job_id']}/cancel", headers=owner)).status_code == 200
             await _drain(sessions)
-            assert (await client.get(f"/api/v1/knowledge-bases/jobs/{first['job_id']}", headers=owner)).json()["data"][
-                "state"
-            ] == KnowledgeJobState.CANCELLED
+            assert (await client.get(f"/api/v1/knowledge-bases/jobs/{first['job_id']}", headers=owner)).json()["data"]["state"] == KnowledgeJobState.CANCELLED
             rebuilt = await client.post(
                 f"/api/v1/knowledge-bases/{kb['id']}/rebuild",
                 headers=owner,
@@ -581,15 +568,13 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
                                 "args": {
                                     "query": "报销期限",
                                 },
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="应在十五个工作日内提交，请核对返回的知识引用。"),
-                ]
+                ],
             )
-            result = await execute_text_run(
-                sessions, run_id, model, tmp_path / "checkpoints.db", resolve_tools=make_worker_tool_resolver(sessions)
-            )
+            result = await execute_text_run(sessions, run_id, model, tmp_path / "checkpoints.db", resolve_tools=make_worker_tool_resolver(sessions))
             assert result.state == "completed", result.failure_code
             async with sessions() as db:
                 audit = await db.scalar(select(KnowledgeRetrieval).where(KnowledgeRetrieval.run_id == run_id))

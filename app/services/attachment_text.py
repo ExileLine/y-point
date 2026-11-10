@@ -30,7 +30,7 @@ CONTEXT_MEDIA_TYPES = frozenset(
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }
+    },
 )
 GENERATED_CONTEXT_MEDIA_TYPES = CONTEXT_MEDIA_TYPES | frozenset({"text/markdown", "text/html", "text/csv", "application/json"})
 

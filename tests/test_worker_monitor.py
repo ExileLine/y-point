@@ -68,9 +68,7 @@ async def exercise_worker_status(database_path: Path) -> None:
             await create_run(db, 1, input_text="queued")
             running = await create_run(db, 1, input_text="running")
             await claim_run(db, running.id)
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == running.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == running.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         async with sessions() as db:
             status = await inspect_worker_status(db)
             assert status["worker_available"] is False and status["queued_runs"] == 1
@@ -82,9 +80,7 @@ async def exercise_worker_status(database_path: Path) -> None:
             assert status["worker_available"] is True and status["active_workers"] == 1
         async with sessions.begin() as db:
             await db.execute(
-                update(RunWorkerHeartbeat)
-                .where(RunWorkerHeartbeat.id == "worker-1")
-                .values(last_seen_at=shanghai_now(naive=True) - timedelta(seconds=30))
+                update(RunWorkerHeartbeat).where(RunWorkerHeartbeat.id == "worker-1").values(last_seen_at=shanghai_now(naive=True) - timedelta(seconds=30)),
             )
         async with sessions() as db:
             assert (await inspect_worker_status(db))["worker_available"] is False
@@ -118,9 +114,7 @@ async def exercise_busy_worker_heartbeat(database_path: Path, checkpoint_path: P
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         monkeypatch.setattr(run_worker_module, "dispatch_next_run", blocked_dispatch)
         task = asyncio.create_task(
-            run_worker_module.run_worker(
-                checkpoint_path, idle_seconds=0.01, heartbeat_seconds=0.05, artifact_path=checkpoint_path.parent / "artifacts"
-            )
+            run_worker_module.run_worker(checkpoint_path, idle_seconds=0.01, heartbeat_seconds=0.05, artifact_path=checkpoint_path.parent / "artifacts"),
         )
         try:
             await asyncio.wait_for(entered.wait(), timeout=2)
@@ -155,7 +149,7 @@ async def exercise_worker_health_api(database_path: Path) -> None:
             [
                 Admin(id=1, username="worker-admin", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
                 Admin(id=2, username="worker-user", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-            ]
+            ],
         )
         await create_run(db, 2, input_text="waiting")
 
@@ -218,9 +212,7 @@ async def exercise_worker_restart_recovery(database_path: Path, checkpoint_path:
         async with sessions.begin() as db:
             run = await create_run(db, 1, input_text="可能已经调用过模型")
             old_token = (await claim_run(db, run.id)).lease_token
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         await run_worker_module.run_worker(checkpoint_path, once=True)
         async with sessions() as db:
@@ -254,9 +246,7 @@ async def exercise_heartbeat_pruning(database_path: Path, checkpoint_path: Path,
                         last_seen_at=now - timedelta(days=31),
                         stopped_at=now - timedelta(days=31),
                     ),
-                    RunWorkerHeartbeat(
-                        id="old-crashed", started_at=now - timedelta(days=32), last_seen_at=now - timedelta(days=31), stopped_at=None
-                    ),
+                    RunWorkerHeartbeat(id="old-crashed", started_at=now - timedelta(days=32), last_seen_at=now - timedelta(days=31), stopped_at=None),
                     RunWorkerHeartbeat(
                         id="recent-stopped",
                         started_at=now - timedelta(days=2),
@@ -264,7 +254,7 @@ async def exercise_heartbeat_pruning(database_path: Path, checkpoint_path: Path,
                         stopped_at=now - timedelta(days=1),
                     ),
                     RunWorkerHeartbeat(id="active", started_at=now, last_seen_at=now, stopped_at=None),
-                ]
+                ],
             )
         async with sessions.begin() as db:
             assert await prune_worker_heartbeats(db, limit=1, now=now) == 1
@@ -328,7 +318,7 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
                     timeout_seconds=15,
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
             db.add(
                 ModelCatalog(
@@ -341,7 +331,7 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
                     verified_capabilities=[],
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
             run = await create_run(db, 1, model_id=1, input_text="阻塞模型调用")
         child_env = {
@@ -351,9 +341,7 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
             "DEBUG": "false",
         }
         command = (sys.executable, "-m", "app.cli.run_worker", "--checkpoint-db", str(checkpoint_path), "--once")
-        first_worker = await asyncio.create_subprocess_exec(
-            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
-        )
+        first_worker = await asyncio.create_subprocess_exec(*command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         for _ in range(200):
             if requested.is_set() or first_worker.returncode is not None:
                 break
@@ -369,13 +357,9 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
         async with sessions.begin() as db:
             active = await db.get(AgentRun, run.id)
             assert active.state == "running"
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         release_response.set()
-        second_worker = await asyncio.create_subprocess_exec(
-            *command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
-        )
+        second_worker = await asyncio.create_subprocess_exec(*command, env=child_env, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, error_output = await asyncio.wait_for(second_worker.communicate(), timeout=15)
         assert second_worker.returncode == 0, error_output.decode()
         async with sessions() as db:
@@ -383,9 +367,7 @@ async def exercise_worker_process_crash(database_path: Path, checkpoint_path: Pa
             assert recovered.state == "failed" and recovered.failure_code == "lease_expired"
             assert recovered.event_seq == 3 and recovered.lease_token is None
             assert [event.state for event in await replay_events(db, run.id, 1)] == ["queued", "running", "failed"]
-            assert [
-                message.role for message in (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id))).all()
-            ] == ["user"]
+            assert [message.role for message in (await db.scalars(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id))).all()] == ["user"]
         assert requests_seen == ["/v1/chat/completions"]
     finally:
         release_response.set()

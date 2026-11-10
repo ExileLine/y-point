@@ -172,7 +172,12 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
             with pytest.raises(RunConflictError):
                 await create_run(db, 1, request_key="hello", input_text="different")
         completed = await execute_text_run(
-            sessions, run.id, ScriptedModel(responses=[AIMessage(content="hello back")]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
+            sessions,
+            run.id,
+            ScriptedModel(responses=[AIMessage(content="hello back")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and completed.checkpoint_id
         async with sessions.begin() as db:
@@ -249,15 +254,13 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
                                 "text": "tool result",
                             },
                             "id": "budget-call",
-                        }
+                        },
                     ],
                 ),
                 AIMessage(content="should not be returned"),
-            ]
+            ],
         )
-        result = await execute_text_run(
-            sessions, limited.id, model, checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        result = await execute_text_run(sessions, limited.id, model, checkpoint_path, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert result.state == "failed" and result.failure_code == "model_call_budget_exceeded"
         assert result.model_call_count == 1 and result.max_model_calls == 1
         async with sessions() as db:
@@ -282,11 +285,11 @@ async def exercise_model_call_budget(database_path: Path, checkpoint_path: Path)
                                     "text": "tool result",
                                 },
                                 "id": "allowed-call",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="done"),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_tools,
@@ -381,11 +384,11 @@ async def exercise_token_budget(database_path: Path, checkpoint_path: Path) -> N
                                     "text": "result",
                                 },
                                 "id": "token-tool",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="must not be returned", usage_metadata=usage),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_tools,
@@ -430,7 +433,7 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
                     timeout_seconds=30,
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
             db.add(
                 ModelCatalog(
@@ -446,11 +449,9 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
                     price_currency="USD",
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
-            allowed = await create_run(
-                db, 1, model_id=7, input_text="预算内回答", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing
-            )
+            allowed = await create_run(db, 1, model_id=7, input_text="预算内回答", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing)
         async with sessions.begin() as db:
             model = await db.get(ModelCatalog, 7)
             model.input_price = Decimal("20")
@@ -473,9 +474,7 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
             assert record.estimated_cost == Decimal("0.000040000000")
 
         async with sessions.begin() as db:
-            exceeded = await create_run(
-                db, 1, model_id=7, input_text="超过预算", max_estimated_cost=Decimal("0.000039"), cost_pricing=pricing
-            )
+            exceeded = await create_run(db, 1, model_id=7, input_text="超过预算", max_estimated_cost=Decimal("0.000039"), cost_pricing=pricing)
         rejected = await execute_text_run(
             sessions,
             exceeded.id,
@@ -491,9 +490,7 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
             assert not any(event.event_type == "text_delta" for event in await replay_events(db, exceeded.id, 1))
 
         async with sessions.begin() as db:
-            unknown = await create_run(
-                db, 1, model_id=7, input_text="缺少用量", max_estimated_cost=Decimal("0.000100"), cost_pricing=pricing
-            )
+            unknown = await create_run(db, 1, model_id=7, input_text="缺少用量", max_estimated_cost=Decimal("0.000100"), cost_pricing=pricing)
         unavailable = await execute_text_run(
             sessions,
             unknown.id,
@@ -508,9 +505,7 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
             assert not any(event.event_type == "text_delta" for event in await replay_events(db, unknown.id, 1))
 
         async with sessions.begin() as db:
-            looping = await create_run(
-                db, 1, model_id=7, input_text="工具后继续", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing
-            )
+            looping = await create_run(db, 1, model_id=7, input_text="工具后继续", max_estimated_cost=Decimal("0.000040"), cost_pricing=pricing)
         stopped = await execute_text_run(
             sessions,
             looping.id,
@@ -526,11 +521,11 @@ async def exercise_cost_budget(database_path: Path, checkpoint_path: Path) -> No
                                     "text": "result",
                                 },
                                 "id": "cost-tool",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="must not be returned", usage_metadata=usage),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_tools,
@@ -569,7 +564,7 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
                             "text": "first",
                         },
                         "id": "tool-first",
-                    }
+                    },
                 ],
             ),
             AIMessage(
@@ -581,7 +576,7 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
                             "text": "second",
                         },
                         "id": "tool-second",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="should not be returned"),
@@ -650,11 +645,11 @@ async def exercise_tool_call_budget(database_path: Path, checkpoint_path: Path) 
                                     "secret": "private-input",
                                 },
                                 "id": "failure",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="done"),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_failing_tool,
@@ -713,11 +708,11 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
                                     "secret": "private-input",
                                 },
                                 "id": "slow-call",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="should not be returned"),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_slow_tool,
@@ -753,11 +748,11 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
                                     "text": "result",
                                 },
                                 "id": "quick-call",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="done"),
-                ]
+                ],
             ),
             checkpoint_path,
             resolve_tools=resolve_quick_tool,
@@ -791,7 +786,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
                             "text": "approved result",
                         },
                         "id": "call-1",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="tool completed", usage_metadata=usage),
@@ -804,11 +799,11 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
                             "text": "must not run",
                         },
                         "id": "call-2",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="must not appear"),
-        ]
+        ],
     )
 
     async def resolve_model(db, run):
@@ -839,9 +834,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
                 max_estimated_cost=Decimal("0.000080"),
                 cost_pricing=(Decimal("2"), Decimal("4"), "USD"),
             )
-        paused = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        paused = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert paused.id == run.id and paused.state == "waiting_for_approval" and paused.checkpoint_id
         assert paused.model_call_count == 1
         assert paused.tool_call_count == 0
@@ -854,7 +847,12 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             await decide_approval(db, run.id, 1, "approve")
         assert await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model) is None
         completed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
+            sessions,
+            checkpoint_path,
+            resolve_model=resolve_model,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.id == run.id and completed.state == "completed"
         assert completed.model_call_count == 2
@@ -886,14 +884,19 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
                     "configurable": {
                         "thread_id": run.thread_id,
                     },
-                }
+                },
             )
             assert any(isinstance(message, ToolMessage) and message.content == "approved result" for message in snapshot.values["messages"])
 
         async with sessions.begin() as db:
             revoked = await create_run(db, 1, input_text="再次调用工具")
         paused_again = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
+            sessions,
+            checkpoint_path,
+            resolve_model=resolve_model,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert paused_again.id == revoked.id and paused_again.state == "waiting_for_approval"
         async with sessions.begin() as db:
@@ -903,9 +906,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
             """模拟审批后工具权限被撤销。"""
             return [], {}
 
-        denied = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=revoked_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        denied = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=revoked_tools, lease_seconds=2, poll_seconds=0.1)
         assert denied.id == revoked.id and denied.state == "failed" and denied.failure_code == "runtime_error"
         async with sessions() as db:
             assert [message.role for message in await get_owned_messages(db, revoked.id, 1)] == ["user"]
@@ -923,7 +924,7 @@ async def exercise_approved_resume(database_path: Path, checkpoint_path: Path) -
                     "configurable": {
                         "thread_id": revoked.thread_id,
                     },
-                }
+                },
             )
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
     finally:
@@ -945,7 +946,7 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
                             "text": "first",
                         },
                         "id": "call-1",
-                    }
+                    },
                 ],
             ),
             AIMessage(
@@ -957,11 +958,11 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
                             "text": "second",
                         },
                         "id": "call-2",
-                    }
+                    },
                 ],
             ),
             AIMessage(content="both completed"),
-        ]
+        ],
     )
 
     async def resolve_model(db, run):
@@ -980,16 +981,12 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="repeat-approval", password="not-used", role="user", status=1, is_deleted=0))
             run = await create_run(db, 1, input_text="连续调用两次工具")
-        first = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        first = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert first.state == "waiting_for_approval"
         async with sessions.begin() as db:
             first_approval = await get_owned_approval(db, run.id, 1)
             await decide_approval(db, run.id, 1, "approve")
-        second = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        second = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert second.state == "waiting_for_approval" and second.checkpoint_id != first.checkpoint_id
         async with sessions.begin() as db:
             second_approval = await get_owned_approval(db, run.id, 1)
@@ -997,7 +994,12 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
             assert second_approval.state == "pending"
             await decide_approval(db, run.id, 1, "approve")
         completed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
+            sessions,
+            checkpoint_path,
+            resolve_model=resolve_model,
+            resolve_tools=resolve_tools,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed"
         async with sessions() as db:
@@ -1025,7 +1027,7 @@ async def exercise_repeated_approvals(database_path: Path, checkpoint_path: Path
                     "configurable": {
                         "thread_id": run.thread_id,
                     },
-                }
+                },
             )
             assert [message.content for message in snapshot.values["messages"] if isinstance(message, ToolMessage)] == ["first", "second"]
     finally:
@@ -1050,10 +1052,10 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
                                 "text": "private",
                             },
                             "id": "call-1",
-                        }
+                        },
                     ],
-                )
-            ]
+                ),
+            ],
         )
 
     async def resolve_tools(db, run):
@@ -1068,9 +1070,7 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
         async with sessions.begin() as db:
             db.add(Admin(id=1, username="changed-approval", password="not-used", role="user", status=1, is_deleted=0))
             run = await create_run(db, 1, input_text="调用工具")
-        paused = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        paused = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert paused.state == "waiting_for_approval"
         async with sessions.begin() as db:
             approval = await decide_approval(db, run.id, 1, "approve")
@@ -1078,11 +1078,9 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
                 {
                     "name": "echo_approved",
                     "arguments_hash": "0" * 64,
-                }
+                },
             ]
-        failed = await dispatch_next_run(
-            sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1
-        )
+        failed = await dispatch_next_run(sessions, checkpoint_path, resolve_model=resolve_model, resolve_tools=resolve_tools, lease_seconds=2, poll_seconds=0.1)
         assert failed.state == "failed" and failed.failure_code == "checkpoint_mismatch"
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
             agent = create_deep_agent(
@@ -1098,7 +1096,7 @@ async def exercise_changed_approval(database_path: Path, checkpoint_path: Path) 
                     "configurable": {
                         "thread_id": run.thread_id,
                     },
-                }
+                },
             )
             assert snapshot.next and not any(isinstance(message, ToolMessage) for message in snapshot.values["messages"])
     finally:
@@ -1138,7 +1136,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                     "configurable": {
                         "thread_id": run.thread_id,
                     },
-                }
+                },
             )
             assert snapshot.metadata.get("tool_count") == 0, snapshot.metadata
         async with sessions.begin() as db:
@@ -1146,9 +1144,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
             assert interrupted.state == "running" and interrupted.checkpoint_id is None
             with pytest.raises(RunConflictError):
                 await complete_expired_run(db, run.id, checkpoint_id="untrusted", final_text="untrusted")
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
         await run_worker_module.run_worker(checkpoint_path, once=True)
         async with sessions() as db:
@@ -1178,16 +1174,14 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
             foreign = await create_run(db, 1, input_text="检查归属")
             await claim_run(db, foreign.id)
         async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
-            agent = create_deep_agent(
-                model=ScriptedModel(responses=[AIMessage(content="不属于该运行")]), tools=[], checkpointer=checkpointer
-            )
+            agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="不属于该运行")]), tools=[], checkpointer=checkpointer)
             await agent.ainvoke(
                 {
                     "messages": [
                         {
                             "role": "user",
                             "content": "检查归属",
-                        }
+                        },
                     ],
                 },
                 {
@@ -1200,9 +1194,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 },
             )
         async with sessions.begin() as db:
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == foreign.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == foreign.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -1222,7 +1214,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                         {
                             "role": "user",
                             "content": "旧版检查点",
-                        }
+                        },
                     ],
                 },
                 {
@@ -1235,9 +1227,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 },
             )
         async with sessions.begin() as db:
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == legacy.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == legacy.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -1261,10 +1251,10 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                                         "text": "pending",
                                     },
                                     "id": "call-pending",
-                                }
+                                },
                             ],
-                        )
-                    ]
+                        ),
+                    ],
                 ),
                 tools=[echo_approved],
                 interrupt_on={
@@ -1278,7 +1268,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                         {
                             "role": "user",
                             "content": "审批工具",
-                        }
+                        },
                     ],
                 },
                 {
@@ -1292,9 +1282,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 },
             )
         async with sessions.begin() as db:
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == pending.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == pending.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -1318,11 +1306,11 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                                         "text": "tool-result",
                                     },
                                     "id": "call-complete",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="工具执行完成"),
-                    ]
+                    ],
                 ),
                 tools=[echo_approved],
                 checkpointer=checkpointer,
@@ -1333,7 +1321,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                         {
                             "role": "user",
                             "content": "调用工具后回答",
-                        }
+                        },
                     ],
                 },
                 {
@@ -1347,9 +1335,7 @@ async def exercise_checkpoint_reconciliation(database_path: Path, checkpoint_pat
                 },
             )
         async with sessions.begin() as db:
-            await db.execute(
-                update(AgentRun).where(AgentRun.id == tool_run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-            )
+            await db.execute(update(AgentRun).where(AgentRun.id == tool_run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
         assert await reconcile_expired_runs(sessions, checkpoint_path) == 0
         async with sessions.begin() as db:
             assert await recover_expired_runs(db) == 1
@@ -1373,7 +1359,12 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
             normal = await create_run(db, 1, input_text="回答即可")
         CapturingModel.offered_tools = []
         completed = await execute_text_run(
-            sessions, normal.id, CapturingModel(responses=[AIMessage(content="ok")]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
+            sessions,
+            normal.id,
+            CapturingModel(responses=[AIMessage(content="ok")]),
+            checkpoint_path,
+            lease_seconds=2,
+            poll_seconds=0.1,
         )
         assert completed.state == "completed" and CapturingModel.offered_tools == []
         async with sessions.begin() as db:
@@ -1393,10 +1384,10 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
                                     "content": "secret",
                                 },
                                 "id": "call-1",
-                            }
+                            },
                         ],
-                    )
-                ]
+                    ),
+                ],
             ),
             checkpoint_path,
             lease_seconds=2,
@@ -1414,8 +1405,8 @@ async def exercise_builtin_tool_denied(database_path: Path, checkpoint_path: Pat
                 echo_approved.model_copy(
                     update={
                         "name": "write_file",
-                    }
-                )
+                    },
+                ),
             ], {}
 
         rejected = await execute_text_run(
@@ -1455,7 +1446,7 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
                     timeout_seconds=5,
                     lease_seconds=2,
                     poll_seconds=0.05,
-                )
+                ),
             )
             await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
             if action == "cancel":
@@ -1498,7 +1489,7 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
                     [
                         Admin(id=1, username="root", password=hash_password("StrongPassword123"), role="admin", status=1, is_deleted=0),
                         Admin(id=2, username="runner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
-                    ]
+                    ],
                 )
                 run = await create_run(db, 2, input_text="wait")
 
@@ -1525,9 +1516,7 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
                     },
                 )
                 request = SimpleNamespace(
-                    state=SimpleNamespace(
-                        auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
-                    ),
+                    state=SimpleNamespace(auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]),
                     is_disconnected=AsyncMock(return_value=False),
                 )
                 async with sessions() as stream_db:
@@ -1544,7 +1533,7 @@ def test_admin_disable_interrupts_run_and_stream(tmp_path: Path, monkeypatch: py
                             tmp_path / "disable-active-run-checkpoint.db",
                             lease_seconds=2,
                             poll_seconds=0.05,
-                        )
+                        ),
                     )
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
@@ -1604,9 +1593,7 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
             async with sessions.begin() as db:
                 db.add_all(
                     [
-                        Admin(
-                            id=1, username="agent-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0
-                        ),
+                        Admin(id=1, username="agent-owner", password=hash_password("StrongPassword123"), role="user", status=1, is_deleted=0),
                         Admin(
                             id=2,
                             username="agent-recipient",
@@ -1629,7 +1616,7 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
                             status=1,
                         ),
                         AgentShare(agent_id=1, user_id=2, is_deleted=0, status=1),
-                    ]
+                    ],
                 )
                 run = await create_run(db, 2, agent_id=1, input_text="wait")
                 run_id = run.id
@@ -1657,9 +1644,7 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
                     },
                 )
                 request = SimpleNamespace(
-                    state=SimpleNamespace(
-                        auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]
-                    ),
+                    state=SimpleNamespace(auth_session_id=claims["sid"], auth_token_version=claims["ver"], auth_token_expires_at=claims["exp"]),
                     is_disconnected=AsyncMock(return_value=False),
                 )
                 async with sessions() as stream_db:
@@ -1675,7 +1660,7 @@ def test_revoke_agent_share_interrupts_run_and_stream(tmp_path: Path, monkeypatc
                             tmp_path / "revoke-active-share-checkpoint.db",
                             lease_seconds=2,
                             poll_seconds=0.05,
-                        )
+                        ),
                     )
                     try:
                         await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
@@ -1799,7 +1784,7 @@ def test_lease_transfer_stops_previous_model(tmp_path: Path) -> None:
                     tmp_path / "lease-transfer-checkpoint.db",
                     lease_seconds=2,
                     poll_seconds=0.05,
-                )
+                ),
             )
             await asyncio.wait_for(SlowModel.started.wait(), timeout=3)
             async with sessions.begin() as db:
@@ -1858,17 +1843,17 @@ def test_cancel_during_tool_execution(tmp_path: Path) -> None:
                                         "name": "slow_read",
                                         "args": {},
                                         "id": "slow-read-call",
-                                    }
+                                    },
                                 ],
                             ),
                             AIMessage(content="unreachable"),
-                        ]
+                        ],
                     ),
                     tmp_path / "cancel-tool-checkpoint.db",
                     resolve_tools=resolve_tool,
                     lease_seconds=2,
                     poll_seconds=0.05,
-                )
+                ),
             )
             await asyncio.wait_for(started.wait(), timeout=3)
             async with sessions.begin() as db:
@@ -1920,7 +1905,7 @@ def test_cancel_after_generated_artifact_is_staged(tmp_path: Path, monkeypatch: 
                                     "content": "项目星河-27，预算18万元。",
                                 },
                                 "id": "create-before-cancel",
-                            }
+                            },
                         ],
                     )
                 else:
@@ -1972,7 +1957,7 @@ def test_cancel_after_generated_artifact_is_staged(tmp_path: Path, monkeypatch: 
                             is_deleted=0,
                         ),
                         AgentSession(id="a" * 36, owner_id=1, agent_id=1, thread_id="b" * 36, title="取消文件生成"),
-                    ]
+                    ],
                 )
                 run = await create_run(
                     db,
@@ -1997,7 +1982,7 @@ def test_cancel_after_generated_artifact_is_staged(tmp_path: Path, monkeypatch: 
                     resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
                     lease_seconds=2,
                     poll_seconds=0.05,
-                )
+                ),
             )
             await asyncio.wait_for(second_call_started.wait(), timeout=5)
             async with sessions() as db:
@@ -2107,7 +2092,7 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
                     timeout_seconds=30,
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
             db.add(
                 ModelCatalog(
@@ -2123,7 +2108,7 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
                     price_currency="USD",
                     status=1,
                     is_deleted=0,
-                )
+                ),
             )
             first = await create_run(db, 1, model_id=7, input_text="first")
         first_result = await execute_text_run(
@@ -2138,8 +2123,8 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
                             "output_tokens": 5,
                             "total_tokens": 15,
                         },
-                    )
-                ]
+                    ),
+                ],
             ),
             checkpoint_path,
             lease_seconds=2,
@@ -2160,8 +2145,8 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
                             "output_tokens": 8,
                             "total_tokens": 28,
                         },
-                    )
-                ]
+                    ),
+                ],
             ),
             checkpoint_path,
             lease_seconds=2,
@@ -2170,9 +2155,7 @@ async def exercise_runtime_call_records(database_path: Path, checkpoint_path: Pa
         assert second_result.state == "completed"
         async with sessions.begin() as db:
             failed = await create_run(db, 1, model_id=7, input_text="fail")
-        failed_result = await execute_text_run(
-            sessions, failed.id, FailingModel(responses=[]), checkpoint_path, lease_seconds=2, poll_seconds=0.1
-        )
+        failed_result = await execute_text_run(sessions, failed.id, FailingModel(responses=[]), checkpoint_path, lease_seconds=2, poll_seconds=0.1)
         assert failed_result.state == "failed"
         async with sessions() as db:
             records = (await db.scalars(select(ModelCallRecord).order_by(ModelCallRecord.id))).all()
@@ -2210,9 +2193,7 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
             checkpoint_path.unlink()
         else:
             async with open_async_sqlite_checkpointer(checkpoint_path) as checkpointer:
-                agent = create_deep_agent(
-                    model=ScriptedModel(responses=[AIMessage(content="unrecorded answer")]), tools=[], checkpointer=checkpointer
-                )
+                agent = create_deep_agent(model=ScriptedModel(responses=[AIMessage(content="unrecorded answer")]), tools=[], checkpointer=checkpointer)
                 config = {
                     "configurable": {
                         "thread_id": first.thread_id,
@@ -2224,7 +2205,7 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
                             {
                                 "role": "user",
                                 "content": "unrecorded input",
-                            }
+                            },
                         ],
                     },
                     config,
@@ -2289,7 +2270,12 @@ def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> 
             async with sessions.begin() as db:
                 followup = await create_run(db, 1, thread_id=first.thread_id, input_text="继续")
             resumed = await execute_text_run(
-                sessions, followup.id, ScriptedModel(responses=[AIMessage(content="已恢复")]), checkpoint, lease_seconds=2, poll_seconds=0.1
+                sessions,
+                followup.id,
+                ScriptedModel(responses=[AIMessage(content="已恢复")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
             )
             assert resumed.state == "completed", resumed.failure_code
             assert resumed.thread_id == completed.thread_id
@@ -2338,9 +2324,7 @@ def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> 
         "external-tool",
     ],
 )
-def test_skill_rewind_requires_complete_read_only_call_accounting(
-    tmp_path: Path, events: list[tuple[str, str, str]], tool_count: int, expected: bool
-) -> None:
+def test_skill_rewind_requires_complete_read_only_call_accounting(tmp_path: Path, events: list[tuple[str, str, str]], tool_count: int, expected: bool) -> None:
     """允许只读中断，但事件缺失、损坏或含外部工具时继续拦截。"""
 
     async def exercise() -> None:
@@ -2364,7 +2348,7 @@ def test_skill_rewind_requires_complete_read_only_call_accounting(
                             state="running",
                             tool_call_id=call_id,
                             tool_name=name,
-                        )
+                        ),
                     )
                 await db.flush()
                 assert await run_executor_module._can_rewind_failed_run(db, run) is expected
@@ -2375,9 +2359,7 @@ def test_skill_rewind_requires_complete_read_only_call_accounting(
 
 
 @pytest.mark.parametrize("interrupt_skill_read", [False, True], ids=["completed-read", "lease-expired-read"])
-def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt_skill_read: bool
-) -> None:
+def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt_skill_read: bool) -> None:
     """失败轮次只读 Skill 后，后续轮次仍可从已确认检查点继续。"""
 
     async def exercise() -> None:
@@ -2389,7 +2371,7 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
         _, _, manifest, digest = validate_package(
             {
                 "SKILL.md": skill_text,
-            }
+            },
         )
         try:
             async with engine.begin() as connection:
@@ -2430,7 +2412,7 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
                 first = await create_run(db, 1, agent_id=3, input_text="first")
             completed = await execute_text_run(
@@ -2469,10 +2451,10 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
                                             "file_path": "/skills/status/SKILL.md",
                                         },
                                         "id": "skill-read",
-                                    }
+                                    },
                                 ],
-                            )
-                        ]
+                            ),
+                        ],
                     ),
                     checkpoint,
                     lease_seconds=2,
@@ -2483,9 +2465,7 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
                         await execution
                     async with sessions.begin() as db:
                         await db.execute(
-                            update(AgentRun)
-                            .where(AgentRun.id == failed_run.id)
-                            .values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
+                            update(AgentRun).where(AgentRun.id == failed_run.id).values(lease_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)),
                         )
                         assert await recover_expired_runs(db) == 1
                     async with sessions() as db:
@@ -2495,7 +2475,7 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
                                 select(AgentRunEvent).where(
                                     AgentRunEvent.run_id == failed_run.id,
                                     AgentRunEvent.event_type != RunEventType.STATE,
-                                )
+                                ),
                             )
                         ).all()
                         assert [event.event_type for event in events] == [RunEventType.TOOL_STARTED]
@@ -2538,10 +2518,10 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(
                                         "text": "hello",
                                     },
                                     "id": "other-tool",
-                                }
+                                },
                             ],
-                        )
-                    ]
+                        ),
+                    ],
                 ),
                 checkpoint,
                 resolve_tools=resolve_echo,
@@ -2579,7 +2559,7 @@ def test_missing_skill_file_does_not_abort_tool_calls_or_followup(tmp_path: Path
         _, _, manifest, digest = validate_package(
             {
                 "SKILL.md": skill_text,
-            }
+            },
         )
 
         async def resolve_echo(db: Any, run: AgentRun) -> tuple[list[Any], dict[str, bool]]:
@@ -2593,9 +2573,7 @@ def test_missing_skill_file_does_not_abort_tool_calls_or_followup(tmp_path: Path
                 db.add_all(
                     [
                         Admin(id=1, username="missing-file-user", password="not-used", role="user", status=1, is_deleted=0),
-                        AgentConfig(
-                            id=3, owner_id=1, name="Missing File Agent", default_model_id=1, enabled=True, version=1, status=1, is_deleted=0
-                        ),
+                        AgentConfig(id=3, owner_id=1, name="Missing File Agent", default_model_id=1, enabled=True, version=1, status=1, is_deleted=0),
                         Skill(
                             id=1,
                             owner_id=1,
@@ -2618,7 +2596,7 @@ def test_missing_skill_file_does_not_abort_tool_calls_or_followup(tmp_path: Path
                             status=1,
                             is_deleted=0,
                         ),
-                    ]
+                    ],
                 )
                 run = await create_run(db, 1, agent_id=3, input_text="run the script")
                 db.add(RunSkill(run_id=run.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
@@ -2648,7 +2626,7 @@ def test_missing_skill_file_does_not_abort_tool_calls_or_followup(tmp_path: Path
                             ],
                         ),
                         AIMessage(content="The script is missing; approved tool succeeded."),
-                    ]
+                    ],
                 ),
                 checkpoint,
                 resolve_tools=resolve_echo,
@@ -2788,13 +2766,13 @@ def test_approval_actions_hide_arguments() -> None:
                                         "token": "private-secret",
                                     },
                                     "description": "private-secret",
-                                }
+                                },
                             ],
-                        }
-                    )
-                ]
-            )
-        ]
+                        },
+                    ),
+                ],
+            ),
+        ],
     )
     actions = _approval_actions(snapshot)
     assert len(actions) == 1 and actions[0]["name"] == "search"
@@ -2836,9 +2814,7 @@ def test_worker_expires_queued_run_before_dispatch(tmp_path: Path, monkeypatch: 
             async with sessions.begin() as db:
                 run = await create_run(db, 1, input_text="已过期", max_queue_wait_seconds=1)
             async with sessions.begin() as db:
-                await db.execute(
-                    update(AgentRun).where(AgentRun.id == run.id).values(queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1))
-                )
+                await db.execute(update(AgentRun).where(AgentRun.id == run.id).values(queue_expires_at=shanghai_now(naive=True) - timedelta(seconds=1)))
             monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
             await run_worker_module.run_worker(tmp_path / "queue-checkpoint.db", once=True)
             async with sessions() as db:
@@ -2893,11 +2869,11 @@ def test_worker_text_artifact_approval_resume(tmp_path: Path, monkeypatch: pytes
                                     "artifact_id": artifact_id,
                                 },
                                 "id": "read-call",
-                            }
+                            },
                         ],
                     ),
                     AIMessage(content="文件已读取"),
-                ]
+                ],
             )
             monkeypatch.setattr(run_worker_module, "AsyncSessionLocal", sessions)
             monkeypatch.setattr(run_worker_module, "dispatch_next_run", dispatch)
@@ -2956,11 +2932,11 @@ def test_worker_lists_owned_text_artifacts_without_approval(tmp_path: Path, monk
                                     "name": "list_text_artifacts",
                                     "args": {},
                                     "id": "list-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="已找到文件"),
-                    ]
+                    ],
                 ),
                 tmp_path / "artifact-list-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3014,9 +2990,7 @@ def test_worker_publishes_answer_after_completed_run(tmp_path: Path, monkeypatch
                 assert len(artifacts) == 1 and artifacts[0].filename == "answer.txt"
                 assert (root / artifacts[0].storage_key).read_text() == "最终回答"
                 events = await replay_events(db, run.id, 1)
-                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
-                    ("artifact_published", artifacts[0].id)
-                ]
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [("artifact_published", artifacts[0].id)]
 
         finally:
             await engine.dispose()
@@ -3052,7 +3026,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         version=1,
                         is_deleted=0,
                         status=1,
-                    )
+                    ),
                 )
                 db.add(
                     ProviderConnection(
@@ -3064,7 +3038,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -3076,7 +3050,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         verified_capabilities=["text", "tools"],
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 run = await create_run(db, 1, model_id=1, input_text="总结文档并生成一个 .txt 文件", max_model_calls=2)
             result = await execute_text_run(
@@ -3094,11 +3068,11 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                                         "content": "夷陵之战摘要\n蜀汉战败。",
                                     },
                                     "id": "create-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="已生成摘要文件。"),
-                    ]
+                    ],
                 ),
                 tmp_path / "generated-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3122,13 +3096,11 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                             "available": True,
                             "context_artifact_ids": [],
                             "read_source_artifact_ids": [],
-                        }
+                        },
                     ],
                 }
                 events = await replay_events(db, run.id, 1)
-                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [
-                    ("artifact_published", artifacts[0].id)
-                ]
+                assert [(event.event_type, event.artifact_id) for event in events if event.artifact_id] == [("artifact_published", artifacts[0].id)]
             async with sessions.begin() as db:
                 limited = await create_run(db, 1, model_id=1, input_text="再生成一个 TXT", max_model_calls=1)
             stopped = await execute_text_run(
@@ -3146,10 +3118,10 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                                         "content": "partial",
                                     },
                                     "id": "limited-call",
-                                }
+                                },
                             ],
-                        )
-                    ]
+                        ),
+                    ],
                 ),
                 tmp_path / "limited-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3175,7 +3147,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         agent_id=1,
                         thread_id="20000000-0000-0000-0000-000000000001",
                         title="文件交付检查",
-                    )
+                    ),
                 )
                 await db.flush()
                 missing = await create_run(
@@ -3260,11 +3232,11 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                                         "content": "交付内容",
                                     },
                                     "id": "delivered-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="文件已交付。"),
-                    ]
+                    ],
                 ),
                 tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3307,11 +3279,11 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                                         "content": "纠正后交付",
                                     },
                                     "id": "retry-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="文件已交付。"),
-                    ]
+                    ],
                 ),
                 tmp_path / "required-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3329,9 +3301,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                 assert [item.role for item in retried_messages] == ["user", "assistant"]
                 assert retried_messages[-1].content == "文件已交付。"
                 retried_events = await replay_events(db, retried.id, 1)
-                assert "已生成文件，但尚未调用工具" not in "".join(
-                    (event.content or "" for event in retried_events if event.event_type == "text_delta")
-                )
+                assert "已生成文件，但尚未调用工具" not in "".join((event.content or "" for event in retried_events if event.event_type == "text_delta"))
             async with sessions.begin() as db:
                 exhausted = await create_run(
                     db,
@@ -3368,7 +3338,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                         agent_id=1,
                         thread_id="20000000-0000-0000-0000-000000000002",
                         title="格式检查",
-                    )
+                    ),
                 )
                 await db.flush()
                 wrong_format = await create_run(
@@ -3400,11 +3370,11 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                                         "content": "正文",
                                     },
                                     "id": "wrong-format-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="文件已生成。"),
-                    ]
+                    ],
                 ),
                 tmp_path / "wrong-format-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3449,7 +3419,7 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
                     {
                         "name": "汇总",
                         "rows": [["事件", "年份"], ["夷陵之战", 222]],
-                    }
+                    },
                 ],
             },
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3457,7 +3427,12 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
     ],
 )
 def test_model_created_office_file_is_published_with_assistant_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, filename: str, arguments: dict, media_type: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    filename: str,
+    arguments: dict,
+    media_type: str,
 ) -> None:
     """办公文件生成后经过相同的事务发布、事件和消息引用链路。"""
 
@@ -3483,7 +3458,7 @@ def test_model_created_office_file_is_published_with_assistant_message(
                         creator_id=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -3495,7 +3470,7 @@ def test_model_created_office_file_is_published_with_assistant_message(
                         verified_capabilities=["text", "tools"],
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 run = await create_run(db, 1, model_id=1, input_text=f"生成{filename}", max_model_calls=2)
             completed = await execute_text_run(
@@ -3513,11 +3488,11 @@ def test_model_created_office_file_is_published_with_assistant_message(
                                         **arguments,
                                     },
                                     "id": "office-call",
-                                }
+                                },
                             ],
                         ),
                         AIMessage(content="文件已生成。"),
-                    ]
+                    ],
                 ),
                 tmp_path / "office-checkpoint.db",
                 resolve_tools=worker_tools_module.make_worker_tool_resolver(sessions),
@@ -3566,7 +3541,7 @@ def test_live_ollama_persisted_run(tmp_path: Path) -> None:
                         timeout_seconds=60,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     ModelCatalog(
@@ -3579,7 +3554,7 @@ def test_live_ollama_persisted_run(tmp_path: Path) -> None:
                         verified_capabilities=[],
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 run = await create_run(db, 1, input_text="请用一句中文回复：你好。", model_id=999004)
             completed = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", timeout_seconds=60, lease_seconds=30, poll_seconds=2)
@@ -3650,13 +3625,11 @@ def test_configurable_model_and_execution_deadlines(tmp_path: Path, monkeypatch:
                                 "name": "read_review_contract",
                                 "args": {},
                                 "id": "read-contract",
-                            }
+                            },
                         ],
                     ),
                 )
-            model = DelayedModel(
-                delay=0.1 if scenario == "step_limit" else 0.65 if scenario == "multiple_calls" else 1.5, responses=responses
-            )
+            model = DelayedModel(delay=0.1 if scenario == "step_limit" else 0.65 if scenario == "multiple_calls" else 1.5, responses=responses)
             result = await execute_text_run(
                 sessions,
                 run.id,
@@ -3715,7 +3688,7 @@ def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str
                         kind="openai_compatible",
                         base_url="http://unused.invalid/v1",
                         creator_id=1,
-                    )
+                    ),
                 )
                 db.add(ModelCatalog(id=1, provider_id=1, external_id="fake", display_name="fake", creator_id=1))
                 run = await create_run(db, 1, model_id=1, input_text="请审核施工方案", agent_max_output_tokens=4096)
@@ -3731,8 +3704,8 @@ def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str
                             "output_tokens": 4096,
                             "total_tokens": 46928,
                         },
-                    )
-                ]
+                    ),
+                ],
             )
             result = await execute_text_run(sessions, run.id, model, tmp_path / "checkpoint.sqlite", lease_seconds=2, poll_seconds=0.1)
             assert (result.state, result.failure_code) == ("failed", "model_output_limit_exceeded")
@@ -3747,9 +3720,7 @@ def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str
                 assert (record.input_tokens, record.output_tokens) == (42832, 4096)
                 assert result.reported_total_tokens == 46928
             async with sessions.begin() as db:
-                followup = await create_run(
-                    db, 1, model_id=1, thread_id=run.thread_id, input_text="继续审核", agent_max_output_tokens=16384
-                )
+                followup = await create_run(db, 1, model_id=1, thread_id=run.thread_id, input_text="继续审核", agent_max_output_tokens=16384)
             completed = await execute_text_run(
                 sessions,
                 followup.id,
@@ -3816,7 +3787,7 @@ def test_output_limit_does_not_execute_tools_or_retry_report(tmp_path: Path, too
                             "filename": "incomplete.docx",
                         },
                         "id": "truncated-call",
-                    }
+                    },
                 ]
                 if tool_call
                 else [],
@@ -3895,7 +3866,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
         _, _, manifest, digest = validate_package(
             {
                 "SKILL.md": skill_text,
-            }
+            },
         )
 
         @tool
@@ -3935,7 +3906,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                         kind="openai_compatible",
                         base_url="http://unused.invalid/v1",
                         creator_id=1,
-                    )
+                    ),
                 )
                 db.add(ModelCatalog(id=1, provider_id=1, external_id="fake", display_name="fake", creator_id=1))
                 db.add(AgentConfig(id=1, owner_id=1, name="review", default_model_id=1))
@@ -3950,7 +3921,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                             "SKILL.md": skill_text,
                         },
                         manifest=manifest,
-                    )
+                    ),
                 )
                 first = await create_run(
                     db,
@@ -3975,7 +3946,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                             "file_path": "/skills/status/SKILL.md",
                         },
                         "id": "legacy-skill-read",
-                    }
+                    },
                 ],
             )
             if list_artifacts:
@@ -3985,7 +3956,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                         "args": {},
                         "id": "legacy-artifact-list",
                         "type": "tool_call",
-                    }
+                    },
                 )
             response.usage_metadata = {
                 "input_tokens": 10,
@@ -4026,7 +3997,7 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                         "configurable": {
                             "thread_id": first.thread_id,
                         },
-                    }
+                    },
                 )
                 assert saved.metadata["run_id"] == (first.id if truncated else f"{first.id}:retry")
             async with sessions.begin() as db:

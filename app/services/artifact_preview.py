@@ -30,7 +30,7 @@ MAX_PREVIEW_PAGES = 20
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PREVIEW_MEDIA_TYPES = frozenset(
-    {"text/plain", "text/markdown", "text/html", "text/csv", "application/json", "application/pdf", DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE}
+    {"text/plain", "text/markdown", "text/html", "text/csv", "application/json", "application/pdf", DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE},
 )
 HTML_TAGS = frozenset(
     {
@@ -58,7 +58,7 @@ HTML_TAGS = frozenset(
         "td",
         "hr",
         "a",
-    }
+    },
 )
 
 
@@ -111,11 +111,7 @@ def _check_office(content: bytes) -> None:
 
 def _html_table(rows: list[list[str]]) -> str:
     """把表格中的纯文本转换为无属性的静态 HTML。"""
-    return (
-        "<table><tbody>"
-        + "".join("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
-        + "</tbody></table>"
-    )
+    return "<table><tbody>" + "".join("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows) + "</tbody></table>"
 
 
 def _document_html(content: bytes, budget: _PreviewBudget) -> str:

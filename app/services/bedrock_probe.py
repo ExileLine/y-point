@@ -124,9 +124,9 @@ async def probe_bedrock_model(model: ModelCatalog, provider: ProviderConnection)
                             "content": [
                                 {
                                     "text": "Hi",
-                                }
+                                },
                             ],
-                        }
+                        },
                     ],
                     inferenceConfig={
                         "maxTokens": 64,
@@ -142,9 +142,7 @@ async def probe_bedrock_model(model: ModelCatalog, provider: ProviderConnection)
                 raise
         status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
         content = response.get("output", {}).get("message", {}).get("content")
-        if not isinstance(content, list) or not any(
-            isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip() for part in content
-        ):
+        if not isinstance(content, list) or not any(isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip() for part in content):
             failure = "invalid_response"
         usage = response.get("usage")
         if isinstance(usage, dict):

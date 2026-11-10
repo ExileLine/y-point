@@ -69,9 +69,7 @@ async def _http_platform(sessions):
     """通过真实认证路由验证两个用户的 Tool 管理权限。"""
     async with sessions.begin() as db:
         for index, username in enumerate(("governance-a", "governance-b"), 1):
-            db.add(
-                Admin(id=index, username=username, password=hash_password("StrongPassword123"), role=UserRole.USER, status=1, is_deleted=0)
-            )
+            db.add(Admin(id=index, username=username, password=hash_password("StrongPassword123"), role=UserRole.USER, status=1, is_deleted=0))
 
     async def override_db():
         """向 HTTP 路由提供隔离数据库。"""
@@ -94,7 +92,7 @@ async def _http_platform(sessions):
                 headers.append(
                     {
                         "Authorization": f"Bearer {response.json()['data']['access_token']}",
-                    }
+                    },
                 )
             yield client, headers
     finally:
@@ -202,7 +200,7 @@ def test_mcp_discovery_rejects_unbounded_pages_and_schema(monkeypatch) -> None:
                 schema={
                     "type": "object",
                     "description": "x" * 16384,
-                }
+                },
             ),
         ):
             with pytest.raises(ValueError, match="超限"):
@@ -233,7 +231,7 @@ def test_mcp_credentials_rotate_clear_revoke_and_cancel_old_runs(tmp_path, monke
                     "type": "object",
                 },
                 "read_only": True,
-            }
+            },
         ]
 
     monkeypatch.setattr("app.api.v1.tools.discover_mcp_tools", discover)
@@ -366,9 +364,7 @@ def test_mcp_credentials_rotate_clear_revoke_and_cancel_old_runs(tmp_path, monke
             ).status_code == 409
             details = (await client.get(f"/api/v1/tools/{tool_id}", headers=owner)).json()["data"]
             assert details["enabled"] is False
-            assert all(
-                secret not in json.dumps(details) for secret in ("first-private-secret", "second-private-secret", "third-private-secret")
-            )
+            assert all(secret not in json.dumps(details) for secret in ("first-private-secret", "second-private-secret", "third-private-secret"))
 
     asyncio.run(exercise())
 
@@ -464,8 +460,7 @@ asyncio.run(exercise())
                 "TOOL_CALL_RUN_LIMIT": "1",
             }
             processes = [
-                subprocess.Popen([sys.executable, "-c", script, url], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                for _ in range(2)
+                subprocess.Popen([sys.executable, "-c", script, url], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)
             ]
             results = [await asyncio.to_thread(process.communicate, timeout=30) for process in processes]
             assert all(process.returncode == 0 for process in processes), results
@@ -556,7 +551,7 @@ def test_expired_docker_resources_and_workspaces_are_reconciled(tmp_path, monkey
                         environment_key="a" * 64,
                         is_deleted=1,
                         status=1,
-                    )
+                    ),
                 )
             result = await prune_tool_resources(sessions)
             assert result["containers"] == 1 and result["networks"] == 1 and result["directories"] == 2
@@ -612,7 +607,7 @@ def test_external_write_injects_idempotency_and_never_replays(tmp_path, monkeypa
                         current_version=1,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 db.add(
                     UserToolVersion(
@@ -640,7 +635,7 @@ def test_external_write_injects_idempotency_and_never_replays(tmp_path, monkeypa
                         share_credentials=False,
                         status=1,
                         is_deleted=0,
-                    )
+                    ),
                 )
                 await db.flush()
                 run = await create_run(db, 1, input_text="创建一次记录")
@@ -650,9 +645,7 @@ def test_external_write_injects_idempotency_and_never_replays(tmp_path, monkeypa
                 "args": {},
                 "id": "stable-model-call",
             }
-            model = GovernanceModel(
-                responses=[AIMessage(content="", tool_calls=[call]), AIMessage(content="", tool_calls=[call]), AIMessage(content="完成")]
-            )
+            model = GovernanceModel(responses=[AIMessage(content="", tool_calls=[call]), AIMessage(content="", tool_calls=[call]), AIMessage(content="完成")])
             checkpoint = tmp_path / "write-checkpoints.db"
             result = await execute_text_run(sessions, run.id, model, checkpoint, resolve_tools=make_worker_tool_resolver(sessions))
             for _ in range(3):
@@ -660,9 +653,7 @@ def test_external_write_injects_idempotency_and_never_replays(tmp_path, monkeypa
                     break
                 async with sessions.begin() as db:
                     await decide_approval(db, run.id, 1, "approve")
-                result = await execute_text_run(
-                    sessions, run.id, model, checkpoint, resolve_tools=make_worker_tool_resolver(sessions), resume=True
-                )
+                result = await execute_text_run(sessions, run.id, model, checkpoint, resolve_tools=make_worker_tool_resolver(sessions), resume=True)
             assert result.state == ("timed_out" if remote_fails else "failed"), result.failure_code
             assert len(calls) == 1, result.failure_code
             async with sessions() as db:
@@ -687,7 +678,7 @@ def test_credential_revoke_closes_approval_and_signals_running_run(tmp_path, mon
                     "type": "object",
                 },
                 "read_only": True,
-            }
+            },
         ]
 
     monkeypatch.setattr("app.api.v1.tools.discover_mcp_tools", discover)
@@ -726,7 +717,7 @@ def test_credential_revoke_closes_approval_and_signals_running_run(tmp_path, mon
                                 {
                                     "name": tool["model_name"],
                                     "arguments_hash": "a" * 64,
-                                }
+                                },
                             ],
                         )
                     runs.append(run.id)
@@ -763,7 +754,7 @@ def test_write_contract_requires_admin_evidence_and_resets_for_new_version(tmp_p
                     },
                 },
                 "read_only": False,
-            }
+            },
         ]
 
     monkeypatch.setattr("app.api.v1.tools.discover_mcp_tools", discover)

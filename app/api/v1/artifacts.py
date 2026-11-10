@@ -8,7 +8,7 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from botocore.exceptions import BotoCoreError, ClientError
 from loguru import logger
@@ -19,7 +19,7 @@ from urllib.parse import quote
 from app.core.enums import ArtifactOrigin, ArtifactState
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
-from app.core.security import get_current_admin
+from app.core.security import get_current_admin, require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
@@ -27,6 +27,8 @@ from app.models.artifact import Artifact
 from app.models.knowledge import KnowledgeDocumentVersion
 from app.models.base import shanghai_now
 from app.schemas.artifact import ArtifactOut
+from app.schemas.artifact_cleanup import ArtifactCleanupIn
+from app.services.artifact_cleanup import cleanup_files, list_cleanup_files
 from app.services.artifact_store import (
     MAX_FILES,
     artifact_read_max_bytes,
@@ -108,6 +110,37 @@ async def upload_artifacts(
         data=[ArtifactOut.model_validate(item).model_dump(mode="json") for item, _ in saved],
         is_pop=False,
     )
+
+
+@router.get("/dev-files", summary="开发环境按智能体或会话盘点本地文件")
+async def list_development_files(
+    agent_id: int | None = Query(None, ge=1, description="智能体 ID，与 session_id 二选一", examples=[11]),
+    session_id: str | None = Query(
+        None,
+        min_length=1,
+        max_length=36,
+        description="会话 ID，与 agent_id 二选一",
+        examples=["3c180865-bbbf-42b1-a484-e588d29a9152"],
+    ),
+    page: int = Query(1, ge=1, description="页码", examples=[1]),
+    page_size: int = Query(100, ge=1, le=200, description="每页数量", examples=[100]),
+    actor: Admin = Depends(require_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """仅开发环境管理员可盘点自己的上传物及产物，返回原名与磁盘名而不返回绝对路径。"""
+    result = await list_cleanup_files(db, actor.id, agent_id=agent_id, session_id=session_id, page=page, page_size=page_size)
+    response = api_response(data=result.model_dump(mode="json"), is_pop=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/dev-files/delete", summary="开发环境按名称批量物理删除本地文件")
+async def delete_development_files(body: ArtifactCleanupIn, actor: Admin = Depends(require_admin), db: AsyncSession = Depends(get_db_session)):
+    """清理本人文件并撤销记录访问；原名歧义、受保护资源及未结束任务在整批删除前拒绝。"""
+    result = await cleanup_files(db, actor.id, body.filenames)
+    response = api_response(data=result.model_dump(mode="json"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/{artifact_id}", summary="查询私有文件元数据")
@@ -212,9 +245,7 @@ async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_a
     item = await _owned_artifact(db, artifact_id, actor.id)
     if item.source == ArtifactOrigin.SKILL_RESOURCE:
         raise CustomException(status_code=409, custom_code=10005, detail="Skill 模板是不可变版本资源，不能单独删除")
-    knowledge_version = await db.scalar(
-        select(KnowledgeDocumentVersion.id).where(KnowledgeDocumentVersion.artifact_id == artifact_id).limit(1)
-    )
+    knowledge_version = await db.scalar(select(KnowledgeDocumentVersion.id).where(KnowledgeDocumentVersion.artifact_id == artifact_id).limit(1))
     if knowledge_version is not None:
         raise CustomException(status_code=409, custom_code=10005, detail="知识库原始文件须通过知识文档删除接口管理")
     item.state = ArtifactState.DELETED
