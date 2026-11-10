@@ -296,7 +296,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     "/api/v1/artifacts/uploads",
                     headers=owner,
                     files=[
-                        ("files", ("too-long.txt", b"x" * 16385, "text/plain")),
+                        ("files", ("too-long.txt", b"x" * (20 * 1024 * 1024), "text/plain")),
                     ],
                 )
                 long_id = oversized.json()["data"][0]["id"]
@@ -304,8 +304,8 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     path + "/attachments/check",
                     headers=owner,
                     json={
-                        "artifact_ids": [long_id],
-                        "context_artifact_ids": [long_id],
+                        "artifact_ids": [long_id, file_id],
+                        "context_artifact_ids": [long_id, file_id],
                     },
                 )
                 assert rejected.status_code == 413

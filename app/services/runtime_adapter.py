@@ -19,6 +19,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
+from app.core.config import get_config
 from app.models.agent_run import AgentRun
 
 CONVERSATION_SUMMARY_PROMPT = (
@@ -72,7 +73,7 @@ class RuntimeRunConfig:
         """为输出、系统指令和工具描述保留窗口空间。"""
         if self.context_window is None:
             return None
-        output = self.max_output_tokens or min(4096, self.context_window // 4)
+        output = self.max_output_tokens or min(get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS, self.context_window // 4)
         input_budget = self.context_window - output - CONTEXT_OVERHEAD_TOKENS
         if input_budget < MIN_CONTEXT_INPUT_TOKENS:
             raise ValueError("模型上下文窗口不足以容纳当前输出预算")
@@ -88,6 +89,7 @@ class RuntimeRunConfig:
     def graph_config(self) -> dict:
         """返回包含检查点线程和运行元数据的图配置。"""
         return {
+            "recursion_limit": get_config().RUNTIME_RECURSION_LIMIT,
             "configurable": {
                 "thread_id": self.thread_id,
             },
@@ -177,6 +179,10 @@ class DeepAgentsRuntimeAdapter:
                 "\n当用户要求继续修改、分析或引用本会话先前生成的文件时，先用 list_session_artifacts 查找文件，"
                 "再按需用 read_generated_artifact 读取目标文件。多个文件都可能符合时先请用户明确目标；"
                 "不要假定仅凭先前对话就掌握文件的完整内容。"
+                f"当前平台附件提取文本与元信息的合计预算为 {get_config().ATTACHMENT_CONTEXT_MAX_BYTES} 字节，"
+                "由平台按当前配置校验。已提供的附件正文应依据实际内容审查。"
+                "本轮已选入上下文的用户上传附件，其正文在用户消息的‘参考文件内容’中，直接使用这些资料；"
+                "read_generated_artifact 仅用于先前生成的文件，不能传入用户上传附件的 ID。"
             )
         self.agent = create_deep_agent(
             model=model,
@@ -192,6 +198,23 @@ class DeepAgentsRuntimeAdapter:
     async def state(self) -> Any:
         """读取当前线程的运行时检查点状态。"""
         return await self.agent.aget_state(self.config)
+
+    async def rewind_to_empty_start(self, run_id: str) -> bool:
+        """首轮安全失败后只回到该轮的空起点，不恢复失败消息、内部补救或待执行工具。"""
+        history = self.agent.aget_state_history(
+            self.config,
+            filter={
+                "run_id": run_id,
+                "source": "input",
+            },
+            limit=1,
+        )
+        async for snapshot in history:
+            if snapshot.parent_config is not None or snapshot.values.get("messages"):
+                return False
+            self.config["configurable"]["checkpoint_id"] = snapshot.config["configurable"]["checkpoint_id"]
+            return True
+        return False
 
     async def events(self, invocation: dict | Command) -> AsyncIterator[tuple[str, Any]]:
         """执行或恢复运行，并迭代模型消息和图更新事件。"""

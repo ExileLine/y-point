@@ -9,12 +9,12 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | 业务环节 | 当前能力 |
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
-| Agent 与对话 | Agent 配置版本和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
+| Agent 与对话 | Agent 配置版本、模型思考偏好和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要和窗口预算。 |
 | Skill | 标准文件包工作区，支持草稿/校验/发布、参考资料、完整 ZIP、多个模板独立契约、受管脚本沙箱及 Agent/Run 版本固定。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
 | 知识库 | 私有或指定只读共享；文档版本、后台索引、关键词/向量混合检索及固定引用；Agent 检索使用实际用户权限，支持撤权、删除、取消与恢复。 |
-| Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、模型及工具预算；worker 故障后按条件恢复已完成的无工具运行。 |
+| Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、单次模型/工具时限及图步数预算、输出截断识别、工具参数同轮纠正；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系。 |
 | 实时与恢复 | 持久化事件、SSE、快照和游标补发；助手消息关联产物，上传附件保留在用户消息中。 |
 
@@ -62,6 +62,80 @@ uv run alembic check
 ```bash
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
+
+## 附件容量与运行参数配置
+
+API 与 worker 通过同一套环境配置读取附件容量和单次调用时限。可在 `.env.development.local` 配置本机值，部署时使用环境变量；完整参数见 `.env.example`。配置加载后在进程内缓存，修改后须重启 API 与 worker，前端重新加载页面以读取当前配置。
+
+**对话整轮不设置总倒计时。** 一项正常任务可以多次调用模型、Skill、Tool、MCP 或知识库，只要每次调用在对应时限内完成，就不会因累计运行时间较长被终止。取消、权限复核、租约心跳和明确配置的调用次数/Token/费用预算仍生效；达到图步数上限时以明确的失败原因结束，防止无限循环。
+
+| 配置项 | 默认值 | 生效范围 |
+| --- | --- | --- |
+| `ARTIFACT_UPLOAD_MAX_BYTES` | `20971520`（20 MiB） | 对话上传单文件字节上限；multipart 请求总限额自动按 5 个文件加 1 MiB 开销计算。 |
+| `ATTACHMENT_CONTEXT_MAX_BYTES` | `20971520`（20 MiB） | 本轮附件提取正文及 JSON 元信息的 UTF-8 字节预算；预检查与 worker 共用。 |
+| `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS` | `120` | 新 Agent 和独立 Run 默认的单次模型调用时限；普通生成和历史摘要均受其控制。 |
+| `AGENT_MAX_MODEL_TIMEOUT_SECONDS` | `3600` | Agent、独立 Run 及供应商管理允许设置的模型或请求超时上限。 |
+| `AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS` | `120` | 新 Agent 和独立 Run 默认的单次工具调用时限。 |
+| `AGENT_MAX_TOOL_TIMEOUT_SECONDS` | `3600` | 允许设置的单次工具调用时限上限。 |
+| `AGENT_DEFAULT_MAX_OUTPUT_TOKENS` | `4096` | 新 Agent 和独立 Run 默认的单次模型输出 Token 上限。 |
+| `AGENT_MAX_OUTPUT_TOKENS` | `65536` | Agent 创建、修改时允许设置的最大输出 Token 数。 |
+| `MCP_CONNECT_TIMEOUT_SECONDS` | `10` | MCP HTTP 建连、写入及连接池等待时限。 |
+| `MCP_DISCOVERY_TIMEOUT_SECONDS` | `15` | 页面发现 MCP 工具的一次完整操作，包含建连、握手及分页。 |
+| `MCP_CALL_TIMEOUT_SECONDS` | `120` | 一次正式 MCP 操作，包含建连、握手、工具结构复核及远端调用；各阶段共享本次时限。 |
+| `KNOWLEDGE_SEARCH_TIMEOUT_SECONDS` | `60` | 一次知识检索，HTTP 检索与 Agent 检索共用。 |
+| `KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS` | `60` | 一批嵌入请求，检索与索引共用，并受嵌入供应商请求时限约束。 |
+| `SCRIPT_EXECUTION_TIMEOUT_SECONDS` | `30` | 一次正式脚本执行，适用于用户 Tool 和 Skill 脚本。 |
+| `SCRIPT_TEST_TIMEOUT_SECONDS` | `10` | 页面上的 Tool 和 Skill 脚本试运行。 |
+| `RUNTIME_RECURSION_LIMIT` | `9999` | 每次执行或审批恢复的 LangGraph 最大图步数；包括编排和中间件步骤，不等于模型或工具调用次数，也不是秒数。 |
+
+正式调用的有效时限按调用类型确定：
+
+- 模型：Agent/Run 保存的 `model_timeout_seconds` 控制一次调用的整体等待，供应商 `timeout_seconds` 独立控制 SDK 请求；OpenAI、兼容服务、Ollama 和 Azure 的异步流式数据块等待也显式使用该值，SSE 心跳不会延长数据块等待时限。较短的限制可能先触发。历史摘要同样有单次模型时限，不受整轮累计耗时影响。
+- MCP：`min(Agent.tool_timeout_seconds, MCP_CALL_TIMEOUT_SECONDS)`；HTTP 建连另受 `MCP_CONNECT_TIMEOUT_SECONDS` 约束。初始化、结构复核和调用共享一次 MCP 预算，SDK 进度通知不延长它。工具发现使用单独的发现预算。
+- 知识检索：Agent 中使用 `min(Agent.tool_timeout_seconds, KNOWLEDGE_SEARCH_TIMEOUT_SECONDS)`；独立 HTTP 检索采用部署的检索时限。嵌入请求还受 `min(嵌入供应商.timeout_seconds, KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS)` 约束，完整检索预算覆盖其内的多次嵌入和召回。
+- 脚本：正式执行使用 `min(Agent.tool_timeout_seconds, SCRIPT_EXECUTION_TIMEOUT_SECONDS)`；页面试运行使用 `SCRIPT_TEST_TIMEOUT_SECONDS`。容器在超时或取消时清理；超时不会自动重放脚本或外部写入。
+- Skill：纯文档 Skill 按授权的 `read_file` 工具读取，没有独立的整个 Skill 倒计时；Skill 调用的模型、MCP、脚本和知识库遵循各自的时限。
+
+例如，为较长的施工审查任务配置单次调用预算：
+
+```dotenv
+ARTIFACT_UPLOAD_MAX_BYTES=20971520
+ATTACHMENT_CONTEXT_MAX_BYTES=20971520
+AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS=300
+AGENT_MAX_MODEL_TIMEOUT_SECONDS=3600
+AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS=300
+AGENT_MAX_TOOL_TIMEOUT_SECONDS=3600
+AGENT_DEFAULT_MAX_OUTPUT_TOKENS=8192
+AGENT_MAX_OUTPUT_TOKENS=65536
+MCP_CONNECT_TIMEOUT_SECONDS=10
+MCP_DISCOVERY_TIMEOUT_SECONDS=30
+MCP_CALL_TIMEOUT_SECONDS=300
+KNOWLEDGE_SEARCH_TIMEOUT_SECONDS=120
+KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS=90
+SCRIPT_EXECUTION_TIMEOUT_SECONDS=180
+SCRIPT_TEST_TIMEOUT_SECONDS=30
+RUNTIME_RECURSION_LIMIT=9999
+```
+
+所有值必须大于零，三个 Agent 默认值不能超过各自可设置上限。已经保存的 Agent 参数优先，新 Run 固定为配置快照；修改环境默认值不会改写已有 Agent 或历史 Run。已有 Agent 需在编辑页保存新的模型/工具超时、输出 Token，新提交的 Run 才采用新数值。供应商请求时限在供应商页面单独调整；输出还受实际模型能力和上下文窗口约束，大文件容量不代表模型能容纳同等大小输入。
+
+`max_model_calls`、`max_tool_calls`、`max_total_tokens` 是每轮累计预算，与上表中的单次时限、单次输出上限分别生效：
+
+| 参数 | 创建时省略或传 `null` | 填写时的范围与用途 |
+| --- | --- | --- |
+| `max_model_calls` | 默认 `null`，不设置该项上限。 | `1～100`，限制本轮可开始的模型调用次数，包含历史摘要与纠正回合。 |
+| `max_tool_calls` | 默认 `null`，不设置该项上限。 | `1～100`，限制本轮工具调用次数，失败调用也计数。 |
+| `max_total_tokens` | 默认 `null`，不设置该项上限。 | `1～10000000`，限制本轮上游报告的累计 Token，包含输入和输出。 |
+
+会话任务在 Agent 创建/编辑接口配置这些预算，提交时保存到 Run 快照；独立 `POST /api/v1/runs` 可直接传入。Agent 更新时省略字段保留原值，传 `null` 清除该项上限；`0` 不是关闭上限的合法值。这三项没有对应的环境默认数值，默认 `null` 也不会关闭单次调用时限、单次输出上限或图步数限制。模型是否报告完整用量决定累计 Token 的可核算范围；本轮已超额后会停止后续调用，无法保证上游单次请求不会越过剩余额度。
+
+输出 Token 上限和调用时限需要分别判断。模型以 `length`、`max_tokens` 等结束原因停止时，平台记录 `failed/model_output_limit_exceeded`，不会把部分回答标为完成，也不会在相同额度下自动补救文件或执行被截断的工具参数；本轮已报告的模型用量仍进入 Run 和调用记录。思考模型可能在正文、工具参数生成前耗尽输出额度；应结合 Agent 的“模型思考模式”“最大输出 Token”、实际模型能力、上下文窗口和单次模型时限调整。没有明确的输出截断标记且最终正文为空时，仍记录 `empty_response`；不能仅凭输出用量等于上限判断截断。
+
+Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随模型，默认）、`enabled`（启用思考）、`disabled`（关闭思考）。`yp_agent_config.thinking_mode` 保存偏好，每次提交固定到 `yp_agent_run.agent_thinking_mode`；worker 使用该快照构造模型，修改 Agent 不改变已有 Run。Agent 创建/更新接口接受 `thinking_mode`，独立 `POST /api/v1/runs` 也可传同名字段，Run 响应返回 `agent_thinking_mode`；重复提交键须保持原偏好。
+
+当前显式启闭仅适配实现 `chat_template_kwargs.enable_thinking` 的 `openai_compatible` 服务，参数通过 SDK 的 `extra_body` 写入请求体。其他供应商类型须使用 `auto`；Agent 保存、会话模型目录及提交会检查兼容性。兼容协议类型也不代表具体上游一定支持该扩展，需在目标服务验证。关闭思考不会关闭工具调用，工具仍按既有权限及自动选择规则使用；它也不能保证任意长报告都能在配置额度内生成。
+
+`GET /api/v1/agents/runtime-limits` 向已登录用户返回附件限额、Agent 默认值、分类调用时限及图步数限制，不返回密钥、完整环境配置或整轮倒计时字段。页面读取该接口，加载失败时可以重试。知识库上传 10 MiB、生成产物 10 MiB、图片 2 MiB、脚本入参 64 KiB 及各格式解析页数/行数继续按各自限制处理。
 
 ## 模块与数据边界
 
@@ -125,7 +199,7 @@ uv run python -m app.cli.create_admin admin --mail admin@example.com
 
 ## 文件存储
 
-`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、每个最多 10 MiB。支持 UTF-8 TXT/Markdown、PDF、DOCX、XLSX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
+`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、单文件上限由 `ARTIFACT_UPLOAD_MAX_BYTES` 配置（默认 20 MiB）。支持 UTF-8 TXT/Markdown、PDF、DOCX、XLSX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
 
 默认文件正文位于 Git 忽略的 `.run-private/artifacts`，可通过 `ARTIFACT_STORAGE_DIR` 指向私有目录；元数据位于 `yp_artifact`。设置 `ARTIFACT_STORAGE_BACKEND=s3`、`ARTIFACT_S3_BUCKET` 及对应的 endpoint、region、凭据后可使用私有 S3 兼容桶；`ARTIFACT_STORAGE_DIR` 此时仍用于临时校验文件。切换存储后端不会自动迁移已有正文。停写并备份后可用 `uv run python -m app.cli.migrate_artifacts_to_s3` 复制和校验现有文件，再让 API 与 worker 同时切换配置。上传配额由 `ARTIFACT_OWNER_MAX_BYTES` 和 `ARTIFACT_OWNER_MAX_FILES` 控制；部署时应配置代理上传上限、恶意软件扫描与备份/孤儿文件清理策略。
 
@@ -139,11 +213,11 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 长会话使用模型目录的 `context_window` 和 Agent 的 `max_output_tokens` 计算输入预算，并预留系统指令及工具描述空间；接近阈值时由 DeepAgents 将较早历史压缩为摘要，最近消息继续保留。摘要模型调用同样计入 Run 的调用次数、Token 和估算成本，受模型超时与预算限制。摘要只改变后续模型看到的检查点上下文，业务库中的用户和助手消息保持原文，可继续供前端按游标读取；压缩后的历史可能丢失细节，文件仍可按需重新读取。图片按每张额外预留约 2048 个输入 Token，摘要提示仅保留图片旁的文字，不重新发送内嵌图片。窗口不足以容纳输出上限及最低输入空间时，Agent 配置返回 409；旧配置、直接 Run 或单轮输入估算超过可用空间时以 `context_window_exceeded` 失败。Token 估算和固定开销不是供应商实际计数的保证。未配置 `context_window` 时仍依赖框架默认摘要阈值，应在模型目录填入经验证的窗口大小。
 
-摘要或普通模型调用失败时，公开消息不追加助手回答。上一轮存在已完成检查点时，若失败 Run 未调用工具，或仅完成当前授权 Skill 的文件读取，下一轮可从该已确认检查点继续；其他工具调用及失败的 Skill 读取不自动回退。当前执行线程尚未完成过回答且其中历史 Run 都已终结、未调用工具时，下一次提交会更换检查点线程；若会话在其他线程已有成功轮次，仍按模型切换规则携带可见文字历史。切换只影响后续 Run 的模型上下文，会话 ID 与历史消息保持不变，失败轮的输入不会自动带入新线程。无法证明检查点归属或工具副作用安全时仍返回 `checkpoint_mismatch`，需要核对后创建新会话。失败 Run 中已发生的模型调用仍计入预算。
+摘要或普通模型调用失败时，公开消息不追加助手回答，已发生的模型调用仍计入预算。下一轮只在能证明检查点归属和工具副作用安全时继续：无工具调用、已授权 Skill 文件读取及 `list_session_artifacts` 只读附件列表适用受控恢复；无法证明时返回 `checkpoint_mismatch`。首轮空起点与历史检查点的分支规则见“失败轮次后的继续对话”，会话 ID、历史消息和原失败状态保留，失败输入不自动带入新轮。
 
 工具事件 `tool_started`、`tool_completed`、`tool_failed` 只公开工具名和关联 ID，不把参数、结果、异常正文或文件内容塞进 SSE。文本文件读取工具只有在 Run 开启且模型工具能力已验证时才可用；`list_text_artifacts` 返回授权文件摘要，`read_text_artifact` 需要所有者审批，执行时再次检查文件和权限。具备工具能力的模型可自行调用生成工具，无需前端传 `publish_answer_artifact`；生成文件先暂存，Run 完成时与助手消息一同发布并写入 `artifact_published`。审批入口为 `GET /api/v1/runs/{run_id}/approval` 与 `POST /api/v1/runs/{run_id}/approval/decision`；拒绝会取消 Run，同意只保存决定，worker 才会根据检查点恢复执行。产物也可用 `GET /api/v1/artifacts?run_id={run_id}` 查询，下载仍走授权文件接口。
 
-具备已验证工具能力的模型还可调用 `list_session_artifacts` 查看本会话最近已发布产物的 ID、名称和类型，再用 `read_generated_artifact` 按指定 ID 读取文本。读取时再次核对当前 Run 租约、用户、会话、产物状态、期限、大小和 SHA-256；TXT、Markdown、HTML、JSON、CSV、PDF、DOCX、XLSX 的可提取文本单次最多 16 KiB。HTML 只提取可见文本；扫描 PDF、复杂嵌入对象及超限文件不能据此完整续编辑。工具结果属于模型内部上下文，不写入公开消息或 SSE，但可能保留在检查点中；删除源文件不会自动清除已有检查点内容。模型仅在判断需要时调用工具，多个候选文件时应先确认目标；服务端不会在每轮自动读取所有产物。依次列出、读取、回答通常至少需要 3 次模型调用和 2 次工具调用；再生成新版文件还需预留额外预算。
+具备已验证工具能力的模型还可调用 `list_session_artifacts` 查看本会话最近已发布产物的 ID、名称和类型，再用 `read_generated_artifact` 按指定 ID 读取文本。本轮选入上下文的用户上传附件已在消息的“参考文件内容”中提供，直接使用该正文；上传附件 ID 不适用于此工具。读取 ID 不属于当前可读生成产物（包括跨会话、已删除或过期）时，返回 `status=error`、`error=generated_artifact_unavailable` 的可修正提示，模型可继续使用已有附件正文或重新列出可用产物；拒绝读取不登记产物来源，不泄漏目标文件是否存在或其正文。授权失效和文件损坏等实际读取故障仍按原流程处理。读取时再次核对当前 Run 租约、用户、会话、产物状态、期限、大小和 SHA-256；TXT、Markdown、HTML、JSON、CSV、PDF、DOCX、XLSX 的可提取文本单次最多 20 MiB。HTML 只提取可见文本；扫描 PDF、复杂嵌入对象及超限文件不能据此完整续编辑。工具结果属于模型内部上下文，不写入公开消息或 SSE，但可能保留在检查点中；删除源文件不会自动清除已有检查点内容。模型仅在判断需要时调用工具，多个候选文件时应先确认目标；服务端不会在每轮自动读取所有产物。依次列出、读取、回答通常至少需要 3 次模型调用和 2 次工具调用；再生成新版文件还需预留额外预算。
 
 | 模型生成工具 | 产物格式 | 输入与边界 |
 | --- | --- | --- |
@@ -187,7 +261,7 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 会话更新与提交均使用版本比较，所有线程中的活动 Run 都阻止切换；当前及历史会话线程不能通过独立 `POST /runs` 复用。相同提交键和相同请求重试优先返回原 Run，即使之后会话已切换模型；若显式携带的模型与原 Run 不一致，则返回 409。原有客户端不传新增校验字段时仍可提交，但会话仍使用自身保存的模型。
 
-冲突保留 HTTP 409 和业务码 `10005`，并以 `data.reason` 区分 `session_busy`、`session_archived`、`session_version_changed`、`session_model_changed`、`model_unavailable`、`model_capability_mismatch`、`model_context_insufficient` 和 `model_pricing_missing`。收到版本或选择冲突后应刷新会话与运行状态，保留输入草稿后再提交。
+冲突保留 HTTP 409 和业务码 `10005`，并以 `data.reason` 区分 `session_busy`、`session_archived`、`session_version_changed`、`session_model_changed`、`model_unavailable`、`model_capability_mismatch`、`model_context_insufficient`、`model_pricing_missing` 和 `model_thinking_mode_unsupported`。收到版本或选择冲突后应刷新会话与运行状态，保留输入草稿后再提交。
 
 ### 对话产物内容预览
 
@@ -204,7 +278,7 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 `GET /api/v1/artifacts/{artifact_id}/preview` 沿用下载接口的文件所有权、状态、逻辑删除和有效期校验，返回 `artifact_id/filename/media_type/kind/content/sheets/truncated/notice`。展示方式以服务端核验的媒体类型及返回的 `kind` 为准，不依据文件名推断。接口复用私有本地/S3 存储读取，不生成公共链接、不新增预览文件或数据库表，响应带 `Cache-Control: no-store`。未登录返回 401；不存在、跨用户、未发布、已删除或过期的文件返回 404；不支持的格式返回 415，内容解析失败返回 422；抽屉内保留错误说明、重试和原件下载入口。
 
-预览最多读取 10 MiB 原文件，正文共享 100000 字符预算；PDF 最多 20 页；表格最多 5 张工作表，每表 200 行、50 列，总计 5000 个单元格。超限通过 `truncated=true` 和界面提示说明仅展示部分内容，完整内容仍通过原件下载。Office 解析前限制 ZIP 条目和解压体积；解析在后台线程执行。预览不会更改文件、消息、Run 状态或模型上下文。
+预览读取上限取对话上传配置与生成产物 10 MiB 上限的较大值（默认 20 MiB），正文共享 100000 字符预算；PDF 最多 20 页；表格最多 5 张工作表，每表 200 行、50 列，总计 5000 个单元格。超限通过 `truncated=true` 和界面提示说明仅展示部分内容，完整内容仍通过原件下载。Office 解析前限制 ZIP 条目和解压体积；解析在后台线程执行。预览不会更改文件、消息、Run 状态或模型上下文。
 
 ### 对话中的 Skill、Tool 与知识库调用状态
 
@@ -212,7 +286,7 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 `GET /api/v1/runs/{run_id}/calls` 返回按首次事件顺序排列的 `call_id/kind/name/status/sequence`，每次复核运行所有权与 Agent 当前访问权。会话 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` 的每条消息同时携带所属运行的 `calls` 数组，按页批量查询，不逐条回放完整文本事件；用户消息也携带该摘要，以便没有最终助手回答的失败轮次恢复调用记录。前端仅在助手一侧展示，运行时由工具事件触发重读并定时补齐，完成后以消息内摘要恢复历史。同名工具的多次调用按关联 ID 分别保留，不混并成功和失败。
 
-调用摘要按需读取既有 `yp_agent_run_event`、`yp_agent_run` 及本轮知识库关联和当前授权资源，不新增摘要表，也不需要数据库迁移。没有可汇总调用事件的运行返回 `data: []`，会话消息对应 `calls: []`；旧运行仅能恢复已保存的事件，不补造历史调用。独立摘要接口使用 `Cache-Control: no-store`；运行不存在、跨所有者或 Agent 当前授权已撤销时返回 HTTP 404。
+调用摘要按需读取 `yp_agent_run_event`、`yp_agent_run` 及本轮知识库关联和当前授权资源。没有可汇总调用事件的运行返回 `data: []`，会话消息对应 `calls: []`；旧运行仅能恢复已保存的事件，不补造历史调用。独立摘要接口使用 `Cache-Control: no-store`；运行不存在、跨所有者或 Agent 当前授权已撤销时返回 HTTP 404。
 
 状态为 `running`（执行中）、`succeeded`（成功）、`failed`（失败）和 `interrupted`（结果未确认）。只有开始事件而运行已终结时显示结果未确认，不能据整轮成功或失败猜测调用结果；已成功工具不会因后续模型失败而改为失败。Skill 成功表示对应文件读取完成；知识库成功表示检索调用完成，无命中仍可成功，也不证明最终回答使用了检索片段。摘要不返回工具参数、工具结果、查询正文、文档原文或凭据；原有知识引用详情仍通过独立授权接口查看。
 
@@ -288,6 +362,8 @@ scripts:
 
 该脚本的试运行和正式调用参数都是 `{}`。脚本通过标准输入读取 JSON，通过标准输出返回单个有界 JSON 值；统计和取数以实际返回为准。脚本试运行验证绑定整个包，即使只修改参考资料或 CSV，也需重新验证后发布。
 
+用户脚本、Skill 受管脚本与 MCP 的执行前参数纠正规则见“Tool 管理与沙箱”。脚本字段由模型依据 Skill 组织，用户无需把内部字段添加到会话 `/runs` 请求中。
+
 “不需要用户传参”不表示内部工具没有参数：正文生成文档仍需模型传入 `filename` 与 `content`，模板生成仍需模型组织字段。通用文档生成适合固定章节及基础标题、段落、列表；严格复用既有 Word 版式时使用模板流程，当前不能把无占位符的静态 DOCX 放入 `assets/templates/` 后跳过字段契约自动写入任意正文。模板也可以只约定一个正文字符串字段，但仍需匹配的 Schema。脚本在临时目录写出的文件不会自动成为会话产物，需由内置文件生成或模板工具交付。
 
 创建时先保存正文与实际资源，仅登记存在的脚本和模板；没有执行能力的 Skill 不用填写执行配置。有脚本则先准备依赖、试运行，通过后校验发布；“准备完成”不等于“已验证”。Agent 关联已发布启用版本，用户新建会话后直接描述任务，需要附件时再上传。以真实调用记录和可下载产物判断完成，不以模型声明“已执行/已生成”作为成功证据。
@@ -338,7 +414,7 @@ Skill 正文定义何时使用、取数步骤和产物要求；模板是该 Skil
 1. 在 Skill 页面编写适用场景、取数步骤、模板文件名、字段含义及缺失信息处理规则。例如正文写明“调用 func1 工具获取数据，按照 xxx_template.docx 模板生成报告”。
 2. 在文件工作区批量上传实际 DOCX 到 `assets/templates/`，把各自的报告字段 JSON Schema 放入 `assets/schemas/`，在执行配置中逐个关联。每个版本最多 10 个模板、单个最多 2 MiB。Word 模板使用 `{{ title }}`、`{{ summary }}` 等占位符；正文、模板和字段契约一起校验并原子发布。仅在正文中写文件名不会读取服务器本地文件或外部 URL。
 3. 在 Agent 中重新保存该 Skill 关联，固定包含模板的版本，并关联正文需要的业务工具；选择已验证 `tools` 能力的模型。之后更新正文或模板，已有 Agent 绑定和已提交 Run 继续使用原版本。
-4. 用户正常发送业务任务。若任务需要本地材料，可在输入区添加或拖入文件，勾选“供模型读取”；支持 TXT、Markdown、PDF、DOCX、XLSX、PNG/JPEG，每轮最多 5 个、单个最多 10 MiB。若数据来自业务工具，则无需上传附件。
+4. 用户正常发送业务任务。若任务需要本地材料，可在输入区添加或拖入文件，勾选“供模型读取”；支持 TXT、Markdown、PDF、DOCX、XLSX、PNG/JPEG，每轮最多 5 个、单文件上限默认 20 MiB、由部署配置控制。若数据来自业务工具，则无需上传附件。
 5. worker 固定本轮 Skill 版本，模型按任务读取 `SKILL.md`。正文附带该版本所有模板文件名、Skill ID、各自字段契约及受控生成方式；模型按正文的适用条件选取模板，调用实际授权的业务工具或读取材料，组织所选模板的报告字段。上传多个模板不代表每次任务都要生成全部模板。
 6. 模型调用 `render_skill_document(skill_id, report_data, filename, template_name="assets/templates/xxx_template.docx")`；有多个模板时必须提供 `template_name`，单模板可省略。服务端核对本轮绑定版本及当前授权，校验结构化字段，使用私有模板填充 DOCX，保留正文、表格、页眉页脚及样式。
 7. 成功读取模板 Skill 正文后，运行会登记该 Skill 的模板交付要求。每个已执行模板 Skill 至少须交付一个来源匹配的 DOCX；具体需生成哪些报告由正文和任务要求决定。文字、通用 DOCX 和其他版本模板不能替代。缺少产物时在预算内进行一次纠正尝试，仍未交付则明确失败。完成后发布文件，助手消息提供来源、预览和下载。
@@ -396,7 +472,7 @@ Skill 正文示例（`func1` 应是已关联且可用的业务工具名称；运
 
 数据链路为：`SkillVersion` → `yp_skill_template(skill_id, skill_version, template_key, artifact_id, fields_schema)` → 本轮 `yp_run_skill` 版本快照 → 模型读取正文并登记 `required_report` → 业务工具取数/可选用户材料 → 字段校验/沙箱渲染 → `yp_artifact` 暂存 → Run 完成发布 → 助手消息。模板正文沿用私有文件存储，`yp_artifact.source=skill_resource`，不随普通上传保留期过期，受所有者文件配额约束；历史版本资源不能通过通用文件删除接口单独移除。文字版本更新沿用全部模板关联，替换模板创建新资源。文件名按 Unicode NFC 和不区分大小写规范化，每个版本内唯一，禁止使用目录路径；多个模板未指定名称或名称不存在时明确报错，不自动猜测。模板报告在 `yp_artifact.template_source` 保存 Skill 名称/ID/版本、模板文件名/键、模板文件 ID/摘要和结构化数据摘要；消息中的 `context_artifact_ids` 继续记录本轮提供的材料。这些是生成来源记录，不代表模型已正确审查全部事实或实际引用每一段材料。
 
-当前文本上下文提取后的正文连同文件标识合计最多 **16 KiB**；发送前与 worker 使用同一提取预算，超限明确拒绝，不静默截断。长材料需拆分或使用知识库；知识库检索只召回相关片段，也不能等同于逐页全文审查。扫描 PDF 的 OCR、长文档分段读取与覆盖证明、完整 Word 分页版式预览尚未提供。完整 Skill ZIP 可携带模板及字段契约跨环境迁移；脚本执行环境及其试运行验证不会随 ZIP 迁移，需在目标环境重新准备并验证。
+文本上下文提取后的正文连同文件标识合计受 `ATTACHMENT_CONTEXT_MAX_BYTES` 控制，默认 **20 MiB**；发送前与 worker 使用同一提取预算，超限明确拒绝，不静默截断。长材料需拆分或使用知识库；知识库检索只召回相关片段，也不能等同于逐页全文审查。扫描 PDF 的 OCR、长文档分段读取与覆盖证明、完整 Word 分页版式预览尚未提供。完整 Skill ZIP 可携带模板及字段契约跨环境迁移；脚本执行环境及其试运行验证不会随 ZIP 迁移，需在目标环境重新准备并验证。 20 MiB 是 UTF-8 字节预算，不代表模型一定容纳同等大小的输入；实际仍受所选模型上下文窗口及解析格式约束（最多 5000 行，PDF 最多 50 页，XLSX 最多 5 表、每表 1000 行/100 列）。
 
 ## Tool 管理与沙箱
 
@@ -415,6 +491,12 @@ Skill 正文示例（`func1` 应是已关联且可用的业务工具名称；运
 | `GET /api/v1/tools/runs/{run_id}/calls` | 仅向 Run 所有者返回调用版本、状态和脱敏失败类别；终态时未完成的调用标为 `unknown`，不能视为成功或可安全重试。 |
 
 脚本创建参数包含 `name`、`description`、`kind=script`、`input_schema`、`script_language`（`python`/`bash`）和 `source_code`。`input_schema` 必须是对象型 JSON Schema，描述调用参数；无参数脚本可填 `{"type":"object","properties":{},"additionalProperties":false}`。源码通过 JSON 字符串传递，由序列化器处理实际换行；`/test` 不接受源码或语言字段。
+
+正式 worker 调用用户脚本或 MCP Tool 前，严格校验该版本的输入 JSON Schema。模型遗漏必填字段、类型不符或包含多余字段时，工具返回 `status=error` 的可修正反馈：`error=invalid_tool_arguments`、`retryable=true` 及最多 8 条字段路径/规则/缺失字段提示，并标明是否截断；不回显输入正文、完整 Schema 或原始校验异常。该次工具尚未执行；模型可使用新的调用 ID 补齐真实数据后再次调用，同一 Run 继续编排。错误调用仍计入工具次数和事件，调用审计记录 `failed/invalid_tool_arguments`，修正成功另记一次成功调用；不自动填入空列表、删除约束或编造审查结果，重试仍受已有模型/工具预算及图步数限制。
+
+`retryable=true` 表示模型可以根据反馈修正后重新调用，不会触发平台按固定次数重放。模型自行决定是否继续，后续调用使用新的调用 ID，受同一 Run 的 `max_model_calls`、`max_tool_calls`、Token/费用预算及 `RUNTIME_RECURSION_LIMIT` 约束；没有单独的“脚本失败自动重试两次”配置。脚本主动拒绝输入的反馈协议见“脚本 Tool 与依赖环境”；生成文件缺失时最多一次内部补救是另一项独立规则。
+
+上述 `invalid_tool_arguments` 反馈仅适用于执行前 Schema 校验；权限失效、依赖配置、脚本崩溃及外部服务错误沿用既有处理，外部写入结果未知仍不能自动重放。已确认未执行的外部写参数错误记录为 `failed`，实际调用后结果不明仍记录 `unknown`。MCP 外部写在校验前仍复核恢复契约并注入服务端幂等键。
 
 Python Tool 通过 `requirements` 声明依赖，前端支持逐行填写或导入 `requirements.txt`。清单最多 32 项，每项 256 字节，支持标准包名、版本约束、extras 和环境标记；拒绝 URL、Git、本地路径及 pip 配置参数。Bash/MCP 不支持 Python 依赖清单。平台不根据 `import` 猜包名，例如导入 `PIL` 时应声明 `Pillow`；空数组表示沿用基础镜像，无需额外环境。
 
@@ -495,6 +577,8 @@ result = {
 print(json.dumps(result))
 ```
 
+只读脚本可通过“标准输出为空、标准错误为一行最多 512 字的可打印 UTF-8 校验提示、退出码为 1”主动拒绝输入。该提示会作为 `status=error`、`error=script_input_rejected`、`retryable=true` 的 ToolMessage 交给模型，供其依据 Skill 规则修正后用新的调用 ID 再调用；提示属于工具公开反馈，不应包含凭据或内部日志。脚本已经执行，调用审计保留 `failed/execution_error`，仍消耗工具预算。写工具不自动修正重试；多行日志、堆栈、超长或非文本错误、非空标准输出、其他退出码及依赖/容器/超时故障继续走原失败处理。
+
 试运行检查退出码为 0、输出可解析为 JSON，并通过统一响应返回；`data.result` 是 JSON 字符串，例如 `{"code":200,"message":"操作成功","data":{"result":"{\"ok\": true}"}}`。这验证了受限环境中的执行和输出协议，业务结果是否符合预期仍由 Tool 创建者确认。常驻 Web 服务不适用于该任务模式：脚本需在时限内完成并输出 JSON。
 
 ### 基础镜像与离线部署
@@ -530,7 +614,7 @@ docker load -i y-point-script-sandbox.tar
 | 网络 | 下载仅经允许的包仓库代理；离线下载与安装均禁网 | 始终禁网 |
 | 内存 / CPU / 进程数 | 512 MiB / 1 CPU / 64 | 128 MiB / 1 CPU / 64 |
 | 临时目录 | 64 MiB | 8 MiB |
-| 时限 | 总计默认 180 秒，配置范围 10～1800 秒 | 试运行 10 秒；正式调用取 Agent 工具时限且最多 30 秒 |
+| 时限 | 总计默认 180 秒，配置范围 10～1800 秒 | 试运行按 `SCRIPT_TEST_TIMEOUT_SECONDS`（默认 10 秒）；正式调用取 Agent 工具时限与 `SCRIPT_EXECUTION_TIMEOUT_SECONDS`（默认 30 秒）的较小值 |
 | 文件及数据 | 构建期间周期性检查 512 MiB、20,000 个文件上限，非宿主文件系统硬配额 | 参数结构最多 16 KiB、源码最多 64 KiB、输入/标准输出/错误输出各最多 64 KiB |
 
 准备和执行容器使用非特权用户、只读根文件系统、权限与进程限制；按阶段只挂载所需的准备目录、源码或依赖，不挂载宿主机业务目录或 Docker 管理接口。执行时不安装库，安装 `httpx` 不会开放外部访问；外部服务业务应使用经授权和审批的 MCP Tool。容器内系统信息反映沙箱环境，需要中国标准时间的脚本应明确指定 UTC+08:00。
@@ -543,9 +627,9 @@ docker load -i y-point-script-sandbox.tar
 
 连接使用 SDK 的 `streamable_http_client` 和显式管理的 `httpx.AsyncClient`，统一认证、连接/读取超时及退出清理。仅允许公网 HTTPS，解析结果不得包含私网、回环或保留地址；请求固定到校验后的 IP，保留原 Host 与 TLS 域名，并在传输层拒绝所有 3xx 响应。当前只支持 Streamable HTTP，每个 Tool 保存一个远端定义，无独立连接实体供多个 Tool 统一维护。每次连接在 SDK 解析前累计限制接收 1 MiB，拒绝压缩响应及超预算的声明长度；结果解析后仍保留 64 KiB 上限。发现支持有界分页，默认最多 128 个工具、总量 256 KiB，单个名称/描述/Schema 分别限制为 128 B/4 KiB/16 KiB，并拒绝重复工具名和循环游标。
 
-### M5.1 治理与兼容边界
+### Tool 治理与兼容边界
 
-`041` 增加凭据撤销水位、恢复契约和数据库并发租约；启动 API/worker 前执行 `uv run alembic upgrade head`，并重启常驻 worker。SQLite 业务库可先使用在线备份；历史 MCP 写类型不会自动改成只读或自动获得写契约验收。
+Tool 治理覆盖凭据撤销、外部写恢复契约和数据库并发租约。外部写类型须显式核对能力与恢复契约后启用；部署操作见“数据库与测试”，迁移与回填历史见 `y-point-server-todo.md`。
 
 - 凭据更新省略 `mcp_bearer_token` 或提交空字符串时保留；非空值替换。`clear_mcp_credentials=true` 清除新版本凭据，与替换互斥。轮换/清除会撤销此前带凭据版本并取消相关 Run。`POST /api/v1/tools/{id}/credentials/revoke` 接收 `expected_version`，无需远端在线即可撤销历史凭据并禁用 Tool；恢复须显式替换或清除后重新发布。撤销共享会阻止旧 Run 继续借用凭据；已发往远端的操作无法撤回。
 - MCP 缺少只读声明时默认按外部写处理；管理员可在核对实际能力后显式以 `effect=read` 发布缺少声明的只读工具。远端明确声明写操作时不能降为只读。外部写要求 `recovery_policy=idempotent`、有效的字符串 `idempotency_key_field`，以及管理员通过 `POST /api/v1/tools/{id}/write-contract/verify` 提交该版本的 `expected_version` 和 `evidence_reference`。新版本须重新验收。模型不可自行提供服务端幂等键；结果不明记为 `unknown`，相同调用禁止自动重放。
@@ -822,7 +906,7 @@ SQLite 自动创建其余内部影子表，所以代码中没有每张表各自�
 | `yp_knowledge_fts_docsize` | 保存全文记录各列的词项数量，供评分等逻辑使用，不是原文件字节大小。 |
 | `yp_knowledge_fts_config` | 保存 FTS5 的持久化配置。 |
 
-正式建表由 [知识库迁移](migrations/versions/042_knowledge.py) 管理；ORM 的 `KnowledgeChunk` 建表事件也调用 [create_native_keyword_index()](app/services/knowledge_backend.py)，供测试等建表场景保持一致。发布时 `write_keyword_rows()` 与片段同事务写入，查询使用 `MATCH` 和 BM25。只通过虚拟表入口维护，不直接修改或单独删除影子表，也不为它们补 `CustomBaseModel`、`__table_name__`；[Alembic 比较规则](migrations/env.py) 已排除这些内部表，避免误生成删除迁移。
+关键词索引随业务表创建和维护；ORM 的 `KnowledgeChunk` 建表事件也调用 [create_native_keyword_index()](app/services/knowledge_backend.py)，供测试等建表场景保持一致。发布时 `write_keyword_rows()` 与片段同事务写入，查询使用 `MATCH` 和 BM25。只通过虚拟表入口维护，不直接修改或单独删除影子表，也不为它们补 `CustomBaseModel`、`__table_name__`；[Alembic 比较规则](migrations/env.py) 已排除这些内部表，避免误生成删除迁移。
 
 切换 PostgreSQL 后不会创建这组表，而是在分块表上创建原生全文索引：
 
@@ -863,9 +947,11 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 ### 失败轮次后的继续对话
 
-已有成功回答的会话在后续 Run 失败、取消或超时后，可以使用新的 `request_key` 提交下一轮。若最新检查点属于同一用户、Agent、会话和线程中已终结的轮次，且该轮没有工具调用，或全部已计数调用均可由只读 Skill 文件开始事件证明，worker 会从更早的已确认检查点分支继续；Skill 读取失败或中断后未写入结束事件也适用。此前已完成的对话上下文保留，失败轮次不会自动重放，旧 Run、事件与检查点保留用于核对。
+已有成功回答的会话在后续 Run 失败、取消或超时后，可以使用新的 `request_key` 提交下一轮。若最新检查点属于同一用户、Agent、会话和线程中已终结的轮次，且该轮没有工具调用，或全部已计数调用均可由只读 Skill 文件或 `list_session_artifacts` 附件列表开始事件证明，worker 会从更早的已确认检查点分支继续；Skill 读取失败或中断后未写入结束事件也适用。此前已完成的对话上下文保留，失败轮次不会自动重放，旧 Run、事件与检查点保留用于核对。
 
-供应商连接的 `timeout_seconds` 控制 SDK 请求等待，Agent 的 `model_timeout_seconds` 控制本轮执行预算；供应商设置较短时，即使 Agent 预算较长也会提前中断。OpenAI/Anthropic SDK 和 HTTPX 明确报告的请求超时归为 `timed_out/provider_timeout`，执行预算耗尽为 `timed_out/execution_timeout`，工具执行超时为 `timed_out/tool_execution_timeout`；Run、状态事件与调用记录同步保存原因，页面展示可操作的提示。其他模型错误仍为 `failed/model_error`，不向响应暴露原始 SDK 异常、请求头或凭据。连续失败时先查上游响应、供应商超时和 Agent 预算；失败后新一轮使用新 `request_key`，沿用旧键只会返回原失败 Run，不会重新执行。平台不会为超时自动切换模型或重放工具。
+首轮失败后也可以继续同一会话：失败轮次没有工具调用，或仅调用已授权的 Skill 文件读取与 `list_session_artifacts` 只读附件列表时，新请求从空起点或最近已确认的检查点分支，不继承失败输入、内部文件补救提示或待执行工具。历史产物补救检查点的 `run_id:retry` 元数据可追溯至原 Run，仍核对所有者、Agent、会话、线程、时间顺序及工具事件。存在其他工具执行记录或无法确认安全边界时继续拒绝自动恢复，不重放业务工具。历史 Run 状态保持原样，每次重新发送使用新的 `request_key`，并读取当前会话版本。
+
+供应商连接的 `timeout_seconds` 控制 SDK 请求等待，Agent 的 `model_timeout_seconds` 控制单次模型调用时限；整轮不再设置总倒计时，供应商设置较短时仍会提前中断。OpenAI/Anthropic SDK 和 HTTPX 明确报告的请求超时归为 `timed_out/provider_timeout`，单次模型调用超时为 `timed_out/model_execution_timeout`，历史整轮超时或内部调用方显式时限保护保留 `timed_out/execution_timeout`，工具执行超时为 `timed_out/tool_execution_timeout`，图步数耗尽为 `failed/graph_step_limit_exceeded`；Run、状态事件与调用记录同步保存原因，页面展示可操作的提示。其他模型错误仍为 `failed/model_error`，不向响应暴露原始 SDK 异常、请求头或凭据。连续失败时先查上游响应、供应商超时和 Agent 预算；失败后新一轮使用新 `request_key`，沿用旧键只会返回原失败 Run，不会重新执行。平台不会为超时自动切换模型或重放工具。
 
 普通工具调用、缺失开始事件、重复调用 ID、结束事件不匹配、检查点归属不明或缺少可用的已确认检查点，不适用上述自动回退；无法通过其他既有恢复路径时仍返回 `checkpoint_mismatch`。该故障码不应通过把旧 Run 改回排队或删除检查点来绕过。尚无成功回答且全部历史轮次已终结、没有工具调用的会话，仍按既有规则在新提交时切换检查点线程；已发生或结果未知的外部写入不会因继续对话而自动撤销。
 
@@ -884,13 +970,13 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 | 场景 | 接口与前端处理 | 业务数据落库和流转 |
 | --- | --- | --- |
-| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT/Markdown、PDF、DOCX、XLSX 文本；单轮提取后连同文件标识最多 16 KiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且本轮会话模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT 原文件在提交时另受 16 KiB 限制；未选中的附件只供展示和下载。 |
+| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT/Markdown、PDF、DOCX、XLSX 文本；单轮提取后连同文件标识受 `ATTACHMENT_CONTEXT_MAX_BYTES` 控制，默认 20 MiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且本轮会话模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT/Markdown 原文件在提交时另受本轮附件正文预算限制；未选中的附件只供展示和下载。 |
 | 根据附件生成文件 | 本轮上传文件 ID 同时放入 `artifact_ids` 与 `context_artifact_ids`，`input_text` 写明所需格式；完成后读取会话 `messages`，从助手消息的 `artifacts` 获取生成文件 ID、`context_artifact_ids` 和 `read_source_artifact_ids`。Agent 的 `max_model_calls` 至少预留 2 次供工具调用与最终回复；需要首次未生成时自动纠正，则至少预留 3 次。 | 用户上传文件始终在用户消息的 `attachments`；模型生成文件写入私有存储，先记为 `pending`，完成时改为 `ready` 并与助手消息、事件同事务提交。产物列表和详情也返回本轮参考文件 ID，历史引用在原文件失效后保留。失败或取消后暂存文件不可下载，过期由清理任务回收。模型未调用工具时不会凭代码块自动生成文件。 |
 | 继续使用本会话产物 | 用户说“修改刚才生成的文件”时无需把产物 ID 填入 `context_artifact_ids`；模型可先列出本会话产物，再按需读取目标。前端仍可从历史助手消息取得产物 ID，供用户明确指定。 | 产物仍存于私有文件存储，读取工具只访问同一用户、同一会话中已完成 Run 的有效产物，不把全部产物自动加入每轮上下文。成功读取记录在 `yp_run_artifact_read`；其后生成新文件时，将此前读取的旧产物 ID 固定在 `yp_artifact_source`。生成产物 ID 目前不能作为上传附件传给会话提交接口；模型未调用读取工具时，下一轮仅沿用原有检查点历史。 |
 | 删除附件 | `DELETE /api/v1/artifacts/{artifact_id}` 后重新读取消息；下载仍用 `GET /api/v1/artifacts/{artifact_id}/download`。 | 文件状态变为 `deleted`，私有正文尽力清理；历史附件快照仍保留，动态 `available=false`，下载及新 Run 引用返回 404。已进入旧检查点的内容不会自动抹除。 |
 | 重复提交 | 同一会话、输入、附件顺序、上下文附件选择和回答产物开关使用相同 `request_key` 重试，返回原 `run_id`；改变任一项返回 409。 | 重试不新增 Run、消息或事件，也不再次调用模型；被拒绝的请求不占用提交键。 |
 | 取消 | `POST /api/v1/runs/{run_id}/cancel`。排队中直接返回 `cancelled`；运行中先返回 `cancel_requested`，再等待 worker 确认。 | 排队取消写终态事件，不调用模型；worker 重启不会补执行已取消 Run。运行中取消不撤销已发生的外部副作用。 |
-| 编辑 Agent | `PUT /api/v1/agents/{agent_id}` 必须传 `expected_version`，旧版本返回 409。 | 原子更新 Agent 并递增版本；已提交 Run 保留创建时的模型、指令、时限和预算快照。修改默认模型后，已有成功对话的旧会话拒绝新提交（409）；使用新模型需创建新会话。 |
+| 编辑 Agent | `PUT /api/v1/agents/{agent_id}` 必须传 `expected_version`，旧版本返回 409。 | 原子更新 Agent 并递增版本；已提交 Run 保留创建时的模型、指令、时限和预算快照。修改默认模型只影响新建会话，旧会话继续使用自身保存的模型；需要改用其他模型时，通过会话模型切换接口操作。 |
 | 归档与恢复 | `PUT /api/v1/agents/{agent_id}/sessions/{session_id}`，传 `expected_version` 和 `archived`。 | 会话版本递增；活动 Run 阻止归档，归档后拒绝新提交，恢复后可再次提交。 |
 | 会话与用户隔离 | 同一 Agent 的不同会话分别查询消息；访问未共享的 Agent、他人会话、Run 或文件。 | 会话拥有独立 `thread_id`；服务端按所有权和指定共享授权，跨用户资源按不存在处理。若检查点与业务库不一致，后续 Run 可能报 `checkpoint_mismatch`，不能只换提交键假定历史已恢复。 |
 

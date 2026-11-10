@@ -10,7 +10,11 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import ApprovalDecision, ApprovalState, MessageRole, RunCallKind, RunCallStatus, RunState
+from app.core.config import get_config
+from app.schemas.runtime_limits import ModelTimeout, ToolTimeout
+
+
+from app.core.enums import ModelThinkingMode, ApprovalDecision, ApprovalState, MessageRole, RunCallKind, RunCallStatus, RunState
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
@@ -18,8 +22,15 @@ class RunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_id: int = Field(gt=0, description="本次运行使用的可选模型 ID", examples=[1])
-    model_timeout_seconds: int = Field(default=120, ge=1, le=120, description="本轮模型生成最长秒数", examples=[60])
-    tool_timeout_seconds: int = Field(default=120, ge=1, le=120, description="单次工具执行最长秒数", examples=[30])
+    thinking_mode: ModelThinkingMode = Field(
+        default=ModelThinkingMode.AUTO, description="模型思考模式；显式启闭要求兼容服务支持 enable_thinking", examples=["auto"]
+    )
+    model_timeout_seconds: ModelTimeout = Field(
+        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, description="单次模型生成最长秒数", examples=[60]
+    )
+    tool_timeout_seconds: ToolTimeout = Field(
+        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, description="单次工具执行最长秒数", examples=[30]
+    )
     max_queue_wait_seconds: int | None = Field(default=None, ge=1, le=86400, description="排队等待最长秒数；为空时不限制", examples=[300])
     enable_text_artifact_tool: bool = Field(
         default=False, description="是否允许列出本人文本文件，并申请审批后读取文件正文", examples=[False]
@@ -57,7 +68,8 @@ class RunOut(BaseModel):
     agent_id: int | None = Field(description="关联的智能体 ID", examples=[1])
     session_id: str | None = Field(description="关联的会话 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     agent_config_version: int | None = Field(description="提交时的智能体配置版本", examples=[1])
-    model_timeout_seconds: int = Field(description="本轮模型生成最长秒数", examples=[60])
+    agent_thinking_mode: ModelThinkingMode = Field(description="提交时模型思考模式快照", examples=["auto"])
+    model_timeout_seconds: int = Field(description="单次模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行最长秒数", examples=[30])
     max_queue_wait_seconds: int | None = Field(description="排队等待最长秒数", examples=[300])
     queue_expires_at: datetime | None = Field(description="排队等待截止时间", examples=["2026-10-22T22:05:00"])
@@ -115,6 +127,7 @@ class RunSnapshotOut(BaseModel):
                 "agent_id": 1,
                 "session_id": "550e8400-e29b-41d4-a716-446655440001",
                 "agent_config_version": 1,
+                "agent_thinking_mode": "auto",
                 "model_timeout_seconds": 60,
                 "tool_timeout_seconds": 30,
                 "max_queue_wait_seconds": 300,

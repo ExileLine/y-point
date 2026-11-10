@@ -103,6 +103,7 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                     artifact_store,
                     "get_config",
                     lambda: SimpleNamespace(
+                        ARTIFACT_UPLOAD_MAX_BYTES=20 * 1024 * 1024,
                         ARTIFACT_RETENTION_DAYS=30,
                         ARTIFACT_REQUIRE_MALWARE_SCAN=False,
                         ARTIFACT_OWNER_MAX_FILES=3,
@@ -205,7 +206,7 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 "/api/v1/artifacts/uploads",
                 headers=alice,
                 files={
-                    "files": ("large.txt", b"a" * (10 * 1024 * 1024 + 1), "text/plain"),
+                    "files": ("large.txt", b"a" * (20 * 1024 * 1024 + 1), "text/plain"),
                 },
             )
             assert oversized.status_code in {400, 413}
@@ -213,7 +214,7 @@ async def exercise_artifacts(database: Path, root: Path, monkeypatch: pytest.Mon
                 "/api/v1/artifacts/uploads",
                 headers={
                     **alice,
-                    "Content-Length": str(52 * 1024 * 1024),
+                    "Content-Length": str(102 * 1024 * 1024),
                 },
                 content=b"small",
             )

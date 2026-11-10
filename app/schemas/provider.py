@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
+from app.core.config import get_config
+from app.schemas.runtime_limits import ModelTimeout
 from app.core.enums import ModelCapability, ProviderKind
 
 
@@ -44,7 +46,9 @@ class ProviderCreateIn(BaseModel):
     )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
     region: str | None = Field(default=None, max_length=64, description="服务区域", examples=["us-east-1"])
-    timeout_seconds: int = Field(default=15, ge=1, le=120, description="请求超时时间（秒）", examples=[15])
+    timeout_seconds: ModelTimeout = Field(
+        default_factory=lambda: min(15, get_config().AGENT_MAX_MODEL_TIMEOUT_SECONDS), description="请求超时时间（秒）", examples=[15]
+    )
     remark: str | None = Field(default=None, max_length=512, description="备注", examples=["用于生产环境"])
     status: Literal[0, 1] = Field(default=1, description="状态：1 启用，0 停用", examples=[1])
 
@@ -66,7 +70,7 @@ class ProviderUpdateIn(BaseModel):
     )
     api_version: str | None = Field(default=None, max_length=64, description="接口版本", examples=["2024-01-01"])
     region: str | None = Field(default=None, max_length=64, description="服务区域", examples=["us-east-1"])
-    timeout_seconds: int | None = Field(default=None, ge=1, le=120, description="请求超时时间（秒）", examples=[30])
+    timeout_seconds: ModelTimeout | None = Field(default=None, description="请求超时时间（秒）", examples=[30])
     remark: str | None = Field(default=None, max_length=512, description="备注", examples=["已验证连接"])
     status: Literal[0, 1] | None = Field(default=None, description="状态：1 启用，0 停用", examples=[0])
 

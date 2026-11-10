@@ -119,10 +119,25 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
 
             app.dependency_overrides[get_db_session] = test_session
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                login = await client.post("/api/v1/auth/login", json={"identifier": "recovery-user", "password": "StrongPassword123"})
-                headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+                login = await client.post(
+                    "/api/v1/auth/login",
+                    json={
+                        "identifier": "recovery-user",
+                        "password": "StrongPassword123",
+                    },
+                )
+                headers = {
+                    "Authorization": f"Bearer {login.json()['data']['access_token']}",
+                }
                 path = "/api/v1/agents/1/sessions/recovery-session/runs"
-                first = await client.post(path, headers=headers, json={"request_key": "first", "input_text": "第一轮"})
+                first = await client.post(
+                    path,
+                    headers=headers,
+                    json={
+                        "request_key": "first",
+                        "input_text": "第一轮",
+                    },
+                )
                 assert first.status_code == 201, first.text
                 first_id = first.json()["data"]["id"]
                 failed = await execute_text_run(
@@ -134,7 +149,14 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
                     poll_seconds=0.1,
                 )
                 assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 0
-                second = await client.post(path, headers=headers, json={"request_key": "second", "input_text": "第二轮"})
+                second = await client.post(
+                    path,
+                    headers=headers,
+                    json={
+                        "request_key": "second",
+                        "input_text": "第二轮",
+                    },
+                )
                 assert second.status_code == 201, second.text
                 result = await execute_text_run(
                     sessions,
@@ -205,6 +227,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
         """使用独立数据库和正式 HTTP 路由完成两轮对话。"""
         prompts: list[str | None] = []
         generation_settings: list[tuple[Decimal | None, int | None]] = []
+        thinking_settings: list[str] = []
         original_create_agent = runtime_adapter_module.create_deep_agent
         original_build_model = run_dispatcher_module.build_chat_model
 
@@ -218,6 +241,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
         def capture_model(model, provider, **kwargs):
             """记录队列运行实际使用的生成参数快照。"""
             generation_settings.append((kwargs.get("temperature"), kwargs.get("max_output_tokens")))
+            thinking_settings.append(kwargs.get("thinking_mode"))
             return original_build_model(model, provider, **kwargs)
 
         monkeypatch.setattr(run_dispatcher_module, "build_chat_model", capture_model)
@@ -246,7 +270,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                             id=1,
                             name="session-provider",
                             name_key="session-provider",
-                            kind="ollama",
+                            kind="openai_compatible",
                             base_url="http://localhost:11434/v1",
                             creator_id=1,
                             status=1,
@@ -387,6 +411,24 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert large_upload.status_code == 201
                     large_id = large_upload.json()["data"][0]["id"]
+                    readable = await client.post(
+                        f"{base}/{first_id}/attachments/check",
+                        headers=alice,
+                        json={
+                            "artifact_ids": [large_id],
+                            "context_artifact_ids": [large_id],
+                        },
+                    )
+                    assert readable.status_code == 200, readable.text
+                    assert readable.json()["data"]["max_context_bytes"] == 20 * 1024 * 1024
+                    assert readable.json()["data"]["context_bytes"] > 16 * 1024
+                    limit_upload = await client.post(
+                        "/api/v1/artifacts/uploads",
+                        headers=alice,
+                        files=[("files", ("at-limit.txt", b"x" * (20 * 1024 * 1024), "text/plain"))],
+                    )
+                    assert limit_upload.status_code == 201, limit_upload.text
+                    limit_id = limit_upload.json()["data"][0]["id"]
                     assert (
                         await client.post(
                             f"{base}/{first_id}/runs",
@@ -394,8 +436,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                             json={
                                 "request_key": "oversized-context",
                                 "input_text": "第一轮",
-                                "artifact_ids": [large_id],
-                                "context_artifact_ids": [large_id],
+                                "artifact_ids": [limit_id, large_id],
+                                "context_artifact_ids": [limit_id, large_id],
                             },
                         )
                     ).status_code == 413
@@ -690,6 +732,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert "first attachment" in SessionModel.seen_inputs[-1]
                     assert "second attachment" not in SessionModel.seen_inputs[-1]
                     assert generation_settings[-1] == (Decimal("1.00"), 4096)
+                    assert thinking_settings[-1] == "auto"
                     assert await publish_pending_answers(sessions, artifact_root) == 1
                     assert await publish_pending_answers(sessions, artifact_root) == 0
                     published = await client.get(
@@ -762,6 +805,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         json={
                             "expected_version": 1,
                             "system_prompt": "使用新版指令",
+                            "thinking_mode": "disabled",
                             "temperature": "0.25",
                             "max_output_tokens": 2048,
                             "model_timeout_seconds": 60,
@@ -793,6 +837,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert next_run.status_code == 201, next_run.text
                     assert next_run.json()["data"]["agent_config_version"] == 2
+                    assert next_run.json()["data"]["agent_thinking_mode"] == "disabled"
                     assert next_run.json()["data"]["thread_id"] == first_thread
                     assert next_run.json()["data"]["model_timeout_seconds"] == 60
                     assert next_run.json()["data"]["tool_timeout_seconds"] == 30
@@ -809,6 +854,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         assert new.agent_temperature == Decimal("0.25")
                         assert old.agent_max_output_tokens == 4096
                         assert new.agent_max_output_tokens == 2048
+                        assert old.agent_thinking_mode == "auto" and new.agent_thinking_mode == "disabled"
                     other_run = await client.post(
                         f"{base}/{second_id}/runs",
                         headers=alice,
@@ -829,6 +875,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert second_done is not None and second_done.id == next_run.json()["data"]["id"]
                     assert second_done.state == "completed" and prompts[-1].startswith("使用新版指令\n")
                     assert generation_settings[-1] == (Decimal("0.25"), 2048)
+                    assert thinking_settings[-1] == "disabled"
                     other_done = await dispatch_next_run(sessions, tmp_path / "checkpoint.db", resolve_model=model_two)
                     assert other_done is not None and other_done.id == other_run.json()["data"]["id"]
                     assert other_done.state == "completed" and prompts[-1].startswith("使用新版指令\n")

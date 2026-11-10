@@ -57,6 +57,14 @@ class ToolInvocationState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ToolFeedbackFailure(StrEnum):
+    """工具可反馈给模型修正的输入问题，执行与审计状态分别判断。"""
+
+    INVALID_ARGUMENTS = "invalid_tool_arguments"
+    SCRIPT_INPUT_REJECTED = "script_input_rejected"
+    GENERATED_ARTIFACT_UNAVAILABLE = "generated_artifact_unavailable"
+
+
 class RunState(StrEnum):
     """运行任务的持久化状态。"""
 
@@ -138,12 +146,45 @@ class ProviderKind(StrEnum):
     BEDROCK = "bedrock"
 
 
+class ModelThinkingMode(StrEnum):
+    """单次模型调用的思考偏好，默认遵循上游设置。"""
+
+    AUTO = "auto"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
 class RunTimeoutReason(StrEnum):
     """运行超时的机器可读原因，区分上游请求与执行预算。"""
 
+    MODEL = "model_execution_timeout"
     EXECUTION = "execution_timeout"
     PROVIDER = "provider_timeout"
     TOOL = "tool_execution_timeout"
+
+
+class RunRuntimeFailureReason(StrEnum):
+    """运行编排失败的机器可读原因。"""
+
+    GRAPH_STEP_LIMIT = "graph_step_limit_exceeded"
+
+
+class RunModelFailureReason(StrEnum):
+    """模型生成失败的机器可读原因。"""
+
+    UPSTREAM = "model_error"
+    EMPTY = "empty_response"
+    SUMMARY = "summary_error"
+    OUTPUT_LIMIT = "model_output_limit_exceeded"
+
+
+class ModelOutputLimitReason(StrEnum):
+    """统一大小写后的各供应商输出额度耗尽标记。"""
+
+    LENGTH = "length"
+    MAX_TOKENS = "max_tokens"
+    BEDROCK_MAX_TOKENS = "maxtokens"
+    MAX_OUTPUT_TOKENS = "max_output_tokens"
 
 
 class SessionModelReason(StrEnum):
@@ -157,6 +198,7 @@ class SessionModelReason(StrEnum):
     ARCHIVED = "session_archived"
     VERSION = "session_version_changed"
     SELECTION = "session_model_changed"
+    THINKING = "model_thinking_mode_unsupported"
 
 
 class ModelCapability(StrEnum):

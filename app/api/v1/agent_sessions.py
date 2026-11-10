@@ -47,7 +47,7 @@ from app.services.attachment_text import CONTEXT_MEDIA_TYPES
 from app.services.message_attachments import (
     IMAGE_CONTEXT_MEDIA_TYPES,
     build_attachment_context,
-    MAX_CONTEXT_ATTACHMENT_BYTES,
+    context_max_bytes,
     load_message_artifacts,
     load_message_attachments,
 )
@@ -339,14 +339,20 @@ async def _check_context_files(artifacts: list[Artifact], context_ids: set[str],
         raise CustomException(status_code=409, custom_code=10005, detail="当前模型未验证视觉能力，请切换模型或取消图片上下文")
     if len(images) > 2:
         raise CustomException(status_code=400, custom_code=10006, detail="单轮最多读取两张图片")
-    if sum(item.byte_size for item in context if item.media_type in {"text/plain", "text/markdown"}) > MAX_CONTEXT_ATTACHMENT_BYTES:
-        raise CustomException(status_code=413, custom_code=10005, detail="文本上下文附件超过 16 KiB 限制")
+    if sum(item.byte_size for item in context if item.media_type in {"text/plain", "text/markdown"}) > context_max_bytes():
+        raise CustomException(
+            status_code=413, custom_code=10005, detail=f"文本上下文附件超过 {context_max_bytes() / (1024 * 1024):g} MiB 限制"
+        )
     try:
         text = await asyncio.wait_for(
             build_attachment_context([item for item in context if item.media_type in CONTEXT_MEDIA_TYPES]), timeout=10
         )
     except (ValueError, TimeoutError) as exc:
-        raise CustomException(status_code=400, custom_code=10006, detail="附件正文无法读取或超过 16 KiB，请拆分文档或改用知识库") from exc
+        raise CustomException(
+            status_code=400,
+            custom_code=10006,
+            detail=f"附件正文无法读取或超过 {context_max_bytes() / (1024 * 1024):g} MiB，请拆分文档或改用知识库",
+        ) from exc
     return len((text or "").encode())
 
 
@@ -371,7 +377,7 @@ async def check_attachments(
         data={
             "valid": True,
             "context_bytes": size,
-            "max_context_bytes": MAX_CONTEXT_ATTACHMENT_BYTES,
+            "max_context_bytes": context_max_bytes(),
         }
     )
 
@@ -447,6 +453,7 @@ async def submit_session_run(
         agent_system_prompt=agent.system_prompt,
         agent_temperature=agent.temperature,
         agent_max_output_tokens=agent.max_output_tokens,
+        agent_thinking_mode=agent.thinking_mode,
         model_timeout_seconds=agent.model_timeout_seconds,
         tool_timeout_seconds=agent.tool_timeout_seconds,
         max_model_calls=agent.max_model_calls,

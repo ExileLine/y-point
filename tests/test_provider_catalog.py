@@ -587,8 +587,19 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
             assert text_probe.status_code == 200 and text_probe.json()["data"]["verified_capabilities"] == ["text"]
             available = await client.get("/api/v1/models/available", headers=user_headers)
             assert available.status_code == 200
-            assert available.json()["data"] == [{"id": model_id, "display_name": "Chat 1", "context_window": 8192}]
+            assert available.json()["data"] == [
+                {
+                    "id": model_id,
+                    "display_name": "Chat 1",
+                    "context_window": 8192,
+                }
+            ]
             assert "external_id" not in available.text and "api_key" not in available.text
+            with monkeypatch.context() as patcher:
+                patcher.setattr(get_config(), "AGENT_DEFAULT_MAX_OUTPUT_TOKENS", 8192)
+                assert (await client.get("/api/v1/models/available", headers=user_headers)).json()["data"] == []
+                patcher.setattr(get_config(), "AGENT_DEFAULT_MAX_OUTPUT_TOKENS", 2048)
+                assert (await client.get("/api/v1/models/available", headers=user_headers)).json()["data"] == available.json()["data"]
             stream_probe = await client.post(
                 capability_path,
                 headers=root_headers,

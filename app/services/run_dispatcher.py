@@ -36,7 +36,13 @@ async def resolve_stored_model(db: AsyncSession, run: AgentRun) -> BaseChatModel
     provider = await db.get(ProviderConnection, model.provider_id)
     if provider is None or provider.status != 1 or provider.is_deleted != 0:
         raise RunConflictError("供应商连接不可用")
-    return build_chat_model(model, provider, temperature=run.agent_temperature, max_output_tokens=run.agent_max_output_tokens)
+    return build_chat_model(
+        model,
+        provider,
+        temperature=run.agent_temperature,
+        max_output_tokens=run.agent_max_output_tokens,
+        thinking_mode=run.agent_thinking_mode,
+    )
 
 
 async def dispatch_next_run(
@@ -45,7 +51,7 @@ async def dispatch_next_run(
     *,
     resolve_model: ModelResolver = resolve_stored_model,
     resolve_tools: ToolResolver | None = None,
-    timeout_seconds: float = 120,
+    timeout_seconds: float | None = None,
     lease_seconds: int = 30,
     poll_seconds: float = 5,
 ) -> AgentRun | None:

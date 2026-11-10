@@ -12,7 +12,7 @@ from datetime import timedelta
 from urllib.parse import urlsplit
 
 import httpx
-from mcp import ClientSession
+from mcp import ClientSession, McpError
 from mcp.client.streamable_http import streamable_http_client
 
 from app.core.config import get_config
@@ -105,7 +105,7 @@ async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int)
             **(headers or {}),
             "Accept-Encoding": "identity",
         },
-        timeout=httpx.Timeout(10, read=read_timeout),
+        timeout=httpx.Timeout(get_config().MCP_CONNECT_TIMEOUT_SECONDS, read=read_timeout),
         transport=_PinnedPublicTransport(urlsplit(url).hostname, address),
         trust_env=False,
         follow_redirects=False,
@@ -151,11 +151,31 @@ async def _discover_session(session: ClientSession) -> list[dict]:
     raise ValueError("MCP 发现分页超限")
 
 
+def _is_mcp_timeout(exc: Exception) -> bool:
+    """识别 SDK 或任务组包装的超时，保持上层工具超时及外部写结果不明语义。"""
+    if isinstance(exc, ExceptionGroup):
+        return all(isinstance(item, Exception) and _is_mcp_timeout(item) for item in exc.exceptions)
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException)) or isinstance(exc, McpError) and exc.error.code == 408
+
+
+@asynccontextmanager
+async def _mcp_deadline(seconds: int):
+    """连接、握手、分页和调用共享单次时限，SDK 的进度通知不延长它。"""
+    try:
+        async with asyncio.timeout(seconds):
+            yield
+    except Exception as exc:
+        if _is_mcp_timeout(exc):
+            raise TimeoutError("MCP 单次操作超时") from None
+        raise
+
+
 async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[dict]:
-    """在完整连接时限和传输预算内发现远端可发布工具。"""
-    async with asyncio.timeout(15):
-        async with _mcp_connection(url, bearer_token, 10) as (read, write, _):
-            async with ClientSession(read, write) as session:
+    """在配置的完整连接时限和传输预算内发现远端可发布工具。"""
+    timeout = get_config().MCP_DISCOVERY_TIMEOUT_SECONDS
+    async with _mcp_deadline(timeout):
+        async with _mcp_connection(url, bearer_token, timeout) as (read, write, _):
+            async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=timeout)) as session:
                 await session.initialize()
                 return await _discover_session(session)
 
@@ -170,18 +190,20 @@ async def invoke_mcp_tool(
     *,
     expected_read_only: bool = False,
 ) -> str:
-    """核对远端工具结构后调用，并仅返回有界的文本或结构化内容。"""
-    async with _mcp_connection(url, bearer_token, timeout_seconds) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            discovered = await _discover_session(session)
-            remote = next((item for item in discovered if item["name"] == name), None)
-            if remote is None or remote["input_schema"] != expected_schema or expected_read_only and remote["read_only"] is False:
-                raise ValueError("MCP 工具结构已变化，请发布新版本")
-            response = await session.call_tool(name, arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout_seconds))
-            result = json.dumps(response.model_dump(mode="json"), ensure_ascii=False)
-            if len(result.encode()) > 64 * 1024:
-                raise ValueError("MCP 结果超过 64 KiB")
-            if response.isError:
-                raise ValueError("MCP 工具执行失败")
-            return result
+    """在单次预算内连接、核对远端工具结构并调用，返回有界内容。"""
+    timeout = min(timeout_seconds, get_config().MCP_CALL_TIMEOUT_SECONDS)
+    async with _mcp_deadline(timeout):
+        async with _mcp_connection(url, bearer_token, timeout) as (read, write, _):
+            async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=timeout)) as session:
+                await session.initialize()
+                discovered = await _discover_session(session)
+                remote = next((item for item in discovered if item["name"] == name), None)
+                if remote is None or remote["input_schema"] != expected_schema or expected_read_only and remote["read_only"] is False:
+                    raise ValueError("MCP 工具结构已变化，请发布新版本")
+                response = await session.call_tool(name, arguments=arguments, read_timeout_seconds=timedelta(seconds=timeout))
+                result = json.dumps(response.model_dump(mode="json"), ensure_ascii=False)
+                if len(result.encode()) > 64 * 1024:
+                    raise ValueError("MCP 结果超过 64 KiB")
+                if response.isError:
+                    raise ValueError("MCP 工具执行失败")
+                return result

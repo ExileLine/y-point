@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_config
 from app.core.enums import ModelCapability
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
@@ -17,7 +18,6 @@ from app.models.agent_config import AgentConfig
 from app.models.model_catalog import ModelCatalog
 from app.models.model_call_record import ModelCallRecord
 from app.models.provider_connection import ProviderConnection
-from app.schemas.agent import AgentCreateIn
 from app.schemas.provider import (
     CapabilityTestIn,
     CapabilityTestOut,
@@ -130,7 +130,7 @@ async def list_models(
 @router.get("/available", summary="查询可用于创建 Agent 的模型")
 async def list_available_models(actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """向登录用户提供已验证文本能力的最小模型目录。"""
-    minimum_context_window = AgentCreateIn.model_fields["max_output_tokens"].default + CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
+    minimum_context_window = get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS + CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
     rows = await db.execute(
         select(ModelCatalog, ProviderConnection)
         .join(ProviderConnection, ModelCatalog.provider_id == ProviderConnection.id)

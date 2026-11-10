@@ -29,7 +29,8 @@ from app.models.base import shanghai_now
 from app.schemas.artifact import ArtifactOut
 from app.services.artifact_store import (
     MAX_FILES,
-    MAX_FILE_BYTES,
+    artifact_read_max_bytes,
+    upload_max_bytes,
     ArtifactValidationError,
     artifact_root,
     enforce_owner_quota,
@@ -75,13 +76,13 @@ async def _cleanup_failed_uploads(saved: list[tuple[Artifact, Path]], root: Path
 @router.post("/uploads", summary="上传多个私有文件")
 async def upload_artifacts(
     request: Request,
-    files: list[UploadFile] = File(description="本批上传文件，最多 5 个，每个最多 10 MiB"),
+    files: list[UploadFile] = File(description="本批上传文件，最多 5 个，单文件上限由 /agents/runtime-limits 返回"),
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
     """校验并持久化本批文件；任一失败时清理本批写入。"""
     length = request.headers.get("content-length")
-    if length is not None and length.isdecimal() and int(length) > MAX_FILES * MAX_FILE_BYTES + 1024 * 1024:
+    if length is not None and length.isdecimal() and int(length) > MAX_FILES * upload_max_bytes() + 1024 * 1024:
         raise CustomException(status_code=413, custom_code=10005, detail="上传请求超过大小限制")
     if not 1 <= len(files) <= MAX_FILES:
         raise CustomException(status_code=400, custom_code=10006, detail="每批只允许上传 1 到 5 个文件")
@@ -161,7 +162,7 @@ async def preview_artifact(artifact_id: str, actor: Admin = Depends(get_current_
     if item.media_type not in PREVIEW_MEDIA_TYPES:
         raise CustomException(status_code=415, custom_code=10006, detail="暂不支持该类型的预览，请下载原件查看")
     try:
-        content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
+        content = await read_blob(artifact_root(), item.storage_key, max_bytes=artifact_read_max_bytes())
     except (OSError, ValueError, BotoCoreError, ClientError):
         raise CustomException(status_code=404, custom_code=10002, detail="文件不存在") from None
     try:
@@ -181,7 +182,7 @@ async def download_artifact(artifact_id: str, actor: Admin = Depends(get_current
     item = await _owned_artifact(db, artifact_id, actor.id)
     if using_s3():
         try:
-            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
+            content = await read_blob(artifact_root(), item.storage_key, max_bytes=artifact_read_max_bytes())
         except (OSError, ValueError, BotoCoreError, ClientError):
             raise CustomException(status_code=404, custom_code=10002, detail="文件不存在") from None
         return Response(

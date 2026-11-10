@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.config import get_config
 from app.core.password import hash_password
 from app.core.middleware import _mask_fields
 from app.db.session import get_db_session
@@ -419,6 +420,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
 
     async def fake_invoke(url, name, arguments, token, timeout, schema, **kwargs):
         """代替外部 MCP 服务，保留运行时授权检查。"""
+        assert timeout == 120
         assert token is None and arguments == {
             "repoName": "modelcontextprotocol/python-sdk",
         }
@@ -661,6 +663,7 @@ def test_tool_aliases_reject_ambiguity_and_reserved_names() -> None:
 def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """新 MCP 接口复用受限 HTTP 客户端，退出和异常时都关闭连接。"""
     seen = []
+    monkeypatch.setattr(get_config(), "MCP_CONNECT_TIMEOUT_SECONDS", 4)
 
     @asynccontextmanager
     async def fake_stream(url, *, http_client):
@@ -668,7 +671,7 @@ def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch
         assert url == "https://mcp.example.com/mcp"
         assert not http_client.is_closed
         assert http_client.headers["Authorization"] == "Bearer test-token"
-        assert http_client.timeout.connect == 10 and http_client.timeout.read == 7
+        assert http_client.timeout.connect == 4 and http_client.timeout.read == 7
         assert not http_client.follow_redirects
         assert http_client._trust_env is False
         assert isinstance(http_client._transport, _PinnedPublicTransport)

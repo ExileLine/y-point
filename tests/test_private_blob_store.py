@@ -141,7 +141,11 @@ def test_s3_artifact_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             assert fake.encryption == ["AES256", "AES256"]
             with monkeypatch.context() as patcher:
                 patcher.setattr(
-                    artifact_store, "get_config", lambda: SimpleNamespace(ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0)
+                    artifact_store,
+                    "get_config",
+                    lambda: SimpleNamespace(
+                        ARTIFACT_UPLOAD_MAX_BYTES=20 * 1024 * 1024, ARTIFACT_REQUIRE_MALWARE_SCAN=False, ARTIFACT_RETENTION_DAYS=0
+                    ),
                 )
                 before = dict(fake.objects)
                 with pytest.raises(artifact_store.ArtifactValidationError, match="保留天数"):

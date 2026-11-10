@@ -21,7 +21,7 @@ from app.models.artifact import Artifact
 from app.models.base import shanghai_now
 from app.models.knowledge import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgeDocumentVersion, KnowledgeIndex, KnowledgeJob
 from app.models.tool_execution import ToolExecutionLease
-from app.services.artifact_store import MAX_FILE_BYTES, artifact_root
+from app.services.artifact_store import artifact_read_max_bytes, artifact_root
 from app.services.embedding_adapter import EMBEDDING_BATCH_SIZE, embed_texts, embedding_identity, load_embedding_model
 from app.services.knowledge import MAX_INDEX_CHUNKS, TERMINAL_KNOWLEDGE_JOBS
 from app.services.knowledge_backend import knowledge_tokens, remove_keyword_rows, write_keyword_rows
@@ -104,7 +104,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             if version.extracted_text is not None and version.blocks is not None:
                 parsed = ParsedKnowledge(version.extracted_text, version.blocks)
             else:
-                content = await read_blob(artifact_root(), artifact.storage_key, max_bytes=MAX_FILE_BYTES)
+                content = await read_blob(artifact_root(), artifact.storage_key, max_bytes=artifact_read_max_bytes())
                 parsed = None
         if parsed is None:
             parsed = await parse_knowledge_isolated(content, version.media_type)

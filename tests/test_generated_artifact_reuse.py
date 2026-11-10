@@ -187,12 +187,15 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                 assert term in result["content"]
                 if filename == "page.html":
                     assert "hidden" not in result["content"]
-            with pytest.raises(ValueError, match="产物不可用"):
+            rejected = json.loads(
                 await by_name["read_generated_artifact"].ainvoke(
                     {
                         "artifact_id": artifact_ids["private.txt"],
                     }
                 )
+            )
+            assert rejected["error"] == "generated_artifact_unavailable"
+            assert "content" not in rejected and "private.txt" not in json.dumps(rejected)
             await by_name["read_generated_artifact"].ainvoke(
                 {
                     "artifact_id": artifact_ids["notes.md"],
@@ -222,13 +225,21 @@ def test_generated_artifacts_are_read_on_demand_with_session_scope(tmp_path: Pat
                 expired = await db.get(Artifact, artifact_ids["page.html"])
                 expired.expires_at = shanghai_now(naive=True) - timedelta(seconds=1)
             (root / f"{3:032x}").write_bytes(b"changed")
-            for filename, error in (("notes.md", "产物不可用"), ("page.html", "产物不可用"), ("report.pdf", "产物不可读取")):
-                with pytest.raises(ValueError, match=error):
+            for filename in ("notes.md", "page.html"):
+                rejected = json.loads(
                     await by_name["read_generated_artifact"].ainvoke(
                         {
                             "artifact_id": artifact_ids[filename],
                         }
                     )
+                )
+                assert rejected["error"] == "generated_artifact_unavailable" and "content" not in rejected
+            with pytest.raises(ValueError, match="产物不可读取"):
+                await by_name["read_generated_artifact"].ainvoke(
+                    {
+                        "artifact_id": artifact_ids["report.pdf"],
+                    }
+                )
             assert len(json.loads(await by_name["list_session_artifacts"].ainvoke({}))) == 3
             async with sessions.begin() as db:
                 active = await db.get(AgentRun, current.id)

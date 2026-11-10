@@ -12,7 +12,10 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ModelCapability
+from app.core.config import get_config
+from app.schemas.runtime_limits import RuntimeLimitsOut
+from app.services.artifact_store import MAX_FILES
+from app.core.enums import ModelCapability, ModelThinkingMode
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin
@@ -28,6 +31,7 @@ from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
 from app.services.agent_access import can_use_agent
 from app.services.identity import audit
+from app.services.model_adapter import thinking_request_options
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 from app.services.skills import agent_skill_rows, selected_skills
@@ -39,6 +43,32 @@ from app.models.knowledge import AgentKnowledgeBase
 from app.services.knowledge import agent_knowledge_ids, selected_knowledge_bases
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+@router.get("/runtime-limits", summary="查询附件限额及运行参数默认值")
+async def runtime_limits(_admin: Admin = Depends(get_current_admin)):
+    """仅向已登录用户返回页面所需的业务限额，不公开环境配置或密钥。"""
+    config = get_config()
+    limits = RuntimeLimitsOut(
+        upload_max_bytes=config.ARTIFACT_UPLOAD_MAX_BYTES,
+        context_max_bytes=config.ATTACHMENT_CONTEXT_MAX_BYTES,
+        max_files=MAX_FILES,
+        recursion_limit=config.RUNTIME_RECURSION_LIMIT,
+        mcp_connect_timeout_seconds=config.MCP_CONNECT_TIMEOUT_SECONDS,
+        mcp_discovery_timeout_seconds=config.MCP_DISCOVERY_TIMEOUT_SECONDS,
+        mcp_call_timeout_seconds=config.MCP_CALL_TIMEOUT_SECONDS,
+        knowledge_search_timeout_seconds=config.KNOWLEDGE_SEARCH_TIMEOUT_SECONDS,
+        knowledge_embedding_timeout_seconds=config.KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS,
+        script_execution_timeout_seconds=config.SCRIPT_EXECUTION_TIMEOUT_SECONDS,
+        script_test_timeout_seconds=config.SCRIPT_TEST_TIMEOUT_SECONDS,
+        default_model_timeout_seconds=config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
+        max_model_timeout_seconds=config.AGENT_MAX_MODEL_TIMEOUT_SECONDS,
+        default_tool_timeout_seconds=config.AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS,
+        max_tool_timeout_seconds=config.AGENT_MAX_TOOL_TIMEOUT_SECONDS,
+        default_max_output_tokens=config.AGENT_DEFAULT_MAX_OUTPUT_TOKENS,
+        max_output_tokens=config.AGENT_MAX_OUTPUT_TOKENS,
+    )
+    return api_response(data=limits.model_dump())
 
 
 async def _agent_data(db: AsyncSession, agent: AgentConfig) -> dict:
@@ -67,12 +97,15 @@ def _shared_data(agent: AgentConfig) -> dict:
     )
 
 
-async def _available_text_model(db: AsyncSession, model_id: int, max_output_tokens: int) -> ModelCatalog:
+async def _available_text_model(
+    db: AsyncSession, model_id: int, max_output_tokens: int, thinking_mode: str = ModelThinkingMode.AUTO
+) -> ModelCatalog:
     """确认默认模型及供应商可用，且模型已经通过文本能力验证。"""
     model = await db.get(ModelCatalog, model_id, with_for_update=True)
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
+    thinking_request_options(provider.kind, thinking_mode)
     if ModelCapability.TEXT not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过文本能力验证")
     if model.context_window is not None and model.context_window - max_output_tokens < CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS:
@@ -99,7 +132,7 @@ async def _owned_agent(db: AsyncSession, agent_id: int, owner_id: int) -> AgentC
 @router.post("", summary="创建私有智能体")
 async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """验证默认模型后保存当前用户的私有 Agent 配置。"""
-    model = await _available_text_model(db, body.default_model_id, body.max_output_tokens)
+    model = await _available_text_model(db, body.default_model_id, body.max_output_tokens, body.thinking_mode)
     _check_cost_pricing(model, body.max_estimated_cost)
     skills = await selected_skills(db, body.skill_ids, actor.id)
     tools = await selected_tools(db, body.tool_ids, actor.id)
@@ -293,15 +326,19 @@ async def update_agent(
         "default_model_id",
         "temperature",
         "max_output_tokens",
+        "thinking_mode",
         "model_timeout_seconds",
         "tool_timeout_seconds",
         "enabled",
     }
     if any(changes.get(name) is None for name in required & changes.keys()):
         raise CustomException(status_code=400, custom_code=10005, detail="必填配置不能为空")
-    if {"default_model_id", "max_output_tokens", "max_estimated_cost"} & changes.keys() or changes.get("enabled") is True:
+    if {"default_model_id", "max_output_tokens", "thinking_mode", "max_estimated_cost"} & changes.keys() or changes.get("enabled") is True:
         model = await _available_text_model(
-            db, changes.get("default_model_id", agent.default_model_id), changes.get("max_output_tokens", agent.max_output_tokens)
+            db,
+            changes.get("default_model_id", agent.default_model_id),
+            changes.get("max_output_tokens", agent.max_output_tokens),
+            changes.get("thinking_mode", agent.thinking_mode),
         )
         _check_cost_pricing(model, changes.get("max_estimated_cost", agent.max_estimated_cost))
     linked_tools = selected_user_tools if selected_user_tools is not None else await agent_tool_rows(db, agent_id)

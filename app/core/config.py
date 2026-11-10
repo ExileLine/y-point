@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
-from pydantic import Field
+from pydantic import Field, model_validator
 from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -91,10 +91,6 @@ BASE_SETTINGS_CONFIG = SettingsConfigDict(env_file_encoding="utf-8", case_sensit
 
 
 class BaseConfig(BaseSettings):
-    KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(
-        default=KnowledgeVectorBackend.EXACT, description="知识向量距离后端，pgvector 须在 PostgreSQL 显式安装", examples=["exact"]
-    )
-
     model_config = BASE_SETTINGS_CONFIG
 
     DOCS_TITLE: str = "y-point"
@@ -112,31 +108,6 @@ class BaseConfig(BaseSettings):
     DEBUG: bool = True
     RUN_HOST: str = "0.0.0.0"
     RUN_PORT: int = 8000
-    WORKER_LOG_FILE: str = ".logs/worker.log"
-    WORKER_LOG_MAX_BYTES: int = Field(default=50 * 1024 * 1024, gt=0, description="worker 日志文件容量上限，单位字节", examples=[52428800])
-    SCRIPT_SANDBOX_IMAGE: str = "y-point-script-sandbox:1"
-    SCRIPT_DEPENDENCY_ALLOW_NETWORK: bool = True
-    SCRIPT_DEPENDENCY_INDEX_URL: str = "https://pypi.org/simple"
-    SCRIPT_DEPENDENCY_ALLOWED_HOSTS: list[str] = ["pypi.org", "files.pythonhosted.org"]
-    SCRIPT_DEPENDENCY_WHEELHOUSE: str = ""
-    SCRIPT_DEPENDENCY_STORAGE_DIR: str = ".run-private/tool-environments"
-    SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS: int = 180
-    MCP_RESPONSE_MAX_BYTES: int = Field(
-        default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576]
-    )
-    MCP_DISCOVERY_MAX_TOOLS: int = Field(default=128, ge=1, le=1024, description="MCP 发现工具数量上限", examples=[128])
-    MCP_DISCOVERY_MAX_BYTES: int = Field(
-        default=256 * 1024, ge=1024, le=1024 * 1024, description="MCP 发现结果总字节上限", examples=[262144]
-    )
-    TOOL_CALL_GLOBAL_LIMIT: int = Field(default=16, ge=1, le=1024, description="全部进程的工具调用并发上限", examples=[16])
-    TOOL_CALL_USER_LIMIT: int = Field(default=4, ge=1, le=1024, description="单用户工具调用并发上限", examples=[4])
-    TOOL_CALL_RUN_LIMIT: int = Field(default=2, ge=1, le=128, description="单 Run 工具调用并发上限", examples=[2])
-    TOOL_PREPARATION_GLOBAL_LIMIT: int = Field(default=2, ge=1, le=128, description="全部进程的依赖准备并发上限", examples=[2])
-    TOOL_PREPARATION_USER_LIMIT: int = Field(default=1, ge=1, le=128, description="单用户依赖准备并发上限", examples=[1])
-    TOOL_STORAGE_MAX_BYTES: int = Field(default=8 * 1024**3, ge=1024, description="依赖缓存和准备目录的应用容量预算", examples=[8589934592])
-    TOOL_STORAGE_MIN_FREE_BYTES: int = Field(default=1024**3, ge=0, description="准备前必须保留的文件系统可用字节", examples=[1073741824])
-    TOOL_RESOURCE_RECONCILE_SECONDS: int = Field(default=60, ge=1, description="工具资源核对间隔秒数", examples=[60])
-    TOOL_RESOURCE_GRACE_SECONDS: int = Field(default=300, ge=30, description="过期资源清理宽限秒数", examples=[300])
 
     # 跨域配置：如果 allow_credentials=True，则 allow_origins 不能设置为 ["*"]，必须明确指定允许的域名。
     ALLOW_ORIGINS: list[str] = ["*"]
@@ -156,9 +127,24 @@ class BaseConfig(BaseSettings):
     POSTGRESQL_PORT: int = 5432
     POSTGRESQL_DATABASE: str = "y_point"
 
+    REDIS_HOST: str = "127.0.0.1"
+    REDIS_ENABLED: bool = False
+    REDIS_PORT: int = 6379
+    REDIS_PWD: str = ""
+    REDIS_DB: int = 0
+    DECODE_RESPONSES: bool = True
+    CELERY_BROKER_URL: Optional[str] = None
+    CELERY_RESULT_BACKEND: Optional[str] = None
+    CELERY_TASK_QUEUE: str = "y_point_task_queue"
+
+    SENSITIVE_HEADERS: str = "authorization,cookie,set-cookie,x-api-key"
+
     SQLITE_DATABASE: str = "y_point.db"
     CHECKPOINT_BACKEND: str = "sqlite"
     CHECKPOINT_POSTGRES_DSN: str = ""
+    RUNTIME_RECURSION_LIMIT: int = Field(default=9999, ge=1, description="每次运行或恢复的 LangGraph 最大图步数，非时间限制", examples=[9999])
+
+    # 产物配置参数
     ARTIFACT_STORAGE_DIR: str = ".run-private/artifacts"
     ARTIFACT_RETENTION_DAYS: int = 30
     ARTIFACT_OWNER_MAX_BYTES: int = 1024 * 1024 * 1024
@@ -171,18 +157,64 @@ class BaseConfig(BaseSettings):
     ARTIFACT_S3_REGION: str = ""
     ARTIFACT_S3_ACCESS_KEY_ID: str = ""
     ARTIFACT_S3_SECRET_ACCESS_KEY: str = ""
+    ARTIFACT_UPLOAD_MAX_BYTES: int = Field(default=20 * 1024 * 1024, gt=0, description="单个对话上传文件字节上限", examples=[20971520])
+    ATTACHMENT_CONTEXT_MAX_BYTES: int = Field(default=20 * 1024 * 1024, gt=0, description="本轮附件提取文本及元数据的 UTF-8 字节上限", examples=[20971520])
 
-    REDIS_HOST: str = "127.0.0.1"
-    REDIS_ENABLED: bool = False
-    REDIS_PORT: int = 6379
-    REDIS_PWD: str = ""
-    REDIS_DB: int = 0
-    DECODE_RESPONSES: bool = True
-    CELERY_BROKER_URL: Optional[str] = None
-    CELERY_RESULT_BACKEND: Optional[str] = None
-    CELERY_TASK_QUEUE: str = "y_point_task_queue"
+    # 开发日志配置参数
+    WORKER_LOG_FILE: str = ".logs/worker.log"
+    WORKER_LOG_MAX_BYTES: int = Field(default=50 * 1024 * 1024, gt=0, description="worker 日志文件容量上限，单位字节", examples=[52428800])
 
-    SENSITIVE_HEADERS: str = "authorization,cookie,set-cookie,x-api-key"
+    # AGENT配置参数
+    AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数", examples=[300])
+    AGENT_MAX_MODEL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次模型或供应商请求超时秒数上限", examples=[3600])
+    AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次工具超时秒数", examples=[120])
+    AGENT_MAX_TOOL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次工具超时秒数上限，具体工具可有更严限制", examples=[3600])
+    AGENT_DEFAULT_MAX_OUTPUT_TOKENS: int = Field(default=4096, gt=0, description="新建 Agent 或独立 Run 默认单次模型输出 Token 上限", examples=[8192])
+    AGENT_MAX_OUTPUT_TOKENS: int = Field(default=65536, gt=0, description="允许设置的单次输出 Token 上限", examples=[65536])
+
+    # SCRIPT配置参数
+    SCRIPT_SANDBOX_IMAGE: str = "y-point-script-sandbox:1"
+    SCRIPT_DEPENDENCY_ALLOW_NETWORK: bool = True
+    SCRIPT_DEPENDENCY_INDEX_URL: str = "https://pypi.org/simple"
+    SCRIPT_DEPENDENCY_ALLOWED_HOSTS: list[str] = ["pypi.org", "files.pythonhosted.org"]
+    SCRIPT_DEPENDENCY_WHEELHOUSE: str = ""
+    SCRIPT_DEPENDENCY_STORAGE_DIR: str = ".run-private/tool-environments"
+    SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS: int = 180
+    SCRIPT_EXECUTION_TIMEOUT_SECONDS: int = Field(default=30, gt=0, description="单次正式脚本执行时限", examples=[120])
+    SCRIPT_TEST_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="Tool 及 Skill 脚本试运行时限", examples=[30])
+
+    # MCP配置参数
+    MCP_CONNECT_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="MCP HTTP 建连、写入及连接池等待超时秒数", examples=[10])
+    MCP_DISCOVERY_TIMEOUT_SECONDS: int = Field(default=15, gt=0, description="单次 MCP 发现总时限，含握手及分页", examples=[15])
+    MCP_CALL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="单次正式 MCP 调用时限，含连接、握手及结构复核", examples=[300])
+    MCP_DISCOVERY_MAX_TOOLS: int = Field(default=128, ge=1, le=1024, description="MCP 发现工具数量上限", examples=[128])
+    MCP_DISCOVERY_MAX_BYTES: int = Field(default=256 * 1024, ge=1024, le=1024 * 1024, description="MCP 发现结果总字节上限", examples=[262144])
+    MCP_RESPONSE_MAX_BYTES: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576])
+
+    # 知识库配置参数
+    KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(default=KnowledgeVectorBackend.EXACT, description="知识向量距离后端，pgvector 须在 PostgreSQL 显式安装", examples=["exact"])
+    KNOWLEDGE_SEARCH_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单次知识检索时限，HTTP 与 Agent 共用", examples=[60])
+    KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单批嵌入请求时限，检索及索引共用", examples=[60])
+
+    # TOOL配置参数
+    TOOL_CALL_GLOBAL_LIMIT: int = Field(default=16, ge=1, le=1024, description="全部进程的工具调用并发上限", examples=[16])
+    TOOL_CALL_USER_LIMIT: int = Field(default=4, ge=1, le=1024, description="单用户工具调用并发上限", examples=[4])
+    TOOL_CALL_RUN_LIMIT: int = Field(default=2, ge=1, le=128, description="单 Run 工具调用并发上限", examples=[2])
+    TOOL_PREPARATION_GLOBAL_LIMIT: int = Field(default=2, ge=1, le=128, description="全部进程的依赖准备并发上限", examples=[2])
+    TOOL_PREPARATION_USER_LIMIT: int = Field(default=1, ge=1, le=128, description="单用户依赖准备并发上限", examples=[1])
+    TOOL_STORAGE_MAX_BYTES: int = Field(default=8 * 1024 ** 3, ge=1024, description="依赖缓存和准备目录的应用容量预算", examples=[8589934592])
+    TOOL_STORAGE_MIN_FREE_BYTES: int = Field(default=1024 ** 3, ge=0, description="准备前必须保留的文件系统可用字节", examples=[1073741824])
+    TOOL_RESOURCE_RECONCILE_SECONDS: int = Field(default=60, ge=1, description="工具资源核对间隔秒数", examples=[60])
+    TOOL_RESOURCE_GRACE_SECONDS: int = Field(default=300, ge=30, description="过期资源清理宽限秒数", examples=[300])
+
+    @model_validator(mode="after")
+    def validate_runtime_defaults(self) -> "BaseConfig":
+        """启动时拒绝默认值大于对应可配置上限的配置。"""
+        for name in ("MODEL_TIMEOUT_SECONDS", "TOOL_TIMEOUT_SECONDS", "MAX_OUTPUT_TOKENS"):
+            maximum = "AGENT_MAX_OUTPUT_TOKENS" if name == "MAX_OUTPUT_TOKENS" else f"AGENT_MAX_{name}"
+            if getattr(self, f"AGENT_DEFAULT_{name}") > getattr(self, maximum):
+                raise ValueError(f"AGENT_DEFAULT_{name} 不能超过 {maximum}")
+        return self
 
     @property
     def ENV_NAME(self) -> str:

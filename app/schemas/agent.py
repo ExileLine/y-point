@@ -12,6 +12,11 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
+from app.core.config import get_config
+from app.core.enums import ModelThinkingMode
+from app.schemas.runtime_limits import ModelTimeout, ToolTimeout, OutputTokens
+
+
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 
 
@@ -25,9 +30,20 @@ class AgentCreateIn(BaseModel):
     welcome_message: str | None = Field(default=None, max_length=2048, description="欢迎语", examples=["你好，请描述需求"])
     default_model_id: int = Field(gt=0, description="默认模型 ID", examples=[1])
     temperature: Decimal = Field(default=Decimal("1"), ge=0, le=2, decimal_places=2, description="生成温度", examples=["0.70"])
-    max_output_tokens: int = Field(default=4096, ge=1, le=65536, description="单次最大输出 Token 数", examples=[4096])
-    model_timeout_seconds: int = Field(default=120, ge=1, le=120, description="单次模型生成超时秒数", examples=[60])
-    tool_timeout_seconds: int = Field(default=120, ge=1, le=120, description="单次工具执行超时秒数", examples=[30])
+    max_output_tokens: OutputTokens = Field(
+        default_factory=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS, description="单次最大输出 Token 数", examples=[4096]
+    )
+    thinking_mode: ModelThinkingMode = Field(
+        default=ModelThinkingMode.AUTO,
+        description="思考模式；auto 跟随上游，enabled/disabled 要求兼容服务支持 enable_thinking",
+        examples=["auto"],
+    )
+    model_timeout_seconds: ModelTimeout = Field(
+        default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, description="单次模型生成超时秒数", examples=[60]
+    )
+    tool_timeout_seconds: ToolTimeout = Field(
+        default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, description="单次工具执行超时秒数", examples=[30]
+    )
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限", examples=[5])
     max_total_tokens: int | None = Field(default=None, ge=1, le=10000000, description="每轮上游报告的总 Token 上限", examples=[10000])
@@ -59,9 +75,12 @@ class AgentUpdateIn(BaseModel):
     welcome_message: str | None = Field(default=None, max_length=2048, description="欢迎语", examples=["你好，请描述需求"])
     default_model_id: int | None = Field(default=None, gt=0, description="默认模型 ID", examples=[1])
     temperature: Decimal | None = Field(default=None, ge=0, le=2, decimal_places=2, description="生成温度", examples=["0.70"])
-    max_output_tokens: int | None = Field(default=None, ge=1, le=65536, description="单次最大输出 Token 数", examples=[4096])
-    model_timeout_seconds: int | None = Field(default=None, ge=1, le=120, description="单次模型生成超时秒数", examples=[60])
-    tool_timeout_seconds: int | None = Field(default=None, ge=1, le=120, description="单次工具执行超时秒数", examples=[30])
+    max_output_tokens: OutputTokens | None = Field(default=None, description="单次最大输出 Token 数", examples=[4096])
+    thinking_mode: ModelThinkingMode | None = Field(
+        default=None, description="思考模式；显式启闭仅支持实现 enable_thinking 的 OpenAI 兼容服务", examples=["disabled"]
+    )
+    model_timeout_seconds: ModelTimeout | None = Field(default=None, description="单次模型生成超时秒数", examples=[60])
+    tool_timeout_seconds: ToolTimeout | None = Field(default=None, description="单次工具执行超时秒数", examples=[30])
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限；null 清除上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限；null 清除上限", examples=[5])
     max_total_tokens: int | None = Field(
@@ -94,6 +113,7 @@ class AgentOut(BaseModel):
     default_model_id: int = Field(description="默认模型 ID", examples=[1])
     temperature: Decimal = Field(description="生成温度", examples=["0.70"])
     max_output_tokens: int = Field(description="单次最大输出 Token 数", examples=[4096])
+    thinking_mode: ModelThinkingMode = Field(description="模型思考模式", examples=["auto"])
     model_timeout_seconds: int = Field(description="单次模型生成超时秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行超时秒数", examples=[30])
     max_model_calls: int | None = Field(description="每轮模型调用次数上限", examples=[3])

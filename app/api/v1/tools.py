@@ -7,12 +7,15 @@
 
 import hashlib
 
+import asyncio
+
 from jsonschema import Draft202012Validator, ValidationError
 from fastapi import APIRouter, Depends
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_config
 from app.core.enums import RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, UserRole, Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
@@ -369,8 +372,11 @@ async def test_tool(tool_id: int, body: ToolTestIn, actor: Admin = Depends(get_c
             else {}
         )
         sessions = async_sessionmaker(db.bind, expire_on_commit=False)
-        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 10):
-            result = await run_script(version.script_language, version.source_code, body.arguments, 10, **options)
+        timeout = get_config().SCRIPT_TEST_TIMEOUT_SECONDS
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, timeout):
+            result = await asyncio.wait_for(
+                run_script(version.script_language, version.source_code, body.arguments, timeout, **options), timeout=timeout
+            )
     except ToolCapacityError as exc:
         raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
     except SandboxConfigurationError as exc:

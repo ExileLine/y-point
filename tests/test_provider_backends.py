@@ -362,3 +362,164 @@ def test_provider_runtime_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     build_chat_model(model, provider, temperature=Decimal("0.25"), max_output_tokens=2048)
     assert calls[-1]["temperature"] == 0.25 and calls[-1]["max_tokens"] == 2048
+
+
+@pytest.mark.parametrize("mode", ["auto", "enabled", "disabled"])
+def test_explicit_thinking_mode_reaches_compatible_request(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """思考模式必须经过真实 SDK 写入兼容服务请求，默认模式保持上游行为。"""
+    from app.services import model_adapter
+
+    async def exercise() -> None:
+        """模拟上游只对显式禁用思考的请求生成可见正文，不调用真实模型。"""
+        provider = ProviderConnection(
+            id=1, kind="openai_compatible", base_url="https://example.invalid/v1", timeout_seconds=5, status=1, is_deleted=0
+        )
+        model = ModelCatalog(id=1, provider_id=1, external_id="compatible-model", status=1, is_deleted=0)
+        seen = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """校验非标准参数位于请求体顶层，未覆盖模型、额度、认证或消息。"""
+            body = json.loads(request.content)
+            seen.append(body)
+            assert body["model"] == "compatible-model" and body["max_completion_tokens"] == 128
+            if mode == "auto":
+                assert "chat_template_kwargs" not in body
+            else:
+                assert body["chat_template_kwargs"] == {
+                    "enable_thinking": mode == "enabled",
+                }
+            return httpx.Response(
+                200,
+                json={
+                    "id": "local-thinking-probe",
+                    "model": "compatible-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": "OK",
+                            },
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 19,
+                        "completion_tokens": 2,
+                        "total_tokens": 21,
+                    },
+                },
+            )
+
+        constructor = model_adapter.ChatOpenAI
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+
+            def configured_client(**kwargs):
+                """保留真实适配器和 SDK，仅替换 HTTP 传输。"""
+                return constructor(http_async_client=client, **kwargs)
+
+            monkeypatch.setattr(model_adapter, "ChatOpenAI", configured_client)
+            runtime = build_chat_model(model, provider, max_output_tokens=128, thinking_mode=mode)
+            response = await runtime.ainvoke("只回复 OK")
+            assert response.text == "OK" and len(seen) == 1
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("kind", ["openai", "openai_compatible", "ollama", "azure_openai"])
+def test_stream_chunk_timeout_follows_provider_budget(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """流式心跳期间的等待遵循供应商配置，避免 SDK 隐含默认值提前中断。"""
+    from app.services import model_adapter
+
+    monkeypatch.setattr(get_config(), "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S", "0.02")
+
+    class DelayedStream(httpx.AsyncByteStream):
+        """通过真实 SDK 的 SSE 解析器发送心跳，再交付完整模型响应。"""
+
+        async def __aiter__(self):
+            """心跳不生成模型数据块，等待间隔大于 SDK 环境默认值。"""
+
+            def chunk(delta: dict, finish_reason: str | None = None) -> bytes:
+                """生成客户端实际消费的 OpenAI 兼容流式数据。"""
+                return (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": "local-timeout-regression",
+                            "object": "chat.completion.chunk",
+                            "model": "timeout-model",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": delta,
+                                    "finish_reason": finish_reason,
+                                }
+                            ],
+                        }
+                    )
+                    + "\n\n"
+                ).encode()
+
+            yield chunk(
+                {
+                    "role": "assistant",
+                    "content": "",
+                }
+            )
+            for _ in range(4):
+                await asyncio.sleep(0.02)
+                yield b": keepalive\n\n"
+            yield chunk(
+                {
+                    "content": "OK",
+                }
+            )
+            yield chunk({}, "stop")
+            yield b"data: [DONE]\n\n"
+
+    async def exercise() -> None:
+        """保留正式构造器、流式 SDK 和预算设置，仅替换上游 HTTP 响应。"""
+        provider = ProviderConnection(
+            id=1,
+            kind=kind,
+            base_url="https://example.invalid/v1" if kind != "azure_openai" else "https://example.openai.azure.com",
+            api_version="2024-10-21" if kind == "azure_openai" else None,
+            encrypted_credentials=encrypt_credentials("local-test-key", {}),
+            timeout_seconds=5,
+            status=1,
+            is_deleted=0,
+        )
+        model = ModelCatalog(id=1, provider_id=1, external_id="timeout-model", status=1, is_deleted=0)
+        seen = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            """确认测试经过真实流式请求，并记录是否发生额外重试。"""
+            body = json.loads(request.content)
+            assert body["stream"] is True
+            seen.append(body)
+            return httpx.Response(
+                200,
+                headers={
+                    "content-type": "text/event-stream",
+                },
+                stream=DelayedStream(),
+            )
+
+        constructor_name = "AzureChatOpenAI" if kind == "azure_openai" else "ChatOpenAI"
+        constructor = getattr(model_adapter, constructor_name)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+
+            def configured_client(**kwargs):
+                """使用真实模型类验证 SDK 默认值不会覆盖保存的供应商时限。"""
+                return constructor(http_async_client=client, **kwargs)
+
+            monkeypatch.setattr(model_adapter, constructor_name, configured_client)
+            runtime = build_chat_model(model, provider)
+            text = "".join([chunk.text async for chunk in runtime.astream("验证流式超时")])
+            assert text == "OK"
+            assert runtime.request_timeout == runtime.stream_chunk_timeout == 5
+            assert runtime.max_retries == 0
+        assert len(seen) == 1
+
+    asyncio.run(exercise())

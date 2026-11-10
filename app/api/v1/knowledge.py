@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_config
 from app.core.custom_exception import CustomException
 from app.core.enums import KnowledgeIndexState, KnowledgeJobState, ModelCapability, ToolLeaseKind
 from app.core.response import api_response
@@ -285,7 +286,7 @@ async def _upload_knowledge_document(
     await require_knowledge_base(db, knowledge_base_id, actor_id, manage=True)
     saved = None
     try:
-        saved = await save_upload(file, actor_id, artifact_root())
+        saved = await save_upload(file, actor_id, artifact_root(), max_bytes=10 * 1024 * 1024)
         artifact, _ = saved
         if artifact.media_type not in SUPPORTED_KNOWLEDGE_TYPES:
             raise CustomException(status_code=400, custom_code=10006, detail="知识文档仅支持 TXT、Markdown、PDF 和 DOCX")
@@ -477,8 +478,9 @@ async def search_knowledge_base(
     indices = [item.active_index_id] if item.active_index_id is not None else []
     sessions = async_sessionmaker(db.bind, expire_on_commit=False)
     try:
-        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 60):
-            result = await asyncio.wait_for(search_knowledge(sessions, actor.id, indices, body), timeout=60)
+        timeout = get_config().KNOWLEDGE_SEARCH_TIMEOUT_SECONDS
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, timeout):
+            result = await asyncio.wait_for(search_knowledge(sessions, actor.id, indices, body), timeout=timeout)
     except ToolCapacityError:
         raise CustomException(status_code=429, custom_code=10005, detail="知识检索资源并发已满") from None
     except TimeoutError:

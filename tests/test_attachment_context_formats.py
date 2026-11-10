@@ -15,6 +15,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_run_message import AgentRunMessage
@@ -23,6 +24,7 @@ from app.models.base import Base
 from app.services import message_attachments
 from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact
 from app.services.artifact_store import save_upload
+from app.services.attachment_text import context_max_bytes, extract_context_text
 from app.services.message_attachments import load_message_artifacts, load_model_attachment_context, load_run_context_artifact_ids
 from app.services.run_manager import claim_run, complete_run, create_run
 
@@ -42,7 +44,7 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
                 await connection.run_sync(Base.metadata.create_all)
             sources = [
                 ("reference.pdf", render_document_artifact("reference.pdf", "# PDF资料\n\nPDF关键字：赤壁")),
-                ("reference.docx", render_document_artifact("reference.docx", "# DOCX资料\n\nDOCX关键字：夷陵")),
+                ("reference.docx", render_document_artifact("reference.docx", "# DOCX资料\n\nDOCX关键字：夷陵" + "正文内容" * 2000)),
                 ("reference.xlsx", render_spreadsheet_artifact([ArtifactSheet(name="数据表", rows=[["事件", "年份"], ["夷陵之战", 222]])])),
                 ("display.txt", b"display only"),
             ]
@@ -119,10 +121,8 @@ def test_office_context_and_generated_artifact_sources(tmp_path: Path, monkeypat
     asyncio.run(exercise())
 
 
-def test_unreadable_or_oversized_document_is_rejected() -> None:
+def test_unreadable_or_oversized_document_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """验证不可读或超出上下文大小限制的文档被拒绝。"""
-    from app.services.attachment_text import extract_context_text
-
     with pytest.raises(ValueError):
         extract_context_text(b"%PDF-1.4\n%%EOF", "application/pdf")
     blank = io.BytesIO()
@@ -131,6 +131,35 @@ def test_unreadable_or_oversized_document_is_rejected() -> None:
     page.save()
     with pytest.raises(ValueError, match="文本"):
         extract_context_text(blank.getvalue(), "application/pdf")
-    large = render_document_artifact("large.docx", "x" * (16 * 1024 + 1))
+    monkeypatch.setattr(get_config(), "ATTACHMENT_CONTEXT_MAX_BYTES", 1024)
+    large = render_document_artifact("large.docx", "x" * 1025)
     with pytest.raises(ValueError, match="上限"):
         extract_context_text(large, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+def test_attachment_text_accepts_twenty_mib_and_rejects_overflow() -> None:
+    """按真实 UTF-8 字节验证 20 MiB 边界，防止只修改提示而没有放开预算。"""
+    limit = 20 * 1024 * 1024
+    assert context_max_bytes() == limit
+    assert extract_context_text(b"x" * limit, "text/plain") == "x" * limit
+    with pytest.raises(ValueError, match="20 MiB"):
+        extract_context_text(b"x" * (limit + 1), "text/plain")
+    with pytest.raises(ValueError, match="20 MiB"):
+        extract_context_text(("中" * (limit // 3 + 1)).encode(), "text/plain")
+
+
+def test_attachment_context_budget_includes_metadata_and_all_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """单文件可读仍须累计 JSON 元信息和其他文件，超限不能静默截断。"""
+
+    async def exercise() -> None:
+        """使用真实私有文件验证 worker 与预检查共用的上下文组装逻辑。"""
+        monkeypatch.setattr(message_attachments, "artifact_root", lambda: tmp_path)
+        payload = b"x" * (10 * 1024 * 1024)
+        first, _ = await save_upload(UploadFile(file=io.BytesIO(payload), filename="first.txt"), 1, tmp_path)
+        second, _ = await save_upload(UploadFile(file=io.BytesIO(payload), filename="second.txt"), 1, tmp_path)
+        context = await message_attachments.build_attachment_context([first])
+        assert context is not None and len(context.encode()) > len(payload)
+        with pytest.raises(message_attachments.AttachmentContextUnavailable, match="20 MiB"):
+            await message_attachments.build_attachment_context([first, second])
+
+    asyncio.run(exercise())

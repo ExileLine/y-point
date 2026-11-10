@@ -19,7 +19,10 @@ from app.core.enums import (
     ArtifactOrigin,
     ArtifactState,
     MessageRole,
+    ModelThinkingMode,
     RunEventType,
+    RunModelFailureReason,
+    RunRuntimeFailureReason,
     RunState,
     RunTimeoutReason,
     ToolInvocationState,
@@ -81,11 +84,12 @@ async def create_run(
     agent_system_prompt: str | None = None,
     agent_temperature: Decimal | None = None,
     agent_max_output_tokens: int | None = None,
+    agent_thinking_mode: str = ModelThinkingMode.AUTO,
     thread_id: str | None = None,
     request_key: str | None = None,
     input_text: str | None = None,
-    model_timeout_seconds: int = 120,
-    tool_timeout_seconds: int = 120,
+    model_timeout_seconds: int | None = None,
+    tool_timeout_seconds: int | None = None,
     max_queue_wait_seconds: int | None = None,
     enable_text_artifact_tool: bool = False,
     publish_answer_artifact: bool = False,
@@ -111,10 +115,16 @@ async def create_run(
         raise ValueError("会话运行缺少智能体配置快照")
     if input_text is not None and (not input_text.strip() or len(input_text) > 32768):
         raise ValueError("用户输入为空或超过长度限制")
-    if not 1 <= model_timeout_seconds <= 120:
-        raise ValueError("模型生成超时秒数必须在 1 到 120 之间")
-    if not 1 <= tool_timeout_seconds <= 120:
-        raise ValueError("单次工具执行超时秒数必须在 1 到 120 之间")
+    agent_thinking_mode = ModelThinkingMode(agent_thinking_mode)
+    config = get_config()
+    model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
+    tool_timeout_seconds = config.AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS if tool_timeout_seconds is None else tool_timeout_seconds
+    if not 1 <= model_timeout_seconds <= config.AGENT_MAX_MODEL_TIMEOUT_SECONDS:
+        raise ValueError(f"模型生成超时秒数必须在 1 到 {config.AGENT_MAX_MODEL_TIMEOUT_SECONDS} 之间")
+    if not 1 <= tool_timeout_seconds <= config.AGENT_MAX_TOOL_TIMEOUT_SECONDS:
+        raise ValueError(f"单次工具执行超时秒数必须在 1 到 {config.AGENT_MAX_TOOL_TIMEOUT_SECONDS} 之间")
+    if agent_max_output_tokens is None:
+        agent_max_output_tokens = config.AGENT_DEFAULT_MAX_OUTPUT_TOKENS
     if max_queue_wait_seconds is not None and not 1 <= max_queue_wait_seconds <= 86400:
         raise ValueError("排队等待秒数必须在 1 到 86400 之间")
     if type(enable_text_artifact_tool) is not bool:
@@ -145,6 +155,7 @@ async def create_run(
                 or existing.agent_system_prompt != agent_system_prompt
                 or existing.agent_temperature != agent_temperature
                 or existing.agent_max_output_tokens != agent_max_output_tokens
+                or existing.agent_thinking_mode != agent_thinking_mode
                 or existing.model_timeout_seconds != model_timeout_seconds
                 or existing.tool_timeout_seconds != tool_timeout_seconds
                 or existing.max_queue_wait_seconds != max_queue_wait_seconds
@@ -217,6 +228,7 @@ async def create_run(
         agent_system_prompt=agent_system_prompt,
         agent_temperature=agent_temperature,
         agent_max_output_tokens=agent_max_output_tokens,
+        agent_thinking_mode=agent_thinking_mode,
         request_key=request_key,
         model_timeout_seconds=model_timeout_seconds,
         tool_timeout_seconds=tool_timeout_seconds,
@@ -650,15 +662,14 @@ async def complete_expired_run(db: AsyncSession, run_id: str, *, checkpoint_id: 
 async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code: str, *, checkpoint_id: str | None = None) -> AgentRun:
     """由持有租约的执行器记录分类故障，不保存原始异常信息。"""
     if failure_code not in {
-        "model_error",
-        "empty_response",
+        *RunModelFailureReason,
         "checkpoint_error",
         "checkpoint_mismatch",
         "runtime_error",
         "attachment_unavailable",
         "context_window_exceeded",
         "artifact_required",
-        "summary_error",
+        RunRuntimeFailureReason.GRAPH_STEP_LIMIT,
         "lease_monitor_error",
         "agent_access_revoked",
         "model_call_budget_exceeded",

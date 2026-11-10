@@ -15,6 +15,7 @@ from urllib.parse import quote
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_config
 from app.core.enums import KnowledgeFailure, ModelCapability, ProviderKind
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
@@ -131,9 +132,11 @@ async def embed_texts(
         }
     owned = client is None
     if owned:
-        client = httpx.AsyncClient(timeout=min(provider.timeout_seconds, 60), trust_env=False, follow_redirects=False)
+        client = httpx.AsyncClient(
+            timeout=min(provider.timeout_seconds, get_config().KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS), trust_env=False, follow_redirects=False
+        )
     try:
-        async with asyncio.timeout(min(provider.timeout_seconds, 60)):
+        async with asyncio.timeout(min(provider.timeout_seconds, get_config().KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS)):
             async with client.stream("POST", url, headers=headers, json=payload) as response:
                 if response.status_code != 200:
                     code = (

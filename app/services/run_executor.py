@@ -27,6 +27,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
+from langgraph.errors import GraphRecursionError
 from deepagents.backends.utils import create_file_data
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -38,13 +39,19 @@ from app.core.enums import (
     ArtifactState,
     MessageRole,
     ModelCapability,
+    ModelOutputLimitReason,
     RunEventType,
+    RunModelFailureReason,
+    RunRuntimeFailureReason,
     RunState,
     RunTimeoutReason,
+    ToolFeedbackFailure,
     ToolInvocationState,
     ToolEffect,
     ToolLeaseKind,
 )
+from app.services.call_timeouts import effective_tool_timeout
+from app.services.tool_arguments import is_tool_argument_error
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
 from app.models.admin import Admin
@@ -217,6 +224,23 @@ async def _account_model_response(
         raise CostBudgetExceeded("估算成本已超过上限")
 
 
+class ModelExecutionTimeout(TimeoutError):
+    """单次模型调用超过 Agent 的已保存时限。"""
+
+
+class ModelOutputLimitExceeded(Exception):
+    """上游在生成完成前耗尽输出额度，禁止接受半份回答或执行被截断的工具参数。"""
+
+
+def _check_model_output(message: AIMessage, model_usage: list[AIMessage]) -> None:
+    """仅保留脱敏用量快照，按上游明确结束原因识别截断，不推断思考正文或自动扩容重试。"""
+    model_usage.append(AIMessage(content="", usage_metadata=message.usage_metadata))
+    metadata = message.response_metadata
+    reason = metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("stopReason")
+    if isinstance(reason, str) and reason.casefold() in set(ModelOutputLimitReason):
+        raise ModelOutputLimitExceeded("模型输出额度耗尽，请调整智能体单次最大输出 Token")
+
+
 class AuthorizedToolsMiddleware(AgentMiddleware):
     """计数模型调用，只展示获授权的工具并在执行前再次校验。"""
 
@@ -233,6 +257,8 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         cost_output_price: Decimal | None,
         skill_paths: frozenset[str] = frozenset(),
         tool_aliases: dict[str, str] | None = None,
+        model_timeout_seconds: int | None = None,
+        model_usage: list[AIMessage] | None = None,
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
         self.allowed_names = frozenset(allowed_names)
@@ -240,6 +266,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.run_id = run_id
         self.lease_token = lease_token
         self.tool_timeout_seconds = tool_timeout_seconds
+        self.model_timeout_seconds = (
+            get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
+        )
+        self.model_usage = model_usage if model_usage is not None else []
         self.max_total_tokens = max_total_tokens
         self.max_estimated_cost = max_estimated_cost
         self.cost_input_price = cost_input_price
@@ -258,7 +288,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             for tool in request.tools
             if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and self.skill_paths)
         ]
-        response = await handler(request.override(tools=visible_tools))
+        try:
+            response = await asyncio.wait_for(handler(request.override(tools=visible_tools)), timeout=self.model_timeout_seconds)
+        except TimeoutError as exc:
+            raise ModelExecutionTimeout("单次模型调用超过时限") from exc
         model_response = response.model_response if isinstance(response, ExtendedModelResponse) else response
         for index, message in enumerate(model_response.result):
             if isinstance(message, AIMessage) and message.tool_calls:
@@ -284,6 +317,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             self.cost_input_price,
             self.cost_output_price,
         )
+        for message in model_response.result:
+            if isinstance(message, AIMessage):
+                _check_model_output(message, self.model_usage)
         return response
 
     async def awrap_tool_call(
@@ -322,6 +358,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         event_name = tool_name
         invocation_id = None
         invocation_effect = ToolEffect.READ
+        call_timeout = effective_tool_timeout(self.tool_timeout_seconds, tool_name=tool_name)
         activated_skill_id = None
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
@@ -352,6 +389,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if matched is None:
                     raise PermissionError("Tool 未在本轮授权")
                 item, version = matched
+                call_timeout = effective_tool_timeout(self.tool_timeout_seconds, kind=item.kind)
                 invocation_id = CURRENT_TOOL_CALL_ID.get()
                 invocation_effect = version.effect
                 existing = await db.scalar(
@@ -377,7 +415,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             await reserve_tool_call(db, self.run_id, self.lease_token)
             await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
         try:
-            result = await asyncio.wait_for(handler(request), timeout=self.tool_timeout_seconds)
+            result = await asyncio.wait_for(handler(request), timeout=call_timeout)
         except BaseException as exc:
             if invocation_id is not None:
                 async with self.sessions.begin() as db:
@@ -408,12 +446,23 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 invocation = await db.scalar(
                     select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id)
                 )
+                argument_error = event_type == RunEventType.TOOL_FAILED and is_tool_argument_error(result.content)
                 invocation.state = (
-                    (ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED)
+                    (
+                        ToolInvocationState.UNKNOWN
+                        if invocation_effect == ToolEffect.WRITE and not argument_error
+                        else ToolInvocationState.FAILED
+                    )
                     if event_type == RunEventType.TOOL_FAILED
                     else ToolInvocationState.COMPLETED
                 )
-                invocation.failure_code = "execution_error" if event_type == RunEventType.TOOL_FAILED else None
+                invocation.failure_code = (
+                    ToolFeedbackFailure.INVALID_ARGUMENTS
+                    if argument_error
+                    else "execution_error"
+                    if event_type == RunEventType.TOOL_FAILED
+                    else None
+                )
         return result
 
 
@@ -621,6 +670,7 @@ async def _finish_interrupted(
     *,
     catalog_model: ModelCatalog | None = None,
     started: float | None = None,
+    model_usage: Sequence | None = None,
 ) -> AgentRun:
     """优先确认已请求的取消，否则将当前执行失败分类入库。"""
     for _ in range(3):
@@ -631,14 +681,14 @@ async def _finish_interrupted(
             try:
                 if run.state == RunState.CANCEL_REQUESTED and run.lease_token == lease_token:
                     result = await acknowledge_cancel(db, run_id, lease_token)
-                    _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
+                    _record_runtime_call(db, run, catalog_model, started, failure="cancelled", messages=model_usage)
                     return result
                 if run.state == RunState.RUNNING and run.lease_token == lease_token:
                     if failure_code in set(RunTimeoutReason):
                         result = await timeout_run(db, run_id, lease_token, failure_code)
                     else:
                         result = await fail_run(db, run_id, lease_token, failure_code)
-                    _record_runtime_call(db, run, catalog_model, started, failure=failure_code)
+                    _record_runtime_call(db, run, catalog_model, started, failure=failure_code, messages=model_usage)
                     return result
                 return run
             except RunConflictError:
@@ -651,11 +701,10 @@ async def _finish_interrupted(
 
 
 async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
-    """失败轮次无工具调用或仅读取 Skill 文件时，允许从已确认检查点开始新一轮。"""
+    """失败轮次无工具调用或仅读 Skill 文件与附件列表时，允许从已确认检查点开始新一轮。"""
     if failed_run.tool_call_count == 0:
         return True
-    if not await db.scalar(select(RunSkill.id).where(RunSkill.run_id == failed_run.id).limit(1)):
-        return False
+    has_skills = bool(await db.scalar(select(RunSkill.id).where(RunSkill.run_id == failed_run.id).limit(1)))
     events = (
         await db.scalars(
             select(AgentRunEvent)
@@ -669,7 +718,9 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
     started: dict[str, str] = {}
     seen: set[str] = set()
     for event in events:
-        if not event.tool_call_id or not event.tool_name or not event.tool_name.startswith("skill:"):
+        if not event.tool_call_id or not event.tool_name:
+            return False
+        if event.tool_name != "list_session_artifacts" and not (has_skills and event.tool_name.startswith("skill:")):
             return False
         if event.event_type == RunEventType.TOOL_STARTED:
             if event.tool_call_id in seen:
@@ -681,7 +732,7 @@ async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool
                 return False
         else:
             return False
-    # Skill read_file 只读本轮固定文件；worker 中断可能来不及保存结束事件。
+    # Skill read_file 与附件列表均无副作用；worker 中断可能来不及保存结束事件。
     # 核对全部已计数调用均有只读开始事件，后续从成功检查点分支，不重放失败轮次。
     return len(seen) == failed_run.tool_call_count
 
@@ -695,12 +746,12 @@ async def execute_text_run(
     resolve_model: ModelResolver | None = None,
     resolve_tools: ToolResolver | None = None,
     resume: bool = False,
-    timeout_seconds: float = 120,
+    timeout_seconds: float | None = None,
     lease_seconds: int = 30,
     poll_seconds: float = 5,
 ) -> AgentRun:
-    """领取文本运行、执行 DeepAgents，并持久化检查点引用与最终可见回答。"""
-    if timeout_seconds <= 0 or lease_seconds <= 0 or not 0 < poll_seconds < lease_seconds / 2:
+    """按单次调用时限执行并持久化结果；timeout_seconds 仅用于内部调用方显式取消保护，默认不限制整轮。"""
+    if timeout_seconds is not None and timeout_seconds <= 0 or lease_seconds <= 0 or not 0 < poll_seconds < lease_seconds / 2:
         raise ValueError("无效的执行超时或租约参数")
     if (model is None) == (resolve_model is None):
         raise ValueError("必须且只能指定一种模型来源")
@@ -807,6 +858,8 @@ async def execute_text_run(
     if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_content)]) + image_token_reserve > input_budget:
         return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
 
+    model_usage: list[AIMessage] = []
+
     async def summarize_history(messages: list[BaseMessage]) -> str:
         """在运行预算内调用模型压缩历史，记录用量并拒绝空摘要。"""
         async with sessions.begin() as db:
@@ -814,6 +867,10 @@ async def execute_text_run(
         prompt = CONVERSATION_SUMMARY_PROMPT.format(messages=get_buffer_string(_summary_messages_without_images(messages)))
         try:
             response = await asyncio.wait_for(model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds)
+        except (TimeoutError, OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError) as exc:
+            if isinstance(exc, TimeoutError):
+                raise ModelExecutionTimeout("摘要模型调用超过时限") from exc
+            raise
         except Exception as exc:
             raise SummaryModelError("摘要模型调用失败") from exc
         await _account_model_response(
@@ -826,6 +883,7 @@ async def execute_text_run(
             run.cost_input_price,
             run.cost_output_price,
         )
+        _check_model_output(response, model_usage)
         summary = str(response.text).strip()
         if not summary:
             raise SummaryModelError("对话摘要为空")
@@ -856,6 +914,8 @@ async def execute_text_run(
                             run.cost_output_price,
                             frozenset(skill_files),
                             aliases,
+                            model_timeout_seconds=run.model_timeout_seconds,
+                            model_usage=model_usage,
                         )
                     ],
                     summarizer=summarize_history,
@@ -881,12 +941,13 @@ async def execute_text_run(
                 expected_run = await db.scalar(statement)
                 expected_checkpoint_id = expected_run.checkpoint_id if expected_run is not None else None
                 checkpoint_run_id = (snapshot.metadata or {}).get("run_id")
+                if isinstance(checkpoint_run_id, str):
+                    checkpoint_run_id = checkpoint_run_id.removesuffix(":retry")
                 checkpoint_run = await db.get(AgentRun, checkpoint_run_id) if isinstance(checkpoint_run_id, str) else None
                 safe_rewind = await _can_rewind_failed_run(db, checkpoint_run) if checkpoint_run is not None else False
             if (
                 not resume
                 and actual_checkpoint_id != expected_checkpoint_id
-                and expected_run is not None
                 and checkpoint_run is not None
                 and checkpoint_run.owner_id == run.owner_id
                 and checkpoint_run.agent_id == run.agent_id
@@ -894,11 +955,17 @@ async def execute_text_run(
                 and checkpoint_run.thread_id == thread_id
                 and checkpoint_run.state in {RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT}
                 and safe_rewind
-                and expected_run.create_time < checkpoint_run.create_time < run.create_time
+                and checkpoint_run.create_time < run.create_time
+                and (expected_run is None or expected_run.create_time < checkpoint_run.create_time)
             ):
-                runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
-                snapshot = await runtime.state()
-                actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+                if expected_run is not None:
+                    runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
+                    snapshot = await runtime.state()
+                    actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+                elif await runtime.rewind_to_empty_start(checkpoint_run.id):
+                    snapshot = await runtime.state()
+                    actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+                    expected_checkpoint_id = actual_checkpoint_id
             # 检查点可能先于业务事务提交；恢复审批还须核对已批准动作与当前工具授权。
             if resume:
                 try:
@@ -949,7 +1016,7 @@ async def execute_text_run(
                 }
                 invocation["skills_metadata"] = None
             started = time.perf_counter()
-            deadline = time.monotonic() + min(timeout_seconds, run.model_timeout_seconds)
+            deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
             for attempt in range(2):
                 task = asyncio.create_task(
                     _stream_model_text(
@@ -968,7 +1035,7 @@ async def execute_text_run(
                     _watch_run(sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds)
                 )
                 try:
-                    await asyncio.wait_for(task, timeout=max(0, deadline - time.monotonic()))
+                    await asyncio.wait_for(task, timeout=max(0, deadline - time.monotonic()) if deadline is not None else None)
                 finally:
                     watcher.cancel()
                     with suppress(asyncio.CancelledError):
@@ -1041,7 +1108,7 @@ async def execute_text_run(
                     sessions,
                     run_id,
                     lease_token,
-                    "empty_response",
+                    RunModelFailureReason.EMPTY,
                     catalog_model=catalog_model,
                     started=started,
                 )
@@ -1074,8 +1141,29 @@ async def execute_text_run(
             catalog_model=catalog_model,
             started=started,
         )
+    except ModelOutputLimitExceeded:
+        return await _finish_interrupted(
+            sessions,
+            run_id,
+            lease_token,
+            RunModelFailureReason.OUTPUT_LIMIT,
+            catalog_model=catalog_model,
+            started=started,
+            model_usage=model_usage,
+        )
+    except GraphRecursionError:
+        return await _finish_interrupted(
+            sessions,
+            run_id,
+            lease_token,
+            RunRuntimeFailureReason.GRAPH_STEP_LIMIT,
+            catalog_model=catalog_model,
+            started=started,
+        )
     except SummaryModelError:
-        return await _finish_interrupted(sessions, run_id, lease_token, "summary_error", catalog_model=catalog_model, started=started)
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, RunModelFailureReason.SUMMARY, catalog_model=catalog_model, started=started
+        )
     except TokenBudgetExceeded:
         return await _finish_interrupted(
             sessions,
@@ -1145,6 +1233,15 @@ async def execute_text_run(
         return await _finish_interrupted(
             sessions, run_id, lease_token, RunTimeoutReason.PROVIDER, catalog_model=catalog_model, started=started
         )
+    except ModelExecutionTimeout:
+        return await _finish_interrupted(
+            sessions,
+            run_id,
+            lease_token,
+            RunTimeoutReason.MODEL,
+            catalog_model=catalog_model,
+            started=started,
+        )
     except TimeoutError:
         return await _finish_interrupted(
             sessions, run_id, lease_token, RunTimeoutReason.EXECUTION, catalog_model=catalog_model, started=started
@@ -1167,4 +1264,6 @@ async def execute_text_run(
                 return result
             return run
     except Exception:  # noqa: BLE001 - 外部模型和检查点异常统一归类，不保存原始异常信息。
-        return await _finish_interrupted(sessions, run_id, lease_token, "model_error", catalog_model=catalog_model, started=started)
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, RunModelFailureReason.UPSTREAM, catalog_model=catalog_model, started=started
+        )

@@ -48,6 +48,7 @@ from app.schemas.run import (
     WorkerStatusOut,
 )
 from app.services.message_attachments import load_message_artifacts, load_message_attachments
+from app.services.model_adapter import thinking_request_options
 from app.services.run_manager import (
     TERMINAL_STATES,
     RunConflictError,
@@ -116,10 +117,12 @@ async def submit_run(body: RunCreateIn, actor: Admin = Depends(get_current_admin
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.status != 1 or model.is_deleted != 0 or provider is None or provider.status != 1 or provider.is_deleted != 0:
         raise CustomException(status_code=404, custom_code=10002, detail="模型不可用")
+    thinking_request_options(provider.kind, body.thinking_mode)
     if body.enable_text_artifact_tool and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="模型尚未通过工具调用能力验证")
     options = dict(
         model_id=body.model_id,
+        agent_thinking_mode=body.thinking_mode,
         input_text=body.input_text,
         request_key=body.request_key,
         thread_id=body.thread_id,

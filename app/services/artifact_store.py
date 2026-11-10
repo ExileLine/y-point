@@ -39,7 +39,14 @@ from app.models.run_artifact_read import RunArtifactRead
 from app.services.private_blob_store import delete_blob, old_blob_batches, store_blob, using_s3
 
 MAX_FILES = 5
-MAX_FILE_BYTES = 10 * 1024 * 1024
+
+
+def upload_max_bytes() -> int:
+    """读取当前对话上传文件的字节上限。"""
+    return get_config().ARTIFACT_UPLOAD_MAX_BYTES
+
+
+MAX_GENERATED_FILE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 ORPHAN_GRACE_SECONDS = 3600
 MEDIA_TYPES = {
@@ -221,8 +228,14 @@ async def _cleanup_uncommitted_blob(root: Path, key: str, *, remote_attempted: b
             logger.warning("未提交文件的对象清理失败：{}", type(exc).__name__)
 
 
-async def save_upload(file: UploadFile, owner_id: int, root: Path) -> tuple[Artifact, Path]:
+def artifact_read_max_bytes() -> int:
+    """兼顾上传附件与独立生成产物的读取上限。"""
+    return max(upload_max_bytes(), MAX_GENERATED_FILE_BYTES)
+
+
+async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes: int | None = None) -> tuple[Artifact, Path]:
     """限量写入临时文件，校验后原子转入私有目录。"""
+    max_bytes = upload_max_bytes() if max_bytes is None else max_bytes
     filename = file.filename or ""
     key = uuid4().hex
     temporary = root / f".{key}.tmp"
@@ -235,8 +248,8 @@ async def save_upload(file: UploadFile, owner_id: int, root: Path) -> tuple[Arti
         with os.fdopen(descriptor, "wb") as stream:
             while chunk := await file.read(1024 * 1024):
                 total += len(chunk)
-                if total > MAX_FILE_BYTES:
-                    raise ArtifactValidationError("单个文件超过 10 MiB")
+                if total > max_bytes:
+                    raise ArtifactValidationError(f"单个文件超过 {max_bytes / (1024 * 1024):g} MiB")
                 digest.update(chunk)
                 stream.write(chunk)
         if total == 0:
@@ -285,7 +298,7 @@ async def publish_generated_artifact(
     source_artifact_id: str | None = None,
 ) -> Artifact:
     """在已完成 Run 下幂等发布经过格式校验的生成文件。"""
-    if not publication_key or len(publication_key) > 128 or not content or len(content) > MAX_FILE_BYTES:
+    if not publication_key or len(publication_key) > 128 or not content or len(content) > MAX_GENERATED_FILE_BYTES:
         raise ArtifactValidationError("产物发布参数无效或文件超过 10 MiB")
     digest = hashlib.sha256(content).hexdigest()
     async with sessions() as db:
@@ -419,7 +432,7 @@ async def stage_generated_artifact(
     suffix = Path(filename).suffix.lower()
     if suffix not in MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES or len(filename) > 120:
         raise ArtifactValidationError("生成文件格式不支持或文件名超过 120 字符")
-    if not data or len(data) > MAX_FILE_BYTES:
+    if not data or len(data) > MAX_GENERATED_FILE_BYTES:
         raise ArtifactValidationError("生成文件为空或超过 10 MiB")
     prefix = "model-txt-" if suffix == ".txt" else "model-file-"
     publication_key = prefix + hashlib.sha256(filename.encode("utf-8")).hexdigest()

@@ -3594,3 +3594,468 @@ def test_live_ollama_persisted_run(tmp_path: Path) -> None:
             await engine.dispose()
 
     asyncio.run(exercise_live_run())
+
+
+@pytest.mark.parametrize("scenario", ["multiple_calls", "model_timeout", "execution_timeout", "step_limit"])
+def test_configurable_model_and_execution_deadlines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str) -> None:
+    """各次调用独立计时，旧整轮配置不再中断正常长任务，显式内部保护仍可取消。"""
+    monkeypatch.setenv("RUN_EXECUTION_TIMEOUT_SECONDS", "1")
+    assert "RUN_EXECUTION_TIMEOUT_SECONDS" not in type(get_config()).model_fields
+    if scenario == "step_limit":
+        monkeypatch.setattr(get_config(), "RUNTIME_RECURSION_LIMIT", 2)
+
+    class DelayedModel(ScriptedModel):
+        """用固定延迟模拟真实模型等待，不访问外部服务。"""
+
+        delay: float
+        cancelled: ClassVar[bool] = False
+
+        async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+            """支持取消的模型调用，用于区分单次调用与整轮执行时限。"""
+            try:
+                await asyncio.sleep(self.delay)
+                return await super()._agenerate(messages, stop, run_manager, **kwargs)
+            except asyncio.CancelledError:
+                type(self).cancelled = True
+                raise
+
+    @tool
+    async def read_review_contract() -> str:
+        """模拟读取审查契约，工具耗时只计入整轮预算。"""
+        await asyncio.sleep(0.2)
+        return "已读取审查契约"
+
+    async def resolve_tools(db, run):
+        """为隔离运行提供一个已授权的只读工具。"""
+        return [read_review_contract], {}
+
+    async def exercise() -> None:
+        """使用真实执行器、检查点和临时数据库验证时限及终态。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'timeout-scopes.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="timeout-scopes-user", password="not-used", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="完成审查", model_timeout_seconds=3 if scenario == "execution_timeout" else 1)
+            responses = [AIMessage(content="审查完成")]
+            if scenario in {"multiple_calls", "step_limit"}:
+                responses.insert(
+                    0,
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_review_contract",
+                                "args": {},
+                                "id": "read-contract",
+                            }
+                        ],
+                    ),
+                )
+            model = DelayedModel(
+                delay=0.1 if scenario == "step_limit" else 0.65 if scenario == "multiple_calls" else 1.5, responses=responses
+            )
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                model,
+                tmp_path / "checkpoints.db",
+                resolve_tools=resolve_tools,
+                timeout_seconds=1 if scenario == "execution_timeout" else None,
+                lease_seconds=2,
+                poll_seconds=0.05,
+            )
+            if scenario == "multiple_calls":
+                assert result.state == "completed", result.failure_code
+                assert result.model_call_count == 2 and result.tool_call_count == 1
+                assert not DelayedModel.cancelled
+            elif scenario == "step_limit":
+                assert result.state == "failed" and result.failure_code == "graph_step_limit_exceeded"
+                async with sessions() as db:
+                    events = await replay_events(db, run.id, 1)
+                    assert events[-1].failure_code == "graph_step_limit_exceeded"
+            else:
+                assert result.state == "timed_out"
+                assert result.failure_code == ("model_execution_timeout" if scenario == "model_timeout" else "execution_timeout")
+                assert DelayedModel.cancelled
+                async with sessions() as db:
+                    events = await replay_events(db, run.id, 1)
+                    assert events[-1].failure_code == result.failure_code
+                    assert [message.role for message in await get_owned_messages(db, run.id, 1)] == ["user"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("content", ["", "尚未完成的审查正文"])
+@pytest.mark.parametrize(
+    ("reason_key", "reason"),
+    [("finish_reason", "length"), ("stop_reason", "max_tokens"), ("finish_reason", "MAX_TOKENS"), ("stopReason", "max_tokens")],
+)
+def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str, reason_key: str, reason: str) -> None:
+    """上游输出截断必须明确失败，不能误报空响应或把半份审查报告标为成功。"""
+
+    async def exercise() -> None:
+        """在隔离业务库与检查点中复现真实模型的 length 结束原因。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'output-limit.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="output-limit-user", password="unused", role="user", status=1, is_deleted=0))
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="output-limit",
+                        name_key="output-limit",
+                        kind="openai_compatible",
+                        base_url="http://unused.invalid/v1",
+                        creator_id=1,
+                    )
+                )
+                db.add(ModelCatalog(id=1, provider_id=1, external_id="fake", display_name="fake", creator_id=1))
+                run = await create_run(db, 1, model_id=1, input_text="请审核施工方案", agent_max_output_tokens=4096)
+            model = ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content=content,
+                        response_metadata={
+                            reason_key: reason,
+                        },
+                        usage_metadata={
+                            "input_tokens": 42832,
+                            "output_tokens": 4096,
+                            "total_tokens": 46928,
+                        },
+                    )
+                ]
+            )
+            result = await execute_text_run(sessions, run.id, model, tmp_path / "checkpoint.sqlite", lease_seconds=2, poll_seconds=0.1)
+            assert (result.state, result.failure_code) == ("failed", "model_output_limit_exceeded")
+            assert result.model_call_count == 1
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert events[-1].failure_code == "model_output_limit_exceeded"
+                messages = await get_owned_messages(db, run.id, 1)
+                assert all(message.role != "assistant" for message in messages)
+                record = await db.scalar(select(ModelCallRecord).where(ModelCallRecord.run_id == run.id))
+                assert record.failure == "model_output_limit_exceeded" and not record.available
+                assert (record.input_tokens, record.output_tokens) == (42832, 4096)
+                assert result.reported_total_tokens == 46928
+            async with sessions.begin() as db:
+                followup = await create_run(
+                    db, 1, model_id=1, thread_id=run.thread_id, input_text="继续审核", agent_max_output_tokens=16384
+                )
+            completed = await execute_text_run(
+                sessions,
+                followup.id,
+                ScriptedModel(responses=[AIMessage(content="审核已完成")]),
+                tmp_path / "checkpoint.sqlite",
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert completed.state == "completed", completed.failure_code
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("tool_call", [False, True])
+def test_output_limit_does_not_execute_tools_or_retry_report(tmp_path: Path, tool_call: bool) -> None:
+    """截断的工具参数禁止执行，额度耗尽也不能触发原参数不变的产物补救。"""
+
+    async def exercise() -> None:
+        """使用真实会话约束和产物补全入口验证无副作用地结束。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'report-limit.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        executions = []
+
+        @tool
+        async def create_document_artifact(filename: str) -> str:
+            """记录工具是否被误执行，不创建真实文档。"""
+            executions.append(filename)
+            return "unused"
+
+        async def resolve_tools(db, run):
+            """提供足以触发文件补救的已授权文档工具。"""
+            return [create_document_artifact], {}
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="report-limit-user", password="unused", role="user", status=1, is_deleted=0))
+                db.add(AgentConfig(id=1, owner_id=1, name="review", default_model_id=1))
+                db.add(AgentSession(id="report-limit-session", agent_id=1, owner_id=1, thread_id="report-limit-thread", title="review"))
+                run = await create_run(
+                    db,
+                    1,
+                    agent_id=1,
+                    session_id="report-limit-session",
+                    thread_id="report-limit-thread",
+                    input_text="请生成施工方案审核报告.docx",
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=4096,
+                )
+            response = AIMessage(
+                content="",
+                response_metadata={
+                    "finish_reason": "length",
+                },
+                tool_calls=[
+                    {
+                        "name": "create_document_artifact",
+                        "args": {
+                            "filename": "incomplete.docx",
+                        },
+                        "id": "truncated-call",
+                    }
+                ]
+                if tool_call
+                else [],
+            )
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                ScriptedModel(responses=[response]),
+                tmp_path / "report-checkpoint.sqlite",
+                resolve_tools=resolve_tools,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert result.failure_code == "model_output_limit_exceeded"
+            assert result.model_call_count == 1 and result.tool_call_count == 0
+            assert executions == []
+            async with sessions() as db:
+                assert not await db.scalar(select(Artifact.id).where(Artifact.run_id == run.id))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("content", ["", "已完成的审查正文"])
+def test_normal_model_stop_is_not_inferred_from_usage(tmp_path: Path, content: str) -> None:
+    """正常停止时仅凭用量等于上限不能判断截断，仍保留真正空响应的语义。"""
+
+    async def exercise() -> None:
+        """用相同输出计数对照正常停止与额度耗尽。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'normal-stop.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="normal-stop-user", password="unused", role="user", status=1, is_deleted=0))
+                run = await create_run(db, 1, input_text="请审核施工方案", agent_max_output_tokens=4096)
+            response = AIMessage(
+                content=content,
+                response_metadata={
+                    "finish_reason": "stop",
+                },
+                usage_metadata={
+                    "input_tokens": 42832,
+                    "output_tokens": 4096,
+                    "total_tokens": 46928,
+                },
+            )
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                ScriptedModel(responses=[response]),
+                tmp_path / "normal-checkpoint.sqlite",
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert (result.state, result.failure_code) == (("completed", None) if content else ("failed", "empty_response"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+@pytest.mark.parametrize("list_artifacts", [False, True])
+def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path, truncated: bool, list_artifacts: bool) -> None:
+    """兼容首轮仅读 Skill 后在历史产物补救中失败的检查点，继续时不重放失败消息或工具。"""
+
+    async def exercise() -> None:
+        """复现真实会话首轮失败及带 retry 后缀的检查点元数据。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'legacy-retry.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "legacy-retry-checkpoint.sqlite"
+        skill_text = "---\nname: status\ndescription: Review instructions\n---\n\n# Review\nRead this file only.\n"
+        _, _, manifest, digest = validate_package(
+            {
+                "SKILL.md": skill_text,
+            }
+        )
+
+        @tool
+        async def create_document_artifact(filename: str) -> str:
+            """提供产物补救入口，测试中不得真正执行。"""
+            raise AssertionError("不得重放或执行生成工具")
+
+        @tool
+        async def list_session_artifacts() -> str:
+            """仿真本轮真实调用的只读附件列表工具。"""
+            return "[]"
+
+        async def resolve_tools(db, run):
+            """提供已授权的文档生成与只读列表入口。"""
+            return [create_document_artifact, list_session_artifacts], {}
+
+        class ContinueModel(ScriptedModel):
+            """检查新轮次只接收本次有效输入。"""
+
+            async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                """拒绝把首轮失败正文和内部文件补救提示当作新轮次上下文。"""
+                human_text = [message.content for message in messages if message.type == "human"]
+                assert human_text == ["请继续审核"]
+                assert not any(isinstance(message, ToolMessage) for message in messages)
+                return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="legacy-user", password="unused", role="user", status=1, is_deleted=0))
+                db.add(
+                    ProviderConnection(
+                        id=1,
+                        name="legacy-provider",
+                        name_key="legacy-provider",
+                        kind="openai_compatible",
+                        base_url="http://unused.invalid/v1",
+                        creator_id=1,
+                    )
+                )
+                db.add(ModelCatalog(id=1, provider_id=1, external_id="fake", display_name="fake", creator_id=1))
+                db.add(AgentConfig(id=1, owner_id=1, name="review", default_model_id=1))
+                db.add(AgentSession(id="legacy-session", agent_id=1, owner_id=1, thread_id="legacy-thread", title="review"))
+                db.add(Skill(id=1, owner_id=1, name="status", description="Review instructions", visibility="private", current_version=1))
+                db.add(
+                    SkillVersion(
+                        skill_id=1,
+                        version=1,
+                        content_hash=digest,
+                        files={
+                            "SKILL.md": skill_text,
+                        },
+                        manifest=manifest,
+                    )
+                )
+                first = await create_run(
+                    db,
+                    1,
+                    agent_id=1,
+                    model_id=1,
+                    session_id="legacy-session",
+                    thread_id="legacy-thread",
+                    input_text="请生成原始审查报告.docx",
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=4096,
+                )
+                db.add(RunSkill(run_id=first.id, skill_id=1, skill_version=1))
+            response = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_file",
+                        "args": {
+                            "file_path": "/skills/status/SKILL.md",
+                        },
+                        "id": "legacy-skill-read",
+                    }
+                ],
+            )
+            if list_artifacts:
+                response.tool_calls.append(
+                    {
+                        "name": "list_session_artifacts",
+                        "args": {},
+                        "id": "legacy-artifact-list",
+                        "type": "tool_call",
+                    }
+                )
+            response.usage_metadata = {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            }
+            limited_response = AIMessage(
+                content="",
+                response_metadata={
+                    "finish_reason": "length" if truncated else "stop",
+                },
+                usage_metadata={
+                    "input_tokens": 20,
+                    "output_tokens": 4096,
+                    "total_tokens": 4116,
+                },
+            )
+            failed = await execute_text_run(
+                sessions,
+                first.id,
+                ScriptedModel(responses=[response, limited_response, AIMessage(content="")]),
+                checkpoint,
+                resolve_tools=resolve_tools,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            expected_failure = "model_output_limit_exceeded" if truncated else "empty_response"
+            assert failed.failure_code == expected_failure
+            assert failed.model_call_count == (2 if truncated else 3) and failed.tool_call_count == (2 if list_artifacts else 1)
+            if truncated:
+                async with sessions() as db:
+                    record = await db.scalar(select(ModelCallRecord).where(ModelCallRecord.run_id == first.id))
+                    assert (record.input_tokens, record.output_tokens) == (30, 4098)
+                    assert failed.reported_total_tokens == 4128
+            async with open_async_checkpointer(checkpoint) as checkpointer:
+                saved = await checkpointer.aget_tuple(
+                    {
+                        "configurable": {
+                            "thread_id": first.thread_id,
+                        },
+                    }
+                )
+                assert saved.metadata["run_id"] == (first.id if truncated else f"{first.id}:retry")
+            async with sessions.begin() as db:
+                followup = await create_run(
+                    db,
+                    1,
+                    agent_id=1,
+                    session_id="legacy-session",
+                    thread_id="legacy-thread",
+                    input_text="请继续审核",
+                    agent_config_version=1,
+                    agent_system_prompt="",
+                    agent_temperature=Decimal("1"),
+                    agent_max_output_tokens=16384,
+                )
+            result = await execute_text_run(
+                sessions,
+                followup.id,
+                ContinueModel(responses=[AIMessage(content="已继续审核")]),
+                checkpoint,
+                lease_seconds=2,
+                poll_seconds=0.1,
+            )
+            assert result.state == "completed", result.failure_code
+            assert result.tool_call_count == 0
+            async with sessions() as db:
+                original = await db.get(AgentRun, first.id)
+                assert original.state == "failed" and original.failure_code == expected_failure
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())

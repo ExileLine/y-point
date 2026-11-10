@@ -205,7 +205,7 @@ def test_preview_api_authorization_storage_and_errors(tmp_path: Path, monkeypatc
 
                 async def object_content(root_path: Path, key: str, *, max_bytes: int) -> bytes:
                     """模拟私有对象读取，确认预览没有绑定本地路径或公开 URL。"""
-                    assert root_path == root and max_bytes == 10 * 1024 * 1024
+                    assert root_path == root and max_bytes == 20 * 1024 * 1024
                     return b"# Private object preview"
 
                 monkeypatch.setattr(artifact_api, "read_blob", object_content)

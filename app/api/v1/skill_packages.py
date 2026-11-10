@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jsonschema import Draft202012Validator, ValidationError
 
 from app.api.v1.skills import _owned, _output
+from app.core.config import get_config
 from app.core.custom_exception import CustomException
 from app.core.enums import ToolEnvironmentState, ToolKind, ToolLeaseKind, Visibility
 from app.core.response import api_response
@@ -598,15 +599,19 @@ async def test_script(
         environment = await require_script_environment(version)
         resources = {path: await read_resource(db, item.owner_id, entry) for path, entry in draft.files.items()}
         sessions = async_sessionmaker(db.bind, expire_on_commit=False)
-        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 10):
-            result = await run_script(
-                version.script_language,
-                version.source_code,
-                body.arguments,
-                10,
-                environment=environment,
-                package_files=resources,
-                entrypoint=body.path,
+        timeout = get_config().SCRIPT_TEST_TIMEOUT_SECONDS
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, timeout):
+            result = await asyncio.wait_for(
+                run_script(
+                    version.script_language,
+                    version.source_code,
+                    body.arguments,
+                    timeout,
+                    environment=environment,
+                    package_files=resources,
+                    entrypoint=body.path,
+                ),
+                timeout=timeout,
             )
         await db.refresh(draft)
         if draft.revision != body.expected_revision or package_digest(draft.files) != binding.package_hash:

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.enums import ArtifactState
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
-from app.services.artifact_store import MAX_FILE_BYTES, ArtifactValidationError, storage_path
+from app.services.artifact_store import artifact_read_max_bytes, ArtifactValidationError, storage_path
 from app.services.private_blob_store import delete_blob, read_blob, store_blob, using_s3
 
 
@@ -27,7 +27,7 @@ def _matches(content: bytes, artifact: Artifact) -> bool:
 async def _read_remote(root: Path, artifact: Artifact) -> bytes | None:
     """有界读取待核验的远端文件，不存在时返回空值。"""
     try:
-        return await read_blob(root, artifact.storage_key, max_bytes=MAX_FILE_BYTES)
+        return await read_blob(root, artifact.storage_key, max_bytes=artifact_read_max_bytes())
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "NotFound", "404"}:
             return None
@@ -72,7 +72,7 @@ async def migrate_local_artifacts_to_s3(
             if path.is_symlink() or not path.is_file():
                 raise ArtifactValidationError(f"本地文件不存在：{artifact.id}")
             with path.open("rb") as stream:
-                content = stream.read(MAX_FILE_BYTES + 1)
+                content = stream.read(artifact_read_max_bytes() + 1)
             if not _matches(content, artifact):
                 raise ArtifactValidationError(f"本地文件摘要不一致：{artifact.id}")
             await store_blob(root, artifact.storage_key, path)

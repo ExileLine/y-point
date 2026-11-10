@@ -11,6 +11,8 @@ from decimal import Decimal
 from sqlalchemy import Boolean, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.config import get_config
+from app.core.enums import ModelThinkingMode
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
@@ -35,11 +37,14 @@ class AgentRun(CustomBaseModel):
     agent_temperature: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, comment="提交时生成温度快照")
     agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
+    agent_thinking_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ModelThinkingMode.AUTO, server_default=ModelThinkingMode.AUTO, comment="提交时模型思考模式快照"
+    )
     model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="模型生成超时秒数"
+        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, comment="单次模型生成超时秒数"
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数"
+        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, comment="单次工具执行超时秒数"
     )
     max_queue_wait_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="排队等待最长秒数")
     queue_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, index=True, comment="排队等待截止时间")

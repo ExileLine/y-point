@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.password import hash_password
 from app.db.session import get_db_session
 from app.main import app
+from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
 from app.models.agent_share import AgentShare
@@ -233,7 +234,7 @@ def test_private_agent_crud(tmp_path: Path) -> None:
                     )
                     assert unpriced.status_code == 409
                     for field, invalid_value in (
-                        ("model_timeout_seconds", 121),
+                        ("model_timeout_seconds", get_config().AGENT_MAX_MODEL_TIMEOUT_SECONDS + 1),
                         ("tool_timeout_seconds", 0),
                         ("max_model_calls", 101),
                         ("max_tool_calls", 0),
@@ -479,11 +480,35 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                     }
 
                 owner, recipient, stranger = await login("share-owner"), await login("share-recipient"), await login("share-stranger")
-                assert (await client.get("/api/v1/agents/share-targets", params={"query": "sh"})).status_code == 401
-                targets = await client.get("/api/v1/agents/share-targets", headers=owner, params={"query": "share-rec"})
+                assert (
+                    await client.get(
+                        "/api/v1/agents/share-targets",
+                        params={
+                            "query": "sh",
+                        },
+                    )
+                ).status_code == 401
+                targets = await client.get(
+                    "/api/v1/agents/share-targets",
+                    headers=owner,
+                    params={
+                        "query": "share-rec",
+                    },
+                )
                 assert targets.status_code == 200
-                assert targets.json()["data"] == [{"user_id": 2, "username": "share-recipient"}]
-                recipient_targets = await client.get("/api/v1/agents/share-targets", headers=recipient, params={"query": "share-rec"})
+                assert targets.json()["data"] == [
+                    {
+                        "user_id": 2,
+                        "username": "share-recipient",
+                    }
+                ]
+                recipient_targets = await client.get(
+                    "/api/v1/agents/share-targets",
+                    headers=recipient,
+                    params={
+                        "query": "share-rec",
+                    },
+                )
                 assert recipient_targets.json()["data"] == []
                 created = await client.post(
                     "/api/v1/agents",

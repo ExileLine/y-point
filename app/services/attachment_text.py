@@ -15,7 +15,14 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-MAX_CONTEXT_ATTACHMENT_BYTES = 16 * 1024
+from app.core.config import get_config
+
+
+def context_max_bytes() -> int:
+    """读取附件正文及元数据的合计字节预算。"""
+    return get_config().ATTACHMENT_CONTEXT_MAX_BYTES
+
+
 CONTEXT_MEDIA_TYPES = frozenset(
     {
         "text/plain",
@@ -66,8 +73,8 @@ def _bounded_text(lines) -> str:
         if not line:
             continue
         size += len(line.encode("utf-8")) + (1 if collected else 0)
-        if size > MAX_CONTEXT_ATTACHMENT_BYTES:
-            raise ValueError("文档提取文本超过 16 KiB 上限")
+        if size > context_max_bytes():
+            raise ValueError(f"文档提取文本超过 {context_max_bytes() / (1024 * 1024):g} MiB 上限")
         collected.append(line)
     if not collected:
         raise ValueError("文档没有可提取的文本")
@@ -75,7 +82,7 @@ def _bounded_text(lines) -> str:
 
 
 def extract_context_text(content: bytes, media_type: str) -> str:
-    """只提取小型文本上下文；不默默截断未读完的文档。"""
+    """提取有界文本上下文；不默默截断未读完的文档。"""
     if media_type in {"text/plain", "text/markdown", "text/csv", "application/json"}:
         return _bounded_text(content.decode("utf-8").splitlines())
     if media_type == "text/html":

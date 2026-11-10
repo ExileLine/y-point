@@ -21,8 +21,8 @@ from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
-from app.services.attachment_text import CONTEXT_MEDIA_TYPES, MAX_CONTEXT_ATTACHMENT_BYTES, extract_context_text
-from app.services.artifact_store import MAX_FILE_BYTES, MAX_IMAGE_BYTES, artifact_root
+from app.services.attachment_text import CONTEXT_MEDIA_TYPES, context_max_bytes, extract_context_text
+from app.services.artifact_store import artifact_read_max_bytes, MAX_IMAGE_BYTES, artifact_root
 from app.services.artifact_sources import load_read_source_artifact_ids
 from app.services.private_blob_store import read_blob
 
@@ -86,7 +86,7 @@ async def build_attachment_context(items: list[Artifact]) -> str | None:
     chunks = []
     for item in items:
         try:
-            content = await read_blob(artifact_root(), item.storage_key, max_bytes=MAX_FILE_BYTES)
+            content = await read_blob(artifact_root(), item.storage_key, max_bytes=artifact_read_max_bytes())
             if len(content) != item.byte_size or hashlib.sha256(content).hexdigest() != item.sha256:
                 raise AttachmentContextUnavailable("模型上下文附件校验失败")
             decoded = await asyncio.to_thread(extract_context_text, content, item.media_type)
@@ -105,8 +105,8 @@ async def build_attachment_context(items: list[Artifact]) -> str | None:
                 ensure_ascii=False,
             )
         )
-    if sum(len(chunk.encode("utf-8")) for chunk in chunks) > MAX_CONTEXT_ATTACHMENT_BYTES:
-        raise AttachmentContextUnavailable("模型上下文附件提取文本超过 16 KiB 限制")
+    if sum(len(chunk.encode("utf-8")) for chunk in chunks) + len(chunks) - 1 > context_max_bytes():
+        raise AttachmentContextUnavailable(f"模型上下文附件提取文本超过 {context_max_bytes() / (1024 * 1024):g} MiB 限制")
     return "\n".join(chunks)
 
 

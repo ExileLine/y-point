@@ -12,6 +12,7 @@ import shortuuid
 from loguru import logger
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.core.config import get_config
 from app.core.response import api_response
 
 
@@ -51,7 +52,7 @@ class UploadTooLargeError(Exception):
 class ArtifactUploadLimitMiddleware:
     """在 multipart 解析前限制文件上传请求的实际接收字节数。"""
 
-    def __init__(self, app: ASGIApp, max_bytes: int = 51 * 1024 * 1024):
+    def __init__(self, app: ASGIApp, max_bytes: int | None = None):
         """保存下游应用和上传请求总上限。"""
         self.app = app
         self.max_bytes = max_bytes
@@ -67,10 +68,14 @@ class ArtifactUploadLimitMiddleware:
             return
         headers = _decode_headers(scope.get("headers", []))
         content_length = headers.get("content-length")
-        request_limit = min(self.max_bytes, 11 * 1024 * 1024) if knowledge_upload else self.max_bytes
+        request_limit = 5 * get_config().ARTIFACT_UPLOAD_MAX_BYTES + 1024 * 1024
+        if knowledge_upload:
+            request_limit = 11 * 1024 * 1024
         if skill_upload:
             single_template = path.endswith(("/template", "/templates"))
-            request_limit = min(self.max_bytes, (21 if single_template else 33) * 1024 * 1024)
+            request_limit = (21 if single_template else 33) * 1024 * 1024
+        if self.max_bytes is not None:
+            request_limit = min(self.max_bytes, request_limit)
         if content_length and content_length.isdecimal() and int(content_length) > request_limit:
             await api_response(http_code=413, code=10005, message="上传请求超过大小限制")(scope, receive, send)
             return

@@ -10,6 +10,8 @@ from decimal import Decimal
 from sqlalchemy import Boolean, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.config import get_config
+from app.core.enums import ModelThinkingMode
 from app.models.base import CustomBaseModel
 
 
@@ -29,12 +31,21 @@ class AgentConfig(CustomBaseModel):
     welcome_message: Mapped[str | None] = mapped_column(String(2048), nullable=True, comment="欢迎语")
     default_model_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="默认模型 ID")
     temperature: Mapped[Decimal] = mapped_column(Numeric(3, 2), nullable=False, default=Decimal("1"), comment="生成温度")
-    max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=4096, comment="单次最大输出 Token 数")
+    max_output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS, comment="单次最大输出 Token 数"
+    )
+    thinking_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=ModelThinkingMode.AUTO,
+        server_default=ModelThinkingMode.AUTO,
+        comment="模型思考模式：auto 跟随上游，enabled 启用，disabled 关闭",
+    )
     model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次模型生成超时秒数"
+        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS, comment="单次模型生成超时秒数"
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=120, server_default="120", comment="单次工具执行超时秒数"
+        Integer, nullable=False, default=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS, comment="单次工具执行超时秒数"
     )
     max_model_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="每轮模型调用次数上限")
     max_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="每轮工具调用次数上限")

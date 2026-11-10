@@ -29,6 +29,10 @@ class ScriptEnvironment:
     site: Path
 
 
+class ScriptInputRejected(ValueError):
+    """脚本以空标准输出、单行短提示及退出码 1 主动拒绝本次输入。"""
+
+
 class SandboxConfigurationError(ValueError):
     """表示可向 Tool 所有者公开的依赖或镜像配置问题。"""
 
@@ -162,6 +166,14 @@ async def run_script(
                     raise SandboxConfigurationError(f"沙箱镜像缺少依赖 {module}，请在 Tool 中声明对应安装包并保存、准备环境后重新试运行")
                 if b"No such image" in errors or b"pull access denied" in errors:
                     raise SandboxConfigurationError("沙箱镜像不可用，请先构建镜像或在离线环境导入镜像")
+                # Docker 自身失败使用 125/126/127；仅接收脚本主动交付的短提示，拒绝堆栈与日志。
+                if process.returncode == 1 and not output:
+                    try:
+                        feedback = errors.decode("utf-8").removesuffix("\n")
+                    except UnicodeDecodeError:
+                        feedback = ""
+                    if feedback and len(feedback) <= 512 and feedback.isprintable():
+                        raise ScriptInputRejected(feedback)
                 raise ValueError("脚本执行失败")
             try:
                 result = json.loads(output)

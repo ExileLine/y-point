@@ -210,7 +210,7 @@ async def _exercise_isolated_migrations(
                         assert not schema.get_foreign_keys(table.name)
 
                 await connection.run_sync(verify)
-                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "046"
+                assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "048"
                 await connection.run_sync(check_mapped_schema)
             await _assert_tool_slot_processes(engine.url)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
