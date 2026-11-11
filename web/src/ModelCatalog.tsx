@@ -105,7 +105,7 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
   function field(name: string) {
     const required = spec?.required_fields.includes(name) && !(provider && name === "api_key" && provider.has_api_key);
     if (name === "status") return <Form.Item key={name} name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>;
-    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} className="catalog-full-input" /></Form.Item>;
+    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} extra="必填，新连接通常默认 15 秒。独立于 Agent 单次模型超时；长时间思考或等待首包时，应同步调整此值。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} className="catalog-full-input" /></Form.Item>;
     if (name === "remark") return <Form.Item key={name} name={name} label={fieldLabels[name]}><Input.TextArea rows={2} maxLength={512} /></Form.Item>;
     if (name === "custom_headers") return <Form.Item key={name} name="custom_headers_text" label={fieldLabels[name]} extra={provider?.has_custom_headers ? "已配置；留空保留原值" : "JSON 对象，例如 {\"X-Tenant\":\"tenant\"}"}><Input.TextArea rows={3} /></Form.Item>;
     return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={required ? [{ required: true, whitespace: true, message: `请输入${fieldLabels[name]}` }] : undefined} extra={name === "api_key" && provider?.has_api_key ? "已配置；留空保留原值" : undefined}>
@@ -179,13 +179,13 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
     {error && <Alert className="catalog-alert" type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void save(values)}>
       <Form.Item name="provider_id" label="供应商连接" rules={[{ required: true }]}><Select disabled={Boolean(model)} options={providers.map((item) => ({ value: item.id, label: item.name, disabled: item.status !== 1 }))} /></Form.Item>
-      <Form.Item name="external_id" label="供应商模型 ID" rules={[{ required: true, whitespace: true }]}><Input maxLength={255} /></Form.Item>
+      <Form.Item name="external_id" label="供应商模型 ID" extra="须与供应商实际开放的模型标识一致；显示名称可自行命名。" rules={[{ required: true, whitespace: true }]}><Input maxLength={255} /></Form.Item>
       <Form.Item name="display_name" label="显示名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={128} /></Form.Item>
-      <Form.Item name="capabilities" label="声明能力" extra="声明后还需逐项验证"><Select mode="multiple" options={capabilities} /></Form.Item>
-      <Form.Item name="context_window" label="上下文窗口（Token）"><InputNumber min={1} precision={0} className="catalog-full-input" /></Form.Item>
+      <Form.Item name="capabilities" label="声明能力" extra="声明后仍需逐项验证；Agent 会检查已验证的文本能力，使用 Skill、Tool 或知识库还需要工具能力。"><Select mode="multiple" options={capabilities} /></Form.Item>
+      <Form.Item name="context_window" label="上下文窗口（Token）" extra="填写当前部署实际允许的窗口，包含输入与输出。留空表示未知，平台无法据此可靠预检；调大此值不会扩容模型。"><InputNumber min={1} precision={0} className="catalog-full-input" /></Form.Item>
       <div className="catalog-form-row">
-        <Form.Item name="input_price" label="输入价格 / 百万 Token"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
-        <Form.Item name="output_price" label="输出价格 / 百万 Token"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
+        <Form.Item name="input_price" label="输入价格 / 百万 Token" extra="留空表示价格未知；0 表示按零价格估算。与输出价格一起用于 Agent 成本预算。"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
+        <Form.Item name="output_price" label="输出价格 / 百万 Token" extra="按下方币种、每百万 Token 填写；供应商单独计价的项目需核对，估算不等于实际账单。"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
       </div>
       <Form.Item name="price_currency" label="币种" rules={[{ required: true, pattern: /^[A-Z]{3}$/, message: "请输入三位大写币种代码" }]}><Input maxLength={3} /></Form.Item>
       <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>

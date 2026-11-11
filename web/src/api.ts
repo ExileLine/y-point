@@ -22,7 +22,7 @@ export type Agent = {
   welcome_message: string | null;
   default_model_id: number;
   temperature: string;
-  max_output_tokens: number;
+  max_output_tokens: number | null;
   thinking_mode: ModelThinkingMode;
   model_timeout_seconds: number;
   tool_timeout_seconds: number;
@@ -267,7 +267,7 @@ export type AgentDraft = {
   welcome_message?: string | null;
   default_model_id?: number;
   temperature?: string;
-  max_output_tokens?: number;
+  max_output_tokens?: number | null;
   thinking_mode?: ModelThinkingMode;
   model_timeout_seconds?: number;
   tool_timeout_seconds?: number;
