@@ -8,19 +8,23 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 import json
+import math
 from typing import Any, Protocol
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
 from app.core.config import get_config
 from app.models.agent_run import AgentRun
+from app.schemas.runtime_file import RuntimeTextFileReadIn
 
 CONVERSATION_SUMMARY_PROMPT = (
     "请将以下历史对话压缩成准确的上下文摘要，保留用户目标、已确认事实、文件 ID、已完成操作"
@@ -28,6 +32,44 @@ CONVERSATION_SUMMARY_PROMPT = (
 )
 MIN_CONTEXT_INPUT_TOKENS = 512
 CONTEXT_OVERHEAD_TOKENS = 512
+
+
+def count_context_tokens(messages: list[BaseMessage], *, tools: list[BaseTool | dict] | None = None) -> int:
+    """为中文正文补充预算估计，避免默认四字符一 Token 低估；不用于费用或真实用量记账。"""
+    baseline = count_tokens_approximately(messages, tools=tools, use_usage_metadata_scaling=False)
+    non_ascii = sum(not character.isascii() for message in messages for character in str(message.content) + str(getattr(message, "tool_calls", [])))
+    return baseline + math.ceil(non_ascii * 0.55)
+
+
+class RuntimeSummarizationMiddleware(SummarizationMiddleware):
+    """仅对平台实际开放的工具计入窗口，避免未授权的默认工具造成错误拒绝。"""
+
+    def __init__(self, allowed_names: frozenset[str], **kwargs) -> None:
+        """保存平台工具名称并沿用 DeepAgents 的摘要和有界恢复实现。"""
+        super().__init__(**kwargs)
+        self.allowed_names = allowed_names
+
+    @property
+    def name(self) -> str:
+        """替换默认摘要中间件的位置，避免同时安装两套摘要策略。"""
+        return "SummarizationMiddleware"
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """先限制工具集合，再检查完整请求；具体读取路径仍由内层授权中间件校验。"""
+        tools = []
+        for tool in request.tools:
+            if getattr(tool, "name", None) == "read_file":
+                read_tool = tool.model_copy()
+                read_tool.description = "读取已授权的 Skill 文本或当前会话历史。历史文件每页最多 8192 字符，使用 next_offset 继续直到 EOF。"
+                read_tool.args_schema = RuntimeTextFileReadIn
+                tools.append(read_tool)
+            elif getattr(tool, "name", None) in self.allowed_names:
+                tools.append(tool)
+        return await super().awrap_model_call(request.override(tools=tools), handler)
 
 
 @dataclass(frozen=True)
@@ -70,10 +112,10 @@ class RuntimeRunConfig:
         )
 
     def input_budget(self) -> int | None:
-        """为输出、系统指令和工具描述保留窗口空间。"""
+        """为已指定的输出额度及指令预留空间，未指定额度时由供应商校验实际窗口。"""
         if self.context_window is None:
             return None
-        output = self.max_output_tokens or min(get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS, self.context_window // 4)
+        output = self.max_output_tokens if self.max_output_tokens is not None else 0
         input_budget = self.context_window - output - CONTEXT_OVERHEAD_TOKENS
         if input_budget < MIN_CONTEXT_INPUT_TOKENS:
             raise ValueError("模型上下文窗口不足以容纳当前输出预算")
@@ -127,23 +169,35 @@ class DeepAgentsRuntimeAdapter:
     ) -> None:
         """根据运行配置、模型与检查点构建 DeepAgents 图及摘要策略。"""
         self.config = config.graph_config()
+        if config.context_window is not None:
+            model.profile = {
+                **(model.profile or {}),
+                "max_input_tokens": config.context_window,
+            }
         backend = StateBackend()
         limits = config.summarization_limits()
         defaults = compute_summarization_defaults(model)
         trigger, keep = (("tokens", limits[0]), ("tokens", limits[1])) if limits is not None else (defaults["trigger"], defaults["keep"])
         middleware = [
             *middleware,
-            SummarizationMiddleware(
+            RuntimeSummarizationMiddleware(
+                allowed_names=frozenset(config.tool_names),
                 model=model,
                 backend=backend,
                 trigger=trigger,
                 keep=keep,
+                token_counter=count_context_tokens,
                 summary_prompt=CONVERSATION_SUMMARY_PROMPT,
                 trim_tokens_to_summarize=limits[0] if limits is not None else 4000,
                 summarizer=summarizer,
             ),
         ]
         system_prompt = config.system_prompt or ""
+        system_prompt += (
+            "\n自动摘要如提供 /conversation_history/ 下的 Markdown 路径，原始资料仍保存在当前会话的虚拟历史文件中。"
+            "摘要未保留审查所需细节时，用 read_file 分段回读原文；历史原文长行会软换行，每页最多 8192 字符，按返回的 next_offset 继续直到 EOF；"
+            "不要把摘要省略正文视为附件提取失败，也不要据此生成空白或仅说明缺失的审核报告。"
+        )
         if config.model_id is not None and config.model_external_id is not None:
             route = json.dumps(
                 {

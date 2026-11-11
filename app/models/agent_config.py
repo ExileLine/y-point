@@ -31,11 +31,11 @@ class AgentConfig(CustomBaseModel):
     welcome_message: Mapped[str | None] = mapped_column(String(2048), nullable=True, comment="欢迎语")
     default_model_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="默认模型 ID")
     temperature: Mapped[Decimal] = mapped_column(Numeric(3, 2), nullable=False, default=Decimal("1"), comment="生成温度")
-    max_output_tokens: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
+    max_output_tokens: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(),
+        nullable=True,
         default=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS,
-        comment="单次最大输出 Token 数",
+        comment="单次最大输出 Token 数，空值跟随供应商",
     )
     thinking_mode: Mapped[str] = mapped_column(
         String(16),

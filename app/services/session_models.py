@@ -18,7 +18,7 @@ from app.models.agent_session import AgentSession
 from app.models.knowledge import AgentKnowledgeBase
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
-from app.services.model_adapter import thinking_request_options
+from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.models.skill import AgentSkill
 from app.models.tool import AgentTool
 from app.schemas.agent_session import SessionModelOptionOut
@@ -82,7 +82,11 @@ def model_issue(
     capabilities = model.verified_capabilities or []
     if ModelCapability.TEXT not in capabilities or needs_tools and ModelCapability.TOOLS not in capabilities:
         return SessionModelReason.CAPABILITY, "模型未通过当前 Agent 所需的文本或工具调用能力验证"
-    minimum_window = agent.max_output_tokens + CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
+    try:
+        validate_output_token_setting(provider.kind, agent.max_output_tokens)
+    except CustomException as exc:
+        return SessionModelReason.OUTPUT, exc.detail
+    minimum_window = (agent.max_output_tokens or 0) + CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS
     if model.context_window is not None and model.context_window < minimum_window:
         return SessionModelReason.CONTEXT, "模型上下文窗口无法容纳输出上限和最低输入空间"
     missing_price = any(value is None for value in (model.input_price, model.output_price, model.price_currency))

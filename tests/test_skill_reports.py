@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 from docx import Document
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -364,7 +364,24 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                         },
                     ],
                 }
-                model = SkillModel(
+                correction_feedback = []
+
+                class ReportCorrectionModel(SkillModel):
+                    """校验模型能实际收到模板契约错误，并在同轮修正后继续完成报告。"""
+
+                    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                        """确认错误以带字段提示的工具反馈传入模型，而非中断运行或伪装成功。"""
+                        for message in messages:
+                            if isinstance(message, ToolMessage) and message.tool_call_id == "render-review-invalid-fields":
+                                assert message.status == "error"
+                                feedback = json.loads(message.content)
+                                assert feedback["error"] == "invalid_tool_arguments" and feedback["retryable"]
+                                assert set(feedback["allowed_fields"]) == {"title", "summary", "findings"}
+                                assert feedback["issues"][0]["rule"] == "additionalProperties"
+                                correction_feedback.append(feedback)
+                        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+                model = ReportCorrectionModel(
                     responses=[
                         AIMessage(
                             content="",
@@ -385,8 +402,28 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                     "name": "render_skill_document",
                                     "args": {
                                         "skill_id": skill_id,
+                                        "report_data": {
+                                            **data,
+                                            "issue_count": 1,
+                                            "red_line_count": 0,
+                                        },
+                                        "filename": "合同审查报告.docx",
+                                        "template_name": "",
+                                    },
+                                    "id": "render-review-invalid-fields",
+                                },
+                            ],
+                        ),
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "render_skill_document",
+                                    "args": {
+                                        "skill_id": skill_id,
                                         "report_data": data,
                                         "filename": "合同审查报告.docx",
+                                        "template_name": " \t ",
                                     },
                                     "id": "render-review",
                                 },
@@ -426,6 +463,10 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     assert files == [skill_id]
                     events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()
                     assert "".join(event.content or "" for event in events if event.event_type == RunEventType.TEXT_DELTA) == "已完成审查并生成报告。"
+                    failed_renders = [event for event in events if event.tool_name == "render_skill_document" and event.event_type == RunEventType.TOOL_FAILED]
+                    assert len(failed_renders) == 1
+                    assert result.tool_call_count == 4
+                    assert correction_feedback
                 assert (await client.post(path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
                 response = await client.get(path + "/messages", headers=owner)
                 assert response.status_code == 200, response.text
@@ -685,7 +726,24 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     assert selected.artifact_id == templates["B_template.docx"]["artifact_id"]
                     files = await load_run_skill_files(db, multi_run, 1)
                     assert all(name in files["/skills/contract-review/SKILL.md"] for name in templates)
-                multi_model = SkillModel(
+                template_feedback = []
+
+                class MultiTemplateCorrectionModel(SkillModel):
+                    """要求模型收到多模板候选反馈后，明确指定固定版本模板。"""
+
+                    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                        """确认空名称没有猜测模板或中断，反馈只包含已授权版本候选。"""
+                        for message in messages:
+                            if isinstance(message, ToolMessage) and message.tool_call_id == "render-ambiguous-template":
+                                assert message.status == "error"
+                                feedback = json.loads(message.content)
+                                assert feedback["error"] == "invalid_tool_arguments" and feedback["retryable"]
+                                assert set(feedback["allowed_templates"]) == {"a_template.docx", "b_template.docx", "新版报告.docx"}
+                                assert feedback["issues"][0]["path"] == "/template_name"
+                                template_feedback.append(feedback)
+                        return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+                multi_model = MultiTemplateCorrectionModel(
                     responses=[
                         AIMessage(
                             content="",
@@ -696,6 +754,25 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "read-multiple-templates",
+                                },
+                            ],
+                        ),
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "render_skill_document",
+                                    "args": {
+                                        "skill_id": skill_id,
+                                        "template_name": "",
+                                        "report_data": {
+                                            "title": "乙" * 110,
+                                            "summary": "使用 B 模板独立字段契约。",
+                                            "findings": [],
+                                        },
+                                        "filename": "详细报告.docx",
+                                    },
+                                    "id": "render-ambiguous-template",
                                 },
                             ],
                         ),
@@ -731,6 +808,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     poll_seconds=0.2,
                 )
                 assert multi_result.state == "completed", multi_result.failure_code
+                assert template_feedback and multi_result.tool_call_count == 3
                 report_message = (await client.get(multi_path + "/messages", headers=owner)).json()["data"][-1]
                 assert len(report_message["artifacts"]) == 1
                 selected_report = report_message["artifacts"][0]
@@ -857,3 +935,94 @@ def test_template_allows_static_footnotes() -> None:
             target.writestr(entry, source.read(entry))
         target.writestr("word/footnotes.xml", "<root><text>静态脚注说明</text></root>")
     skill_reports.validate_docx_template(output.getvalue(), skill_reports.validate_fields_schema(SCHEMA))
+
+
+@pytest.mark.parametrize("template_name", [None, "", " ", "\t\n"])
+def test_single_template_accepts_omitted_or_blank_name(template_name: str | None) -> None:
+    """模型将可选模板名输出为空串或空白时，与省略名称一样选择当前固定版本的唯一模板。"""
+
+    async def exercise() -> None:
+        """使用真实模板记录，验证空名称不会进入包路径校验，也不会跨版本选择。"""
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all(
+                    [
+                        SkillTemplate(skill_id=1, skill_version=3, template_key="assets/templates/report.docx", artifact_id="current", fields_schema=SCHEMA),
+                        SkillTemplate(skill_id=1, skill_version=4, template_key="assets/templates/new.docx", artifact_id="new", fields_schema=SCHEMA),
+                    ],
+                )
+            async with sessions() as db:
+                selected = await skill_reports.template_for_version(db, 1, 3, template_name)
+                assert selected is not None and selected.artifact_id == "current"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("template_name", [None, "", " ", "missing.docx", "../outside.docx", "report.docx"])
+def test_report_template_selection_error_has_scoped_choices(template_name: str | None) -> None:
+    """空名称、多模板重名和无效路径只反馈当前固定版本的可选项，不猜测模板或终止整轮。"""
+    from app.services.tool_arguments import ToolArgumentsError
+
+    async def exercise() -> None:
+        """以真实多模板记录验证错误反馈范围，另一版本与另一个 Skill 的模板不能泄漏。"""
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        choices = ["assets/templates/a/report.docx", "assets/templates/b/report.docx"]
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add_all(
+                    [
+                        SkillTemplate(skill_id=1, skill_version=3, template_key=choices[0], artifact_id="a", fields_schema=SCHEMA),
+                        SkillTemplate(skill_id=1, skill_version=3, template_key=choices[1], artifact_id="b", fields_schema=SCHEMA),
+                        SkillTemplate(skill_id=1, skill_version=4, template_key="new.docx", artifact_id="new", fields_schema=SCHEMA),
+                        SkillTemplate(skill_id=2, skill_version=3, template_key="other.docx", artifact_id="other", fields_schema=SCHEMA),
+                    ],
+                )
+            async with sessions() as db:
+                with pytest.raises(ToolArgumentsError) as caught:
+                    await skill_reports._report_template_for_version(db, 1, 3, template_name)
+                feedback = json.loads(str(caught.value))
+                assert feedback["error"] == "invalid_tool_arguments" and feedback["retryable"]
+                assert feedback["allowed_templates"] == choices
+                assert feedback["issues"] == [
+                    {
+                        "path": "/template_name",
+                        "rule": "template_selection",
+                    },
+                ]
+                selected = await skill_reports._report_template_for_version(db, 1, 3, choices[1])
+                assert selected.artifact_id == "b"
+                assert not (await db.scalars(select(Artifact))).all()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_missing_report_template_remains_fatal() -> None:
+    """没有固定版本模板时保持真实资源故障，不要求模型反复修改正确参数。"""
+    from langchain_core.tools import ToolException
+
+    async def exercise() -> None:
+        """无资源的数据库不会生成可重试反馈或任何产物。"""
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions() as db:
+                with pytest.raises(ValueError, match="没有报告模板") as caught:
+                    await skill_reports._report_template_for_version(db, 1, 3, None)
+                assert not isinstance(caught.value, ToolException)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())

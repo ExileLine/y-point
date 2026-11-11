@@ -7,6 +7,7 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+from types import EllipsisType
 import re
 from uuid import uuid4
 
@@ -81,7 +82,7 @@ async def create_run(
     agent_config_version: int | None = None,
     agent_system_prompt: str | None = None,
     agent_temperature: Decimal | None = None,
-    agent_max_output_tokens: int | None = None,
+    agent_max_output_tokens: int | None | EllipsisType = ...,
     agent_thinking_mode: str = ModelThinkingMode.AUTO,
     thread_id: str | None = None,
     request_key: str | None = None,
@@ -97,7 +98,7 @@ async def create_run(
     max_estimated_cost: Decimal | None = None,
     cost_pricing: tuple[Decimal, Decimal, str] | None = None,
 ) -> AgentRun:
-    """在当前事务中创建运行、调度意图和可选的用户输入。"""
+    """创建运行、调度意图与可选输入；省略输出额度采用默认值，显式空值跟随供应商。"""
     if owner_id <= 0 or request_key is not None and (not request_key or len(request_key) > 128):
         raise ValueError("无效的运行所有者或提交键")
     if thread_id is not None and (not thread_id or len(thread_id) > 36):
@@ -108,7 +109,7 @@ async def create_run(
         or agent_config_version is None
         or agent_system_prompt is None
         or agent_temperature is None
-        or agent_max_output_tokens is None
+        or agent_max_output_tokens is ...
     ):
         raise ValueError("会话运行缺少智能体配置快照")
     if input_text is not None and (not input_text.strip() or len(input_text) > 32768):
@@ -121,7 +122,7 @@ async def create_run(
         raise ValueError(f"模型生成超时秒数必须在 1 到 {config.AGENT_MAX_MODEL_TIMEOUT_SECONDS} 之间")
     if not 1 <= tool_timeout_seconds <= config.AGENT_MAX_TOOL_TIMEOUT_SECONDS:
         raise ValueError(f"单次工具执行超时秒数必须在 1 到 {config.AGENT_MAX_TOOL_TIMEOUT_SECONDS} 之间")
-    if agent_max_output_tokens is None:
+    if agent_max_output_tokens is ...:
         agent_max_output_tokens = config.AGENT_DEFAULT_MAX_OUTPUT_TOKENS
     if max_queue_wait_seconds is not None and not 1 <= max_queue_wait_seconds <= 86400:
         raise ValueError("排队等待秒数必须在 1 到 86400 之间")
@@ -649,7 +650,7 @@ async def fail_run(db: AsyncSession, run_id: str, lease_token: str, failure_code
         "attachment_unavailable",
         "context_window_exceeded",
         "artifact_required",
-        RunRuntimeFailureReason.GRAPH_STEP_LIMIT,
+        *RunRuntimeFailureReason,
         "lease_monitor_error",
         "agent_access_revoked",
         "model_call_budget_exceeded",

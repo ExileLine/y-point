@@ -31,7 +31,7 @@ from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
 from app.services.agent_access import can_use_agent
 from app.services.identity import audit
-from app.services.model_adapter import thinking_request_options
+from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 from app.services.skills import agent_skill_rows, selected_skills
@@ -97,16 +97,17 @@ def _shared_data(agent: AgentConfig) -> dict:
     )
 
 
-async def _available_text_model(db: AsyncSession, model_id: int, max_output_tokens: int, thinking_mode: str = ModelThinkingMode.AUTO) -> ModelCatalog:
+async def _available_text_model(db: AsyncSession, model_id: int, max_output_tokens: int | None, thinking_mode: str = ModelThinkingMode.AUTO) -> ModelCatalog:
     """确认默认模型及供应商可用，且模型已经通过文本能力验证。"""
     model = await db.get(ModelCatalog, model_id, with_for_update=True)
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
     thinking_request_options(provider.kind, thinking_mode)
+    validate_output_token_setting(provider.kind, max_output_tokens)
     if ModelCapability.TEXT not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过文本能力验证")
-    if model.context_window is not None and model.context_window - max_output_tokens < CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS:
+    if model.context_window is not None and model.context_window - (max_output_tokens or 0) < CONTEXT_OVERHEAD_TOKENS + MIN_CONTEXT_INPUT_TOKENS:
         raise CustomException(status_code=409, custom_code=10005, detail="模型上下文窗口无法容纳输出上限和最低输入空间")
     return model
 
@@ -299,7 +300,6 @@ async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depend
         "system_prompt",
         "default_model_id",
         "temperature",
-        "max_output_tokens",
         "thinking_mode",
         "model_timeout_seconds",
         "tool_timeout_seconds",

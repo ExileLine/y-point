@@ -175,12 +175,14 @@ class RunRuntimeFailureReason(StrEnum):
     """运行编排失败的机器可读原因。"""
 
     GRAPH_STEP_LIMIT = "graph_step_limit_exceeded"
+    TOOL_CAPACITY = "tool_capacity_exceeded"
 
 
 class RunModelFailureReason(StrEnum):
     """模型生成失败的机器可读原因。"""
 
     UPSTREAM = "model_error"
+    CONTEXT = "context_window_exceeded"
     EMPTY = "empty_response"
     SUMMARY = "summary_error"
     OUTPUT_LIMIT = "model_output_limit_exceeded"
@@ -207,6 +209,7 @@ class SessionModelReason(StrEnum):
     VERSION = "session_version_changed"
     SELECTION = "session_model_changed"
     THINKING = "model_thinking_mode_unsupported"
+    OUTPUT = "model_output_limit_required"
 
 
 class ModelCapability(StrEnum):

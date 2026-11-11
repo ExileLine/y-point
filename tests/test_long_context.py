@@ -20,6 +20,7 @@ from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.enums import RunModelFailureReason, RunState, RunTimeoutReason
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
 from app.models.agent_run_message import AgentRunMessage
@@ -94,7 +95,13 @@ class ToolHistoryModel(FakeMessagesListChatModel):
             if type(self).normal_calls == 1:
                 answer = AIMessage(
                     content="",
-                    tool_calls=[{"name": "read_project_brief", "args": {}, "id": "read-project-brief"}],
+                    tool_calls=[
+                        {
+                            "name": "read_project_brief",
+                            "args": {},
+                            "id": "read-project-brief",
+                        },
+                    ],
                 )
             else:
                 answer = AIMessage(content="星河-27" if "星河-27" in content else "未找到项目编号")
@@ -200,7 +207,7 @@ def test_tool_history_summary_respects_checkpoint_boundary(tmp_path: Path, failu
                 assert tool_invocations == 1
             else:
                 assert first_result.state == "completed", first_result.failure_code
-                second_input = "请只回答采购项目编号。以下是本轮填充资料：" + "甲乙丙丁" * 500
+                second_input = "请只回答采购项目编号。以下是本轮填充资料：" + "甲乙丙丁" * 250
                 async with sessions.begin() as db:
                     second = await create_run(db, 1, input_text=second_input, **snapshot)
                 resumed = await execute_text_run(sessions, second.id, model, checkpoint, resolve_tools=resolve_tools)
@@ -227,7 +234,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         TrackingModel.summary_calls = TrackingModel.normal_calls = 0
         checkpoint = tmp_path / "checkpoint.db"
-        inputs = ["第一轮：" + "甲" * 2600, "第二轮：" + "乙" * 2600]
+        inputs = ["第一轮：" + "甲" * 1000, "第二轮：" + "乙" * 1000]
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
@@ -350,8 +357,50 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
     asyncio.run(exercise())
 
 
-def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Path) -> None:
-    """验证摘要失败返回明确终态，并保留历史以供后续会话恢复。"""
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["error", "provider_timeout", "stream_timeout", "model_timeout", "connection_once", "connection_error", "connection_budget", "context_overflow"],
+)
+def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str) -> None:
+    """验证摘要失败与两层超时分别归类，并保留历史以供后续会话恢复。"""
+    from langchain_openai import StreamChunkTimeoutError
+
+    from openai import APIConnectionError, BadRequestError
+    import httpx
+    from app.core.config import get_config
+
+    monkeypatch.setattr(get_config(), "AGENT_MODEL_CONNECTION_MAX_RETRIES", 1)
+    monkeypatch.setattr(get_config(), "AGENT_MODEL_CONNECTION_RETRY_DELAY_SECONDS", 0)
+    original_generate = TrackingModel._agenerate
+    failed_summary_attempts = 0
+
+    async def generate_with_timeout(self, messages, stop=None, run_manager=None, **kwargs):
+        """只在配置的摘要调用模拟超时，普通回复和后续恢复继续使用原模型。"""
+        nonlocal failed_summary_attempts
+        if failure_kind != "error" and type(self).fail_summary and any("压缩成准确的上下文摘要" in str(message.content) for message in messages):
+            type(self).summary_calls += 1
+            if failure_kind in {"connection_once", "connection_error", "connection_budget"}:
+                failed_summary_attempts += 1
+                if failure_kind == "connection_once" and failed_summary_attempts == 2:
+                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content="此前输入已压缩为摘要。"))])
+                raise APIConnectionError(request=httpx.Request("POST", "https://private-summary-marker.test"))
+            if failure_kind == "context_overflow":
+                raise BadRequestError(
+                    "private-context-summary-marker",
+                    response=httpx.Response(400, request=httpx.Request("POST", "https://private-summary-marker.test")),
+                    body={
+                        "message": "This model's maximum context length is 65536 tokens. Please reduce the input tokens.",
+                        "param": "input_tokens",
+                    },
+                )
+            if failure_kind == "model_timeout":
+                await asyncio.Event().wait()
+            if failure_kind == "stream_timeout":
+                raise StreamChunkTimeoutError(0.1, model_name="private-summary-model", chunks_received=1)
+            raise TimeoutError("private-summary-read-timeout")
+        return await original_generate(self, messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    monkeypatch.setattr(TrackingModel, "_agenerate", generate_with_timeout)
 
     async def exercise() -> None:
         """在隔离环境执行异步场景：验证摘要失败返回明确终态，并保留历史以供后续会话恢复。"""
@@ -422,14 +471,35 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                         agent_system_prompt="简洁回答",
                         agent_temperature=Decimal("1"),
                         agent_max_output_tokens=256,
-                        input_text=f"第{index + 1}轮：" + "甲" * 2600,
-                        max_model_calls=3,
+                        input_text=f"第{index + 1}轮：" + "甲" * 1000,
+                        max_model_calls=1 if failure_kind == "connection_budget" and index == 1 else 3,
+                        model_timeout_seconds=1 if failure_kind == "model_timeout" else 120,
                     )
                 TrackingModel.fail_summary = index == 1
                 result = await execute_text_run(sessions, run.id, model, checkpoint)
-                assert result.state == ("completed" if index == 0 else "failed")
-                if index == 1:
-                    assert result.failure_code == "summary_error"
+                expected_state = (
+                    RunState.COMPLETED
+                    if failure_kind == "connection_once"
+                    else RunState.FAILED
+                    if failure_kind in {"error", "connection_error", "connection_budget", "context_overflow"}
+                    else RunState.TIMED_OUT
+                )
+                assert result.state == (RunState.COMPLETED if index == 0 else expected_state)
+                if index == 1 and failure_kind == "connection_once":
+                    assert failed_summary_attempts == 2 and result.model_call_count == 3
+                if index == 1 and failure_kind != "connection_once":
+                    expected_failure = (
+                        RunModelFailureReason.CONTEXT
+                        if failure_kind == "context_overflow"
+                        else RunModelFailureReason.SUMMARY
+                        if failure_kind in {"error", "connection_error"}
+                        else "model_call_budget_exceeded"
+                        if failure_kind == "connection_budget"
+                        else RunTimeoutReason.MODEL
+                        if failure_kind == "model_timeout"
+                        else RunTimeoutReason.PROVIDER
+                    )
+                    assert result.failure_code == expected_failure
                     assert result.model_call_count >= 1
                     assert TrackingModel.summary_calls >= 1
                     async with sessions() as db:
@@ -499,8 +569,8 @@ def test_live_ollama_long_session_summary(tmp_path: Path) -> None:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'live-long.db'}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         checkpoint = tmp_path / "live-long-checkpoint.db"
-        first_input = "请记住项目代号 ALPHA-42。下面是测试填充资料：" + "甲乙丙丁" * 500
-        second_input = "请只回答之前的项目代号。下面是另一批测试填充资料：" + "戊己庚辛" * 500
+        first_input = "请记住项目代号 ALPHA-42。下面是测试填充资料：" + "甲乙丙丁" * 250
+        second_input = "请只回答之前的项目代号。下面是另一批测试填充资料：" + "戊己庚辛" * 250
         try:
             async with engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
@@ -673,7 +743,7 @@ def test_live_ollama_tool_history_survives_summary(tmp_path: Path) -> None:
             first_input = "先读取 read_project_brief 工具中的采购简报，只回答项目编号。"
             first = await run_turn(first_input)
             assert first.tool_call_count == 1 and tool_reads == 1
-            second_input = "不再调用工具，请仅回答先前简报中的项目编号。下面是无关测试资料：" + "甲乙丙丁" * 500
+            second_input = "不再调用工具，请仅回答先前简报中的项目编号。下面是无关测试资料：" + "甲乙丙丁" * 250
             second = await run_turn(second_input)
             assert second.model_call_count >= 2 and tool_reads == 1
             async with sessions() as db:
@@ -682,5 +752,244 @@ def test_live_ollama_tool_history_survives_summary(tmp_path: Path) -> None:
                 assert "XINGHE-27" in [message.content for message in messages if message.role == "assistant"][-1]
         finally:
             await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_summarized_source_can_be_read_from_current_thread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """摘要只保留概述后，模型仍可按范围读取当前线程中的原始附件，避免生成未获取正文的空报告。"""
+    import re
+    from langchain_core.messages import ToolMessage
+
+    monkeypatch.setattr(RuntimeRunConfig, "summarization_limits", lambda self: (800, 80))
+    observed = []
+
+    class SourceRecoveryModel(TrackingModel):
+        """使用摘要提供的实际路径回读原文，强制核对工具是否可见且成功。"""
+
+        def bind_tools(self, tools, *, tool_choice=None, **kwargs):
+            """记录摘要后的模型实际可用工具，禁止测试绕过工具披露。"""
+            observed.append([item.name for item in tools])
+            return self
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            """摘要故意省略关键事实，业务回答必须通过历史读取恢复事实。"""
+            if any("压缩成准确的上下文摘要" in str(message.content) for message in messages):
+                recovered_fact = any(
+                    isinstance(message, ToolMessage) and message.name == "read_file" and "设计锚固长度为12米" in str(message.content) for message in messages
+                )
+                answer = AIMessage(content="通过原文回读确认：设计锚固长度为12米" if recovered_fact else "附件已转存，请按需回读历史原文。")
+            elif any(
+                isinstance(message, ToolMessage)
+                and "设计锚固长度为12米" in str(message.content)
+                or "通过原文回读确认：设计锚固长度为12米" in str(message.content)
+                for message in messages
+            ):
+                answer = AIMessage(content="设计锚固长度为12米")
+            elif any(isinstance(message, ToolMessage) and message.name == "read_file" for message in messages):
+                answer = AIMessage(content="未获取正文")
+            else:
+                content = "\n".join(str(message.content) for message in messages)
+                match = re.search(r"/conversation_history/[^\s]+\.md", content)
+                if match is None:
+                    return ChatResult(
+                        generations=[
+                            ChatGeneration(
+                                message=AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "prepare_review",
+                                            "args": {},
+                                            "id": "prepare-review",
+                                        },
+                                    ],
+                                ),
+                            ),
+                        ],
+                    )
+                assert "read_file" in observed[-1], "摘要后的模型必须能发现原文读取工具"
+                answer = AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {
+                                "file_path": match.group(),
+                                "offset": 0,
+                                "limit": 12,
+                            },
+                            "id": "recover-source",
+                        },
+                    ],
+                )
+            return ChatResult(generations=[ChatGeneration(message=answer)])
+
+    async def exercise() -> None:
+        """通过真实摘要、虚拟文件存储、工具授权和执行器验证原文恢复。"""
+
+        @tool
+        def prepare_review() -> str:
+            """在摘要前形成完整的工具轮次，模拟读取 Skill 后开始审查。"""
+            return "审查已准备。"
+
+        async def resolve_tools(db, run):
+            """只提供用于准备审查的只读工具，历史读取由平台控制。"""
+            return [prepare_review], {}
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'recover-source.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="source-recovery-owner", password="unused", role="user"))
+                run = await create_run(db, 1, input_text="设计锚固长度为12米\n" + "一般施工说明。\n" * 600, max_model_calls=5)
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                SourceRecoveryModel(responses=[AIMessage(content="unused")]),
+                tmp_path / "recover-source-checkpoint.db",
+                resolve_tools=resolve_tools,
+            )
+            assert result.state == "completed", result.failure_code
+            assert result.tool_call_count == 2
+            async with sessions() as db:
+                answer = await db.scalar(select(AgentRunMessage.content).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == "assistant"))
+                assert answer == "设计锚固长度为12米"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("window", [65536, None])
+def test_catalog_window_reaches_runtime_model_profile(window: int | None) -> None:
+    """目录中的实际部署窗口必须交给运行时检查完整请求，未设置时保留原有能力信息。"""
+    from app.services.runtime_adapter import DeepAgentsRuntimeAdapter
+
+    model = TrackingModel(responses=[AIMessage(content="unused")])
+    model.profile = {
+        "max_input_tokens": 131072,
+        "tool_calling": True,
+    }
+    config = RuntimeRunConfig(
+        run_id="profile-run",
+        owner_id=1,
+        thread_id="profile-thread",
+        model_id=4,
+        tool_names=(),
+        context_window=window,
+        max_output_tokens=16384,
+    )
+    DeepAgentsRuntimeAdapter(config, model=model, tools=[], interrupt_on={}, checkpointer=None, middleware=[])
+    assert model.profile["max_input_tokens"] == (window if window is not None else 131072)
+    assert model.profile["tool_calling"] is True
+
+
+def test_runtime_read_schema_replaces_warm_media_schema() -> None:
+    """即使默认文件工具已缓存多媒体契约，模型仍只看到已授权的工具和三个文本分页字段。"""
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain_core.messages import HumanMessage
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    from app.services.runtime_adapter import RuntimeSummarizationMiddleware, count_context_tokens
+
+    async def exercise() -> None:
+        """经过真实摘要包装层，检查请求工具契约及原工具对象均符合预期。"""
+        filesystem_tools = FilesystemMiddleware(backend=StateBackend()).tools
+        original = next(item for item in filesystem_tools if item.name == "read_file")
+        original_schema = convert_to_openai_tool(original)
+        assert len(original_schema["function"]["description"]) > 1000
+        model = TrackingModel(
+            responses=[AIMessage(content="unused")],
+            profile={
+                "max_input_tokens": 65536,
+            },
+        )
+        middleware = RuntimeSummarizationMiddleware(
+            allowed_names=frozenset(),
+            model=model,
+            backend=StateBackend(),
+            trigger=("tokens", 30000),
+            keep=("tokens", 1000),
+            token_counter=count_context_tokens,
+        )
+        calls = []
+
+        async def handler(request):
+            """记录经过过滤的请求，防止默认工具或缓存的媒体契约重新进入预算。"""
+            calls.append(request)
+            assert len(request.tools) == 1
+            assert request.tools[0] is not original
+            schema = convert_to_openai_tool(request.tools[0])
+            properties = schema["function"]["parameters"]["properties"]
+            assert set(properties) == {"file_path", "offset", "limit"}
+            assert properties["file_path"]["description"] == "已授权的 Skill 文件或当前会话历史文件路径"
+            assert len(schema["function"]["description"]) < 200
+            return ModelResponse(result=[AIMessage(content="完成")])
+
+        await middleware.awrap_model_call(
+            ModelRequest(model=model, messages=[HumanMessage(content="查看文本")], tools=filesystem_tools, state={}),
+            handler,
+        )
+        assert len(calls) == 1
+        assert convert_to_openai_tool(original) == original_schema
+
+    asyncio.run(exercise())
+
+
+def test_complete_request_budget_reserves_output_and_counts_system_and_tools() -> None:
+    """正文单独可以装入窗口，系统指令与工具契约加入并预留输出后必须在发请求前拒绝。"""
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.summarization import ContextOverflowError
+    from langchain.agents.middleware.types import ModelRequest
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from unittest.mock import AsyncMock
+
+    from app.services.runtime_adapter import RuntimeSummarizationMiddleware, count_context_tokens
+
+    async def exercise() -> None:
+        """以不可压缩的单条消息和完整请求开销检验真正生效的预算保护。"""
+
+        @tool
+        def review_plan(text: str) -> str:
+            """校验施工方案。"""
+            return text
+
+        model = TrackingModel(
+            responses=[AIMessage(content="unused")],
+            profile={
+                "max_input_tokens": 4096,
+            },
+        )
+        middleware = RuntimeSummarizationMiddleware(
+            allowed_names=frozenset({"review_plan"}),
+            model=model,
+            backend=StateBackend(),
+            trigger=("tokens", 100000),
+            keep=("tokens", 128),
+            token_counter=count_context_tokens,
+        )
+        messages = [HumanMessage(content="施工参数。" * 100)]
+        request = ModelRequest(
+            model=model,
+            messages=messages,
+            system_message=SystemMessage(content="审查规则。" * 150),
+            tools=[review_plan],
+            model_settings={
+                "max_completion_tokens": 3072,
+            },
+            state={},
+        )
+        budget = int(4096 * 0.95) - 3072
+        assert count_context_tokens(messages) < budget
+        assert count_context_tokens(messages + [request.system_message], tools=[review_plan]) > budget
+        handler = AsyncMock()
+        with pytest.raises(ContextOverflowError):
+            await middleware.awrap_model_call(request, handler)
+        handler.assert_not_called()
 
     asyncio.run(exercise())

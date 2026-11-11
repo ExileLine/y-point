@@ -13,6 +13,7 @@ import re
 import zipfile
 import unicodedata
 from copy import deepcopy
+from itertools import islice
 from xml.etree import ElementTree
 
 from docx import Document
@@ -21,17 +22,18 @@ from jinja2 import StrictUndefined, nodes
 from jinja2.sandbox import SandboxedEnvironment
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from langchain_core.tools import tool
+from langchain_core.tools import ToolException, tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ArtifactOrigin, ArtifactState
+from app.core.enums import ArtifactOrigin, ArtifactState, ToolFeedbackFailure
 from app.models.artifact import Artifact
 from app.models.skill import RunSkill
 from app.models.skill_template import SkillTemplate
 from app.services.artifact_store import artifact_root, stage_generated_artifact
 from app.services.private_blob_store import read_blob
 from app.services.tool_registry import ToolContext
+from app.services.tool_arguments import ToolArgumentsError
 
 MAX_TEMPLATE_BYTES = 2 * 1024 * 1024
 
@@ -262,6 +264,8 @@ async def templates_for_version(db: AsyncSession, skill_id: int, version: int) -
 async def template_for_version(db: AsyncSession, skill_id: int, version: int, template_name: str | None = None) -> SkillTemplate | None:
     """按文件名选择固定模板；旧单模板可省略名称，多模板禁止猜测。"""
     templates = await templates_for_version(db, skill_id, version)
+    if template_name is not None and not template_name.strip():
+        template_name = None
     if template_name is not None:
         from app.services.skill_packages import package_path
 
@@ -346,12 +350,42 @@ async def required_report_delivered(db: AsyncSession, run_id: str) -> bool:
     return expected <= satisfied
 
 
+async def _report_template_for_version(db: AsyncSession, skill_id: int, version: int, template_name: str | None) -> SkillTemplate:
+    """只将固定版本模板的名称选择错误反馈给模型，缺失资源仍作为真实故障处理。"""
+    try:
+        selected = await template_for_version(db, skill_id, version, template_name)
+    except ValueError:
+        selected = None
+    if selected is not None:
+        return selected
+    templates = await templates_for_version(db, skill_id, version)
+    if not templates:
+        raise ValueError("此 Skill 固定版本中没有报告模板")
+    raise ToolArgumentsError(
+        json.dumps(
+            {
+                "error": ToolFeedbackFailure.INVALID_ARGUMENTS,
+                "message": "报告尚未生成。单模板可省略 template_name 或传空值；多模板必须从当前固定版本的模板列表中指定完整名称。",
+                "retryable": True,
+                "allowed_templates": [item.template_key for item in templates],
+                "issues": [
+                    {
+                        "path": "/template_name",
+                        "rule": "template_selection",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 def skill_document_tool(context: ToolContext):
     """创建只能使用本轮已授权 Skill 模板的幂等暂存工具。"""
 
     @tool
     async def render_skill_document(skill_id: int, report_data: dict, filename: str, template_name: str | None = None) -> str:
-        """按本轮固定模板生成 DOCX；多模板时用 template_name 指定 SKILL.md 中的模板文件名。"""
+        """按本轮固定模板生成 DOCX；单模板省略 template_name 或传空值，多模板指定 SKILL.md 中的完整模板文件名。"""
         from app.services.skills import selected_skills
 
         canonical = json.dumps(report_data, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
@@ -363,9 +397,7 @@ def skill_document_tool(context: ToolContext):
             fixed = await db.scalar(select(RunSkill).where(RunSkill.run_id == context.run_id, RunSkill.skill_id == skill_id))
             if fixed is None:
                 raise ValueError("Skill 未绑定本轮运行")
-            template = await template_for_version(db, skill_id, fixed.skill_version, template_name)
-            if template is None:
-                raise ValueError("此 Skill 固定版本中没有指定的报告模板")
+            template = await _report_template_for_version(db, skill_id, fixed.skill_version, template_name)
             source = await db.get(Artifact, template.artifact_id)
             if source is None or source.source != ArtifactOrigin.SKILL_RESOURCE or source.state != ArtifactState.READY or source.is_deleted:
                 raise ValueError("模板文件不可用")
@@ -385,8 +417,27 @@ def skill_document_tool(context: ToolContext):
                 "template_sha256": source.sha256,
                 "report_data_sha256": hashlib.sha256(canonical).hexdigest(),
             }
-        if not Draft202012Validator(schema).is_valid(report_data):
-            raise ValueError("报告字段不符合契约，请补齐必填项并检查类型与长度")
+        issues = [
+            {
+                "path": "/" + "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in error.absolute_path),
+                "rule": error.validator,
+            }
+            for error in islice(Draft202012Validator(schema).iter_errors(report_data), 20)
+        ]
+        if issues:
+            raise ToolException(
+                json.dumps(
+                    {
+                        "error": ToolFeedbackFailure.INVALID_ARGUMENTS,
+                        "message": "报告尚未生成。请按模板字段契约修正；业务校验工具若返回 report_data，应沿用该对象，不要添加额外字段。",
+                        "retryable": True,
+                        "allowed_fields": list(schema.get("properties", {})),
+                        "required_fields": schema.get("required", []),
+                        "issues": issues,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
 
         def render() -> bytes:
             """使用无全局对象的模板环境渲染并重开校验。"""
@@ -435,4 +486,5 @@ def skill_document_tool(context: ToolContext):
             ensure_ascii=False,
         )
 
+    render_skill_document.handle_tool_error = True
     return render_skill_document

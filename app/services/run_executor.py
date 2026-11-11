@@ -19,6 +19,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from anthropic import APITimeoutError as AnthropicTimeoutError
 from httpx import TimeoutException as HttpTimeoutError
 from openai import APITimeoutError as OpenAITimeoutError
+from loguru import logger
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
@@ -51,6 +52,9 @@ from app.core.enums import (
     ToolLeaseKind,
 )
 from app.services.call_timeouts import effective_tool_timeout
+from app.services.conversation_history import conversation_history_paths as _conversation_history_paths, read_conversation_history
+from app.services.model_adapter import is_model_context_overflow
+from app.services.model_connection_retry import invoke_model_with_connection_retry
 from app.services.tool_arguments import is_tool_argument_error
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
@@ -82,7 +86,6 @@ from app.services.run_manager import (
     fail_run,
     heartbeat_run,
     request_cancel,
-    reserve_model_call,
     record_model_tokens,
     record_model_cost,
     reserve_tool_call,
@@ -224,6 +227,10 @@ class ModelExecutionTimeout(TimeoutError):
     """单次模型调用超过 Agent 的已保存时限。"""
 
 
+class ModelProviderTimeout(TimeoutError):
+    """模型调用未耗尽执行预算，上游读取或流式数据等待已超时。"""
+
+
 class ModelOutputLimitExceeded(Exception):
     """上游在生成完成前耗尽输出额度，禁止接受半份回答或执行被截断的工具参数。"""
 
@@ -235,6 +242,18 @@ def _check_model_output(message: AIMessage, model_usage: list[AIMessage]) -> Non
     reason = metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("stopReason")
     if isinstance(reason, str) and reason.casefold() in set(ModelOutputLimitReason):
         raise ModelOutputLimitExceeded("模型输出额度耗尽，请调整智能体单次最大输出 Token")
+
+
+def _exception_cause_types(error: BaseException) -> list[str]:
+    """仅提取有界底层异常类型，跳过循环引用，不记录异常正文、请求地址或凭据。"""
+    names = []
+    seen = {id(error)}
+    current = error.__cause__ or error.__context__
+    while current is not None and id(current) not in seen and len(names) < 5:
+        seen.add(id(current))
+        names.append(type(current).__name__[:80])
+        current = current.__cause__ or current.__context__
+    return names
 
 
 class AuthorizedToolsMiddleware(AgentMiddleware):
@@ -257,33 +276,78 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         model_usage: list[AIMessage] | None = None,
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
+        config = get_config()
+        self.tool_call_semaphore = asyncio.Semaphore(min(config.TOOL_CALL_RUN_LIMIT, config.TOOL_CALL_USER_LIMIT, config.TOOL_CALL_GLOBAL_LIMIT))
         self.allowed_names = frozenset(allowed_names)
         self.sessions = sessions
         self.run_id = run_id
         self.lease_token = lease_token
         self.tool_timeout_seconds = tool_timeout_seconds
-        self.model_timeout_seconds = get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
+        self.model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
         self.model_usage = model_usage if model_usage is not None else []
         self.max_total_tokens = max_total_tokens
         self.max_estimated_cost = max_estimated_cost
         self.cost_input_price = cost_input_price
         self.cost_output_price = cost_output_price
         self.skill_paths = skill_paths
+        self.history_read_snapshots: dict[str, list[str]] = {}
         self.tool_aliases = {name: target for name, target in (tool_aliases or {}).items() if target in self.allowed_names and name not in self.allowed_names}
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
         """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
-        async with self.sessions.begin() as db:
-            await reserve_model_call(db, self.run_id, self.lease_token)
+        has_history = bool(_conversation_history_paths(request.state)) or any(
+            message.additional_kwargs.get("lc_source") == "summarization" for message in request.messages
+        )
         visible_tools = [
             tool
             for tool in request.tools
-            if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and self.skill_paths)
+            if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and (self.skill_paths or has_history))
         ]
+
+        async def invoke() -> ModelResponse:
+            """只重新请求当前模型，不重新运行已完成工具或整轮图。"""
+            return await handler(request.override(tools=visible_tools))
+
+        started = time.perf_counter()
+        logger.info("模型调用开始 run_id={} timeout_seconds={}", self.run_id, self.model_timeout_seconds)
+        model_deadline = asyncio.timeout(self.model_timeout_seconds)
         try:
-            response = await asyncio.wait_for(handler(request.override(tools=visible_tools)), timeout=self.model_timeout_seconds)
+            async with model_deadline:
+                response = await invoke_model_with_connection_retry(invoke, self.sessions, self.run_id, self.lease_token)
         except TimeoutError as exc:
+            if not model_deadline.expired():
+                logger.warning(
+                    "模型上游读取超时 run_id={} timeout_seconds={} elapsed_ms={} error_type={} cause_types={}",
+                    self.run_id,
+                    self.model_timeout_seconds,
+                    round((time.perf_counter() - started) * 1000),
+                    type(exc).__name__,
+                    _exception_cause_types(exc),
+                )
+                raise ModelProviderTimeout("模型上游读取超时") from exc
+            logger.warning(
+                "模型调用超时 run_id={} timeout_seconds={} elapsed_ms={}",
+                self.run_id,
+                self.model_timeout_seconds,
+                round((time.perf_counter() - started) * 1000),
+            )
             raise ModelExecutionTimeout("单次模型调用超过时限") from exc
+        except Exception as exc:
+            logger.warning(
+                "模型调用失败 run_id={} timeout_seconds={} elapsed_ms={} error_type={} cause_types={}",
+                self.run_id,
+                self.model_timeout_seconds,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+                _exception_cause_types(exc),
+            )
+            raise
+        logger.info(
+            "模型调用完成 run_id={} timeout_seconds={} elapsed_ms={}",
+            self.run_id,
+            self.model_timeout_seconds,
+            round((time.perf_counter() - started) * 1000),
+        )
         model_response = response.model_response if isinstance(response, ExtendedModelResponse) else response
         for index, message in enumerate(model_response.result):
             if isinstance(message, AIMessage) and message.tool_calls:
@@ -315,18 +379,19 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         return response
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]) -> ToolMessage | Command:
-        """在工具实际执行前领取跨进程名额，审批等待不占用执行资源。"""
-        async with self.sessions() as db:
-            run = await db.get(AgentRun, self.run_id)
-            if run is None:
-                raise PermissionError("运行不存在")
-            owner_id = run.owner_id
-        async with tool_execution_slot(self.sessions, owner_id, self.run_id, ToolLeaseKind.CALL, self.tool_timeout_seconds):
-            token = CURRENT_TOOL_CALL_ID.set(str(uuid5(NAMESPACE_URL, f"{self.run_id}:{request.tool_call['id']}")))
-            try:
-                return await self._execute_authorized_tool_call(request, handler)
-            finally:
-                CURRENT_TOOL_CALL_ID.reset(token)
+        """同一运行的突发调用先限流排队，再领取跨进程名额；排队不占数据库连接和工具租约。"""
+        async with self.tool_call_semaphore:
+            async with self.sessions() as db:
+                run = await db.get(AgentRun, self.run_id)
+                if run is None:
+                    raise PermissionError("运行不存在")
+                owner_id = run.owner_id
+            async with tool_execution_slot(self.sessions, owner_id, self.run_id, ToolLeaseKind.CALL, self.tool_timeout_seconds):
+                token = CURRENT_TOOL_CALL_ID.set(str(uuid5(NAMESPACE_URL, f"{self.run_id}:{request.tool_call['id']}")))
+                try:
+                    return await self._execute_authorized_tool_call(request, handler)
+                finally:
+                    CURRENT_TOOL_CALL_ID.reset(token)
 
     async def _execute_authorized_tool_call(
         self,
@@ -337,11 +402,13 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         tool_name = request.tool_call["name"]
         if tool_name not in self.allowed_names and tool_name != "read_file":
             raise PermissionError("运行未授权该工具")
+        history_read = False
         if tool_name == "read_file":
             path = request.tool_call.get("args", {}).get("file_path")
-            if not isinstance(path, str) or path not in self.skill_paths:
+            history_read = isinstance(path, str) and path in _conversation_history_paths(request.state)
+            if not isinstance(path, str) or path not in self.skill_paths and not history_read:
                 return ToolMessage(
-                    content="Skill 文件未授权或不存在。请只读取已关联 Skill 中实际提供的文件。",
+                    content="文件未授权或不存在。请只读取已关联 Skill 文件或当前会话摘要提供的历史文件路径。",
                     tool_call_id=request.tool_call["id"],
                     name="read_file",
                     status="error",
@@ -356,7 +423,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
                 raise PermissionError("运行授权已失效")
-            if tool_name == "read_file":
+            if tool_name == "read_file" and not history_read:
                 try:
                     current_files = await load_run_skill_files(db, self.run_id, run.owner_id)
                 except Exception as exc:
@@ -402,8 +469,15 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 )
             await reserve_tool_call(db, self.run_id, self.lease_token)
             await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
+
+        async def invoke_tool() -> ToolMessage | Command:
+            """历史原文采用有界分页，其余工具保持原始处理链路。"""
+            if history_read:
+                return read_conversation_history(request.state, request.tool_call, self.history_read_snapshots)
+            return await handler(request)
+
         try:
-            result = await asyncio.wait_for(handler(request), timeout=call_timeout)
+            result = await asyncio.wait_for(invoke_tool(), timeout=call_timeout)
         except BaseException as exc:
             if invocation_id is not None:
                 async with self.sessions.begin() as db:
@@ -797,7 +871,7 @@ async def execute_text_run(
     try:
         input_budget = runtime_config.input_budget()
     except ValueError:
-        return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
+        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.CONTEXT)
     input_content = (
         [
             {
@@ -811,22 +885,39 @@ async def execute_text_run(
     )
     image_token_reserve = 2048 * sum(block.get("type") == "image_url" for block in image_blocks)
     if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_content)]) + image_token_reserve > input_budget:
-        return await _finish_interrupted(sessions, run_id, lease_token, "context_window_exceeded")
+        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.CONTEXT)
 
     model_usage: list[AIMessage] = []
 
     async def summarize_history(messages: list[BaseMessage]) -> str:
         """在运行预算内调用模型压缩历史，记录用量并拒绝空摘要。"""
-        async with sessions.begin() as db:
-            await reserve_model_call(db, run_id, lease_token)
         prompt = CONVERSATION_SUMMARY_PROMPT.format(messages=get_buffer_string(_summary_messages_without_images(messages)))
+
+        async def invoke() -> AIMessage:
+            """在同一摘要调用和时限内重试响应前连接失败。"""
+            return await model.ainvoke([HumanMessage(content=prompt)])
+
+        model_deadline = asyncio.timeout(run.model_timeout_seconds)
         try:
-            response = await asyncio.wait_for(model.ainvoke([HumanMessage(content=prompt)]), timeout=run.model_timeout_seconds)
-        except (TimeoutError, OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError) as exc:
-            if isinstance(exc, TimeoutError):
+            async with model_deadline:
+                response = await invoke_model_with_connection_retry(invoke, sessions, run_id, lease_token)
+        except TimeoutError as exc:
+            if model_deadline.expired():
                 raise ModelExecutionTimeout("摘要模型调用超过时限") from exc
+            raise ModelProviderTimeout("摘要模型上游读取超时") from exc
+        except (
+            OpenAITimeoutError,
+            AnthropicTimeoutError,
+            HttpTimeoutError,
+            ModelCallBudgetExceeded,
+            TokenBudgetExceeded,
+            CostBudgetExceeded,
+            RunConflictError,
+        ):
             raise
         except Exception as exc:
+            if is_model_context_overflow(exc):
+                raise
             raise SummaryModelError("摘要模型调用失败") from exc
         await _account_model_response(
             response,
@@ -1160,7 +1251,7 @@ async def execute_text_run(
             sessions,
             run_id,
             lease_token,
-            "tool_capacity_exceeded",
+            RunRuntimeFailureReason.TOOL_CAPACITY,
             catalog_model=catalog_model,
             started=started,
         )
@@ -1175,7 +1266,7 @@ async def execute_text_run(
         )
     except LeaseMonitorError:
         return await _finish_interrupted(sessions, run_id, lease_token, "lease_monitor_error", catalog_model=catalog_model, started=started)
-    except (OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError):
+    except (ModelProviderTimeout, OpenAITimeoutError, AnthropicTimeoutError, HttpTimeoutError):
         return await _finish_interrupted(sessions, run_id, lease_token, RunTimeoutReason.PROVIDER, catalog_model=catalog_model, started=started)
     except ModelExecutionTimeout:
         return await _finish_interrupted(
@@ -1205,5 +1296,6 @@ async def execute_text_run(
                 _record_runtime_call(db, run, catalog_model, started, failure="cancelled")
                 return result
             return run
-    except Exception:  # noqa: BLE001 - 外部模型和检查点异常统一归类，不保存原始异常信息。
-        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.UPSTREAM, catalog_model=catalog_model, started=started)
+    except Exception as exc:  # noqa: BLE001 - 仅保存脱敏故障类别，不保存上游错误正文。
+        reason = RunModelFailureReason.CONTEXT if is_model_context_overflow(exc) else RunModelFailureReason.UPSTREAM
+        return await _finish_interrupted(sessions, run_id, lease_token, reason, catalog_model=catalog_model, started=started)

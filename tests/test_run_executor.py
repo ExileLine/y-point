@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.v1.runs import stream_events
 from app.core.config import get_config
-from app.core.enums import RunEventType
+from app.core.enums import RunEventType, RunModelFailureReason, RunRuntimeFailureReason, RunState, RunTimeoutReason, UserRole
 from app.core.password import hash_password
 from app.db.session import get_db_session
 from app.main import app
@@ -3663,12 +3663,13 @@ def test_configurable_model_and_execution_deadlines(tmp_path: Path, monkeypatch:
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("output_limit", [4096, None])
 @pytest.mark.parametrize("content", ["", "尚未完成的审查正文"])
 @pytest.mark.parametrize(
     ("reason_key", "reason"),
     [("finish_reason", "length"), ("stop_reason", "max_tokens"), ("finish_reason", "MAX_TOKENS"), ("stopReason", "max_tokens")],
 )
-def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str, reason_key: str, reason: str) -> None:
+def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str, reason_key: str, reason: str, output_limit: int | None) -> None:
     """上游输出截断必须明确失败，不能误报空响应或把半份审查报告标为成功。"""
 
     async def exercise() -> None:
@@ -3691,7 +3692,7 @@ def test_model_output_limit_is_not_empty_or_success(tmp_path: Path, content: str
                     ),
                 )
                 db.add(ModelCatalog(id=1, provider_id=1, external_id="fake", display_name="fake", creator_id=1))
-                run = await create_run(db, 1, model_id=1, input_text="请审核施工方案", agent_max_output_tokens=4096)
+                run = await create_run(db, 1, model_id=1, input_text="请审核施工方案", agent_max_output_tokens=output_limit)
             model = ScriptedModel(
                 responses=[
                     AIMessage(
@@ -4028,5 +4029,431 @@ def test_first_failed_report_retry_can_continue_after_skill_reads(tmp_path: Path
                 assert original.state == "failed" and original.failure_code == expected_failure
         finally:
             await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "success", "connection_error", "provider_timeout", "stream_timeout"])
+def test_model_call_diagnostics_after_successful_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    """复现三次工具成功后下一次模型超时，核对单次耗时及连接异常日志的隐私边界，正常返回作为对照。"""
+    from loguru import logger
+    from openai import APIConnectionError
+    from langchain_openai import StreamChunkTimeoutError
+
+    monkeypatch.setattr(get_config(), "AGENT_MODEL_CONNECTION_MAX_RETRIES", 0)
+    records = []
+    sink = logger.add(records.append, filter=lambda record: record["name"] == "app.services.run_executor")
+
+    class ReviewModel(ScriptedModel):
+        """先返回三次只读调用，再模拟校验后下一次模型长时间未返回。"""
+
+        async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+            """在第四次模型模拟超时或连接失败，前三次工具必须实际完成。"""
+            if self.i == 3 and outcome == "connection_error":
+                raise APIConnectionError(
+                    message="private-upstream-error-marker",
+                    request=httpx.Request("POST", "https://private-upstream-marker.test"),
+                ) from httpx.ConnectError("private-transport-marker")
+            if self.i == 3 and outcome == "provider_timeout":
+                raise TimeoutError("private-upstream-timeout-marker")
+            if self.i == 3 and outcome == "stream_timeout":
+                raise StreamChunkTimeoutError(0.1, model_name="private-upstream-marker", chunks_received=1)
+            if self.i == 3 and outcome == "timeout":
+                await asyncio.Event().wait()
+            return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+    @tool
+    async def read_review_contract() -> str:
+        """返回带私有标记的只读校验结果，确认日志不会记录工具正文。"""
+        return "private-report-data-marker"
+
+    async def resolve_tools(db, run):
+        """只提供无副作用工具，不使用真实脚本或业务附件。"""
+        return [read_review_contract], {}
+
+    async def exercise() -> None:
+        """使用真实执行器与临时库复现调用时间线，验证超时终态和完成对照。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'model-call-diagnostics.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="model-diagnostics-user", password="not-used", role=UserRole.USER))
+                run = await create_run(db, 1, input_text="private-construction-plan-marker", model_timeout_seconds=1)
+            responses = [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_review_contract",
+                            "args": {},
+                            "id": f"contract-{index}",
+                        },
+                    ],
+                )
+                for index in range(3)
+            ]
+            responses.append(AIMessage(content="完成"))
+            result = await execute_text_run(
+                sessions,
+                run.id,
+                ReviewModel(responses=responses),
+                tmp_path / "checkpoints.db",
+                resolve_tools=resolve_tools,
+                poll_seconds=0.05,
+            )
+            assert result.model_call_count == 4 and result.tool_call_count == 3
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert sum(event.event_type == RunEventType.TOOL_COMPLETED for event in events) == 3
+                if outcome == "timeout":
+                    assert result.state == RunState.TIMED_OUT and result.failure_code == RunTimeoutReason.MODEL
+                    assert events[-1].failure_code == RunTimeoutReason.MODEL
+                elif outcome in {"provider_timeout", "stream_timeout"}:
+                    assert result.state == RunState.TIMED_OUT and result.failure_code == RunTimeoutReason.PROVIDER
+                    assert events[-1].failure_code == RunTimeoutReason.PROVIDER
+                elif outcome == "connection_error":
+                    assert result.state == RunState.FAILED and result.failure_code == RunModelFailureReason.UPSTREAM
+                    assert events[-1].failure_code == RunModelFailureReason.UPSTREAM
+                else:
+                    assert result.state == RunState.COMPLETED and result.failure_code is None
+            messages = [record.record["message"] for record in records]
+            assert sum("模型调用开始" in message for message in messages) == 4
+            assert sum("模型调用完成" in message for message in messages) == (4 if outcome == "success" else 3)
+            timeouts = [message for message in messages if "模型调用超时" in message]
+            assert len(timeouts) == int(outcome == "timeout")
+            failures = [message for message in messages if "模型调用失败" in message]
+            assert len(failures) == int(outcome == "connection_error")
+            provider_timeouts = [message for message in messages if "模型上游读取超时" in message]
+            assert len(provider_timeouts) == int(outcome in {"provider_timeout", "stream_timeout"})
+            if failures:
+                assert "error_type=APIConnectionError" in failures[0]
+                assert "cause_types=['ConnectError']" in failures[0]
+            for message in messages:
+                assert run.id in message and "timeout_seconds=1" in message
+                if "模型调用开始" not in message:
+                    assert "elapsed_ms=" in message
+            text = "\n".join(messages)
+            for marker in (
+                "private-construction-plan-marker",
+                "private-report-data-marker",
+                "private-upstream-error-marker",
+                "private-upstream-marker",
+                "private-transport-marker",
+                "private-upstream-timeout-marker",
+            ):
+                assert marker not in text
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        logger.remove(sink)
+
+
+@pytest.mark.parametrize("limits", [(16, 4, 2), (1, 4, 2), (16, 1, 2)])
+@pytest.mark.parametrize("parallel_count", [3, 11])
+def test_parallel_tools_are_scheduled_within_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limits: tuple[int, int, int],
+    parallel_count: int,
+) -> None:
+    """复现模型同轮发出十一个调用，在现有全局、用户与单 Run 上限内排队完成而非抢满自有名额。"""
+    from sqlalchemy import func
+
+    from app.models.tool_execution import ToolExecutionLease
+
+    for name, value in zip(("TOOL_CALL_GLOBAL_LIMIT", "TOOL_CALL_USER_LIMIT", "TOOL_CALL_RUN_LIMIT"), limits, strict=True):
+        monkeypatch.setattr(get_config(), name, value)
+    active = peak = 0
+
+    @tool
+    async def read_review_contract() -> str:
+        """在真实名额内短暂保持执行，用于观察并行上限与取消时的资源释放。"""
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.15)
+            return "校验完成"
+        finally:
+            active -= 1
+
+    async def resolve_tools(db, run):
+        """提供同一个只读工具，模拟模型对多个参考文件的批量读取。"""
+        return [read_review_contract], {}
+
+    async def exercise() -> None:
+        """通过真实执行器和临时 SQLite 验证突发调用、完成终态及无残留租约。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'parallel-tool-scheduling.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="parallel-review-user", password="not-used", role=UserRole.USER))
+                run = await create_run(db, 1, input_text="读取审查参考文件")
+            model = ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_review_contract",
+                                "args": {},
+                                "id": f"reference-{index}",
+                            }
+                            for index in range(parallel_count)
+                        ],
+                    ),
+                    AIMessage(content="读取完成"),
+                ],
+            )
+            result = await execute_text_run(sessions, run.id, model, tmp_path / "checkpoints.db", resolve_tools=resolve_tools, poll_seconds=0.05)
+            assert result.state == RunState.COMPLETED, result.failure_code
+            assert result.tool_call_count == parallel_count and result.model_call_count == 2
+            assert 1 <= peak <= min(limits) and active == 0
+            async with sessions() as db:
+                assert await db.scalar(select(func.count()).select_from(ToolExecutionLease)) == 0
+                events = await replay_events(db, run.id, 1)
+                assert sum(event.event_type == RunEventType.TOOL_COMPLETED for event in events) == parallel_count
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_external_tool_capacity_failure_is_finalized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """其他运行占满资源时应直接保存明确故障，不能让未知故障码抛异常后等待租约过期。"""
+    from app.core.enums import ToolLeaseKind
+    from app.services.tool_execution import acquire_tool_slot, release_tool_slot
+
+    monkeypatch.setattr(get_config(), "TOOL_CALL_GLOBAL_LIMIT", 1)
+
+    @tool
+    async def read_review_contract() -> str:
+        """资源被其他运行占满时不应实际进入此工具。"""
+        raise AssertionError("不应执行工具")
+
+    async def resolve_tools(db, run):
+        """提供受全局名额控制的只读工具。"""
+        return [read_review_contract], {}
+
+    async def exercise() -> None:
+        """预占其他任务名额，通过真实执行器验证故障分类、事件和租约收尾。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'external-tool-capacity.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="capacity-review-user", password="not-used", role=UserRole.USER))
+                run = await create_run(db, 1, input_text="读取审查契约")
+                token = await acquire_tool_slot(db, 2, "another-run", ToolLeaseKind.CALL, 30)
+            model = ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_review_contract",
+                                "args": {},
+                                "id": "capacity-contract",
+                            },
+                        ],
+                    ),
+                ],
+            )
+            result = await execute_text_run(sessions, run.id, model, tmp_path / "checkpoints.db", resolve_tools=resolve_tools)
+            assert result.state == RunState.FAILED and result.failure_code == RunRuntimeFailureReason.TOOL_CAPACITY
+            assert result.tool_call_count == 0 and result.lease_token is None
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert events[-1].failure_code == RunRuntimeFailureReason.TOOL_CAPACITY
+            await release_tool_slot(sessions, token)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("outcome", ["recovered", "exhausted", "partial", "budget", "disabled", "timeout", "deadline", "cancelled"])
+def test_connection_retry_preserves_tools_and_model_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    """复现工具成功后连接重置，验证有限恢复、部分输出保护和每次尝试的预算及时间边界。"""
+    from openai import APIConnectionError, APITimeoutError
+
+    config = get_config()
+    monkeypatch.setattr(config, "AGENT_MODEL_CONNECTION_MAX_RETRIES", 0 if outcome == "disabled" else 1)
+    monkeypatch.setattr(config, "AGENT_MODEL_CONNECTION_RETRY_DELAY_SECONDS", 2 if outcome in {"deadline", "cancelled"} else 0)
+    requests = []
+    tool_calls = []
+    failure_seen = asyncio.Event()
+
+    class ResetModel(ScriptedModel):
+        """读取一次资料后在下一次调用模拟响应前断连或已收到部分流式数据。"""
+
+        failed_attempts: int = 0
+
+        async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any):
+            """仅在模型调用阶段注入连接故障，不重放已经返回的工具响应。"""
+            requests.append(self.i)
+            if self.i == 1 and (self.failed_attempts == 0 or outcome == "exhausted"):
+                self.failed_attempts += 1
+                failure_seen.set()
+                request = httpx.Request("POST", "https://private-connection-marker.test")
+                if outcome == "timeout":
+                    raise APITimeoutError(request=request)
+                if outcome == "partial":
+                    await run_manager.on_llm_new_token("private-partial-output")
+                raise APIConnectionError(message="private-connection-marker", request=request) from ConnectionResetError("private-reset-marker")
+            return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+    @tool
+    async def read_contract_once() -> str:
+        """记录已成功完成的工具调用，检测重试是否误重放工具。"""
+        tool_calls.append(1)
+        return "资料已读取"
+
+    async def resolve_tools(db, run):
+        """为隔离运行提供唯一的只读工具。"""
+        return [read_contract_once], {}
+
+    async def exercise() -> None:
+        """经真实执行器检查终态、物理模型尝试计数与工具完成事件。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'connection-retry.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="connection-retry-owner", password="unused", role=UserRole.USER))
+                run = await create_run(db, 1, input_text="审核资料", model_timeout_seconds=1, max_model_calls=2 if outcome == "budget" else None)
+            responses = [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_contract_once",
+                            "args": {},
+                            "id": "contract-once",
+                        },
+                    ],
+                ),
+                AIMessage(content="审核完成"),
+            ]
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    run.id,
+                    ResetModel(responses=responses),
+                    tmp_path / "checkpoints.db",
+                    resolve_tools=resolve_tools,
+                    poll_seconds=0.05,
+                ),
+            )
+            if outcome == "cancelled":
+                await asyncio.wait_for(failure_seen.wait(), timeout=2)
+                async with sessions.begin() as db:
+                    await request_cancel(db, run.id, 1)
+            result = await asyncio.wait_for(task, timeout=10)
+            assert len(tool_calls) == 1 and result.tool_call_count == 1
+            assert len(requests) == (3 if outcome in {"recovered", "exhausted"} else 2)
+            assert result.model_call_count == len(requests)
+            if outcome == "recovered":
+                assert result.state == RunState.COMPLETED and result.failure_code is None
+            elif outcome == "budget":
+                assert result.state == RunState.FAILED and result.failure_code == "model_call_budget_exceeded"
+            elif outcome == "timeout":
+                assert result.state == RunState.TIMED_OUT and result.failure_code == RunTimeoutReason.PROVIDER
+            elif outcome == "deadline":
+                assert result.state == RunState.TIMED_OUT and result.failure_code == RunTimeoutReason.MODEL
+            elif outcome == "cancelled":
+                assert result.state == RunState.CANCELLED
+            else:
+                assert result.state == RunState.FAILED and result.failure_code == RunModelFailureReason.UPSTREAM
+            async with sessions() as db:
+                events = await replay_events(db, run.id, 1)
+                assert sum(event.event_type == RunEventType.TOOL_COMPLETED for event in events) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("requested", "files"),
+    [
+        (
+            "/conversation_history/other-thread.md",
+            {
+                "/conversation_history/current-thread.md": {},
+            },
+        ),
+        (
+            "/etc/passwd",
+            {
+                "/etc/passwd": {},
+            },
+        ),
+        (
+            "/conversation_history/../private.md",
+            {
+                "/conversation_history/../private.md": {},
+            },
+        ),
+        (
+            "/conversation_history/media/image.md",
+            {
+                "/conversation_history/media/image.md": {},
+            },
+        ),
+        (
+            "/conversation_history/current-thread.txt",
+            {
+                "/conversation_history/current-thread.txt": {},
+            },
+        ),
+        (
+            "/conversation_history//current-thread.md",
+            {
+                "/conversation_history//current-thread.md": {},
+            },
+        ),
+        ("/conversation_history/current-thread.md", None),
+    ],
+    ids=["other-thread", "host-file", "parent-traversal", "nested-file", "wrong-type", "noncanonical", "no-history"],
+)
+def test_history_read_rejects_unscoped_paths(requested: str, files: dict | None) -> None:
+    """历史读取只允许当前线程虚拟文件的规范路径，拒绝其他线程、宿主文件和路径穿越。"""
+    from langchain.agents.middleware.types import ToolCallRequest
+
+    async def exercise() -> None:
+        """在数据库和文件处理前验证拒绝结果，不能调用底层读取器。"""
+        sessions = AsyncMock()
+        handler = AsyncMock()
+        middleware = run_executor_module.AuthorizedToolsMiddleware(set(), sessions, "test-run", "lease", 30, None, None, None, None)
+        result = await middleware._execute_authorized_tool_call(
+            ToolCallRequest(
+                tool_call={
+                    "name": "read_file",
+                    "args": {
+                        "file_path": requested,
+                    },
+                    "id": "unscoped-history",
+                },
+                tool=None,
+                state={
+                    "files": files,
+                },
+                runtime=None,
+            ),
+            handler,
+        )
+        assert isinstance(result, ToolMessage) and result.status == "error"
+        handler.assert_not_called()
+        sessions.assert_not_called()
 
     asyncio.run(exercise())

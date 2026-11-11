@@ -171,6 +171,14 @@ class BaseConfig(BaseSettings):
     AGENT_MAX_TOOL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次工具超时秒数上限，具体工具可有更严限制", examples=[3600])
     AGENT_DEFAULT_MAX_OUTPUT_TOKENS: int = Field(default=4096, gt=0, description="新建 Agent 或独立 Run 默认单次模型输出 Token 上限", examples=[8192])
     AGENT_MAX_OUTPUT_TOKENS: int = Field(default=65536, gt=0, description="允许设置的单次输出 Token 上限", examples=[65536])
+    AGENT_MODEL_CONNECTION_MAX_RETRIES: int = Field(default=1, ge=0, le=3, description="模型尚未返回数据时连接失败的最多重试次数，0 为禁用", examples=[1])
+    AGENT_MODEL_CONNECTION_RETRY_DELAY_SECONDS: float = Field(
+        default=1,
+        ge=0,
+        le=30,
+        description="模型连接失败重试前等待秒数，计入原单次模型时限",
+        examples=[1],
+    )
 
     # SCRIPT配置参数
     SCRIPT_SANDBOX_IMAGE: str = "y-point-script-sandbox:1"
