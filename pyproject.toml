@@ -46,6 +46,8 @@ dependencies = [
   "jsonschema>=4.0,<5",
   "packaging>=24,<27",
   "docxtpl>=0.20,<0.21",
+  "pdfplumber>=0.11.10,<0.12",
+  "pypdfium2>=5.15,<6",
 ]
 
 [dependency-groups]

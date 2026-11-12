@@ -9,15 +9,15 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | 业务环节 | 当前能力 |
 | --- | --- |
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
-| Agent 与对话 | Agent 配置版本、模型思考偏好、可空输出额度和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要、窗口预算和原文分页回读。 |
+| Agent 与对话 | Agent 配置版本、模型思考偏好、知识回答模式（智能融合/仅知识库）、可空输出额度和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要、窗口预算和原文分页回读。 |
 | Skill | 标准文件包工作区，支持草稿/校验/发布、参考资料、完整 ZIP、多个模板独立契约、受管脚本沙箱及 Agent/Run 版本固定；报告 Skill ID、模板名称和字段错误支持在原运行预算内修正，候选仅来自本轮有权限的固定绑定。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
-| 知识库 | 私有或指定只读共享；按格式解析文档，XLSX/CSV 保留完整记录和单元格来源，可独立配置模型生成检索解释；后台索引、关键词/向量混合检索、加工预览及固定引用；支持撤权、删除、取消与恢复。 |
+| 知识库 | 私有或指定只读共享；按格式解析文档，XLSX/CSV 保留完整记录和单元格来源，PDF 支持按页版面提取、本地 OCR、质量检查及原页引用核对；可独立配置模型生成检索解释；后台索引、关键词/向量混合检索、发布代加工预览及固定引用；支持撤权、删除、取消与恢复。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、单次模型/工具时限及图步数预算；模型响应前连接失败有限重试、上下文与输出截断分类、工具并发排队和参数同轮纠正；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系；开发环境管理员可按 Agent/会话盘点本人文件，并按名称批量清理本地正文。 |
 | 对话过程与统计 | 模型公开思考独立流式发布；Tool、Skill、MCP 等调用分类、耗时与脱敏失败原因；每轮及整个会话的耗时、累计已报告 Token，附件与产物大小。 |
-| 实时与恢复 | 持久化事件、SSE、快照和游标补发；失败、超时或取消后保留已公开的未完成正文；审计可证明安全的只读调用及无产物失败报告支持继续对话；助手消息关联产物，上传附件保留在用户消息中。 |
+| 实时与恢复 | 持久化事件、SSE、快照和游标补发；失败、超时或取消后保留已公开的未完成正文；审计可证明安全的只读调用（含完整结束的知识检索）及无产物失败报告支持继续对话；助手消息关联产物，上传附件保留在用户消息中。 |
 
 核心业务闭环：认证与资源授权后，用户通过 Agent 会话或独立文本入口提交 Run；业务事务保存输入、排队状态和首个事件，worker 领取后按模型配置执行并持续写入事件。完成时保存最终消息和检查点引用，生成文件与助手消息关联；前端按事件游标追平过程，再从消息接口读取最终结果。会话失败后，历史接口从公开事件恢复未完成正文并保留失败状态；下一轮在安全条件满足时从已确认检查点或干净起点继续。上传文件正文留在私有存储，下载时重新校验所有权和有效期；Skill 文本包另存于业务数据库。
 
@@ -63,6 +63,129 @@ uv run alembic check
 ```bash
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
+
+## Docker 部署准备（含 PDF OCR）
+
+本机已安装的 Homebrew、Tesseract 和 Python 虚拟环境不会自动进入容器。当前仓库根目录的 `Dockerfile` 只有 Python 基础镜像及维护者声明，尚未包含依赖安装、源码复制与启动命令；`Dockerfile.sandbox` 是脚本 Tool 的独立执行镜像。部署服务端时需准备下面的 API/worker 镜像、配置与持久化存储，不能直接把现有根 Dockerfile 当作完整发布镜像。
+
+### 系统依赖与进程分工
+
+| 准备项 | 安装或配置位置 | 用途与边界 |
+| --- | --- | --- |
+| Python 3.12、按 `uv.lock` 安装的 Python 依赖 | API 和 worker 镜像 | 包含 pdfplumber、pypdfium2、Pillow 等；在目标 Linux/CPU 架构中安装，不复制 macOS 的 `.venv`。 |
+| `libstdc++6`、Fontconfig、中文字体 `fonts-noto-cjk` | API 和 worker 镜像 | PDFium 动态库运行及原页字体回退；未嵌入中文字体的 PDF 尤其需要字体，避免渲染成方框。字体不能修复源文件本身错误的文字映射。 |
+| `tesseract-ocr`、`tesseract-ocr-chi-sim`、`tesseract-ocr-eng` | 执行索引任务的 worker 镜像 | 默认 OCR 使用 `chi_sim+eng`，两种语言包必须都存在；只有引擎或只装英文包仍不满足配置。API 不执行 OCR；使用统一镜像时一起安装即可。 |
+| `ca-certificates` | API 和 worker 镜像 | 模型、嵌入、MCP、对象存储等 HTTPS 连接使用系统信任链；内网服务使用私有 CA 时需将其加入容器信任链。 |
+| Alembic | 执行数据库迁移的镜像/一次性任务 | 当前列在 `dev` 依赖组，单独 `uv sync --no-dev` 不会安装；下面示例保留该组供迁移使用，精简运行镜像时须另备迁移镜像。 |
+| PostgreSQL 或持久化 SQLite、业务库迁移 | 数据库及迁移任务 | API 和 worker 必须连接同一业务数据库。业务库换成 PostgreSQL 不会自动切换 Checkpointer，后者需单独配置。 |
+| Poppler / `pdftoppm` | 可选测试环境 | 用于人工渲染核对测试文件；当前在线 OCR 和原页预览由 PDFium 渲染，不要求生产安装 Poppler。 |
+
+当前本地 OCR 不需要 GPU、额外 OCR 服务或 OCR API Key。安装完成后识别本身可离线执行；模型加工、混合索引嵌入及其他外部工具仍需要各自的模型配置、凭据与网络。OCR 只在知识 PDF 处理链中启用，不会因为容器安装了 Tesseract 就自动对所有聊天附件执行 OCR。
+
+### API / worker 镜像示例
+
+以下为 Debian Bookworm 基础镜像示例，可保存为 `Dockerfile.deploy` 后按目标架构构建。API 与 worker 使用同一镜像、不同启动命令；示例包含数据库迁移工具，不包含前端静态服务或脚本 Tool 的 Docker CLI/引擎接入。
+
+```dockerfile
+FROM ghcr.io/astral-sh/uv:0.11.16 AS uv
+FROM python:3.12-slim-bookworm
+
+COPY --from=uv /uv /usr/local/bin/uv
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libstdc++6 fontconfig fonts-noto-cjk \
+        tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --group dev --no-install-project
+COPY app ./app
+COPY migrations ./migrations
+COPY alembic.ini ./
+COPY sandbox ./sandbox
+COPY scripts ./scripts
+
+RUN groupadd --gid 10001 appuser \
+    && useradd --create-home --uid 10001 --gid 10001 appuser \
+    && mkdir -p /app/.run-private /app/.logs \
+    && chown -R 10001:10001 /app/.run-private /app/.logs
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+构建前准备 `.dockerignore`，至少排除 `.git/`、`.venv/`、`.env*`、`.run-private/`、`.logs/`、`*.db`、`*.db-shm`、`*.db-wal`、`web/node_modules/` 和 `web/dist/`。不要将本机数据库、凭据、上传文件或 Homebrew 安装目录打入镜像；上面使用显式 `COPY`，生产配置在运行时只读挂载。uv 和基础镜像版本在正式发布中应固定，跨架构交付应在目标架构重新构建和检查 PDFium。
+
+```bash
+docker build -f Dockerfile.deploy -t y-point-server:ocr .
+docker run --rm y-point-server:ocr tesseract --list-langs
+docker run --rm y-point-server:ocr fc-match 'sans:lang=zh-cn'
+docker run --rm y-point-server:ocr python -c "import pdfplumber, pypdfium2; from PIL import Image; print('PDF runtime ready')"
+```
+
+语言列表应同时包含 `chi_sim` 和 `eng`；字体应匹配已安装的中文字体；Python 检查需成功加载 PDFium 动态库。不能只检查宿主机的 `tesseract --version`。使用发行版标准语言包路径安装；当前 OCR 子进程使用受限环境，不会自动继承自定义 `TESSDATA_PREFIX`，只设置该环境变量不能替代标准路径中的语言包。
+
+### 生产配置、共享存储与启动顺序
+
+准备独立的生产配置文件，例如宿主机 `/srv/y-point/config/production.env`，授予容器 UID/GID `10001:10001` 读取权限，运行时只读挂载到 `/run/config/production.env`。当前配置加载器要求至少有一个真实配置文件，**仅传 Docker `--env-file` 注入环境变量仍不足以满足配置文件存在检查**。容器环境另传 `FAST_API_ENV=production` 和 `ENV_FILE=/run/config/production.env`；文件内使用 `ENV=production`、`DEBUG=False`，避免沿用开发配置。后续可由部署平台以同等方式挂载 Secret。
+
+API 和 worker 应使用同一份业务配置，至少核对：
+
+| 配置或存储 | 生产准备 |
+| --- | --- |
+| 数据库 | `DB_BACKEND=postgresql` 及 `POSTGRESQL_HOSTNAME/PORT/USERNAME/PASSWORD/DATABASE`；主机名使用容器网络中的数据库服务名，端口通常为容器内部的 5432。容器内 `127.0.0.1` 指向该容器自身。SQLite 部署则将 `SQLITE_DATABASE` 指向共享持久目录，例如 `/app/.run-private/y_point.db`。 |
+| Checkpointer | 使用 PostgreSQL 时另设 `CHECKPOINT_BACKEND=postgres`、`CHECKPOINT_POSTGRES_DSN`，DSN 使用 Checkpointer 接受的 `postgresql://…` 地址，账号需具备初始化检查点表的权限。保留 SQLite 时持久化 `.run-private/checkpoints.sqlite`，多容器需访问同一文件，不把各自容器的临时副本当作共享检查点。 |
+| 上传原件与产物 | 本地存储时显式设置 `ARTIFACT_STORAGE_DIR=/app/.run-private/artifacts`，API 与 worker 挂载同一卷；API 要读取原 PDF 生成页面预览，不能只给 worker 挂载。使用 S3 时两者配置同一后端/桶/前缀及访问权限，仍需可写的本地临时目录。 |
+| 密钥 | 注入有效 `SECRET_KEY` 和 `CREDENTIAL_ENCRYPTION_KEY`，不要使用示例占位值；迁移已有供应商数据时保留原凭据加密密钥，否则旧凭据无法解密。生成方式见前面的本地运行说明。 |
+| OCR | 两者配置相同的 `KNOWLEDGE_PDF_OCR_*`；容器命令使用 `tesseract` 或 `/usr/bin/tesseract`，不填 macOS 的 `/opt/homebrew/bin/tesseract`。默认语言、置信度、页数和 DPI 见 PDF 章节。 |
+| 运行目录与日志 | `.run-private/`、`.logs/` 及 `/tmp` 必须对运行用户可写，持久卷权限匹配 UID/GID；`WORKER_LOG_FILE` 默认 `/app/.logs/worker.log`，worker 标准输出被收集到该文件，不能仅依赖 `docker logs` 判断执行情况。原件、检查点和日志按各自保留策略备份。 |
+| 向量后端 | `KNOWLEDGE_VECTOR_BACKEND=exact` 无需额外向量数据库。只有显式选择 `pgvector` 时，才在 PostgreSQL 服务端安装并启用对应扩展；它与 OCR 安装无关。 |
+
+当前新增迁移依次为 `052 → 053 → 054`：`052` 保存文档解析摘要，`053` 按已发布索引固定摘要，`054` 为 Agent 及 Run 增加知识回答模式，既有记录默认 `auto`。升级时更新 Python 依赖并执行 `alembic upgrade head`，不能只完成 PDF 的 `053` 后就启动当前版本；升级保留原有会话、回答与活动索引，不会自动 OCR 或重建已发布资料。需要按新 PDF 规则重新处理旧资料时，再显式重建知识库。
+
+下面的启动示例假定：已保存并构建上面的发布 Dockerfile；数据库与 API/worker 加入现有 `y-point` Docker 网络；已准备上述配置文件并填写数据库及密钥；本地文件存储使用两个共享命名卷。升级已有环境前先等待活跃任务结束、停止旧 API/worker，并备份业务库、检查点和私有文件。
+
+```bash
+# 先迁移：PDF 解析摘要/发布快照需要 052、053，知识回答模式需要 054；始终升至当前代码版本 head。
+docker run --rm --network y-point \
+  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
+  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
+  y-point-server:ocr sh -ec 'alembic upgrade head && alembic check'
+
+# API：生产启动不使用 local_run.py 的 reload 模式。
+docker run -d --name y-point-api --init --restart unless-stopped \
+  --network y-point -p 127.0.0.1:8000:8000 \
+  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
+  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
+  --mount type=volume,src=y-point-private,dst=/app/.run-private \
+  --mount type=volume,src=y-point-logs,dst=/app/.logs \
+  y-point-server:ocr
+
+# worker：独立进程领取对话和索引任务，不能只启动 API。
+docker run -d --name y-point-worker --init --restart unless-stopped \
+  --network y-point \
+  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
+  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
+  --mount type=volume,src=y-point-private,dst=/app/.run-private \
+  --mount type=volume,src=y-point-logs,dst=/app/.logs \
+  y-point-server:ocr python -m app.cli.run_worker
+```
+
+此示例按 PostgreSQL 业务库执行一次性迁移；如果改用 SQLite，迁移容器也必须挂载同一个 `y-point-private` 卷。Alembic 只升级目标库结构，**不会把本机 SQLite 业务数据、检查点或上传原件自动搬到 PostgreSQL/服务器**；保留本机数据需要独立的数据迁移、文件复制与核对方案，不能通过修改 `DB_BACKEND` 代替迁移。
+
+OCR 会创建可终止子进程、读写临时 PNG/TSV，容器须允许创建子进程和向其进程组发送信号；启用只读根文件系统时仍要为 `/tmp` 与业务目录提供可写挂载。不要把脚本沙箱的 128 MiB 内存/8 MiB 临时目录限制直接套给 API/worker。Linux 解析子进程有 768 MiB 地址空间上限，容器总资源还需覆盖服务进程、OCR、渲染和并发任务；CPU、内存、PID 与临时空间额度应按目标机器的并发实测配置。只提高容器额度不会取消单页 1200 万像素、默认 20 页 OCR、单页 35 秒及文档解析 120 秒等业务限制。
+
+前端使用 `npm --prefix web ci`、`npm --prefix web run build` 生成 `web/dist`，交给 Nginx 等静态服务；当前 API 镜像不会自动托管 Web 应用，生产不运行 `make dev`/Vite。反向代理需转发 `/api/v1`，保留 SSE 流式传输，并允许知识上传至少 11 MiB 的 multipart 请求；整个站点还须匹配已配置的多附件上传上限，不能只按知识 PDF 的 10 MiB 设置代理限额。
+
+已有脚本 Tool 还需额外准备 Docker CLI、可访问的 Docker 引擎及 `y-point-script-sandbox:1` 镜像，参见“基础镜像与离线部署”。API 的脚本试运行与 worker 的正式调用都可能使用 Docker；仅运行本节 OCR 不需要 Docker 管理接口。服务本身容器化后，Docker 引擎解释的是其所在主机的挂载源路径，源码临时目录、依赖目录等须在相同绝对路径对该引擎可见；当前代码没有自动的宿主机路径映射或跨主机缓存分发。上面的命名卷示例只覆盖 API/worker、知识库和对话文件，不代表脚本 Tool 的容器化接入已经完成；不要直接把管理接口挂入用户脚本执行容器。
+
+首次发布在目标镜像内检查语言包、中文字体和 PDFium，再确认 `/api/v1/health` 与 `/api/v1/health/worker` 都返回 200。页面先用“关键词检索 + 保留原文 + 自动提取”上传中文扫描 PDF，核对逐页摘要、检索结果和原页高亮；随后验证不清晰扫描件失败时保留旧索引。最后再验证加工模型、嵌入模型和脚本 Tool。首次从旧版升级的 PDF 需成功重建后显示新摘要与原页入口，安装引擎不会自动重建历史索引。
+
+离线交付须在与目标 CPU 架构一致的联网构建环境中，把应用依赖、PDFium、Tesseract、语言包及字体构建进镜像后 `docker save`，目标服务器 `docker load`，同时交付配置、数据库/文件备份及所需脚本沙箱镜像。不要依赖容器启动时临时下载语言包。
 
 ## 附件容量与运行参数配置
 
@@ -857,6 +980,27 @@ API 和全部 worker 必须使用一致的并发配置、时钟、业务数据�
 
 原始文件复用私有 Artifact/Blob 存储。本地后端默认写入 `ARTIFACT_STORAGE_DIR=.run-private/artifacts`，文件按 `yp_artifact.storage_key` 保存，不以原始文件名组织目录；切换 S3 后由对应桶和前缀保存正文。知识文档不按普通附件的三十天策略到期，仍计入用户文件配额。文档 ID 稳定，更新增加上传版本；原始哈希、文件名、提取原文与分块位置随版本保存。同一库、同一未删除文档的当前文件名、哈希及有效处理选项相同时去重；不同库或用户分别保存。已存在的同名文件须使用文档更新接口，删除后可重新上传；通用附件删除接口拒绝直接删除知识原始文件，避免绕过文档与索引生命周期。
 
+### Agent 知识回答模式
+
+在“我的 Agent → 编辑 → 知识回答模式”选择回答策略，创建与既有 Agent 默认使用“智能融合”。该设置与知识库的关键词/混合检索策略、文档的自动/原文/增强处理方式分别配置。
+
+| 页面选项 | API `knowledge_mode` | 检索与回答行为 |
+| --- | --- | --- |
+| 智能融合 · 按需检索 | `auto` | 根据当前问题及授权目录判断是否检索。明显无关的历史、日常聊天、通用写作或技术问题直接回答；涉及内部制度、具体业务事实或用户要求查询资料时按需检索。 |
+| 仅知识库 · 依据资料回答 | `knowledge_only` | 事实性问题先检索核对，只依据相关知识库证据回答；无命中、证据不足或知识工具不可用时说明资料不足，不以一般知识补全。普通问候、使用方法或澄清请求无需检索。 |
+
+智能融合下，无命中是正常工具结果。一般问题可以自然回答，不必先介绍知识库缺少哪些资料；例如 Agent 绑定差旅制度后收到“怎么看夷陵之战的刘备？”，应直接分析历史问题。若问题是“公司的研发部门审批额度是多少”，则需要实际制度证据，无相关命中时明确说明未找到规定，不凭常识编造内部事实。用户或 Agent 原有系统指令明确要求“仅根据指定资料”时，仍遵守该证据范围；如需自由切换话题，请同时检查自定义系统指令是否要求每轮强制检索。
+
+模型在原有对话请求中选择是否调用 `search_knowledge_base`，不额外发起一次分类模型请求。Worker 提供当前实际用户仍有权限访问的目录摘要：最多八个知识库，每库名称最多 128 字符、用途说明最多 384 字符、本轮固定发布索引中的三个文件名样例各最多 160 字符；不预读文档正文、不生成查询 embedding，也不产生检索审计。目录会计入原模型请求的输入用量，只用于相关性判断，不是命中证据；填写准确的知识库名称和用途说明有助于工具选择，文件名样例不代表完整目录。文档删除、知识库撤权或不可用状态会过滤目录，实际检索继续使用原有逐阶段鉴权。
+
+`POST /api/v1/agents` 可传 `knowledge_mode`，省略为 `auto`；`PUT /api/v1/agents/{id}` 按 `expected_version` 修改，省略保留原值，显式 `null` 或未知取值被拒绝。每次会话提交把模式保存到 Run 的 `agent_knowledge_mode`，配置修改仅影响新提交的轮次；重复 `request_key` 仍返回原轮次及其模式快照。迁移 `054` 为既有配置及历史运行填充 `auto`，不改写旧回答或重建索引。
+
+正文引用必须来自实际相关命中，不能把目录或以前的工具调用当作本轮引用。真实执行过的检索仍保留调用状态、耗时及审计；无命中时可在折叠的“本轮知识检索记录”中看到“未找到相关内容 · 耗时”，不展示空引用按钮。工具成功表示检索完成，不等于命中或最终回答采用了资料。工具选择和回答措辞由对话模型执行这些规则，核对是否检索及是否命中时以调用记录和检索审计为准。
+
+正文来源使用自然中文，例如“来源：《差旅报销管理规定》· 报销流程”；章节、页码和表格位置只能采用实际返回的定位信息。工具返回的 `citation` 字段及 `kb:...` 标识保留为内部定位数据，不要求模型把它们或自编的 `[1]` 编号显示在回答中。历史回答若已有独立或句末的 `citation: [1]`，会话正文将其显示为“来源说明”，点击按需查看本轮实际检索记录，并明确该模型编号未绑定具体原文；不能把 `[1]` 自动对应到本轮第一条片段。若本轮没有检索记录，可回看前文；读取原文仍复核当前权限，撤权后清理已展示的原文。兼容处理同时用于流式正文和失败后保留的正文，不改写数据库中的原始消息，不替换代码块、行内代码、链接、普通数字编号或产物预览内容，无需迁移或重建知识索引。
+
+本地复测可在同一会话依次询问已上传制度中的问题、与资料无关的历史问题、资料未覆盖的公司内部规定；再切换“仅知识库”重复历史问题，检查其说明资料不足。刷新页面并重新发送会生成新请求，旧消息保持原内容。
+
 ### 业务流程与调用链
 
 以“上传《报销制度.md》，再向 Agent 询问报销期限”为例，文件处理和对话检索分开执行。上传成功表示文件及任务已保存，首次索引完成后才能检索；Agent 按需调用工具获取片段，不会在提交 Run 时把整个知识库装入提示词。
@@ -903,8 +1047,8 @@ flowchart TD
 | --- | --- |
 | 私有本地目录 / S3、既有 `yp_artifact` | Blob 保存原始字节；Artifact 保存存储键、所有者、摘要、大小及状态，上传时建立引用。 |
 | `yp_knowledge_base`、`yp_knowledge_share` | 知识库配置、revision、活动索引指针，以及指定用户只读授权。 |
-| `yp_knowledge_document`、`yp_knowledge_document_version` | 稳定文档及当前版本、每版文件引用；Worker 追加提取原文和结构块缓存。 |
-| `yp_knowledge_index`、`yp_knowledge_job` | 排队时保存完整构建快照；运行中分阶段提交状态、租约、尝试次数及分别统计的加工/嵌入预算和用量。 |
+| `yp_knowledge_document`、`yp_knowledge_document_version` | 稳定文档及当前版本、每版文件引用；Worker 追加提取原文、结构块和逐页摘要缓存。 |
+| `yp_knowledge_index`、`yp_knowledge_job` | 排队时保存完整构建快照，发布时固定逐文档解析摘要；运行中分阶段提交状态、租约、尝试次数及分别统计的加工/嵌入预算和用量。 |
 | `yp_knowledge_chunk`、数据库原生全文结构 | 原始证据、表格来源、独立模型解释、检索文本、关键词、向量及偏移，在发布事务内写入；SQLite FTS 与片段同事务维护。 |
 | `yp_knowledge_enrichment_cache` | 按不可变文档版本及证据/模型/提示版本摘要保存已校验的解释批次，重试或重建复用；删除文档正文时清理。 |
 | `yp_agent_knowledge_base`、`yp_run_knowledge_base` | Agent 关联范围，以及 Run 提交时实际可见的固定索引代。 |
@@ -913,16 +1057,16 @@ flowchart TD
 
 文档更新接口只提交变化文件，但当前每代索引仍按完整知识库构建，可复用解析缓存及已完成的模型加工批次，尚未复用未变化片段的嵌入。新代构建期间保留旧代；更新清单导致 revision 变化后，过期任务不能覆盖新代。删除成功提交后，通过逻辑状态阻断所有代的后续检索和引用，再由 Worker 分批清理正文；既有消息和检查点历史不自动抹除。任务中断通过租约回收和有限重试恢复，解析、预算或上游错误保留失败类别，取消优先于恢复。
 
-### 按格式处理与模型加工（第一阶段，2026-11-12）
+### 按格式处理与模型加工（2026-11-12）
 
-知识构建采用“原始证据 + 可追溯来源 + 独立检索解释”的结构。解释用于帮助召回业务主题、字段含义及适合检索的问题，不能替代原文或作为计算结果。`KnowledgeChunk.content` 始终等于对应文档版本 `extracted_text[start_offset:end_offset]`；`knowledge_notes` 单独保存模型解释，`retrieval_text` 合并两者用于关键词和嵌入。前端的检索、引用、对话检索记录及「加工结果」预览分别展示原始证据与模型解释。
+知识构建采用“原始证据 + 可追溯来源 + 独立检索解释”的结构。解释用于帮助召回业务主题、字段含义及适合检索的问题，不能替代原文或作为计算结果。发布时 `KnowledgeChunk.content` 等于本次提取规范文本 `extracted_text[start_offset:end_offset]`，片段和偏移随索引代固定，后续解析缓存更新不会改写旧片段；`knowledge_notes` 单独保存模型解释，`retrieval_text` 合并两者用于关键词和嵌入。前端的检索、引用、对话检索记录及「加工结果」预览分别展示原始证据与模型解释。
 
 | 文档类型 | 当前处理方式 | 追溯方式与边界 |
 | --- | --- | --- |
 | TXT / Markdown / DOCX | 沿用文本、标题与长度分块；DOCX 提取段落和表格文字。 | 原文字符偏移、标题；不伪造页码。 |
 | XLSX | 优先按 Excel Table，未定义 Table 时按空白行分区；多行/合并表头关联字段，按完整记录分块；可选择可见工作表。 | 工作表、原始表格与表头范围、记录行和实际列字母；排除隐藏工作表及隐藏行列（含分组隐藏列）。 |
 | UTF-8 CSV | 识别逗号、分号、Tab 或竖线分隔，处理引号与字段内换行，校验字段数量，按完整记录分块。 | 表头与记录的物理行、列范围；支持 BOM，不猜测非 UTF-8 编码。 |
-| 文本 PDF | 沿用可提取文字和实际页号分块。 | 扫描或无文字页仍返回 `ocr_required`；复杂布局/OCR 属于第二阶段。 |
+| PDF | 逐页分类并选择文字层或本地 OCR；识别常规有边框表格，保留完整表格行；简单双栏按列读取。 | 实际页号、区域坐标、页面尺寸、提取方式及 OCR 置信度；可查看带高亮的原页。扫描复杂表格标注布局待核对。 |
 
 表格的公式不执行、不重新计算，保留公式表达式及文件已有缓存结果；缺少缓存会明确标注“未提供，未计算”。数字可携带原始显示格式，字段不因隐藏列而错位。模型只解释当前证据中的可见主题、字段和单位，不要求它猜测缺失值、汇总金额或跨片段排名；解释仍属于模型生成内容，业务事实以原始证据核对。当前表格区域识别针对常规表格；多张横向排版或不规则报表应先整理结构，不能保证任意工作簿自动还原业务含义。
 
@@ -930,9 +1074,9 @@ flowchart TD
 
 | 策略 | 行为 |
 | --- | --- |
-| `auto`（默认） | 自动按格式解析。只有明确配置 `processing_model_id` 时，才为 XLSX/CSV 增加模型解释；未配置时只做结构化解析，不隐式选择模型。 |
+| `auto`（默认） | 自动按格式解析。只有明确配置 `processing_model_id` 时，才为 XLSX/CSV，以及含 OCR 内容或已识别表格的 PDF 增加模型解释；纯文字 PDF 不自动加工。未配置时只解析，不隐式选择模型。 |
 | `original` | 该策略生效的文档只保留结构化原文，不调用加工模型。 |
-| `enhanced` | 为 XLSX/CSV 生成解释，必须指定通过文本能力验证且可用的加工模型。常规文本仍沿用原有处理，当前不进行 PDF OCR。 |
+| `enhanced` | 为 XLSX/CSV/PDF 生成解释，必须指定通过文本能力验证且可用的加工模型。TXT/Markdown/DOCX 仍沿用原有处理；PDF 页面提取方式独立设置。 |
 
 `processing_model_id` 独立于 `embedding_model_id` 和 Agent 对话模型。`processing_token_budget`（单次加工 Token 预留上限）与 `embedding_token_budget`（单次索引嵌入 Token 预算）默认均为 `null`，页面留空或 API 传 `null` 表示不限制任务累计 Token；填写时须为 1–2000000 的整数，按每次索引构建的输入/输出或嵌入输入保守预留计算，跨重试累计。`processing_cost_budget` 按加工模型币种限制估算费用，启用前必须填写模型输入和输出价格。加工与嵌入分别记账，任务提供 `processing_call_count`、`processing_tokens`、`processing_reserved_tokens`、`processing_estimated_cost` 和逐次耗时/币种/失败类别的 `processing_usage`；供应商未报告的实际用量显示为未报告，不能把保守预留当成实际消耗。
 
@@ -942,9 +1086,52 @@ flowchart TD
 
 上传/更新的 multipart 可增加 `processing_options` JSON，例如 `{"processing_mode":"enhanced","sheet_names":["报价"],"header_rows":2}`。省略该字段保留既有文档选项，新文档使用默认；`sheet_names=[]` 表示全部可见工作表，`header_rows` 为 1–5，最多选择二十个不同工作表。CSV 不接受工作表选择，非表格不接受工作表或多行表头参数。处理选项变化须通过更新文档生成新版本，保持索引快照与解析缓存对应。
 
-「加工结果」读取已发布活动索引，支持分页；新版本未发布时标记旧版，不重新调用模型，分页期间切代会从新代首页重新读取。当前没有人工确认后才发布的审批步骤。PDF OCR/布局识别为第二阶段，HTML 正文去噪、JSON/YAML 配置结构化、PPTX 等类型路由及进一步检索评测为第三阶段，尚未开放这些新格式上传。
+「加工结果」读取已发布活动索引，支持分页；新版本未发布时标记旧版，不重新调用模型，分页期间切代会从新代首页重新读取。当前没有人工确认后才发布的审批步骤。PDF 页面提取与质量控制见下节。HTML 正文去噪、JSON/YAML 配置结构化、PPTX 等类型路由及进一步检索评测为第三阶段，尚未开放这些新格式上传。
 
 新增手工验收夹具生成工具 `scripts/generate_knowledge_phase1_fixtures.py`，使用本项目的文件校验器、解析器与分块逻辑生成并校验十七份正常/异常样例，涵盖表头、隐藏数据、公式缓存、CSV 引号和多行、分页及错误输入，不连接业务库、不调用模型。运行 `.venv/bin/python scripts/generate_knowledge_phase1_fixtures.py` 前，`docs/knowledge-phase1-manual/` 中须已有配套 `README.md` 与 `验收记录.md`；脚本仅生成样例和校验清单，打包时读取上述人工文档并输出同名 ZIP，不创建或覆盖它们。
+
+### PDF 按页提取、OCR 与原页核对（第二阶段）
+
+上传或更新 PDF 时，`processing_options.pdf_mode` 可选 `auto`（默认）、`text`、`ocr`。它控制原文提取，与上述模型加工策略独立：
+
+| 页面提取方式 | 当前行为 |
+| --- | --- |
+| `auto` | 按页识别文字页、扫描页、混合页及空白页。文字页读取文字层；无文字但有图像/绘制内容的页面，以及含较大图片的混合页，执行本地 OCR；混合页整页识别，避免文字重复。 |
+| `text` | 只读文字层，不执行 OCR；扫描页返回 `ocr_required`，含文字层的混合页只索引可提取文字，图像内容不进入知识。 |
+| `ocr` | 对所有非空白页强制本地 OCR，适合文字层不可用或阅读顺序不符合原件的文件；仍受质量和页数限制。 |
+
+文字层由 pdfplumber 提取；常规有线框表格以完整行保存，标注表号、行号、位置列和单元格值，不执行公式或推算缺失值。简单双栏仅在有稳定中缝时按左列、右列读取，不保证任意报刊或复杂混排的阅读顺序。扫描页由 PDFium 渲染后交给本地 Tesseract；中间图片只写隔离临时目录，超时或取消会终止整组解析/OCR 进程并清理目录。此 OCR 不调用供应商、不产生供应商 Token；模型解释及混合索引嵌入仍按各自配置独立计费。
+
+每段 PDF `source_locator` 保存页号、页面类型、`extraction_method`、`bbox`、页面宽高、布局类别及 OCR 置信度。坐标单位为 PDF 点，原点为完整 MediaBox 左上角；原页预览也按完整 MediaBox 渲染，裁剪、旋转和非零原点下沿用同一坐标基准。OCR 行标注 `layout=unverified`、`review_required=true`，不推断扫描表格的列归属、合并单元格关系或图表含义；置信度是识别评分，不是事实准确率。模型解释与 OCR 原文分开，提示词禁止把未核对布局补成确定业务关系。准确的金额、单位和字段关系仍须核对原页。
+
+文档版本新增 `processing_metadata`（迁移 `052`），缓存逐页分类、方法、置信度、块数以及 OCR/空白页统计；索引新增同名快照字段（迁移 `053`），在发布事务内按文档版本固定摘要。`processing-preview` 只读取活动索引的摘要，后台新解析缓存与失败重建不能改变旧代预览。空白页被跳过并计数，整份文档没有有效内容则返回 `ocr_required`；非空页无法生成证据、加密或损坏时明确失败。OCR 的字符加权平均置信度低于阈值，或低分字符占比超过 25%，返回 `ocr_low_confidence`，不通过删除低分词掩盖质量问题。引擎禁用、不可执行或任一配置语言包缺失返回 `ocr_unavailable`；超限、超时沿用 `size_limit`、`timeout`。失败保留旧活动索引。
+
+新接口 `GET /api/v1/knowledge-bases/{id}/citations/{chunk_id}/page-image` 根据授权引用定位不可变原始版本，返回 PNG；不接受任意文件路径或任意页号，不重新 OCR 或调用模型。渲染前后复核当前权限及文档状态，响应 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`；引用不可访问/非 PDF 为 404，暂不可渲染为 409，并发满额为 429。页面在检索、引用、对话检索记录和加工结果中提供「查看 PDF 原页」，显示区域高亮；关闭、重新聚焦或权限失效时清理旧图像。
+
+API 与 worker 都须 `uv sync` 并升级迁移，执行 OCR 的 worker 还须安装 Tesseract 和配置语言包；默认使用简体中文和英文：
+
+```bash
+# macOS
+brew install tesseract tesseract-lang
+# Debian / Ubuntu
+sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng
+# 应同时列出 chi_sim 与 eng
+tesseract --list-langs
+```
+
+| 服务端配置（API 与 worker 使用相同值） | 默认值 | 含义 |
+| --- | --- | --- |
+| `KNOWLEDGE_PDF_OCR_ENABLED` | `true` | 允许使用本地 OCR；关闭时文字层提取仍可用。 |
+| `KNOWLEDGE_PDF_OCR_COMMAND` | `tesseract` | 可执行文件名称或绝对路径。 |
+| `KNOWLEDGE_PDF_OCR_LANGUAGES` | `chi_sim+eng` | 必须安装其中每种语言，不能静默降为仅英文。 |
+| `KNOWLEDGE_PDF_OCR_MIN_CONFIDENCE` | `60` | 页平均置信度门槛，允许 0–100；低分字符占比仍受限制。 |
+| `KNOWLEDGE_PDF_OCR_MAX_PAGES` | `20` | 单文件 OCR 页数上限，可设 1–50；文字页不占 OCR 页数。 |
+| `KNOWLEDGE_PDF_OCR_DPI` | `180` | OCR 渲染分辨率，可设 120–240；每页仍受 1200 万像素限制。 |
+
+PDF 最多 200 页；单页 OCR 最多 35 秒，整个 PDF 解析最多 120 秒，索引任务总时限仍为 180 秒。原页预览使用 120 DPI；单张 PNG 和 OCR TSV 均最多 8 MiB，PDF 单条证据最多 8192 UTF-8 字节。解析版本、提取选项及 OCR 配置进入缓存指纹；旧 PDF 没有新指纹时会在下次重建重新解析，当前活动代不会自动改写。任务重试沿用排队时快照；配置变更后应创建新重建任务。升级时旧文档摘要为空，重建成功发布后才能展示新来源与原页入口。
+
+手动样例位于 `docs/knowledge-phase2-manual/`，涵盖文字、英文/中文扫描、混合页、表格、双栏及异常文件，共九份 PDF 和操作说明。可运行 `.venv/bin/python -m scripts.generate_knowledge_pdf_fixtures` 重新生成，不连接业务数据库或调用模型；脚本会更新固定说明，人工测试记录请另存。建议先用关键词检索与「保留原文」验证 OCR、原页和失败回退，再配置加工模型验证独立解释。
+
 
 ### 使用与接口
 
@@ -965,6 +1152,7 @@ flowchart TD
 | `POST /knowledge-bases/jobs/{job_id}/cancel`、`POST /knowledge-bases/jobs/{job_id}/retry?expected_attempts=…` | 请求取消；仅最新期望代可在尝试上限内重试，过期任务应重建。 |
 | `POST /knowledge-bases/{id}/search` | 关键词/混合检索，可限定 Top-K、正文预算、相似度及重排。 |
 | `GET /knowledge-bases/{id}/citations/{chunk_id}` | 按固定片段重新鉴权读取原文与位置。 |
+| `GET /knowledge-bases/{id}/citations/{chunk_id}/page-image` | 按 PDF 引用鉴权读取原页 PNG，含渲染后权限复核，禁止缓存；不重新加工。 |
 | `GET /runs/{run_id}/knowledge-retrievals?after_id=…` | 仅本轮实际使用者分页读取检索审计；每页最多五十项，不返回问题或文档正文。 |
 
 创建混合知识库的请求示例，`embedding_model_id` 须替换为已验证的嵌入模型 ID；PUT 更新还必须提供 `expected_revision`，未填写的配置会使用 Schema 默认值：
@@ -999,7 +1187,7 @@ flowchart TD
 }
 ```
 
-命中包含 `knowledge_base_id`、`index_id`、`document_id`、`document_version`、`chunk_id`、原文件名和 SHA-256、`start_offset/end_offset`、页码、标题及正文，引用形如 `kb:1:i:2:c:7`。偏移是规范化提取原文的字符位置，正文等于对应子串；PDF 使用实际页号，DOCX 不伪造页码；表格额外返回 `source_locator`，解释额外返回 `knowledge_notes`，正文/解释共同计入检索字节预算。无候选返回 `no_answer=true`。`keyword_only=true` 可在嵌入服务不可用时显式使用关键词检索。
+命中包含 `knowledge_base_id`、`index_id`、`document_id`、`document_version`、`chunk_id`、原文件名和 SHA-256、`start_offset/end_offset`、页码、标题及正文，引用形如 `kb:1:i:2:c:7`。偏移是该索引构建时规范化提取原文的字符位置，正文等于当次对应子串；PDF 使用实际页号，DOCX 不伪造页码；表格和 PDF 额外返回 `source_locator`，解释额外返回 `knowledge_notes`，正文/解释共同计入检索字节预算。无候选返回 `no_answer=true`。`keyword_only=true` 可在嵌入服务不可用时显式使用关键词检索。
 
 ### 检索方式、阈值与分数
 
@@ -1085,7 +1273,7 @@ Agent 关联请求示例，`expected_version=1` 仅作格式示例，必须替�
 
 ```json
 {
-  "input_text": "请先调用知识库检索工具，查询员工手册中的报销时限，再回答：出差回来后，最晚什么时候需要提交费用报销？请给出 citation 引用；没有依据时请明确说明。",
+  "input_text": "请先调用知识库检索工具，查询员工手册中的报销时限，再回答：出差回来后，最晚什么时候需要提交费用报销？请注明来源文档及实际章节或页码；没有依据时请明确说明。",
   "request_key": "kb1-reimbursement-test-001"
 }
 ```
@@ -1102,7 +1290,7 @@ Agent 关联请求示例，`expected_version=1` 仅作格式示例，必须替�
 
 每代固定完整文档版本清单、分块配置和嵌入身份。文件变更、重建或检索配置变更创建新代，片段、原生全文设施、索引状态及活动指针在一次事务发布，且必须仍是最新期望代。失败或取消保留旧活动索引；Run 已固定的旧代继续用于本轮引用。嵌入模型、维度或供应商连接身份变化必须通过新代切换，不能混用向量空间。历史有效代保留以支撑引用，并受用户文件配额和部署容量管理约束。
 
-支持 UTF-8 TXT、Markdown、带可提取文本的 PDF、DOCX、XLSX 和 UTF-8 CSV。PDF 按文本和页定位，不保证复杂版式或表格重建，最多二百页；扫描或空白页返回 `ocr_required`，不执行自动 OCR。DOCX 保留段落、标题及表格单元格文本，使用标题/字符位置定位。单文件最大 10 MiB，multipart 实际接收上限 11 MiB；每库当前文档最多一百份、原始文件合计 50 MiB，每代最多二千片段；提取原文最多五十万字符。长文按结构分块并重叠，检索合并完全相同的片段正文。表格上限为每表/工作表两万行、二百列、累计十万个单元格；规范记录最多一万条且单条最多两千字符，超限明确失败，不静默舍弃记录。表格可合并完整记录，单条记录可超过较小的 `chunk_size`，但仍不超过两千字符。XLSX 解压后总大小上限 32 MiB，拒绝宏和加密文件。
+支持 UTF-8 TXT、Markdown、文字或扫描 PDF、DOCX、XLSX 和 UTF-8 CSV。PDF 支持文字层/本地 OCR、页码与区域定位、常规有边框表格提取和原页核对，最多二百页，默认最多二十页 OCR；复杂扫描表格及图表关系需人工核对，质量不足不会发布。空白页跳过并计数，全空文件返回 `ocr_required`。DOCX 保留段落、标题及表格单元格文本，使用标题/字符位置定位。单文件最大 10 MiB，multipart 实际接收上限 11 MiB；每库当前文档最多一百份、原始文件合计 50 MiB，每代最多二千片段；提取原文最多五十万字符。长文按结构分块并重叠，检索合并完全相同的片段正文。表格上限为每表/工作表两万行、二百列、累计十万个单元格；规范记录最多一万条且单条最多两千字符，超限明确失败，不静默舍弃记录。表格可合并完整记录，单条记录可超过较小的 `chunk_size`，但仍不超过两千字符。XLSX 解压后总大小上限 32 MiB，拒绝宏和加密文件。
 
 嵌入每批最多十六段、每段最多 8192 UTF-8 字节，实际维度最多 4096；响应最多 4 MiB，验证数量、维度、有限数值与非零范数并归一化。Token 预算可留空以不限制累计量；填写时在发送前按输入字节数保守预留并跨重试累计，留空时仍记录预留和上游实际用量；启用费用预算须配置模型输入价格，费用按该模型币种核算。解析、索引准备与其他依赖准备共用 `TOOL_PREPARATION_*` 名额，HTTP 检索和嵌入探测共用 `TOOL_CALL_*` 名额，Agent 工具复用 Registry 的运行预算和租约。
 
@@ -1189,9 +1377,11 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 已有成功回答的会话在后续 Run 失败、取消或超时后，可以使用新的 `request_key` 提交下一轮。若最新检查点属于同一用户、Agent、会话和线程中已终结的轮次，且其全部工具调用满足下述只读安全条件，worker 会从更早的已确认检查点分支继续。此前已完成的对话上下文和产物保留，失败轮次不会自动重放，旧 Run、事件与检查点保留用于核对。
 
-首轮失败后也可以继续同一会话：失败轮次没有工具调用，或仅调用已授权 Skill 文件、只读附件列表、会话历史/生成产物回读及固定版本声明为只读的用户 Tool 时，新请求可从空起点或最近已确认的检查点分支。Skill 读取和 `list_session_artifacts` 沿用只读开始事件恢复边界；历史 `read_file` 和 `read_generated_artifact` 必须有完整且匹配的开始/成功或失败结束事件，无结束记录不放行。产物 ID 不可用的错误 ToolMessage 可由模型同轮纠正；后续供应商超时仍独立记录 `provider_timeout`，不会因此永久阻断下一轮。用户 Tool 必须有完整且相互一致的开始/结束事件、固定版本摘要和执行审计，外部写工具、未知执行结果、缺失或矛盾审计均不放行。该轮 `render_skill_document` 仅收到明确失败事件且没有任何生成产物记录时，可与这些只读调用一并安全放弃。恢复不继承失败输入、内部补救提示或待执行工具，不重放已执行脚本，不修改原检查点或历史 Run。历史产物补救检查点的 `run_id:retry` 元数据仍追溯原 Run，并核对所有者、Agent、会话、线程及时间顺序。每次重新发送使用新的 `request_key` 和当前会话版本；首轮任务未完成时，继续执行该任务需重新发送原任务内容。
+首轮失败后也可以继续同一会话：失败轮次没有工具调用，或仅调用已授权 Skill 文件、只读附件列表、会话历史/生成产物回读及固定版本声明为只读的用户 Tool 时，新请求可从空起点或最近已确认的检查点分支。Skill 读取和 `list_session_artifacts` 沿用只读开始事件恢复边界；历史 `read_file`、`read_generated_artifact` 及知识检索 `search_knowledge_base` 必须有完整且匹配的开始/成功或失败结束事件，无结束记录不放行。产物 ID 不可用的错误 ToolMessage 可由模型同轮纠正；后续供应商超时仍独立记录 `provider_timeout`，不会因此永久阻断下一轮。用户 Tool 必须有完整且相互一致的开始/结束事件、固定版本摘要和执行审计，外部写工具、未知执行结果、缺失或矛盾审计均不放行。该轮 `render_skill_document` 仅收到明确失败事件且没有任何生成产物记录时，可与这些只读调用一并安全放弃。恢复不继承失败输入、内部补救提示或待执行工具，不重放已执行脚本，不修改原检查点或历史 Run。历史产物补救检查点的 `run_id:retry` 元数据仍追溯原 Run，并核对所有者、Agent、会话、线程及时间顺序。每次重新发送使用新的 `request_key` 和当前会话版本；首轮任务未完成时，继续执行该任务需重新发送原任务内容。
 
 供应商连接的 `timeout_seconds` 控制 SDK 请求等待，Agent 的 `model_timeout_seconds` 控制单次模型调用时限；整轮不再设置总倒计时，供应商设置较短时仍会提前中断。OpenAI/Anthropic SDK、HTTPX 及模型 SDK 流式数据块等待超时归为 `timed_out/provider_timeout`，仅平台单次计时实际到期时归为 `timed_out/model_execution_timeout`，历史整轮超时或内部调用方显式时限保护保留 `timed_out/execution_timeout`，工具执行超时为 `timed_out/tool_execution_timeout`，图步数耗尽为 `failed/graph_step_limit_exceeded`；Run、状态事件与调用记录同步保存原因，页面展示可操作的提示。其他模型错误仍为 `failed/model_error`，不向响应暴露原始 SDK 异常、请求头或凭据。连续失败时先查上游响应、供应商超时和 Agent 预算；失败后新一轮使用新 `request_key`，沿用旧键只会返回原失败 Run，不会重新执行。平台不会为超时自动切换模型或重放工具。
+
+知识库检索返回 `no_answer=true`（无命中）是正常工具结果，本身不会终止对话；后续回答仍受智能体提示词、模型和运行限额约束。如果检索完成后模型生成超时，当前轮次如实记录 `model_execution_timeout` 或 `provider_timeout`；当该轮全部调用满足上述只读安全条件时，下次新提问可恢复到最近已确认的成功检查点，首轮失败则可回到干净起点。历史上已出现 `checkpoint_mismatch` 的同一会话也可在满足检查条件后继续，无需删除会话或知识库。若要再次询问失败轮次的问题，请重新发送该问题；失败输入不会自动加入后续模型上下文。
 
 模型生成和历史摘要对 OpenAI/Anthropic SDK 的连接错误增加有限恢复：未收到任何模型数据时，默认等待 1 秒后仅重试当前模型请求一次；SDK 内部 `max_retries` 仍为 0，避免两层重复重试。每次尝试均重新校验租约及调用次数、已报告 Token、费用预算，等待和重试不重置原单次时限，用户取消可立即打断等待。任意流式数据块（含空正文的思考、工具参数块及原生流式协议事件）到达后不再重试；SDK 超时、HTTP 状态错误和业务工具也不因此自动重放。两个新环境变量由 worker 全局读取，修改后需重启 worker，不写入 Agent/Run 配置快照。恢复只处理瞬时故障；上游持续不可达时仍按原模型错误结束，断连尝试没有返回的用量无法准确补计，已有用量与预算不清零。
 

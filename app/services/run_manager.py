@@ -21,6 +21,7 @@ from app.core.enums import (
     ArtifactState,
     MessageRole,
     ModelThinkingMode,
+    KnowledgeAnswerMode,
     RunEventType,
     RunCallFailure,
     RunModelFailureReason,
@@ -85,6 +86,7 @@ async def create_run(
     agent_temperature: Decimal | None = None,
     agent_max_output_tokens: int | None | EllipsisType = ...,
     agent_thinking_mode: str = ModelThinkingMode.AUTO,
+    agent_knowledge_mode: str = KnowledgeAnswerMode.AUTO,
     thread_id: str | None = None,
     request_key: str | None = None,
     input_text: str | None = None,
@@ -116,6 +118,7 @@ async def create_run(
     if input_text is not None and (not input_text.strip() or len(input_text) > 32768):
         raise ValueError("用户输入为空或超过长度限制")
     agent_thinking_mode = ModelThinkingMode(agent_thinking_mode)
+    agent_knowledge_mode = KnowledgeAnswerMode(agent_knowledge_mode)
     config = get_config()
     model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
     tool_timeout_seconds = config.AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS if tool_timeout_seconds is None else tool_timeout_seconds
@@ -156,6 +159,7 @@ async def create_run(
                 or existing.agent_temperature != agent_temperature
                 or existing.agent_max_output_tokens != agent_max_output_tokens
                 or existing.agent_thinking_mode != agent_thinking_mode
+                or existing.agent_knowledge_mode != agent_knowledge_mode
                 or existing.model_timeout_seconds != model_timeout_seconds
                 or existing.tool_timeout_seconds != tool_timeout_seconds
                 or existing.max_queue_wait_seconds != max_queue_wait_seconds
@@ -223,6 +227,7 @@ async def create_run(
         agent_temperature=agent_temperature,
         agent_max_output_tokens=agent_max_output_tokens,
         agent_thinking_mode=agent_thinking_mode,
+        agent_knowledge_mode=agent_knowledge_mode,
         request_key=request_key,
         model_timeout_seconds=model_timeout_seconds,
         tool_timeout_seconds=tool_timeout_seconds,

@@ -98,6 +98,7 @@ class KnowledgeDocumentVersion(CustomBaseModel):
     blocks: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="提取块的页码标题及原文偏移")
 
     parser_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="解析器及文档选择配置的缓存摘要")
+    processing_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="文档解析摘要及 PDF 逐页分类、OCR 质量与布局提示")
 
 
 class KnowledgeIndex(CustomBaseModel):
@@ -116,6 +117,7 @@ class KnowledgeIndex(CustomBaseModel):
     state: Mapped[str] = mapped_column(String(24), nullable=False, default=KnowledgeIndexState.BUILDING, comment="索引构建及发布状态")
     configuration: Mapped[dict] = mapped_column(JSON, nullable=False, comment="固定的检索分块及模型维度配置")
     document_versions: Mapped[list] = mapped_column(JSON, nullable=False, comment="此代固定的文档版本 ID 清单")
+    processing_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="按文档版本 ID 固定的已发布解析摘要")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="已发布片段数量")
 
 

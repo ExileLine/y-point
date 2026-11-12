@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 from app.core.config import get_config
-from app.core.enums import ModelThinkingMode
+from app.core.enums import KnowledgeAnswerMode, ModelThinkingMode
 from app.schemas.runtime_limits import ModelTimeout, ToolTimeout, OutputTokens
 
 
@@ -34,6 +34,11 @@ class AgentCreateIn(BaseModel):
         default_factory=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS,
         description="单次最大输出 Token 数；null 表示不向供应商指定额度，创建时省略使用平台默认值",
         examples=[4096, None],
+    )
+    knowledge_mode: KnowledgeAnswerMode = Field(
+        default=KnowledgeAnswerMode.AUTO,
+        description="知识回答模式；auto 按相关性检索并自然回答一般问题，knowledge_only 仅依据知识库证据回答",
+        examples=["auto", "knowledge_only"],
     )
     thinking_mode: ModelThinkingMode = Field(
         default=ModelThinkingMode.AUTO,
@@ -84,6 +89,11 @@ class AgentUpdateIn(BaseModel):
         description="单次最大输出 Token 数；null 表示不向供应商指定额度，省略则保留原值",
         examples=[4096, None],
     )
+    knowledge_mode: KnowledgeAnswerMode | None = Field(
+        default=None,
+        description="知识回答模式；省略保留原值，不允许显式为空",
+        examples=["auto", "knowledge_only"],
+    )
     thinking_mode: ModelThinkingMode | None = Field(
         default=None,
         description="思考模式；显式启闭仅支持实现 enable_thinking 的 OpenAI 兼容服务",
@@ -121,6 +131,7 @@ class AgentOut(BaseModel):
     default_model_id: int = Field(description="默认模型 ID", examples=[1])
     temperature: Decimal = Field(description="生成温度", examples=["0.70"])
     max_output_tokens: int | None = Field(description="单次最大输出 Token 数；null 表示由供应商决定", examples=[4096, None])
+    knowledge_mode: KnowledgeAnswerMode = Field(description="知识回答模式", examples=["auto", "knowledge_only"])
     thinking_mode: ModelThinkingMode = Field(description="模型思考模式", examples=["auto"])
     model_timeout_seconds: int = Field(description="单次模型生成超时秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行超时秒数", examples=[30])

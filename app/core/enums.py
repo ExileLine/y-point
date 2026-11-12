@@ -154,6 +154,13 @@ class ProviderKind(StrEnum):
     BEDROCK = "bedrock"
 
 
+class KnowledgeAnswerMode(StrEnum):
+    """智能体知识检索与无证据时的回答策略。"""
+
+    AUTO = "auto"
+    KNOWLEDGE_ONLY = "knowledge_only"
+
+
 class ModelThinkingMode(StrEnum):
     """单次模型调用的思考偏好，默认遵循上游设置。"""
 
@@ -325,6 +332,39 @@ class KnowledgeSourceKind(StrEnum):
 
     TEXT = "text"
     TABLE = "table"
+    PDF = "pdf"
+
+
+class KnowledgePdfMode(StrEnum):
+    """PDF 页面提取策略，独立于语义加工模式。"""
+
+    AUTO = "auto"
+    TEXT = "text"
+    OCR = "ocr"
+
+
+class KnowledgePdfPageKind(StrEnum):
+    """PDF 页面的原始内容分类。"""
+
+    TEXT = "text"
+    SCAN = "scan"
+    MIXED = "mixed"
+    BLANK = "blank"
+
+
+class KnowledgePdfExtraction(StrEnum):
+    """PDF 证据文字的实际提取方式。"""
+
+    NATIVE = "native"
+    OCR = "ocr"
+
+
+class KnowledgePdfLayout(StrEnum):
+    """PDF 证据的布局类别。"""
+
+    TEXT = "text"
+    TABLE = "table"
+    UNVERIFIED = "unverified"
 
 
 class KnowledgeIndexState(StrEnum):
@@ -356,6 +396,8 @@ class KnowledgeFailure(StrEnum):
 
     PARSE_FAILED = "parse_failed"
     OCR_REQUIRED = "ocr_required"
+    OCR_UNAVAILABLE = "ocr_unavailable"
+    OCR_LOW_CONFIDENCE = "ocr_low_confidence"
     SIZE_LIMIT = "size_limit"
     CANCELLED = "cancelled"
     SUPERSEDED = "superseded"

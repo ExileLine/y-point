@@ -301,6 +301,7 @@ async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depend
         "default_model_id",
         "temperature",
         "thinking_mode",
+        "knowledge_mode",
         "model_timeout_seconds",
         "tool_timeout_seconds",
         "enabled",

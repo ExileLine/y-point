@@ -208,6 +208,18 @@ class BaseConfig(BaseSettings):
     KNOWLEDGE_SEARCH_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单次知识检索时限，HTTP 与 Agent 共用", examples=[60])
     KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS: int = Field(default=60, gt=0, description="单批嵌入请求时限，检索及索引共用", examples=[60])
 
+    KNOWLEDGE_PDF_OCR_ENABLED: bool = Field(default=True, description="允许 PDF 扫描页使用本地 OCR，仍须安装引擎和语言包", examples=[True])
+    KNOWLEDGE_PDF_OCR_COMMAND: str = Field(default="tesseract", min_length=1, description="本地 Tesseract 可执行文件名称或绝对路径", examples=["tesseract"])
+    KNOWLEDGE_PDF_OCR_LANGUAGES: str = Field(
+        default="chi_sim+eng",
+        pattern=r"^[A-Za-z0-9_]+(?:\+[A-Za-z0-9_]+)*$",
+        description="本地 OCR 语言包组合，缺失时明确失败，不自动下载",
+        examples=["chi_sim+eng"],
+    )
+    KNOWLEDGE_PDF_OCR_MIN_CONFIDENCE: int = Field(default=60, ge=0, le=100, description="PDF 页 OCR 字符加权最低置信度，低于阈值不发布", examples=[60])
+    KNOWLEDGE_PDF_OCR_MAX_PAGES: int = Field(default=20, ge=1, le=50, description="单份 PDF 最多执行 OCR 的页数", examples=[20])
+    KNOWLEDGE_PDF_OCR_DPI: int = Field(default=180, ge=120, le=240, description="PDF OCR 渲染分辨率，另受单页像素上限约束", examples=[180])
+
     # TOOL配置参数
     TOOL_CALL_GLOBAL_LIMIT: int = Field(default=16, ge=1, le=1024, description="全部进程的工具调用并发上限", examples=[16])
     TOOL_CALL_USER_LIMIT: int = Field(default=4, ge=1, le=1024, description="单用户工具调用并发上限", examples=[4])

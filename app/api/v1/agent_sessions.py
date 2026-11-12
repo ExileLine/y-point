@@ -429,6 +429,7 @@ async def submit_session_run(
         agent_temperature=agent.temperature,
         agent_max_output_tokens=agent.max_output_tokens,
         agent_thinking_mode=agent.thinking_mode,
+        agent_knowledge_mode=agent.knowledge_mode,
         model_timeout_seconds=agent.model_timeout_seconds,
         tool_timeout_seconds=agent.tool_timeout_seconds,
         max_model_calls=agent.max_model_calls,

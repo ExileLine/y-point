@@ -15,14 +15,26 @@ import httpx
 import pytest
 from docx import Document
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from pypdf import PdfWriter
 from sqlalchemy import func, select
 
 from app.core.config import get_config
-from app.core.enums import KnowledgeFailure, KnowledgeIndexState, KnowledgeJobState, ModelCapability, ProviderKind, UserRole
+from app.core.enums import (
+    KnowledgeFailure,
+    KnowledgeIndexState,
+    KnowledgeJobState,
+    ModelCapability,
+    ProviderKind,
+    RunEventType,
+    RunState,
+    RunTimeoutReason,
+    UserRole,
+)
 from app.models.admin import Admin
 from app.models.artifact import Artifact
+from app.models.agent_run import AgentRun
+from app.models.agent_run_event import AgentRunEvent
 from app.models.base import shanghai_now
 from app.models.knowledge import (
     KnowledgeChunk,
@@ -42,7 +54,7 @@ from app.services.knowledge import read_knowledge_citation, search_knowledge
 from app.services.knowledge_jobs import process_next_knowledge_job, prune_deleted_knowledge_blobs
 from app.services.knowledge_parser import KnowledgeProcessingError, chunk_knowledge, parse_knowledge, parse_knowledge_isolated
 from app.services.run_executor import execute_text_run
-from app.services.run_manager import claim_run
+from app.services.run_manager import claim_run, fail_run
 from app.services.worker_tools import make_worker_tool_resolver
 from tests.test_m51_governance import _database, _http_platform
 
@@ -601,5 +613,148 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
             assert (await client.delete(f"/api/v1/knowledge-bases/{kb['id']}/shares/2", headers=alice)).status_code == 200
             snapshot = (await client.get(f"/api/v1/runs/{pending_id}/snapshot", headers=bob)).json()["data"]
             assert snapshot["run"]["state"] == "cancelled"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("has_successful_turn", [True, False])
+def test_knowledge_no_hit_timeout_does_not_poison_following_turn(tmp_path, monkeypatch, has_successful_turn: bool) -> None:
+    """真实知识检索无命中后模型超时，已有或没有成功历史时后续两轮均可继续且不重放失败轮次。"""
+    monkeypatch.setattr(get_config(), "ARTIFACT_STORAGE_DIR", str(tmp_path / "files"))
+    observations = []
+
+    class NoHitTimeoutModel(KnowledgeModel):
+        """让正式知识工具先返回无命中，再触发真实模型调用时限。"""
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            """确认工具正常返回无命中后挂起模型，由正式执行器取消。"""
+            if isinstance(messages[-1], ToolMessage):
+                result = json.loads(messages[-1].content)
+                assert result["no_answer"] is True and not result["hits"]
+                observations.append("no_hit_then_timeout")
+                await asyncio.Event().wait()
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    class FollowupModel(KnowledgeModel):
+        """核对恢复只保留成功历史，不携带失败输入或重放工具。"""
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            """检查旧检查点上下文后通过正常模型接口回答新问题。"""
+            history = "\n".join(str(message.content) for message in messages)
+            assert "郭嘉在三国的地位" not in history
+            assert "此前被检查点阻断" not in history
+            assert ("十五个工作日" in history) is has_successful_turn
+            observations.append("followup")
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def exercise():
+        """通过正式上传、索引、会话提交、工具解析和检查点链路复现本地故障。"""
+        async with _database(tmp_path) as sessions, _http_platform(sessions) as (client, headers):
+            owner = headers[0]
+            await _seed_models(sessions)
+            kb = await _create_kb(client, owner)
+            await _upload(client, owner, kb, "制度.txt", "报销期限为十五个工作日。".encode())
+            await _drain(sessions)
+            created = await client.post(
+                "/api/v1/agents",
+                headers=owner,
+                json={
+                    "name": "知识恢复验证",
+                    "default_model_id": 1,
+                    "knowledge_base_ids": [kb["id"]],
+                },
+            )
+            assert created.status_code == 201, created.text
+            agent_id = created.json()["data"]["id"]
+            session = await client.post(
+                f"/api/v1/agents/{agent_id}/sessions",
+                headers=owner,
+                json={
+                    "title": "知识无命中超时恢复",
+                },
+            )
+            assert session.status_code == 201, session.text
+            base = f"/api/v1/agents/{agent_id}/sessions/{session.json()['data']['id']}"
+            checkpoint = tmp_path / "checkpoints.db"
+            resolver = make_worker_tool_resolver(sessions)
+
+            async def submit(text: str, key: str) -> str:
+                """用独立幂等键提交同一会话的新轮次。"""
+                response = await client.post(
+                    f"{base}/runs",
+                    headers=owner,
+                    json={
+                        "input_text": text,
+                        "request_key": key,
+                    },
+                )
+                assert response.status_code == 201, response.text
+                return response.json()["data"]["id"]
+
+            def search_response(query: str) -> AIMessage:
+                """构造模型发出的知识检索调用，执行仍由正式工具完成。"""
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "knowledge-search",
+                            "name": "search_knowledge_base",
+                            "args": {
+                                "query": query,
+                            },
+                        },
+                    ],
+                )
+
+            if has_successful_turn:
+                successful_id = await submit("报销期限？", "knowledge-hit")
+                successful = await execute_text_run(
+                    sessions,
+                    successful_id,
+                    KnowledgeModel(responses=[search_response("报销期限"), AIMessage(content="报销期限为十五个工作日。")]),
+                    checkpoint,
+                    resolve_tools=resolver,
+                )
+                assert successful.state == RunState.COMPLETED, successful.failure_code
+                async with sessions() as db:
+                    audit = await db.scalar(select(KnowledgeRetrieval).where(KnowledgeRetrieval.run_id == successful_id))
+                    assert audit.hit_count == 1
+            failed_id = await submit("郭嘉在三国的地位？", "knowledge-no-hit-timeout")
+            async with sessions.begin() as db:
+                run = await db.get(AgentRun, failed_id)
+                run.model_timeout_seconds = 1
+            failed = await execute_text_run(
+                sessions,
+                failed_id,
+                NoHitTimeoutModel(responses=[search_response("郭嘉在三国的地位")]),
+                checkpoint,
+                resolve_tools=resolver,
+            )
+            assert failed.state == RunState.TIMED_OUT and failed.failure_code == RunTimeoutReason.MODEL
+            assert failed.model_call_count == 2 and failed.tool_call_count == 1
+            rejected_id = await submit("此前被检查点阻断的提问", "knowledge-previously-blocked")
+            async with sessions.begin() as db:
+                rejected = await claim_run(db, rejected_id)
+                await fail_run(db, rejected_id, rejected.lease_token, "checkpoint_mismatch")
+            for index, text in enumerate(("你好", "继续聊聊")):
+                run_id = await submit(text, f"knowledge-followup-{index}")
+                recovered = await execute_text_run(
+                    sessions,
+                    run_id,
+                    FollowupModel(responses=[AIMessage(content="你好，我们可以继续交流。")]),
+                    checkpoint,
+                    resolve_tools=resolver,
+                )
+                assert recovered.state == RunState.COMPLETED, recovered.failure_code
+                assert recovered.model_call_count == 1 and recovered.tool_call_count == 0
+            assert observations == ["no_hit_then_timeout", "followup", "followup"]
+            async with sessions() as db:
+                stored = await db.get(AgentRun, failed_id)
+                assert stored.state == RunState.TIMED_OUT and stored.failure_code == RunTimeoutReason.MODEL
+                events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == failed_id))).all()
+                tool_events = [event for event in events if event.event_type in (RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED)]
+                assert len(tool_events) == 2 and all(event.tool_name == "search_knowledge_base" for event in tool_events)
+                audit = await db.scalar(select(KnowledgeRetrieval).where(KnowledgeRetrieval.run_id == failed_id))
+                assert audit.hit_count == 0
 
     asyncio.run(exercise())

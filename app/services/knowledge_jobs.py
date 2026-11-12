@@ -15,7 +15,17 @@ from loguru import logger
 from sqlalchemy import bindparam, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.enums import ArtifactState, KnowledgeFailure, KnowledgeIndexState, KnowledgeJobState, KnowledgeSearchMode, KnowledgeProcessingMode, ToolLeaseKind
+from app.core.enums import (
+    ArtifactState,
+    KnowledgeFailure,
+    KnowledgeIndexState,
+    KnowledgeJobState,
+    KnowledgeSearchMode,
+    KnowledgeProcessingMode,
+    KnowledgePdfExtraction,
+    KnowledgePdfLayout,
+    ToolLeaseKind,
+)
 from app.models.admin import Admin
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
@@ -34,6 +44,7 @@ from app.services.embedding_adapter import EMBEDDING_BATCH_SIZE, embed_texts, em
 from app.services.knowledge import MAX_INDEX_CHUNKS, TERMINAL_KNOWLEDGE_JOBS
 from app.services.knowledge_enrichment import enrich_knowledge_chunks, load_processing_model, processing_fingerprint, processing_identity
 from app.services.knowledge_tables import TABLE_MEDIA_TYPES, TABLE_PARSER_VERSION
+from app.services.knowledge_pdf import PDF_PARSER_VERSION, pdf_runtime_configuration
 from app.services.knowledge_backend import knowledge_tokens, remove_keyword_rows, write_keyword_rows
 from app.services.knowledge_parser import KnowledgeProcessingError, ParsedKnowledge, chunk_knowledge, parse_knowledge_isolated
 from app.services.private_blob_store import delete_blob, read_blob
@@ -112,9 +123,12 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             if document.is_deleted != 0 or artifact is None or artifact.state != ArtifactState.READY or artifact.is_deleted != 0:
                 raise KnowledgeProcessingError(KnowledgeFailure.STORAGE_UNAVAILABLE)
             options = configuration.get("document_options", {}).get(str(document.id), {})
+            is_pdf = version.media_type == "application/pdf"
+            runtime = configuration.get("pdf_runtime") or pdf_runtime_configuration() if is_pdf else None
             fingerprint = processing_fingerprint(
                 {
-                    "parser": TABLE_PARSER_VERSION,
+                    "parser": PDF_PARSER_VERSION if is_pdf else TABLE_PARSER_VERSION,
+                    "pdf_runtime": runtime,
                     "media_type": version.media_type,
                     "sha256": version.sha256,
                     "options": options,
@@ -123,16 +137,25 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             if (
                 version.extracted_text is not None
                 and version.blocks is not None
-                and (version.parser_fingerprint == fingerprint or version.parser_fingerprint is None and version.media_type not in TABLE_MEDIA_TYPES)
+                and (
+                    version.parser_fingerprint == fingerprint
+                    or version.parser_fingerprint is None
+                    and version.media_type not in (*TABLE_MEDIA_TYPES, "application/pdf")
+                )
             ):
-                parsed = ParsedKnowledge(version.extracted_text, version.blocks)
+                parsed = ParsedKnowledge(version.extracted_text, version.blocks, version.processing_metadata or {})
             else:
                 content = await read_blob(artifact_root(), artifact.storage_key, max_bytes=artifact_read_max_bytes())
                 parsed = None
         if parsed is None:
+            if is_pdf:
+                options = {
+                    **options,
+                    "_pdf_runtime": runtime,
+                }
             parsed = (
                 await parse_knowledge_isolated(content, version.media_type, options)
-                if version.media_type in TABLE_MEDIA_TYPES
+                if version.media_type in TABLE_MEDIA_TYPES or is_pdf
                 else await parse_knowledge_isolated(content, version.media_type)
             )
             async with sessions.begin() as db:
@@ -140,6 +163,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                     update(KnowledgeDocumentVersion)
                     .where(KnowledgeDocumentVersion.id == version_id)
                     .values(
+                        processing_metadata=parsed.metadata,
                         extracted_text=parsed.text,
                         blocks=parsed.blocks,
                         parser_fingerprint=fingerprint,
@@ -173,8 +197,18 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             "processing_mode",
             KnowledgeProcessingMode.ORIGINAL,
         )
-        if version.media_type in TABLE_MEDIA_TYPES and (
-            mode == KnowledgeProcessingMode.ENHANCED or mode == KnowledgeProcessingMode.AUTO and configuration.get("processing_identity")
+        supported = version.media_type in TABLE_MEDIA_TYPES or version.media_type == "application/pdf"
+        complex_pdf = version.media_type == "application/pdf" and any(
+            chunk.document_version_id == version.id
+            and chunk.source_locator
+            and (chunk.source_locator.get("extraction_method") == KnowledgePdfExtraction.OCR or chunk.source_locator.get("layout") == KnowledgePdfLayout.TABLE)
+            for chunk in chunks
+        )
+        if supported and (
+            mode == KnowledgeProcessingMode.ENHANCED
+            or mode == KnowledgeProcessingMode.AUTO
+            and configuration.get("processing_identity")
+            and (version.media_type in TABLE_MEDIA_TYPES or complex_pdf)
         ):
             enhanced.append(version.id)
     await _job_stage(sessions, job_id, lease, KnowledgeJobState.ENRICHING, skipped=not enhanced)
@@ -273,6 +307,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
         db.add_all(chunks)
         await db.flush()
         await write_keyword_rows(db, chunks)
+        index.processing_metadata = {str(version.id): parsed.metadata for version, parsed in parsed_versions if parsed.metadata}
         index.state, index.chunk_count = KnowledgeIndexState.READY, len(chunks)
         kb.active_index_id = index.id
         job.state, job.failure_code = KnowledgeJobState.COMPLETED, None
@@ -460,5 +495,9 @@ async def prune_deleted_knowledge_blobs(sessions) -> int:
         )
         if version_ids:
             await db.execute(delete(KnowledgeEnrichmentCache).where(KnowledgeEnrichmentCache.document_version_id.in_(version_ids)))
-            await db.execute(update(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.id.in_(version_ids)).values(extracted_text=None, blocks=None))
+            await db.execute(
+                update(KnowledgeDocumentVersion)
+                .where(KnowledgeDocumentVersion.id.in_(version_ids))
+                .values(extracted_text=None, blocks=None, processing_metadata={})
+            )
     return removed

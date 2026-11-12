@@ -10,7 +10,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from app.core.enums import KnowledgeRerank, KnowledgeSearchMode, KnowledgeProcessingMode
+from app.core.enums import KnowledgeRerank, KnowledgeSearchMode, KnowledgeProcessingMode, KnowledgePdfMode
 
 KnowledgeName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 
@@ -27,6 +27,12 @@ class KnowledgeDocumentOptions(BaseModel):
         examples=[["报价表"]],
     )
     header_rows: int = Field(default=1, ge=1, le=5, description="每个表格区域的表头行数，合并多级表头可指定 2 至 5 行", examples=[2])
+
+    pdf_mode: KnowledgePdfMode = Field(
+        default=KnowledgePdfMode.AUTO,
+        description="PDF 页面提取方式：自动识别、仅提取文字层或强制 OCR；不适用于其他格式",
+        examples=["auto"],
+    )
 
     @model_validator(mode="after")
     def validate_sheet_names(self):

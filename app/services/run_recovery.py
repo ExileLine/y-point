@@ -20,7 +20,7 @@ from app.services.user_tools import model_tool_name
 
 
 async def can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
-    """允许有结束事件的历史/产物回读、完整审计只读调用及无产物失败报告退回干净检查点。"""
+    """允许有结束事件的历史/产物回读和知识检索、完整审计只读调用及无产物失败报告退回干净检查点。"""
     events = (
         await db.scalars(
             select(AgentRunEvent)
@@ -74,8 +74,8 @@ async def can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
     for name, ending in calls.values():
         if name == "list_session_artifacts" or has_skills and name.startswith("skill:"):
             continue
-        # 历史文件和生成产物回读只产生读取记录；成功或明确失败均不会产生外部写副作用。
-        if name in {"read_file", "read_generated_artifact"} and ending is not None:
+        # 历史/产物回读和知识检索只产生读取或检索审计；成功或明确失败均不会产生外部写副作用。
+        if name in {"read_file", "read_generated_artifact", "search_knowledge_base"} and ending is not None:
             continue
         if name in read_tools and ending is not None:
             expected_state = ToolInvocationState.COMPLETED if ending == RunEventType.TOOL_COMPLETED else ToolInvocationState.FAILED

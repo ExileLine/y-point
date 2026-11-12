@@ -14,7 +14,17 @@ from app.core.config import get_config
 from app.schemas.runtime_limits import ModelTimeout, ToolTimeout
 
 
-from app.core.enums import ModelThinkingMode, ApprovalDecision, ApprovalState, MessageRole, RunCallFailure, RunCallKind, RunCallStatus, RunState
+from app.core.enums import (
+    KnowledgeAnswerMode,
+    ModelThinkingMode,
+    ApprovalDecision,
+    ApprovalState,
+    MessageRole,
+    RunCallFailure,
+    RunCallKind,
+    RunCallStatus,
+    RunState,
+)
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
@@ -77,6 +87,7 @@ class RunOut(BaseModel):
     agent_id: int | None = Field(description="关联的智能体 ID", examples=[1])
     session_id: str | None = Field(description="关联的会话 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     agent_config_version: int | None = Field(description="提交时的智能体配置版本", examples=[1])
+    agent_knowledge_mode: KnowledgeAnswerMode = Field(description="提交时知识回答模式快照", examples=["auto", "knowledge_only"])
     agent_thinking_mode: ModelThinkingMode = Field(description="提交时模型思考模式快照", examples=["auto"])
     model_timeout_seconds: int = Field(description="单次模型生成最长秒数", examples=[60])
     tool_timeout_seconds: int = Field(description="单次工具执行最长秒数", examples=[30])
@@ -142,6 +153,7 @@ class RunSnapshotOut(BaseModel):
                 "session_id": "550e8400-e29b-41d4-a716-446655440001",
                 "agent_config_version": 1,
                 "agent_thinking_mode": "auto",
+                "agent_knowledge_mode": "auto",
                 "model_timeout_seconds": 60,
                 "tool_timeout_seconds": 30,
                 "max_queue_wait_seconds": 300,

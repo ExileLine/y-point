@@ -10,16 +10,18 @@ import time
 from contextlib import suppress
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_config
 from app.core.custom_exception import CustomException
-from app.core.enums import KnowledgeIndexState, KnowledgeJobState, ModelCapability, ToolLeaseKind
+from app.core.enums import KnowledgeIndexState, KnowledgeJobState, ModelCapability, ToolLeaseKind, KnowledgePdfMode, ArtifactState, KnowledgeSourceKind
 from app.core.response import api_response
 from app.core.security import get_current_admin, require_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.artifact import Artifact
 from app.models.knowledge import (
     KnowledgeBase,
     KnowledgeDocument,
@@ -30,7 +32,7 @@ from app.models.knowledge import (
     KnowledgeShare,
 )
 from app.schemas.knowledge import KnowledgeCreateIn, KnowledgeRevisionIn, KnowledgeSearchIn, KnowledgeShareIn, KnowledgeUpdateIn
-from app.services.artifact_store import ArtifactValidationError, artifact_root, enforce_owner_quota, save_upload
+from app.services.artifact_store import ArtifactValidationError, artifact_read_max_bytes, artifact_root, enforce_owner_quota, save_upload
 from app.services.embedding_adapter import embed_texts, embedding_identity, load_embedding_model
 from app.services.identity import audit
 from app.services.knowledge import (
@@ -44,10 +46,10 @@ from app.services.knowledge import (
     search_knowledge,
     validate_knowledge_configuration,
 )
-from app.services.knowledge_parser import KnowledgeProcessingError
+from app.services.knowledge_parser import KnowledgeProcessingError, render_pdf_page_isolated
 from app.schemas.knowledge import KnowledgeDocumentOptions
 from pydantic import ValidationError
-from app.services.private_blob_store import delete_blob
+from app.services.private_blob_store import delete_blob, read_blob
 from app.services.tool_execution import ToolCapacityError, tool_execution_slot
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
@@ -342,6 +344,8 @@ async def _upload_knowledge_document(
             raise CustomException(status_code=422, custom_code=10006, detail="工作表选择和多行表头仅适用于 XLSX / CSV")
         if artifact.media_type == "text/csv" and effective_options.sheet_names:
             raise CustomException(status_code=422, custom_code=10006, detail="CSV 没有工作表，请清空工作表选择")
+        if artifact.media_type != "application/pdf" and effective_options.pdf_mode != KnowledgePdfMode.AUTO:
+            raise CustomException(status_code=422, custom_code=10006, detail="PDF 提取方式仅适用于 PDF 文件")
         if options is not None:
             document.processing_options = options.model_dump(mode="json")
         await enforce_owner_quota(db, actor_id, add_count=1, add_bytes=artifact.byte_size)
@@ -383,7 +387,7 @@ async def upload_knowledge_document(
     knowledge_base_id: int,
     file: UploadFile = File(description="单个 TXT、Markdown、PDF、DOCX、XLSX 或 UTF-8 CSV，最大 10 MiB"),
     expected_revision: int = Form(ge=1, description="当前知识库版本"),
-    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表和表头行数"),
+    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表、表头行数及 PDF 页面提取方式"),
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -398,7 +402,7 @@ async def update_knowledge_document(
     document_id: int,
     file: UploadFile = File(description="该文档的新版本原始文件"),
     expected_revision: int = Form(ge=1, description="当前知识库版本"),
-    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表和表头行数"),
+    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表、表头行数及 PDF 页面提取方式"),
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -419,6 +423,48 @@ async def list_knowledge_documents(knowledge_base_id: int, actor: Admin = Depend
         )
     ).all()
     return api_response(data=[item.to_dict() for item in rows], is_pop=False, datetime_format=False)
+
+
+@router.get("/{knowledge_base_id}/citations/{chunk_id}/page-image", summary="查看 PDF 引用对应的原始页面图片")
+async def read_knowledge_pdf_page(
+    knowledge_base_id: int,
+    chunk_id: int,
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """按片段定位不可变版本，渲染前后鉴权，不暴露存储键且不缓存图片。"""
+    citation = await read_knowledge_citation(db, actor.id, knowledge_base_id, chunk_id)
+    if citation["page"] is None or (citation.get("source_locator") or {}).get("kind") != KnowledgeSourceKind.PDF:
+        raise CustomException(status_code=404, custom_code=10002, detail="该引用没有 PDF 原页")
+    version = await db.scalar(
+        select(KnowledgeDocumentVersion).where(
+            KnowledgeDocumentVersion.document_id == citation["document_id"],
+            KnowledgeDocumentVersion.version == citation["document_version"],
+        ),
+    )
+    artifact = await db.get(Artifact, version.artifact_id) if version is not None else None
+    if artifact is None or artifact.is_deleted != 0 or artifact.state != ArtifactState.READY or version.media_type != "application/pdf":
+        raise CustomException(status_code=404, custom_code=10002, detail="PDF 原始文件不可用")
+    key, actor_id = artifact.storage_key, actor.id
+    sessions = async_sessionmaker(db.bind, expire_on_commit=False)
+    await db.rollback()
+    try:
+        async with tool_execution_slot(sessions, actor_id, None, ToolLeaseKind.CALL, 45):
+            content = await read_blob(artifact_root(), key, max_bytes=artifact_read_max_bytes())
+            image = await asyncio.wait_for(render_pdf_page_isolated(content, citation["page"]), timeout=40)
+    except ToolCapacityError:
+        raise CustomException(status_code=429, custom_code=10005, detail="PDF 预览并发已满，请稍后重试") from None
+    except (KnowledgeProcessingError, TimeoutError, OSError):
+        raise CustomException(status_code=409, custom_code=10005, detail="PDF 原页暂不可读取，请检查文件或稍后重试") from None
+    await read_knowledge_citation(db, actor_id, knowledge_base_id, chunk_id)
+    return Response(
+        image,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/{knowledge_base_id}/documents/{document_id}/processing-preview", summary="分页预览已发布文档的原文证据及加工解释")

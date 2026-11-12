@@ -58,6 +58,7 @@ from app.services.model_adapter import is_model_context_overflow
 from app.services.model_connection_retry import invoke_model_with_connection_retry
 from app.services.tool_arguments import is_tool_argument_error
 from app.services.run_call_failures import tool_exception_failure, tool_result_failure
+from app.services.knowledge_policy import load_knowledge_scope
 from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
@@ -845,6 +846,7 @@ async def execute_text_run(
         if resume and not tools:
             return await fail_run(db, run_id, lease_token, "runtime_error")
         approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id)) if resume else None
+        knowledge_scope = await load_knowledge_scope(db, run) if any(tool.name == "search_knowledge_base" for tool in tools) else ""
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
         if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
             return await fail_run(db, run_id, lease_token, "attachment_unavailable")
@@ -856,6 +858,7 @@ async def execute_text_run(
         context_window=catalog_model.context_window if catalog_model is not None else None,
         model_name=catalog_model.display_name if catalog_model is not None else None,
         model_external_id=catalog_model.external_id if catalog_model is not None else None,
+        knowledge_scope=knowledge_scope,
     )
     try:
         input_budget = runtime_config.input_budget()

@@ -11,7 +11,7 @@ from sqlalchemy import Boolean, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import get_config
-from app.core.enums import ModelThinkingMode
+from app.core.enums import KnowledgeAnswerMode, ModelThinkingMode
 from app.models.base import CustomBaseModel
 
 
@@ -36,6 +36,13 @@ class AgentConfig(CustomBaseModel):
         nullable=True,
         default=lambda: get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS,
         comment="单次最大输出 Token 数，空值跟随供应商",
+    )
+    knowledge_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=KnowledgeAnswerMode.AUTO,
+        server_default=KnowledgeAnswerMode.AUTO,
+        comment="知识回答模式：auto 智能融合，knowledge_only 仅知识库",
     )
     thinking_mode: Mapped[str] = mapped_column(
         String(16),

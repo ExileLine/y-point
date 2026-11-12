@@ -364,6 +364,8 @@ def test_legacy_failed_report_does_not_poison_following_turn(tmp_path: Path, has
     [
         ("read_file", True),
         ("read_generated_artifact", True),
+        ("search_knowledge_base", True),
+        ("search_knowledge_base_extra", False),
         ("create_document_artifact", False),
         ("user_tool_999_unbound", False),
         ("read_generated_artifact_extra", False),

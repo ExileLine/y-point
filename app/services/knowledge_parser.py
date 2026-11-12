@@ -8,13 +8,16 @@
 import asyncio
 import io
 import json
+import os
+import signal
 import re
 import sys
+import tempfile
 import unicodedata
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from app.core.enums import KnowledgeFailure
+from app.core.enums import KnowledgeFailure, KnowledgeSourceKind
 
 MAX_TEXT_CHARACTERS = 500000
 MAX_PARSER_BYTES = 8 * 1024 * 1024
@@ -35,6 +38,7 @@ class ParsedKnowledge:
 
     text: str
     blocks: list[dict]
+    metadata: dict = field(default_factory=dict)
 
 
 def _normalize(text: str) -> str:
@@ -44,7 +48,7 @@ def _normalize(text: str) -> str:
 
 
 def parse_knowledge(content: bytes, media_type: str, options: dict | None = None) -> ParsedKnowledge:
-    """按实际类型提取文字，扫描 PDF 明确返回需要 OCR。"""
+    """按实际类型提取文字和可追溯结构，PDF 独立选择文字层或本地 OCR。"""
     if media_type in ("text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
         from app.services.knowledge_tables import parse_table_knowledge
 
@@ -53,14 +57,9 @@ def parse_knowledge(content: bytes, media_type: str, options: dict | None = None
     if media_type in ("text/plain", "text/markdown"):
         units = [(content.decode("utf-8-sig"), None, None)]
     elif media_type == "application/pdf":
-        from pypdf import PdfReader
+        from app.services.knowledge_pdf import parse_pdf_knowledge
 
-        reader = PdfReader(io.BytesIO(content), strict=True)
-        if reader.is_encrypted or not 1 <= len(reader.pages) <= 200:
-            raise KnowledgeProcessingError(KnowledgeFailure.PARSE_FAILED)
-        units = [(page.extract_text() or "", number, None) for number, page in enumerate(reader.pages, 1)]
-        if any(not text.strip() for text, _, _ in units):
-            raise KnowledgeProcessingError(KnowledgeFailure.OCR_REQUIRED)
+        return parse_pdf_knowledge(content, options)
     elif media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         from docx import Document
         from docx.table import Table
@@ -114,6 +113,37 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
     """按标题和页码聚合结构块，超长段落有界重叠，所有片段保持精确偏移。"""
     if not 200 <= size <= 2000 or not 0 <= overlap < size // 2:
         raise ValueError("分块参数无效")
+    if any(block.get("source_locator", {}).get("kind") == KnowledgeSourceKind.PDF for block in parsed.blocks):
+        records = []
+        for block in parsed.blocks:
+            source = block["source_locator"]
+            previous = records[-1] if records else None
+            compatible = previous is not None and all(
+                previous["source_locator"][key] == source[key] for key in ("page", "extraction_method", "layout", "table")
+            )
+            if compatible and block["end"] - previous["start"] <= size:
+                previous["end"] = block["end"]
+                box, added = previous["source_locator"]["bbox"], source["bbox"]
+                previous["source_locator"]["bbox"] = [min(box[0], added[0]), min(box[1], added[1]), max(box[2], added[2]), max(box[3], added[3])]
+            else:
+                records.append(
+                    {
+                        **block,
+                        "source_locator": dict(source),
+                    },
+                )
+        return [
+            {
+                "position": position,
+                "content": parsed.text[block["start"] : block["end"]],
+                "start_offset": block["start"],
+                "end_offset": block["end"],
+                "page": block["page"],
+                "heading": block["heading"],
+                "source_locator": block["source_locator"],
+            }
+            for position, block in enumerate(records)
+        ]
     if any(block.get("source_locator") for block in parsed.blocks):
         # 只合并同一表格的完整记录，超长记录不再按字符截断，避免字段失去归属。
         records = []
@@ -174,43 +204,84 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
     return chunks
 
 
+async def _run_parser_process(content: bytes, media_type: str, options: dict | None = None) -> bytes:
+    """有界执行解析或 PDF 原页渲染，超时和取消同时终止 OCR 子进程组。"""
+    with tempfile.TemporaryDirectory(prefix="y-point-parser-") as directory:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "app.services.knowledge_parser",
+            media_type,
+            json.dumps(options or {}, ensure_ascii=False),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
+            env={
+                **os.environ,
+                "TMPDIR": directory,
+            },
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(content), timeout=120 if media_type == "application/pdf" else 25)
+            if len(output) > MAX_PARSER_BYTES:
+                raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
+            if process.returncode:
+                raise KnowledgeProcessingError(KnowledgeFailure.PARSE_FAILED)
+            return output
+        except TimeoutError:
+            raise KnowledgeProcessingError(KnowledgeFailure.TIMEOUT) from None
+        finally:
+            if process.returncode is None:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+
+
 async def parse_knowledge_isolated(content: bytes, media_type: str, options: dict | None = None) -> ParsedKnowledge:
-    """用可终止子进程隔离不可信解析，超时及取消时终止子进程。"""
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "app.services.knowledge_parser",
-        media_type,
-        json.dumps(options or {}, ensure_ascii=False),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    """从受限解析子进程读取规范文本、来源块和质量摘要。"""
     try:
-        output, _ = await asyncio.wait_for(process.communicate(content), timeout=25)
-        if len(output) > MAX_PARSER_BYTES:
-            raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
-        payload = json.loads(output)
+        payload = json.loads(await _run_parser_process(content, media_type, options))
         if "failure" in payload:
             raise KnowledgeProcessingError(KnowledgeFailure(payload["failure"]))
-        if process.returncode or not isinstance(payload.get("text"), str):
+        if not isinstance(payload.get("text"), str):
             raise KnowledgeProcessingError(KnowledgeFailure.PARSE_FAILED)
-        return ParsedKnowledge(payload["text"], payload["blocks"])
+        return ParsedKnowledge(payload["text"], payload["blocks"], payload.get("metadata", {}))
     except (ValueError, KeyError, UnicodeError) as exc:
         if isinstance(exc, KnowledgeProcessingError):
             raise
         raise KnowledgeProcessingError(KnowledgeFailure.PARSE_FAILED) from None
-    finally:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+
+
+async def render_pdf_page_isolated(content: bytes, page: int) -> bytes:
+    """在独立进程渲染单页，失败只返回脱敏错误，不混入图片响应。"""
+    output = await _run_parser_process(
+        content,
+        "application/pdf",
+        {
+            "_render_page": page,
+        },
+    )
+    if not output.startswith(b"\x89PNG\r\n\x1a\n"):
+        try:
+            failure = KnowledgeFailure(json.loads(output)["failure"])
+        except (ValueError, KeyError, UnicodeError):
+            failure = KnowledgeFailure.PARSE_FAILED
+        raise KnowledgeProcessingError(failure)
+    return output
 
 
 def main() -> None:
     """在子进程施加 CPU、文件描述符和虚拟内存约束，只输出受限结构。"""
     import resource
 
-    resource.setrlimit(resource.RLIMIT_CPU, (20, 20))
+    cpu = 90 if sys.argv[1] == "application/pdf" else 20
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     if sys.platform != "darwin":
         resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
@@ -218,10 +289,17 @@ def main() -> None:
         content = sys.stdin.buffer.read(10 * 1024 * 1024 + 1)
         if len(content) > 10 * 1024 * 1024:
             raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
-        parsed = parse_knowledge(content, sys.argv[1], json.loads(sys.argv[2]) if len(sys.argv) > 2 else None)
+        options = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+        if sys.argv[1] == "application/pdf" and "_render_page" in options:
+            from app.services.knowledge_pdf import render_pdf_page
+
+            sys.stdout.buffer.write(render_pdf_page(content, options["_render_page"]))
+            return
+        parsed = parse_knowledge(content, sys.argv[1], options)
         payload = {
             "text": parsed.text,
             "blocks": parsed.blocks,
+            "metadata": parsed.metadata,
         }
         output = json.dumps(payload, ensure_ascii=False)
         if len(output.encode()) > MAX_PARSER_BYTES:
@@ -239,4 +317,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # 使用规范模块身份，避免跨模块导入时重复定义异常类型而丢失失败类别。
+    from app.services.knowledge_parser import main as parser_main
+
+    parser_main()

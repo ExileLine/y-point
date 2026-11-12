@@ -82,6 +82,9 @@ async def validate_knowledge_configuration(db: AsyncSession, values: dict) -> di
         if configuration["embedding_cost_budget"] is not None and model.input_price is None:
             raise CustomException(status_code=409, custom_code=10005, detail="启用嵌入费用预算前须配置输入价格")
         configuration["embedding_identity"] = embedding_identity(model, provider)
+    from app.services.knowledge_pdf import pdf_runtime_configuration
+
+    configuration["pdf_runtime"] = pdf_runtime_configuration()
     for key, default in (
         ("processing_mode", KnowledgeProcessingMode.AUTO),
         ("processing_model_id", None),
@@ -414,6 +417,7 @@ async def load_document_processing_preview(db: AsyncSession, actor_id: int, know
         "current_version": document.current_version,
         "indexed_version": rows[0][1].version if rows else None,
         "processing_options": index.configuration.get("document_options", {}).get(str(document_id), {}) if index is not None else {},
+        "processing_metadata": (index.processing_metadata or {}).get(str(rows[0][1].id), {}) if rows else {},
         "items": [_citation(chunk, version, index) for chunk, version in rows[:limit]],
         "has_more": len(rows) > limit,
         "next_after": rows[min(limit, len(rows)) - 1][0].position if rows else after,

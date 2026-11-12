@@ -23,6 +23,8 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
 from app.core.config import get_config
+from app.core.enums import KnowledgeAnswerMode
+from app.services.knowledge_policy import knowledge_answer_prompt
 from app.models.agent_run import AgentRun
 from app.schemas.runtime_file import RuntimeTextFileReadIn
 
@@ -94,6 +96,8 @@ class RuntimeRunConfig:
     max_output_tokens: int | None = None
     model_name: str | None = None
     model_external_id: str | None = None
+    knowledge_mode: KnowledgeAnswerMode = KnowledgeAnswerMode.AUTO
+    knowledge_scope: str = ""
 
     @classmethod
     def from_run(
@@ -104,6 +108,7 @@ class RuntimeRunConfig:
         context_window: int | None = None,
         model_name: str | None = None,
         model_external_id: str | None = None,
+        knowledge_scope: str = "",
     ) -> "RuntimeRunConfig":
         """从已领取的运行和工具集合构建固定的编排配置。"""
         return cls(
@@ -117,6 +122,8 @@ class RuntimeRunConfig:
             run.agent_max_output_tokens,
             model_name,
             model_external_id,
+            KnowledgeAnswerMode(run.agent_knowledge_mode or KnowledgeAnswerMode.AUTO),
+            knowledge_scope,
         )
 
     def input_budget(self) -> int | None:
@@ -202,6 +209,7 @@ class DeepAgentsRuntimeAdapter:
             ),
         ]
         system_prompt = config.system_prompt or ""
+        system_prompt += knowledge_answer_prompt(config.knowledge_mode, config.knowledge_scope, "search_knowledge_base" in config.tool_names)
         system_prompt += (
             "\n自动摘要如提供 /conversation_history/ 下的 Markdown 路径，原始资料仍保存在当前会话的虚拟历史文件中。"
             "摘要未保留审查所需细节时，用 read_file 分段回读原文；历史原文长行会软换行，每页最多 8192 字符，按返回的 next_offset 继续直到 EOF；"

@@ -12,7 +12,7 @@ from sqlalchemy import Boolean, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import get_config
-from app.core.enums import ModelThinkingMode
+from app.core.enums import KnowledgeAnswerMode, ModelThinkingMode
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
@@ -37,6 +37,13 @@ class AgentRun(CustomBaseModel):
     agent_temperature: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, comment="提交时生成温度快照")
     agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
+    agent_knowledge_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=KnowledgeAnswerMode.AUTO,
+        server_default=KnowledgeAnswerMode.AUTO,
+        comment="提交时知识回答模式快照",
+    )
     agent_thinking_mode: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
