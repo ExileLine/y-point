@@ -29,7 +29,8 @@ function fixture(page, shared = false, options = {}) {
     calls.push({ path, method, body, search: url.search });
     let data = null;
     let status = 200;
-    if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
+    if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() };
+    else if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
     else if (path.startsWith("/api/v1/runs/") && path.endsWith("/calls")) data = [];
     else if (path === "/api/v1/auth/me") data = { id: 1, username: "tester", nickname: "测试用户", role: "user" };
     else if (path === "/api/v1/agents/11" && method === "GET") {

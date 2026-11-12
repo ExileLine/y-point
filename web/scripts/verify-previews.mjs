@@ -37,6 +37,7 @@ try {
       const request = route.request(), path = new URL(request.url()).pathname;
       requests.push({ path, auth: request.headers().authorization });
       const send = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(status === 200 ? envelope(data) : { code: status, message: data }) });
+      if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
       if (path === '/api/v1/auth/me') return send({ id: 1, username: 'preview-tester', role: 'user' });
       if (path === '/api/v1/auth/refresh') return send({ access_token: 'renewed', refresh_token: 'fixture-refresh', expires_in: 3600 });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '预览验证', enabled: true, default_model_id: 1 });

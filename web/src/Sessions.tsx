@@ -14,8 +14,12 @@ import MessageFiles from "./components/MessageFiles";
 import ChatAttachments, { type ChatFile } from "./components/ChatAttachments";
 import RunCalls, { ActiveRunCalls } from "./components/RunCalls";
 import StreamingMessage from "./components/StreamingMessage";
+import ReasoningPanel from "./components/ReasoningPanel";
+import RunMetrics from "./components/RunMetrics";
+import SessionMetrics from "./components/SessionMetrics";
 import RunKnowledgeEvidence from "./knowledge/RunKnowledgeEvidence";
 import "./styles/sessions.css";
+import "./styles/chat-activity.css";
 
 const terminalStates = new Set(["completed", "failed", "cancelled", "timed_out"]);
 const stateLabels: Record<string, string> = {
@@ -51,24 +55,39 @@ function displayTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-const MessageHistory = memo(function MessageHistory({ items, pendingRunId }: { items: SessionMessage[]; pendingRunId: string | null }) {
+function PartialRunNotice({ state, failureCode }: { state?: string | null; failureCode?: string | null }) {
+  if (!state || !terminalStates.has(state) || state === "completed") return null;
+  return <Alert className="session-partial-notice" type="warning" showIcon
+    message={`${stateLabels[state] || "本轮未完成"} · 已保留未完成内容`}
+    description={<><span>以下为中断前生成的内容，尚未完成。</span>{failureCode && <details className="partial-failure-details"><summary>查看失败原因</summary><p>{failureLabels[failureCode] || "本轮未完成，请检查后重新发送。"}</p></details>}</>} />;
+}
+
+const MessageHistory = memo(function MessageHistory({ items, pendingRunId, streamCache }: {
+  items: SessionMessage[]; pendingRunId: string | null; streamCache: React.MutableRefObject<{ runId: string; text: string } | null>;
+}) {
   const answered = new Set(items.filter(item => item.role === "assistant").map(item => item.run_id));
   return <div className="sessions-messages">
     {items.map((item) => <Fragment key={item.id}><div className={`session-message session-message-${item.role}`} data-message-id={item.id}>
       <div className="session-message-avatar">{item.role === "assistant" ? <Bot size={18} /> : "我"}</div>
       <div className="session-message-main">
         <div className="session-message-meta"><strong>{item.role === "assistant" ? "Agent" : "我"}</strong>{item.role === "assistant" && item.model_id && <Tooltip title={[item.provider_name, item.model_name || `模型 #${item.model_id}`].filter(Boolean).join(" · ")}><span className="session-message-model">{item.model_name || `模型 #${item.model_id}`}</span></Tooltip>}<time dateTime={item.create_time}>{displayTime(item.create_time)}</time></div>
-        {item.role === "assistant" && <RunCalls calls={item.calls || []} />}
-        <div className="session-message-content">{item.role === "assistant" ? <MessageContent text={item.content} /> : item.content}</div>
+        {item.role === "assistant" && <><ReasoningPanel key={item.run_id} text={item.reasoning_content || ""} /><RunCalls calls={item.calls || []} /></>}
+        <div className="session-message-content">{item.role === "assistant" ? streamCache.current?.runId === item.run_id ? <StreamingMessage key={item.run_id} runId={item.run_id} text={item.content} initialText={streamCache.current.text} active={false} /> : <MessageContent text={item.content} /> : item.content}</div>
         <MessageActions text={item.content} assistant={item.role === "assistant"} />
         {item.role === "assistant" && item.run_id && <RunKnowledgeEvidence runId={item.run_id} />}
         <MessageFiles files={item.attachments} />
         <MessageFiles files={item.artifacts} generated />
+        {item.role === "assistant" && <RunMetrics metrics={item.metrics} />}
       </div>
     </div>
-    {item.role === "user" && item.calls?.length && !answered.has(item.run_id) && item.run_id !== pendingRunId ? <div className="session-message session-message-assistant" data-call-run={item.run_id}>
+    {item.role === "user" && (item.partial_content || item.calls?.length || item.reasoning_content || item.metrics?.elapsed_ms !== null && item.metrics?.elapsed_ms !== undefined) && !answered.has(item.run_id) && item.run_id !== pendingRunId ? <div className="session-message session-message-assistant" data-call-run={item.run_id}>
       <div className="session-message-avatar"><Bot size={18} /></div>
-      <div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong></div><RunCalls calls={item.calls} /></div>
+      <div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong></div>
+        <PartialRunNotice state={item.run_state} failureCode={item.failure_code} />
+        <ReasoningPanel text={item.reasoning_content || ""} /><RunCalls calls={item.calls || []} />
+        {item.partial_content && <><div className="session-message-content"><MessageContent text={item.partial_content} /></div><MessageActions text={item.partial_content} assistant copyLabel="复制未完成内容" /></>}
+        <RunMetrics metrics={item.metrics} />
+      </div>
     </div> : null}
     </Fragment>)}
   </div>;
@@ -105,6 +124,8 @@ export default function Sessions() {
   const [runError, setRunError] = useState("");
   const [streamText, setStreamText] = useState<{ runId: string; text: string } | null>(null);
   const [streamFallback, setStreamFallback] = useState(false);
+  const [streamReasoning, setStreamReasoning] = useState<{ runId: string; text: string; thinking: boolean } | null>(null);
+  const streamCache = useRef<{ runId: string; text: string } | null>(null);
   const [composer, setComposer] = useState("");
   const [chatFiles, setChatFiles] = useState<Record<string, ChatFile[]>>({});
   const files = selected ? chatFiles[selected.id] || [] : [];
@@ -202,6 +223,8 @@ export default function Sessions() {
     setActiveRun(null);
     setLastRun(null);
     setStreamText(null);
+    setStreamReasoning(null);
+    streamCache.current = null;
     setStreamFallback(false);
     setPendingDraft(null);
     setRunError("");
@@ -329,18 +352,25 @@ export default function Sessions() {
     let retry: number | undefined;
     const fallbackTimer = window.setTimeout(() => { if (active) setStreamFallback(true); }, 5000);
     setStreamText(null);
+    setStreamReasoning(null);
     setStreamFallback(false);
 
     function applyEvent(payload: RunStreamEvent) {
       if (payload.sequence <= cursor) return;
       cursor = payload.sequence;
+      if (payload.event_type === "reasoning_delta" && payload.content) {
+        setStreamReasoning(current => ({ runId, text: (current?.runId === runId ? current.text : "") + payload.content, thinking: true }));
+      }
+      if (["text_delta", "tool_started"].includes(payload.event_type)) {
+        setStreamReasoning(current => current?.runId === runId ? { ...current, thinking: false } : current);
+      }
       if (payload.event_type === "text_delta" && payload.content) {
         setStreamText((current) => ({ runId, text: (current?.runId === runId ? current.text : "") + payload.content }));
       }
       if (["tool_started", "tool_completed", "tool_failed"].includes(payload.event_type)) setCallsRevision(value => value + 1);
       if (payload.event_type === "artifact_published") setMessageRevision((value) => value + 1);
       if (payload.event_type === "state" && payload.state && terminalStates.has(payload.state)) {
-        setLastRun((current) => ({ ...(current?.id === runId ? current : subscribedRun), state: payload.state! }));
+        setLastRun((current) => ({ ...(current?.id === runId ? current : subscribedRun), state: payload.state!, failure_code: payload.failure_code ?? null }));
         setActiveRun(null);
         setMessageRevision((value) => value + 1);
         setRevision((value) => value + 1);
@@ -369,6 +399,9 @@ export default function Sessions() {
         if (!active) return;
         stream = new EventSource(runStreamUrl(runId, cursor));
         stream.onopen = () => { window.clearTimeout(fallbackTimer); if (active) setStreamFallback(false); };
+        stream.addEventListener("reasoning_delta", (event) => {
+          if (active) applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
+        });
         stream.addEventListener("text_delta", (event) => {
           if (!active) return;
           applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
@@ -405,7 +438,7 @@ export default function Sessions() {
   }, [activeRun?.id, sessionId]);
 
   const currentRun = activeRun || lastRun;
-  const preview = streamText && (activeRun?.id === streamText.runId || (lastRun?.id === streamText.runId && lastRun.state === "completed")) && !messages.some((item) => item.role === "assistant" && item.run_id === streamText.runId) ? streamText : null;
+  const preview = streamText && (activeRun?.id === streamText.runId || (lastRun?.id === streamText.runId && terminalStates.has(lastRun.state))) && !messages.some((item) => item.role === "assistant" && item.run_id === streamText.runId) ? streamText : null;
   const pendingRunId = preview?.runId || (activeRun && !messages.some(item => item.role === "assistant" && item.run_id === activeRun.id) ? activeRun.id : null);
   const canSend = Boolean(selected && !selected.archived && agent?.enabled && !activeRun && !submitting && !pendingDraft && !switchingModel && modelTarget === null && !runsLoading);
 
@@ -586,12 +619,13 @@ export default function Sessions() {
               <Dropdown menu={{ items: sessionMenu(selected) }} trigger={["click"]}><Tooltip title="会话操作"><Button type="text" icon={<MoreHorizontal size={17} />} aria-label="当前会话操作" disabled={busy} /></Tooltip></Dropdown>
             </div>
           </div>
+          <SessionMetrics key={`${agentId}:${selected.id}`} agentId={agentId} sessionId={selected.id} refreshKey={messageRevision} active={Boolean(activeRun)} />
           <div className="sessions-history" ref={historyRef} onScroll={trackScroll}>
             <div className="sessions-history-content" ref={historyContentRef}>
             {isMobile && directoryError && <Alert className="sessions-alert" type="error" showIcon message={directoryError} action={<Button size="small" onClick={refresh}>重试</Button>} />}
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
-            {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
-            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={followContent} /> : <MessageContent text={preview.text} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}</div></div></div>}
+            {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} streamCache={streamCache} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
+            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><PartialRunNotice state={currentRun?.state} failureCode={currentRun?.failure_code} /><ReasoningPanel key={`reasoning-${pendingRunId}`} text={streamReasoning?.runId === pendingRunId ? streamReasoning.text : ""} active={activeRun?.id === pendingRunId && Boolean(streamReasoning?.thinking)} onProgress={followContent} /><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={visible => { streamCache.current = { runId: preview.runId, text: visible }; followContent(); }} /> : <MessageContent text={preview.text} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}<RunMetrics run={currentRun} active={activeRun?.id === pendingRunId} /></div></div></div>}
             {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
             {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
             </div>

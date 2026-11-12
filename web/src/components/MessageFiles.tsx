@@ -3,6 +3,8 @@ import { Button, Tooltip, message } from "antd";
 import { Download, Eye, FileText } from "lucide-react";
 import { downloadArtifact, type MessageArtifact } from "../api";
 
+import { fileSizeLabel } from "./chat-format";
+
 const ArtifactPreview = lazy(() => import("./ArtifactPreview"));
 
 function FileItem({ file, generated }: { file: MessageArtifact; generated: boolean }) {
@@ -27,7 +29,7 @@ function FileItem({ file, generated }: { file: MessageArtifact; generated: boole
     <FileText size={18} aria-hidden="true" />
     <div className="session-file-info">
       <span className="session-file-name">{file.filename}</span>
-      <small>{file.template_source ? `模板报告 · ${file.template_source.skill_name || `Skill #${file.template_source.skill_id}`} · v${file.template_source.skill_version}${file.template_source.template_name ? ` · ${file.template_source.template_name}` : ""}` : generated ? "模型生成" : "附件"}{!file.available ? " · 不可用" : file.included_in_context ? " · 已提供给模型" : ""}</small>
+      <small>{typeof file.byte_size === "number" && <span className="session-file-size">{fileSizeLabel(file.byte_size)} · </span>}{file.template_source ? `模板报告 · ${file.template_source.skill_name || `Skill #${file.template_source.skill_id}`} · v${file.template_source.skill_version}${file.template_source.template_name ? ` · ${file.template_source.template_name}` : ""}` : generated ? "模型生成" : "附件"}{!file.available ? " · 不可用" : file.included_in_context ? " · 已提供给模型" : ""}</small>
     </div>
     <div className="session-file-actions">
     {generated && <Tooltip title={file.available ? "预览" : "文件不可用，无法预览"} trigger={["hover", "focus"]}>

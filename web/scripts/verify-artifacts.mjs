@@ -34,7 +34,8 @@ async function fixture(page, refreshAllowed = true) {
     const req = route.request(), path = new URL(req.url()).pathname;
     calls.push({ path, auth: req.headers().authorization });
     let data;
-    if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
+    if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() };
+    else if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
     else if (path === '/api/v1/auth/me') data = { id: 1, username: 'tester', role: 'user' };
     else if (path === '/api/v1/auth/refresh') {
       assert.equal(req.postDataJSON().refresh_token, 'refresh-fixture'); assertions++;

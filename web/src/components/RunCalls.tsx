@@ -1,15 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { BookOpen, CheckCircle2, CircleDashed, CircleHelp, Puzzle, Wrench, XCircle } from "lucide-react";
+import { BookOpen, CheckCircle2, CircleDashed, CircleHelp, Puzzle, PlugZap, Wrench, XCircle } from "lucide-react";
 import { ApiError, getRunCalls, type RunCall } from "../api";
 
-const kinds = { skill: { label: "Skill", Icon: Puzzle }, tool: { label: "Tool", Icon: Wrench }, knowledge: { label: "知识库", Icon: BookOpen } };
+import { elapsedLabel, serverTime } from "./chat-format";
+
+const kinds = { mcp: { label: "MCP", Icon: PlugZap }, skill: { label: "Skill", Icon: Puzzle }, tool: { label: "Tool", Icon: Wrench }, knowledge: { label: "知识库", Icon: BookOpen } };
 const states = {
   running: { label: "执行中", Icon: CircleDashed },
   succeeded: { label: "成功", Icon: CheckCircle2 },
   failed: { label: "失败", Icon: XCircle },
   interrupted: { label: "结果未确认", Icon: CircleHelp },
 };
+
+function CallDuration({ call }: { call: RunCall }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (call.status !== "running" || !call.started_at) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [call.status, call.started_at]);
+  const elapsed = call.elapsed_ms ?? (call.status === "running" && call.started_at ? Math.max(0, now - serverTime(call.started_at)) : null);
+  return <span className="run-call-duration">{elapsed !== null && Number.isFinite(elapsed) ? elapsedLabel(elapsed) : "耗时未知"}</span>;
+}
 
 export default function RunCalls({ calls }: { calls: RunCall[] }) {
   if (!calls.length) return null;
@@ -18,13 +31,21 @@ export default function RunCalls({ calls }: { calls: RunCall[] }) {
     <ul className="run-calls-list">{calls.map(call => {
       const { label, Icon } = kinds[call.kind] || kinds.tool;
       const state = states[call.status] || states.interrupted;
-      return <li className="run-call" key={call.call_id} data-call-id={call.call_id}>
+      return <li className={`run-call${call.status === "failed" ? " run-call-has-failure" : ""}`} key={call.call_id} data-call-id={call.call_id}>
         <Icon className="run-call-kind-icon" size={14} aria-hidden="true" />
         <span className="run-call-kind">{label}</span>
         <span className="run-call-name">{call.name}</span>
+        <CallDuration call={call} />
         <Tooltip title={call.status === "interrupted" ? "未收到调用完成事件，无法确认执行结果" : undefined}>
           <span className={`run-call-result run-call-${call.status}`}><state.Icon size={13} aria-hidden="true" />{state.label}</span>
         </Tooltip>
+        {(call.status === "failed" || call.status === "interrupted") && <details className="run-call-details">
+          <summary>{call.status === "failed" ? "查看失败原因" : "查看中断说明"}</summary>
+          <div className="run-call-explanation">
+            <p>{call.status === "failed" ? (call.failure_reason || "本次调用失败，历史记录未保存具体原因。") : "未收到调用结束事件，无法确认执行结果。如涉及外部写入，请先核实结果再重新提交。"}</p>
+            {call.status === "failed" && call.failure_code && <span className="run-call-error-code">错误码：{call.failure_code}</span>}
+          </div>
+        </details>}
       </li>;
     })}</ul>
   </section>;

@@ -23,7 +23,9 @@ async function fixture(page) {
   await page.route('**/api/v1/**',async route=>{
     const req=route.request(), url=new URL(req.url()),path=url.pathname,method=req.method();calls.push({path,method});
     let data;
-    if(/\/sessions\/[^/]+\/models$/.test(path)) data=[];
+    if(path==='/api/v1/agents/runtime-limits') data={ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 };
+    else if(/\/sessions\/[^/]+\/models$/.test(path)) data=[];
+    else if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 2, active_run_count: 0, elapsed_ms: 12340, total_tokens: 1250, missing_duration_runs: 0, calculated_at: now };
     else if(path==='/api/v1/auth/me')data={id:1,username:'tester',role:'user'};
     else if(path==='/api/v1/agents/11')data={id:11,name:'体验验证助手',description:'测试',enabled:true,default_model_id:1,welcome_message:'欢迎'};
     else if(path==='/api/v1/agents/11/sessions')data={items:[session],total:1,page:1,page_size:20};

@@ -17,6 +17,7 @@ try {
     await page.route('**/api/v1/**', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
       const send = (data, status = 200, message = '操作成功') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status < 400 ? status : 10006, message, data }) });
+      if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
       if (path.endsWith('/auth/me')) return send({ id: 1, username: 'reviewer', role: 'user' });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '合同审查助手', enabled: true, default_model_id: 1 });
       if (path.endsWith('/sessions')) return send({ items: [session], total: 1, page: 1, page_size: 20 });

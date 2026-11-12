@@ -427,14 +427,24 @@ export type ArtifactPreview = {
 export const getArtifactPreview = (artifactId: string, signal?: AbortSignal): Promise<ArtifactPreview> =>
   request(`/artifacts/${encodeURIComponent(artifactId)}/preview`, { signal, cache: "no-store" });
 
-export type MessageArtifact = { artifact_id: string; filename: string; available: boolean; included_in_context?: boolean; template_source?: { skill_id: number; skill_name?: string; skill_version: number; template_name?: string } | null };
+export type MessageArtifact = { byte_size?: number; artifact_id: string; filename: string; available: boolean; included_in_context?: boolean; template_source?: { skill_id: number; skill_name?: string; skill_version: number; template_name?: string } | null };
 export type RunCall = {
   call_id: string;
-  kind: "skill" | "tool" | "knowledge";
+  kind: "skill" | "tool" | "knowledge" | "mcp";
   name: string;
   status: "running" | "succeeded" | "failed" | "interrupted";
   sequence: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  elapsed_ms?: number | null;
+  failure_code?: string | null;
+  failure_reason?: string | null;
 };
+export type SessionMetrics = {
+  run_count: number; active_run_count: number; elapsed_ms: number; total_tokens: number | null;
+  missing_duration_runs: number; calculated_at: string;
+};
+export type RunMetrics = { elapsed_ms: number | null; total_tokens: number | null };
 export type SessionModelOption = {
   id: number; display_name: string; provider_name: string; verified_capabilities: string[];
   context_window: number | null; selectable: boolean; reason: string | null; notice: string | null;
@@ -451,9 +461,14 @@ export type SessionMessage = {
   attachments: MessageArtifact[];
   artifacts: MessageArtifact[];
   calls?: RunCall[];
+  reasoning_content?: string;
+  partial_content?: string;
+  run_state?: string | null;
+  failure_code?: string | null;
+  metrics?: RunMetrics | null;
 };
-export type SessionRun = { model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
-export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null };
+export type SessionRun = { reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null; failure_code?: string | null };
 export type RunSnapshot = { run: SessionRun; events: RunStreamEvent[]; latest_sequence: number; next_after: number; has_more: boolean };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
 export type SessionRunDraft = { model_id?: number; expected_session_version?: number; input_text: string; request_key: string; publish_answer_artifact: boolean; artifact_ids: string[]; context_artifact_ids: string[] };
@@ -474,6 +489,8 @@ export const listSessionModels = (agentId: number, sessionId: string, signal?: A
 export const updateAgentSession = (agentId: number, session: AgentSession, changes: { title?: string; archived?: boolean; model_id?: number }): Promise<AgentSession> => request(sessionPath(agentId, session.id), { method: "PUT", body: JSON.stringify({ ...changes, expected_version: session.version }) });
 export const deleteAgentSession = (agentId: number, sessionId: string): Promise<void> => request(sessionPath(agentId, sessionId), { method: "DELETE" });
 export const listSessionMessages = (agentId: number, sessionId: string, after: number, limit = 100): Promise<SessionMessage[]> => request(`${sessionPath(agentId, sessionId)}/messages?after=${after}&limit=${limit}`);
+export const getSessionMetrics = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionMetrics> =>
+  request(`${sessionPath(agentId, sessionId)}/metrics`, { signal });
 export const listSessionRuns = (agentId: number, sessionId: string): Promise<SessionRunPage> => request(`${sessionPath(agentId, sessionId)}/runs?page=1&page_size=20`);
 export const submitSessionRun = (agentId: number, sessionId: string, draft: SessionRunDraft): Promise<SessionRun> => request(`${sessionPath(agentId, sessionId)}/runs`, { method: "POST", body: JSON.stringify(draft) });
 export const getRunCalls = (runId: string, signal?: AbortSignal): Promise<RunCall[]> => request(`/runs/${encodeURIComponent(runId)}/calls`, { signal });

@@ -40,6 +40,7 @@ async function fixture(page, opts = {}) {
     const body = req.headers()["content-type"]?.startsWith("application/json") && raw ? JSON.parse(raw) : null;
     calls.push({ path, method, body, raw, search: url.search, headers: req.headers() });
     const send = (data, status = 200, text = "操作成功") => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(envelope(data, status, text)) });
+    if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
     if (path === "/auth/me") return send({ id: 1, username: "tester", nickname: "测试用户", role: opts.shared ? "user" : "admin" });
     if (path === "/models") return send([{ id: 2, display_name: "embeddinggemma", external_id: "embeddinggemma:latest", status: 1, capabilities: ["embedding"], verified_capabilities: ["embedding"] }]);
     if (path === "/models/2/embedding-test") return send({ success: true, failure_code: null, dimensions: 768, latency_ms: 77 });
