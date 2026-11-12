@@ -122,7 +122,7 @@ def _validate_office(path: Path, suffix: str) -> None:
         raise ArtifactValidationError("Office 文件损坏或不可读取") from exc
 
 
-def validate_file(path: Path, filename: str, *, generated: bool = False) -> str:
+def validate_file(path: Path, filename: str, *, generated: bool = False, allow_csv: bool = False) -> str:
     """核验扩展名和实际文件结构，返回可信媒体类型。"""
     if not filename or len(filename) > 255 or filename in {".", ".."}:
         raise ArtifactValidationError("文件名无效")
@@ -130,6 +130,10 @@ def validate_file(path: Path, filename: str, *, generated: bool = False) -> str:
         raise ArtifactValidationError("文件名包含非法字符")
     suffix = Path(filename).suffix.lower()
     allowed_types = MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES if generated else MEDIA_TYPES
+    if allow_csv:
+        allowed_types = allowed_types | {
+            ".csv": "text/csv",
+        }
     if suffix not in allowed_types:
         raise ArtifactValidationError("不支持的文件格式")
     if suffix in {".txt", ".md", ".html", ".csv", ".json"}:
@@ -231,7 +235,7 @@ def artifact_read_max_bytes() -> int:
     return max(upload_max_bytes(), MAX_GENERATED_FILE_BYTES)
 
 
-async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes: int | None = None) -> tuple[Artifact, Path]:
+async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes: int | None = None, allow_csv: bool = False) -> tuple[Artifact, Path]:
     """限量写入临时文件，校验后原子转入私有目录。"""
     max_bytes = upload_max_bytes() if max_bytes is None else max_bytes
     filename = file.filename or ""
@@ -252,7 +256,7 @@ async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes:
                 stream.write(chunk)
         if total == 0:
             raise ArtifactValidationError("文件不能为空")
-        media_type = validate_file(temporary, filename)
+        media_type = validate_file(temporary, filename, allow_csv=allow_csv)
         await scan_file(temporary)
         if using_s3():
             remote_attempted = True

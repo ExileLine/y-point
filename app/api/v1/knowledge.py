@@ -38,12 +38,15 @@ from app.services.knowledge import (
     cancel_knowledge_runs,
     enqueue_knowledge_index,
     knowledge_access,
+    load_document_processing_preview,
     read_knowledge_citation,
     require_knowledge_base,
     search_knowledge,
     validate_knowledge_configuration,
 )
 from app.services.knowledge_parser import KnowledgeProcessingError
+from app.schemas.knowledge import KnowledgeDocumentOptions
+from pydantic import ValidationError
 from app.services.private_blob_store import delete_blob
 from app.services.tool_execution import ToolCapacityError, tool_execution_slot
 
@@ -54,6 +57,8 @@ SUPPORTED_KNOWLEDGE_TYPES = frozenset(
     {
         "text/plain",
         "text/markdown",
+        "text/csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     },
@@ -269,15 +274,27 @@ async def revoke_knowledge_share(
     return api_response(message="知识库共享已撤销")
 
 
-async def _upload_knowledge_document(db, actor_id: int, knowledge_base_id: int, file: UploadFile, expected_revision: int, document_id: int | None = None):
+async def _upload_knowledge_document(
+    db,
+    actor_id: int,
+    knowledge_base_id: int,
+    file: UploadFile,
+    expected_revision: int,
+    document_id: int | None = None,
+    processing_options: str | None = None,
+):
     """保存原始文件及上传版本和任务，解析与嵌入完全交给独立 worker。"""
     await require_knowledge_base(db, knowledge_base_id, actor_id, manage=True)
+    try:
+        options = KnowledgeDocumentOptions.model_validate_json(processing_options) if processing_options is not None else None
+    except ValidationError:
+        raise CustomException(status_code=422, custom_code=10006, detail="文档处理选项无效，请检查策略、工作表名称及表头行数") from None
     saved = None
     try:
-        saved = await save_upload(file, actor_id, artifact_root(), max_bytes=10 * 1024 * 1024)
+        saved = await save_upload(file, actor_id, artifact_root(), max_bytes=10 * 1024 * 1024, allow_csv=True)
         artifact, _ = saved
         if artifact.media_type not in SUPPORTED_KNOWLEDGE_TYPES:
-            raise CustomException(status_code=400, custom_code=10006, detail="知识文档仅支持 TXT、Markdown、PDF 和 DOCX")
+            raise CustomException(status_code=400, custom_code=10006, detail="知识文档仅支持 TXT、Markdown、PDF、DOCX、XLSX 和 UTF-8 CSV")
         item = await require_knowledge_base(db, knowledge_base_id, actor_id, manage=True, lock=True)
         if item.revision != expected_revision:
             raise CustomException(status_code=409, custom_code=10005, detail="知识库版本已变化")
@@ -300,7 +317,8 @@ async def _upload_knowledge_document(db, actor_id: int, knowledge_base_id: int, 
                     KnowledgeDocumentVersion.version == document.current_version,
                 ),
             )
-            if previous.sha256 == artifact.sha256:
+            previous_options = KnowledgeDocumentOptions.model_validate(document.processing_options or {})
+            if previous.sha256 == artifact.sha256 and (options is None or previous_options == options):
                 await delete_blob(artifact_root(), artifact.storage_key)
                 saved[1].unlink(missing_ok=True)
                 return {
@@ -317,6 +335,15 @@ async def _upload_knowledge_document(db, actor_id: int, knowledge_base_id: int, 
             document = KnowledgeDocument(knowledge_base_id=item.id, filename=artifact.filename)
             db.add(document)
             await db.flush()
+        effective_options = options or KnowledgeDocumentOptions.model_validate(document.processing_options or {})
+        if artifact.media_type not in {"text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"} and (
+            effective_options.sheet_names or effective_options.header_rows != 1
+        ):
+            raise CustomException(status_code=422, custom_code=10006, detail="工作表选择和多行表头仅适用于 XLSX / CSV")
+        if artifact.media_type == "text/csv" and effective_options.sheet_names:
+            raise CustomException(status_code=422, custom_code=10006, detail="CSV 没有工作表，请清空工作表选择")
+        if options is not None:
+            document.processing_options = options.model_dump(mode="json")
         await enforce_owner_quota(db, actor_id, add_count=1, add_bytes=artifact.byte_size)
         artifact.expires_at = None
         db.add(artifact)
@@ -354,13 +381,14 @@ async def _upload_knowledge_document(db, actor_id: int, knowledge_base_id: int, 
 @router.post("/{knowledge_base_id}/documents", summary="上传知识文档并排队建立索引")
 async def upload_knowledge_document(
     knowledge_base_id: int,
-    file: UploadFile = File(description="单个 TXT、Markdown、PDF 或 DOCX，最大 10 MiB"),
+    file: UploadFile = File(description="单个 TXT、Markdown、PDF、DOCX、XLSX 或 UTF-8 CSV，最大 10 MiB"),
     expected_revision: int = Form(ge=1, description="当前知识库版本"),
+    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表和表头行数"),
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
     """上传接口只保存私有文件和任务，不在 HTTP 请求内调用模型或解析大文件。"""
-    result = await _upload_knowledge_document(db, actor.id, knowledge_base_id, file, expected_revision)
+    result = await _upload_knowledge_document(db, actor.id, knowledge_base_id, file, expected_revision, processing_options=processing_options)
     return api_response(http_code=202, code=202, data=result, datetime_format=False)
 
 
@@ -370,11 +398,12 @@ async def update_knowledge_document(
     document_id: int,
     file: UploadFile = File(description="该文档的新版本原始文件"),
     expected_revision: int = Form(ge=1, description="当前知识库版本"),
+    processing_options: str | None = Form(default=None, max_length=4096, description="文档处理覆盖选项 JSON：策略、工作表列表和表头行数"),
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
     """旧代在新版本完整索引成功前继续可用，Run 已固定代保持不变。"""
-    result = await _upload_knowledge_document(db, actor.id, knowledge_base_id, file, expected_revision, document_id)
+    result = await _upload_knowledge_document(db, actor.id, knowledge_base_id, file, expected_revision, document_id, processing_options)
     return api_response(http_code=202, code=202, data=result, datetime_format=False)
 
 
@@ -390,6 +419,22 @@ async def list_knowledge_documents(knowledge_base_id: int, actor: Admin = Depend
         )
     ).all()
     return api_response(data=[item.to_dict() for item in rows], is_pop=False, datetime_format=False)
+
+
+@router.get("/{knowledge_base_id}/documents/{document_id}/processing-preview", summary="分页预览已发布文档的原文证据及加工解释")
+async def preview_knowledge_document(
+    knowledge_base_id: int,
+    document_id: int,
+    after: int = Query(default=-1, ge=-1, description="上次已读取的片段位置，首次为 -1"),
+    limit: int = Query(default=20, ge=1, le=50, description="本次最多返回的证据片段数"),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """只读取活动代，原文、模型解释和表格来源分别返回，不触发解析或模型请求。"""
+    result = await load_document_processing_preview(db, actor.id, knowledge_base_id, document_id, after, limit)
+    response = api_response(data=result, datetime_format=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.delete("/{knowledge_base_id}/documents/{document_id}", summary="删除知识文档并阻断所有旧代引用")
@@ -527,6 +572,7 @@ async def test_embedding_model(model_id: int, actor: Admin = Depends(require_adm
     verified = set(model.verified_capabilities or []) - {ModelCapability.EMBEDDING}
     if failure is None:
         verified.add(ModelCapability.EMBEDDING)
+        model.capabilities = list(dict.fromkeys([*(model.capabilities or []), ModelCapability.EMBEDDING]))
     model.verified_capabilities = sorted(verified)
     model.embedding_dimensions = dimensions
     model.capabilities_verified = bool(model.capabilities) and set(model.capabilities).issubset(verified)

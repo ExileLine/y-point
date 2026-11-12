@@ -43,8 +43,12 @@ def _normalize(text: str) -> str:
     return "\n".join((line.rstrip() for line in text.replace("\x00", "").splitlines())).strip()
 
 
-def parse_knowledge(content: bytes, media_type: str) -> ParsedKnowledge:
+def parse_knowledge(content: bytes, media_type: str, options: dict | None = None) -> ParsedKnowledge:
     """按实际类型提取文字，扫描 PDF 明确返回需要 OCR。"""
+    if media_type in ("text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+        from app.services.knowledge_tables import parse_table_knowledge
+
+        return parse_table_knowledge(content, media_type, options)
     units = []
     if media_type in ("text/plain", "text/markdown"):
         units = [(content.decode("utf-8-sig"), None, None)]
@@ -110,6 +114,35 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
     """按标题和页码聚合结构块，超长段落有界重叠，所有片段保持精确偏移。"""
     if not 200 <= size <= 2000 or not 0 <= overlap < size // 2:
         raise ValueError("分块参数无效")
+    if any(block.get("source_locator") for block in parsed.blocks):
+        # 只合并同一表格的完整记录，超长记录不再按字符截断，避免字段失去归属。
+        records = []
+        for block in parsed.blocks:
+            if records and records[-1]["heading"] == block["heading"] and block["end"] - records[-1]["start"] <= size:
+                records[-1]["end"] = block["end"]
+                locator = records[-1]["source_locator"]
+                locator["row_end"] = block["source_locator"]["row_end"]
+                columns = locator["columns"]
+                locator["range"] = f"{columns[0]}{locator['row_start']}:{columns[-1]}{locator['row_end']}"
+            else:
+                records.append(
+                    {
+                        **block,
+                        "source_locator": dict(block["source_locator"]),
+                    }
+                )
+        return [
+            {
+                "position": position,
+                "content": parsed.text[block["start"] : block["end"]],
+                "start_offset": block["start"],
+                "end_offset": block["end"],
+                "page": block["page"],
+                "heading": block["heading"],
+                "source_locator": block["source_locator"],
+            }
+            for position, block in enumerate(records)
+        ]
     groups = []
     for block in parsed.blocks:
         if groups and groups[-1]["page"] == block["page"] and groups[-1]["heading"] == block["heading"]:
@@ -141,13 +174,14 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
     return chunks
 
 
-async def parse_knowledge_isolated(content: bytes, media_type: str) -> ParsedKnowledge:
+async def parse_knowledge_isolated(content: bytes, media_type: str, options: dict | None = None) -> ParsedKnowledge:
     """用可终止子进程隔离不可信解析，超时及取消时终止子进程。"""
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
         "app.services.knowledge_parser",
         media_type,
+        json.dumps(options or {}, ensure_ascii=False),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -184,7 +218,7 @@ def main() -> None:
         content = sys.stdin.buffer.read(10 * 1024 * 1024 + 1)
         if len(content) > 10 * 1024 * 1024:
             raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
-        parsed = parse_knowledge(content, sys.argv[1])
+        parsed = parse_knowledge(content, sys.argv[1], json.loads(sys.argv[2]) if len(sys.argv) > 2 else None)
         payload = {
             "text": parsed.text,
             "blocks": parsed.blocks,

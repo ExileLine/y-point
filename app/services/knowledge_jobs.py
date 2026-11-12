@@ -15,15 +15,25 @@ from loguru import logger
 from sqlalchemy import bindparam, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.enums import ArtifactState, KnowledgeFailure, KnowledgeIndexState, KnowledgeJobState, KnowledgeSearchMode, ToolLeaseKind
+from app.core.enums import ArtifactState, KnowledgeFailure, KnowledgeIndexState, KnowledgeJobState, KnowledgeSearchMode, KnowledgeProcessingMode, ToolLeaseKind
 from app.models.admin import Admin
 from app.models.artifact import Artifact
 from app.models.base import shanghai_now
-from app.models.knowledge import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgeDocumentVersion, KnowledgeIndex, KnowledgeJob
+from app.models.knowledge import (
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+    KnowledgeIndex,
+    KnowledgeJob,
+    KnowledgeEnrichmentCache,
+)
 from app.models.tool_execution import ToolExecutionLease
 from app.services.artifact_store import artifact_read_max_bytes, artifact_root
 from app.services.embedding_adapter import EMBEDDING_BATCH_SIZE, embed_texts, embedding_identity, load_embedding_model
 from app.services.knowledge import MAX_INDEX_CHUNKS, TERMINAL_KNOWLEDGE_JOBS
+from app.services.knowledge_enrichment import enrich_knowledge_chunks, load_processing_model, processing_fingerprint, processing_identity
+from app.services.knowledge_tables import TABLE_MEDIA_TYPES, TABLE_PARSER_VERSION
 from app.services.knowledge_backend import knowledge_tokens, remove_keyword_rows, write_keyword_rows
 from app.services.knowledge_parser import KnowledgeProcessingError, ParsedKnowledge, chunk_knowledge, parse_knowledge_isolated
 from app.services.private_blob_store import delete_blob, read_blob
@@ -101,16 +111,39 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             artifact = await db.get(Artifact, version.artifact_id)
             if document.is_deleted != 0 or artifact is None or artifact.state != ArtifactState.READY or artifact.is_deleted != 0:
                 raise KnowledgeProcessingError(KnowledgeFailure.STORAGE_UNAVAILABLE)
-            if version.extracted_text is not None and version.blocks is not None:
+            options = configuration.get("document_options", {}).get(str(document.id), {})
+            fingerprint = processing_fingerprint(
+                {
+                    "parser": TABLE_PARSER_VERSION,
+                    "media_type": version.media_type,
+                    "sha256": version.sha256,
+                    "options": options,
+                },
+            )
+            if (
+                version.extracted_text is not None
+                and version.blocks is not None
+                and (version.parser_fingerprint == fingerprint or version.parser_fingerprint is None and version.media_type not in TABLE_MEDIA_TYPES)
+            ):
                 parsed = ParsedKnowledge(version.extracted_text, version.blocks)
             else:
                 content = await read_blob(artifact_root(), artifact.storage_key, max_bytes=artifact_read_max_bytes())
                 parsed = None
         if parsed is None:
-            parsed = await parse_knowledge_isolated(content, version.media_type)
+            parsed = (
+                await parse_knowledge_isolated(content, version.media_type, options)
+                if version.media_type in TABLE_MEDIA_TYPES
+                else await parse_knowledge_isolated(content, version.media_type)
+            )
             async with sessions.begin() as db:
                 await db.execute(
-                    update(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.id == version_id).values(extracted_text=parsed.text, blocks=parsed.blocks),
+                    update(KnowledgeDocumentVersion)
+                    .where(KnowledgeDocumentVersion.id == version_id)
+                    .values(
+                        extracted_text=parsed.text,
+                        blocks=parsed.blocks,
+                        parser_fingerprint=fingerprint,
+                    ),
                 )
         parsed_versions.append((version, parsed))
     await _job_stage(sessions, job_id, lease, KnowledgeJobState.CHUNKING)
@@ -129,6 +162,33 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             )
         if len(chunks) > MAX_INDEX_CHUNKS:
             raise KnowledgeProcessingError(KnowledgeFailure.SIZE_LIMIT)
+
+    async def check_active():
+        """外部加工每批请求前后复核租约、取消、用户和最新索引代。"""
+        await _job_stage(sessions, job_id, lease)
+
+    enhanced = []
+    for version, _ in parsed_versions:
+        mode = configuration.get("document_options", {}).get(str(version.document_id), {}).get("processing_mode") or configuration.get(
+            "processing_mode",
+            KnowledgeProcessingMode.ORIGINAL,
+        )
+        if version.media_type in TABLE_MEDIA_TYPES and (
+            mode == KnowledgeProcessingMode.ENHANCED or mode == KnowledgeProcessingMode.AUTO and configuration.get("processing_identity")
+        ):
+            enhanced.append(version.id)
+    await _job_stage(sessions, job_id, lease, KnowledgeJobState.ENRICHING, skipped=not enhanced)
+    for version_id in enhanced:
+        await enrich_knowledge_chunks(
+            sessions,
+            job_id,
+            lease,
+            configuration,
+            [chunk for chunk in chunks if chunk.document_version_id == version_id],
+            check_active,
+        )
+    for chunk in chunks:
+        chunk.search_terms = " ".join(knowledge_tokens(chunk.retrieval_text or chunk.content))
     async with sessions() as db:
         previous = await db.get(KnowledgeJob, job_id)
         tokens, cost, reserved = previous.embedding_tokens, previous.estimated_cost, previous.reserved_tokens
@@ -139,10 +199,12 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             model, provider = await load_embedding_model(db, identity["model_id"])
             if embedding_identity(model, provider) != identity:
                 raise KnowledgeProcessingError(KnowledgeFailure.MODEL_UNAVAILABLE)
-        conservative_tokens = sum(len(chunk.content.encode()) for chunk in chunks)
+        conservative_tokens = sum(len((chunk.retrieval_text or chunk.content).encode()) for chunk in chunks)
         budget = configuration["embedding_cost_budget"]
+        token_budget = configuration["embedding_token_budget"]
         if (
-            conservative_tokens + reserved > configuration["embedding_token_budget"]
+            token_budget is not None
+            and conservative_tokens + reserved > token_budget
             or budget is not None
             and (model.input_price is None or Decimal(conservative_tokens + reserved) * model.input_price / Decimal(1000000) > Decimal(budget))
         ):
@@ -150,7 +212,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
         for offset in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
             await _job_stage(sessions, job_id, lease)
             batch = chunks[offset : offset + EMBEDDING_BATCH_SIZE]
-            reserved += sum(len(chunk.content.encode()) for chunk in batch)
+            reserved += sum(len((chunk.retrieval_text or chunk.content).encode()) for chunk in batch)
             async with sessions.begin() as db:
                 changed = await db.execute(
                     update(KnowledgeJob)
@@ -163,7 +225,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                 )
                 if changed.rowcount != 1:
                     raise KnowledgeProcessingError(KnowledgeFailure.CANCELLED)
-            result = await embed_texts(model, provider, [chunk.content for chunk in batch], dimensions=identity["dimensions"])
+            result = await embed_texts(model, provider, [chunk.retrieval_text or chunk.content for chunk in batch], dimensions=identity["dimensions"])
             for chunk, vector in zip(batch, result.vectors, strict=True):
                 chunk.embedding = vector
             tokens += result.tokens or 0
@@ -175,7 +237,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                     .where(KnowledgeJob.id == job_id, KnowledgeJob.lease_token == lease)
                     .values(embedding_tokens=tokens, estimated_cost=cost),
                 )
-            if tokens > configuration["embedding_token_budget"] or budget is not None and cost is not None and cost > Decimal(budget):
+            if (token_budget is not None and tokens > token_budget) or (budget is not None and cost is not None and cost > Decimal(budget)):
                 raise KnowledgeProcessingError(KnowledgeFailure.BUDGET_EXCEEDED)
     else:
         await _job_stage(sessions, job_id, lease, KnowledgeJobState.EMBEDDING, skipped=True)
@@ -195,6 +257,18 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             or kb.revision != index.revision
         ):
             raise KnowledgeProcessingError(KnowledgeFailure.CANCELLED)
+        if enhanced:
+            identity = configuration["processing_identity"]
+            model, provider = await load_processing_model(db, identity["model_id"])
+            if processing_identity(model, provider) != identity:
+                raise KnowledgeProcessingError(KnowledgeFailure.MODEL_UNAVAILABLE)
+            token_budget = configuration["processing_token_budget"]
+            if (token_budget is not None and (job.processing_tokens or 0) > token_budget) or (
+                configuration["processing_cost_budget"] is not None
+                and job.processing_estimated_cost is not None
+                and job.processing_estimated_cost > Decimal(configuration["processing_cost_budget"])
+            ):
+                raise KnowledgeProcessingError(KnowledgeFailure.BUDGET_EXCEEDED)
         await remove_keyword_rows(db, index_id)
         db.add_all(chunks)
         await db.flush()
@@ -385,5 +459,6 @@ async def prune_deleted_knowledge_blobs(sessions) -> int:
             ).all(),
         )
         if version_ids:
+            await db.execute(delete(KnowledgeEnrichmentCache).where(KnowledgeEnrichmentCache.document_version_id.in_(version_ids)))
             await db.execute(update(KnowledgeDocumentVersion).where(KnowledgeDocumentVersion.id.in_(version_ids)).values(extracted_text=None, blocks=None))
     return removed

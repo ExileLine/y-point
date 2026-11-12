@@ -12,7 +12,7 @@ from sqlalchemy import Integer, JSON, Numeric, String, Text, UniqueConstraint, e
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import KnowledgeJobState, KnowledgeIndexState, KnowledgeSearchMode
+from app.core.enums import KnowledgeJobState, KnowledgeIndexState, KnowledgeSearchMode, KnowledgeProcessingMode
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
@@ -35,8 +35,13 @@ class KnowledgeBase(CustomBaseModel):
     embedding_model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="实际验证的嵌入模型 ID")
     chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, default=800, comment="规范提取文本的分块字符上限")
     chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, default=100, comment="相邻片段重叠字符数")
-    embedding_token_budget: Mapped[int] = mapped_column(Integer, nullable=False, default=200000, comment="单次构建的嵌入输入预算")
+    embedding_token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="单次构建的嵌入输入预算，空值不限制累计 Token")
     embedding_cost_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="单次构建的嵌入估算费用上限")
+
+    processing_mode: Mapped[str] = mapped_column(String(16), nullable=False, default=KnowledgeProcessingMode.AUTO, comment="原文或增强加工策略")
+    processing_model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="独立配置的文档加工模型 ID")
+    processing_token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="单次构建跨重试的加工预留 Token 上限，空值不限制累计 Token")
+    processing_cost_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="单次构建加工估算费用上限，按模型币种")
 
 
 class KnowledgeShare(CustomBaseModel):
@@ -68,6 +73,8 @@ class KnowledgeDocument(CustomBaseModel):
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="展示用文件名")
     current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="当前上传版本号")
 
+    processing_options: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, comment="文档处理覆盖配置，索引任务固定快照")
+
 
 class KnowledgeDocumentVersion(CustomBaseModel):
     """保存私有文件引用及规范提取原文，引用位置对应此不可变版本。"""
@@ -89,6 +96,8 @@ class KnowledgeDocumentVersion(CustomBaseModel):
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False, comment="原始文件字节数")
     extracted_text: Mapped[str | None] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), nullable=True, comment="规范提取原文，片段位置以此为准")
     blocks: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="提取块的页码标题及原文偏移")
+
+    parser_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="解析器及文档选择配置的缓存摘要")
 
 
 class KnowledgeIndex(CustomBaseModel):
@@ -133,6 +142,26 @@ class KnowledgeChunk(CustomBaseModel):
     heading: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="所属章节标题")
     embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="固定模型和维度的单位长度向量")
 
+    source_locator: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="原文或表格工作表及单元格范围")
+    knowledge_notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="模型对本片段的解释，仅辅助检索，原文独立保留")
+    retrieval_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="含来源上下文及模型解释的检索文本")
+
+
+class KnowledgeEnrichmentCache(CustomBaseModel):
+    """按文档、证据及模型配置隔离已验证加工结果，重试不重复成功调用。"""
+
+    __table_name__ = "knowledge_enrichment_cache"
+    __table_args__ = (
+        UniqueConstraint("document_version_id", "fingerprint", name="uq_yp_knowledge_enrichment_version_key"),
+        {
+            "comment": "知识文档加工结果缓存",
+        },
+    )
+
+    document_version_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="不可变原始文档版本 ID")
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, comment="证据批次、解析与模型身份及提示版本摘要")
+    notes: Mapped[dict] = mapped_column(JSON, nullable=False, comment="已校验的片段位置到解释文本映射")
+
 
 class KnowledgeJob(CustomBaseModel):
     """任务租约及阶段持久化，取消、超时和重试都不能发布过期代。"""
@@ -155,6 +184,12 @@ class KnowledgeJob(CustomBaseModel):
     reserved_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="跨重试保守预留的嵌入输入用量")
     embedding_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="上游已报告嵌入输入用量")
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="已报告输入用量对应的估算费用")
+
+    processing_reserved_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="跨重试加工输入和输出保守预留用量")
+    processing_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="加工模型累计已报告 Token，未报告为空")
+    processing_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="已发起文档加工模型调用数，含失败请求")
+    processing_estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True, comment="加工模型累计已报告用量的估算费用")
+    processing_usage: Mapped[list] = mapped_column(JSON, nullable=False, default=list, comment="加工模型逐次用量、币种和耗时，不保存提示与响应")
 
 
 class AgentKnowledgeBase(CustomBaseModel):

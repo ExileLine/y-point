@@ -79,6 +79,7 @@ from app.models.knowledge import (
     AgentKnowledgeBase,
     RunKnowledgeBase,
     KnowledgeRetrieval,
+    KnowledgeEnrichmentCache,
 )
 
 __all__ += [
@@ -92,4 +93,5 @@ __all__ += [
     "AgentKnowledgeBase",
     "RunKnowledgeBase",
     "KnowledgeRetrieval",
+    "KnowledgeEnrichmentCache",
 ]

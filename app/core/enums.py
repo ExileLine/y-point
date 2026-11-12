@@ -312,6 +312,21 @@ class KnowledgeSearchMode(StrEnum):
     HYBRID = "hybrid"
 
 
+class KnowledgeProcessingMode(StrEnum):
+    """文档加工偏好，自动模式仅使用明确配置的能力。"""
+
+    AUTO = "auto"
+    ORIGINAL = "original"
+    ENHANCED = "enhanced"
+
+
+class KnowledgeSourceKind(StrEnum):
+    """知识证据来源的结构类型。"""
+
+    TEXT = "text"
+    TABLE = "table"
+
+
 class KnowledgeIndexState(StrEnum):
     """不可变索引代的发布状态。"""
 
@@ -327,6 +342,7 @@ class KnowledgeJobState(StrEnum):
     UPLOADED = "uploaded"
     PARSING = "parsing"
     CHUNKING = "chunking"
+    ENRICHING = "enriching"
     EMBEDDING = "embedding"
     INDEXING = "indexing"
     COMPLETED = "completed"
@@ -349,6 +365,8 @@ class KnowledgeFailure(StrEnum):
     RATE_LIMIT = "rate_limit"
     UPSTREAM = "upstream"
     INVALID_EMBEDDING = "invalid_embedding"
+    INVALID_KNOWLEDGE = "invalid_knowledge"
+    INVALID_STRUCTURE = "invalid_structure"
     MODEL_UNAVAILABLE = "model_unavailable"
     BUDGET_EXCEEDED = "budget_exceeded"
     STORAGE_UNAVAILABLE = "storage_unavailable"

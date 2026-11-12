@@ -13,7 +13,7 @@ Y-Point 智能助手平台后端。需求见 `y-point-dev.txt`；开发进度、
 | Skill | 标准文件包工作区，支持草稿/校验/发布、参考资料、完整 ZIP、多个模板独立契约、受管脚本沙箱及 Agent/Run 版本固定；报告 Skill ID、模板名称和字段错误支持在原运行预算内修正，候选仅来自本轮有权限的固定绑定。 |
 | Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
-| 知识库 | 私有或指定只读共享；文档版本、后台索引、关键词/向量混合检索及固定引用；Agent 检索使用实际用户权限，支持撤权、删除、取消与恢复。 |
+| 知识库 | 私有或指定只读共享；按格式解析文档，XLSX/CSV 保留完整记录和单元格来源，可独立配置模型生成检索解释；后台索引、关键词/向量混合检索、加工预览及固定引用；支持撤权、删除、取消与恢复。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、单次模型/工具时限及图步数预算；模型响应前连接失败有限重试、上下文与输出截断分类、工具并发排队和参数同轮纠正；worker 故障后按条件恢复已完成的无工具运行。 |
 | 文件与产物 | 私有上传和授权下载；TXT、PDF、DOCX、XLSX 等附件上下文及图片输入；模型生成常见格式文件、会话内按需读取旧产物并记录来源关系；开发环境管理员可按 Agent/会话盘点本人文件，并按名称批量清理本地正文。 |
 | 对话过程与统计 | 模型公开思考独立流式发布；Tool、Skill、MCP 等调用分类、耗时与脱敏失败原因；每轮及整个会话的耗时、累计已报告 Token，附件与产物大小。 |
@@ -855,7 +855,7 @@ API 和全部 worker 必须使用一致的并发配置、时钟、业务数据�
 
 知识库是独立持久资源，默认私有，仅创建者可管理，可向指定的有效用户授予只读权限。Agent 的 `knowledge_base_ids` 最多关联八个库；共享 Agent 只共享配置，接受方必须另有知识库授权。Run 提交时固定当时实际可见的已发布索引，尚无可用索引的库不会在本轮稍后自动切代。每次工具调用、模型嵌入返回后和引用读取都重新检查实际用户、知识库及文档状态。
 
-原始文件复用私有 Artifact/Blob 存储。本地后端默认写入 `ARTIFACT_STORAGE_DIR=.run-private/artifacts`，文件按 `yp_artifact.storage_key` 保存，不以原始文件名组织目录；切换 S3 后由对应桶和前缀保存正文。知识文档不按普通附件的三十天策略到期，仍计入用户文件配额。文档 ID 稳定，更新增加上传版本；原始哈希、文件名、提取原文与分块位置随版本保存。同一库、同一未删除文档的当前文件名和哈希相同时去重；不同库或用户分别保存。已存在的同名文件须使用文档更新接口，删除后可重新上传；通用附件删除接口拒绝直接删除知识原始文件，避免绕过文档与索引生命周期。
+原始文件复用私有 Artifact/Blob 存储。本地后端默认写入 `ARTIFACT_STORAGE_DIR=.run-private/artifacts`，文件按 `yp_artifact.storage_key` 保存，不以原始文件名组织目录；切换 S3 后由对应桶和前缀保存正文。知识文档不按普通附件的三十天策略到期，仍计入用户文件配额。文档 ID 稳定，更新增加上传版本；原始哈希、文件名、提取原文与分块位置随版本保存。同一库、同一未删除文档的当前文件名、哈希及有效处理选项相同时去重；不同库或用户分别保存。已存在的同名文件须使用文档更新接口，删除后可重新上传；通用附件删除接口拒绝直接删除知识原始文件，避免绕过文档与索引生命周期。
 
 ### 业务流程与调用链
 
@@ -868,8 +868,10 @@ flowchart TD
     B --> D[Worker 读取并解析文件]
     C --> D
     D --> E[缓存提取原文和结构块]
-    E --> F[按标题和页码分块，混合模式生成向量]
-    F --> G[同事务写入片段和全文索引，发布并切换活动索引]
+    E --> F[文本按结构分块，表格按完整记录分块]
+    F --> F1[按策略为表格生成独立检索解释，可复用缓存]
+    F1 --> F2[原文与解释共同构建检索文本，混合模式生成向量]
+    F2 --> G[同事务写入片段和全文索引，发布并切换活动索引]
     G --> H[手动检索：读取当前活动索引]
     G --> I[提交 Agent Run：固定本轮索引快照]
     I --> J[模型按需调用 search_knowledge_base]
@@ -881,7 +883,7 @@ flowchart TD
 ```
 
 1. **上传并排队**：[`_upload_knowledge_document()`](app/api/v1/knowledge.py) 调用 `save_upload()` 校验和保存文件，检查管理权限、配额、同名摘要及 `expected_revision`。[`enqueue_knowledge_index()`](app/services/knowledge.py) 以条件更新递增 revision，固定全库当前文档版本和配置，创建 `BUILDING` 索引及 `UPLOADED` 任务；文件元数据、文档版本和调度意图在同一次数据库提交中保存。异常时回滚数据库并补偿清理文件，Blob 与数据库之间没有跨系统原子事务。
-2. **后台构建并发布**：[`_knowledge_loop()`](app/cli/run_worker.py) 经 [`process_next_knowledge_job()`](app/services/knowledge_jobs.py) 领取租约，交给 `_build_knowledge_index()`。解析结果缓存到文档版本；[`chunk_knowledge()`](app/services/knowledge_parser.py) 按标题、页码和长度切块，混合模式通过 [`embed_texts()`](app/services/embedding_adapter.py) 分批生成归一化向量。发布事务再次检查用户、租约、取消状态和最新 revision，再一次性写入片段及全文索引、将索引置为 `READY`、切换 `active_index_id` 并完成任务；失败保留旧活动索引。
+2. **后台构建并发布**：[`_knowledge_loop()`](app/cli/run_worker.py) 经 [`process_next_knowledge_job()`](app/services/knowledge_jobs.py) 领取租约，交给 `_build_knowledge_index()`。解析结果按解析器和文档选项身份缓存到文档版本；[`chunk_knowledge()`](app/services/knowledge_parser.py) 对文本按标题、页码和长度切块，对表格按完整记录合并。XLSX/CSV 按处理策略通过 [`enrich_knowledge_chunks()`](app/services/knowledge_enrichment.py) 生成并缓存独立解释，原始数值与原文偏移保持不变；关键词和混合模式的检索输入均可包含解释，混合模式通过 [`embed_texts()`](app/services/embedding_adapter.py) 分批生成归一化向量。发布事务再次检查用户、租约、取消状态和最新 revision，再一次性写入片段及全文索引、将索引置为 `READY`、切换 `active_index_id` 并完成任务；失败保留旧活动索引。
 3. **手动检索**：搜索接口选择请求时的活动索引，进入 [`search_knowledge()`](app/services/knowledge.py)。服务先过滤授权索引及已删除文档，执行关键词和可选向量召回，以 RRF 融合并去重、截断；远程查询嵌入返回后及交付片段前再次鉴权。引用固定到索引代、文档版本和片段，字符偏移对应规范化提取原文；返回 `score` 是融合后的排序分数，不是直接的余弦相似度。
 4. **Agent 回答**：Agent 配置将关联保存到 `AgentKnowledgeBase`，默认聊天模型须通过工具调用能力验证。[`submit_session_run()`](app/api/v1/agent_sessions.py) 在创建 Run 的事务中调用 `snapshot_run_knowledge()`，保存实际用户有权访问的索引快照。[`make_worker_tool_resolver()`](app/services/worker_tools.py) 注册只读、无需审批的工具，[`knowledge_search_tool()`](app/services/knowledge_tool.py) 从本轮快照推导检索范围，仅向模型开放 `query/top_k`。模型自行决定是否调用，工具调用前后复核用户、Run 和租约；返回证据后，回答沿用既有 Run 执行链路保存。
 
@@ -893,7 +895,7 @@ flowchart TD
 | --- | --- | --- |
 | 文档上传版本 `version` | `KnowledgeDocumentVersion` | 文档 ID 保持不变，每次内容更新生成新版本，保存对应文件和提取结果。 |
 | 知识库版本 `revision` | `KnowledgeBase` | 最新文档清单及配置的期望版本；写请求携带 `expected_revision`，冲突返回 409。 |
-| 索引代 `index_id` | `KnowledgeIndex` | 固定完整文档版本清单、分块参数和嵌入模型身份；构建成功后才成为活动索引。 |
+| 索引代 `index_id` | `KnowledgeIndex` | 固定完整文档版本清单、分块参数、逐文档处理选项及加工/嵌入模型身份；构建成功后才成为活动索引。 |
 
 例如 revision 已递增到 3，而 `active_index_id` 仍指向 revision 2 的索引，表示新代尚未发布；旧代继续提供检索。Run 固定提交时的索引，即使新代随后发布也不切换；快照固定数据版本，当前权限仍在每次访问时复核。
 
@@ -902,17 +904,51 @@ flowchart TD
 | 私有本地目录 / S3、既有 `yp_artifact` | Blob 保存原始字节；Artifact 保存存储键、所有者、摘要、大小及状态，上传时建立引用。 |
 | `yp_knowledge_base`、`yp_knowledge_share` | 知识库配置、revision、活动索引指针，以及指定用户只读授权。 |
 | `yp_knowledge_document`、`yp_knowledge_document_version` | 稳定文档及当前版本、每版文件引用；Worker 追加提取原文和结构块缓存。 |
-| `yp_knowledge_index`、`yp_knowledge_job` | 排队时保存完整构建快照；运行中分阶段提交状态、租约、尝试次数及嵌入预算和用量。 |
-| `yp_knowledge_chunk`、数据库原生全文结构 | 正文片段、关键词、向量、标题、页码及偏移，在发布事务内写入；SQLite FTS 与片段同事务维护。 |
+| `yp_knowledge_index`、`yp_knowledge_job` | 排队时保存完整构建快照；运行中分阶段提交状态、租约、尝试次数及分别统计的加工/嵌入预算和用量。 |
+| `yp_knowledge_chunk`、数据库原生全文结构 | 原始证据、表格来源、独立模型解释、检索文本、关键词、向量及偏移，在发布事务内写入；SQLite FTS 与片段同事务维护。 |
+| `yp_knowledge_enrichment_cache` | 按不可变文档版本及证据/模型/提示版本摘要保存已校验的解释批次，重试或重建复用；删除文档正文时清理。 |
 | `yp_agent_knowledge_base`、`yp_run_knowledge_base` | Agent 关联范围，以及 Run 提交时实际可见的固定索引代。 |
 | `yp_knowledge_retrieval` | Agent 工具检索交付时记录查询哈希、返回片段引用、数量、字节、耗时及查询嵌入用量。 |
 | 既有 Run 消息、事件和 checkpoint 存储 | 保存问题、最终回答、执行事件及恢复状态；业务数据库与 checkpoint 之间沿用既有补偿机制。 |
 
-文档更新接口只提交变化文件，但当前每代索引仍按完整知识库构建，可复用解析缓存，尚未复用未变化片段的嵌入。新代构建期间保留旧代；更新清单导致 revision 变化后，过期任务不能覆盖新代。删除成功提交后，通过逻辑状态阻断所有代的后续检索和引用，再由 Worker 分批清理正文；既有消息和检查点历史不自动抹除。任务中断通过租约回收和有限重试恢复，解析、预算或上游错误保留失败类别，取消优先于恢复。
+文档更新接口只提交变化文件，但当前每代索引仍按完整知识库构建，可复用解析缓存及已完成的模型加工批次，尚未复用未变化片段的嵌入。新代构建期间保留旧代；更新清单导致 revision 变化后，过期任务不能覆盖新代。删除成功提交后，通过逻辑状态阻断所有代的后续检索和引用，再由 Worker 分批清理正文；既有消息和检查点历史不自动抹除。任务中断通过租约回收和有限重试恢复，解析、预算或上游错误保留失败类别，取消优先于恢复。
+
+### 按格式处理与模型加工（第一阶段，2026-11-12）
+
+知识构建采用“原始证据 + 可追溯来源 + 独立检索解释”的结构。解释用于帮助召回业务主题、字段含义及适合检索的问题，不能替代原文或作为计算结果。`KnowledgeChunk.content` 始终等于对应文档版本 `extracted_text[start_offset:end_offset]`；`knowledge_notes` 单独保存模型解释，`retrieval_text` 合并两者用于关键词和嵌入。前端的检索、引用、对话检索记录及「加工结果」预览分别展示原始证据与模型解释。
+
+| 文档类型 | 当前处理方式 | 追溯方式与边界 |
+| --- | --- | --- |
+| TXT / Markdown / DOCX | 沿用文本、标题与长度分块；DOCX 提取段落和表格文字。 | 原文字符偏移、标题；不伪造页码。 |
+| XLSX | 优先按 Excel Table，未定义 Table 时按空白行分区；多行/合并表头关联字段，按完整记录分块；可选择可见工作表。 | 工作表、原始表格与表头范围、记录行和实际列字母；排除隐藏工作表及隐藏行列（含分组隐藏列）。 |
+| UTF-8 CSV | 识别逗号、分号、Tab 或竖线分隔，处理引号与字段内换行，校验字段数量，按完整记录分块。 | 表头与记录的物理行、列范围；支持 BOM，不猜测非 UTF-8 编码。 |
+| 文本 PDF | 沿用可提取文字和实际页号分块。 | 扫描或无文字页仍返回 `ocr_required`；复杂布局/OCR 属于第二阶段。 |
+
+表格的公式不执行、不重新计算，保留公式表达式及文件已有缓存结果；缺少缓存会明确标注“未提供，未计算”。数字可携带原始显示格式，字段不因隐藏列而错位。模型只解释当前证据中的可见主题、字段和单位，不要求它猜测缺失值、汇总金额或跨片段排名；解释仍属于模型生成内容，业务事实以原始证据核对。当前表格区域识别针对常规表格；多张横向排版或不规则报表应先整理结构，不能保证任意工作簿自动还原业务含义。
+
+知识库配置的 `processing_mode` 支持三种值，单文档可覆盖该默认值：
+
+| 策略 | 行为 |
+| --- | --- |
+| `auto`（默认） | 自动按格式解析。只有明确配置 `processing_model_id` 时，才为 XLSX/CSV 增加模型解释；未配置时只做结构化解析，不隐式选择模型。 |
+| `original` | 该策略生效的文档只保留结构化原文，不调用加工模型。 |
+| `enhanced` | 为 XLSX/CSV 生成解释，必须指定通过文本能力验证且可用的加工模型。常规文本仍沿用原有处理，当前不进行 PDF OCR。 |
+
+`processing_model_id` 独立于 `embedding_model_id` 和 Agent 对话模型。`processing_token_budget`（单次加工 Token 预留上限）与 `embedding_token_budget`（单次索引嵌入 Token 预算）默认均为 `null`，页面留空或 API 传 `null` 表示不限制任务累计 Token；填写时须为 1–2000000 的整数，按每次索引构建的输入/输出或嵌入输入保守预留计算，跨重试累计。`processing_cost_budget` 按加工模型币种限制估算费用，启用前必须填写模型输入和输出价格。加工与嵌入分别记账，任务提供 `processing_call_count`、`processing_tokens`、`processing_reserved_tokens`、`processing_estimated_cost` 和逐次耗时/币种/失败类别的 `processing_usage`；供应商未报告的实际用量显示为未报告，不能把保守预留当成实际消耗。
+
+迁移 `051` 保留已有知识库填写的数值和历史任务快照。已有知识库如需取消累计额度，在「设置 → 分块与索引预算」清空上述两个 Token 字段后「保存并重建」；旧任务的重试继续使用原快照，不会自动套用新配置。取消 Token 预算仍记录预留、实际用量和费用，独立费用预算、模型上下文/单次输出限制、单批大小、文件大小及任务总超时仍生效；并不保证任务只会在触发供应商模型上限时停止。
+
+模型加工每批最多两条证据，按上下文窗口继续缩小，输出最多 2048 Token；单条证据也放不下时明确失败，不截断原始记录。结果须为覆盖本批每条证据的严格 JSON、每条解释最多三百字符；缺失、重复、越界或截断的结果记录为 `invalid_knowledge`。成功批次写入缓存，模型/连接/价格/提示版本或证据变化均使缓存失效。失败、超时和取消请求仍保留预留预算，重试复用已完成批次；失败与取消均不发布半成品，旧活动索引继续可用。
+
+上传/更新的 multipart 可增加 `processing_options` JSON，例如 `{"processing_mode":"enhanced","sheet_names":["报价"],"header_rows":2}`。省略该字段保留既有文档选项，新文档使用默认；`sheet_names=[]` 表示全部可见工作表，`header_rows` 为 1–5，最多选择二十个不同工作表。CSV 不接受工作表选择，非表格不接受工作表或多行表头参数。处理选项变化须通过更新文档生成新版本，保持索引快照与解析缓存对应。
+
+「加工结果」读取已发布活动索引，支持分页；新版本未发布时标记旧版，不重新调用模型，分页期间切代会从新代首页重新读取。当前没有人工确认后才发布的审批步骤。PDF OCR/布局识别为第二阶段，HTML 正文去噪、JSON/YAML 配置结构化、PPTX 等类型路由及进一步检索评测为第三阶段，尚未开放这些新格式上传。
+
+新增手工验收夹具生成工具 `scripts/generate_knowledge_phase1_fixtures.py`，使用本项目的文件校验器、解析器与分块逻辑生成并校验十七份正常/异常样例，涵盖表头、隐藏数据、公式缓存、CSV 引号和多行、分页及错误输入，不连接业务库、不调用模型。运行 `.venv/bin/python scripts/generate_knowledge_phase1_fixtures.py` 前，`docs/knowledge-phase1-manual/` 中须已有配套 `README.md` 与 `验收记录.md`；脚本仅生成样例和校验清单，打包时读取上述人工文档并输出同名 ZIP，不创建或覆盖它们。
 
 ### 使用与接口
 
-先启动 API 和独立 worker。关键词模式无需嵌入服务；混合模式先由管理员创建嵌入模型，调用 `POST /api/v1/models/{model_id}/embedding-test`，以实际响应验证 `embedding` 能力和维度。通用 `/capabilities/test` 不接受 embedding，聊天、流式或工具能力验证不能替代嵌入验证；探测失败会撤销嵌入标记。模型目录响应中的 `embedding_dimensions` 是探测所得值。适配器支持 Ollama、OpenAI、OpenAI Compatible 和 Azure OpenAI 的嵌入协议；具体上游服务须分别验证。
+先启动 API 和独立 worker。关键词模式无需嵌入服务；混合模式先由管理员创建嵌入模型，调用 `POST /api/v1/models/{model_id}/embedding-test`，以实际响应验证 `embedding` 能力和维度。通用 `/capabilities/test` 不接受 embedding，聊天、流式或工具能力验证不能替代嵌入验证；探测失败会撤销嵌入标记。嵌入探测成功时同时记录声明能力与已验证能力，模型目录响应中的 `embedding_dimensions` 是探测所得值。知识库设置的嵌入下拉框包含已声明或已验证 `embedding` 的启用模型，兼容历史上仅保存验证结果的模型；只有已通过验证且有实际维度的模型才能用于混合检索构建。适配器支持 Ollama、OpenAI、OpenAI Compatible 和 Azure OpenAI 的嵌入协议；具体上游服务须分别验证。
 
 | 接口（统一以 `/api/v1` 为前缀） | 行为 |
 | --- | --- |
@@ -920,9 +956,10 @@ flowchart TD
 | `GET /knowledge-bases/{id}`、`PUT /knowledge-bases/{id}` | 读取详情；提交完整配置与 `expected_revision`，排队创建新索引代。 |
 | `DELETE /knowledge-bases/{id}?expected_revision=…` | 删除知识库、立即阻断访问并取消受影响运行，后台清理正文。 |
 | `POST/GET /knowledge-bases/{id}/shares`、`DELETE /knowledge-bases/{id}/shares/{user_id}` | 授予、查看或撤销指定用户只读权限；POST 传 `user_id`。 |
-| `POST /knowledge-bases/{id}/documents` | multipart 上传 `file`、`expected_revision`，返回文档、最新 revision、任务 ID 和去重标记；新任务返回 HTTP 202。 |
+| `POST /knowledge-bases/{id}/documents` | multipart 上传 `file`、`expected_revision` 及可选 `processing_options`，返回文档、最新 revision、任务 ID 和去重标记；新任务返回 HTTP 202。 |
 | `PUT /knowledge-bases/{id}/documents/{document_id}` | 以相同 multipart 字段上传该文档的新版本。 |
 | `GET /knowledge-bases/{id}/documents`、`DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=…` | 列出当前文档；删除成功提交后影响所有代的检索和引用，嵌入配置失效时的现有限制见下方已知问题。 |
+| `GET /knowledge-bases/{id}/documents/{document_id}/processing-preview?after=-1&limit=20` | 重新鉴权分页读取已发布原始证据、来源及模型解释，最多五十段；返回当前上传版和已索引版，响应禁止缓存，不触发加工。 |
 | `POST /knowledge-bases/{id}/rebuild` | 传 `expected_revision`，固定当前文档版本清单，返回 HTTP 202 和新任务。 |
 | `GET /knowledge-bases/{id}/jobs`、`GET /knowledge-bases/jobs/{job_id}` | 创建者查看任务阶段、履历、跳过记录、尝试次数、用量与脱敏失败类别。 |
 | `POST /knowledge-bases/jobs/{job_id}/cancel`、`POST /knowledge-bases/jobs/{job_id}/retry?expected_attempts=…` | 请求取消；仅最新期望代可在尝试上限内重试，过期任务应重建。 |
@@ -940,8 +977,12 @@ flowchart TD
   "embedding_model_id": 2,
   "chunk_size": 800,
   "chunk_overlap": 100,
-  "embedding_token_budget": 200000,
-  "embedding_cost_budget": null
+  "embedding_token_budget": null,
+  "embedding_cost_budget": null,
+  "processing_mode": "auto",
+  "processing_model_id": null,
+  "processing_token_budget": null,
+  "processing_cost_budget": null
 }
 ```
 
@@ -958,7 +999,7 @@ flowchart TD
 }
 ```
 
-命中包含 `knowledge_base_id`、`index_id`、`document_id`、`document_version`、`chunk_id`、原文件名和 SHA-256、`start_offset/end_offset`、页码、标题及正文，引用形如 `kb:1:i:2:c:7`。偏移是规范化提取原文的字符位置，正文等于对应子串；PDF 使用实际页号，DOCX 不伪造页码。无候选返回 `no_answer=true`。`keyword_only=true` 可在嵌入服务不可用时显式使用关键词检索。
+命中包含 `knowledge_base_id`、`index_id`、`document_id`、`document_version`、`chunk_id`、原文件名和 SHA-256、`start_offset/end_offset`、页码、标题及正文，引用形如 `kb:1:i:2:c:7`。偏移是规范化提取原文的字符位置，正文等于对应子串；PDF 使用实际页号，DOCX 不伪造页码；表格额外返回 `source_locator`，解释额外返回 `knowledge_notes`，正文/解释共同计入检索字节预算。无候选返回 `no_answer=true`。`keyword_only=true` 可在嵌入服务不可用时显式使用关键词检索。
 
 ### 检索方式、阈值与分数
 
@@ -1057,13 +1098,13 @@ Agent 关联请求示例，`expected_version=1` 仅作格式示例，必须替�
 
 ### 索引、格式与运行边界
 
-上传请求只保存文件和调度意图，解析、分块、嵌入及索引交给 worker。任务持久化 `uploaded → parsing → chunking → embedding → indexing → completed` 与失败、请求取消和取消终态；纯关键词或空库明确记录跳过 embedding。总处理上限 180 秒，解析子进程上限 25 秒，最多三次领取；解析期间限制 CPU 和文件描述符，Linux 同时限制虚拟内存。正常停止 worker 会重新排队未完成任务，强制终止后等待数据库租约过期恢复。重试保留已报告的用量和保守预留，未知上游是否完成时也不会重新获得整份预算。
+上传请求只保存文件和调度意图，解析、分块、嵌入及索引交给 worker。任务持久化 `uploaded → parsing → chunking → enriching → embedding → indexing → completed` 与失败、请求取消和取消终态；未启用表格加工时记录跳过 enriching，纯关键词或空库明确记录跳过 embedding。总处理上限 180 秒，解析子进程上限 25 秒，最多三次领取；解析期间限制 CPU 和文件描述符，Linux 同时限制虚拟内存。正常停止 worker 会重新排队未完成任务，强制终止后等待数据库租约过期恢复。重试保留已报告的用量和保守预留，未知上游是否完成时也不会重新获得整份预算。
 
 每代固定完整文档版本清单、分块配置和嵌入身份。文件变更、重建或检索配置变更创建新代，片段、原生全文设施、索引状态及活动指针在一次事务发布，且必须仍是最新期望代。失败或取消保留旧活动索引；Run 已固定的旧代继续用于本轮引用。嵌入模型、维度或供应商连接身份变化必须通过新代切换，不能混用向量空间。历史有效代保留以支撑引用，并受用户文件配额和部署容量管理约束。
 
-支持 UTF-8 TXT、Markdown、带可提取文本的 PDF 和 DOCX。PDF 按文本和页定位，不保证复杂版式或表格重建，最多二百页；扫描或空白页返回 `ocr_required`，不执行自动 OCR。DOCX 保留段落、标题及表格单元格文本，使用标题/字符位置定位。单文件最大 10 MiB，multipart 实际接收上限 11 MiB；每库当前文档最多一百份、原始文件合计 50 MiB，每代最多二千片段；提取原文最多五十万字符。长文按结构分块并重叠，检索合并完全相同的片段正文。
+支持 UTF-8 TXT、Markdown、带可提取文本的 PDF、DOCX、XLSX 和 UTF-8 CSV。PDF 按文本和页定位，不保证复杂版式或表格重建，最多二百页；扫描或空白页返回 `ocr_required`，不执行自动 OCR。DOCX 保留段落、标题及表格单元格文本，使用标题/字符位置定位。单文件最大 10 MiB，multipart 实际接收上限 11 MiB；每库当前文档最多一百份、原始文件合计 50 MiB，每代最多二千片段；提取原文最多五十万字符。长文按结构分块并重叠，检索合并完全相同的片段正文。表格上限为每表/工作表两万行、二百列、累计十万个单元格；规范记录最多一万条且单条最多两千字符，超限明确失败，不静默舍弃记录。表格可合并完整记录，单条记录可超过较小的 `chunk_size`，但仍不超过两千字符。XLSX 解压后总大小上限 32 MiB，拒绝宏和加密文件。
 
-嵌入每批最多十六段、每段最多 8192 UTF-8 字节，实际维度最多 4096；响应最多 4 MiB，验证数量、维度、有限数值与非零范数并归一化。Token 预算在发送前按输入字节数保守预留并跨重试累计，另记录上游实际用量；启用费用预算须配置模型输入价格，费用按该模型币种核算。解析、索引准备与其他依赖准备共用 `TOOL_PREPARATION_*` 名额，HTTP 检索和嵌入探测共用 `TOOL_CALL_*` 名额，Agent 工具复用 Registry 的运行预算和租约。
+嵌入每批最多十六段、每段最多 8192 UTF-8 字节，实际维度最多 4096；响应最多 4 MiB，验证数量、维度、有限数值与非零范数并归一化。Token 预算可留空以不限制累计量；填写时在发送前按输入字节数保守预留并跨重试累计，留空时仍记录预留和上游实际用量；启用费用预算须配置模型输入价格，费用按该模型币种核算。解析、索引准备与其他依赖准备共用 `TOOL_PREPARATION_*` 名额，HTTP 检索和嵌入探测共用 `TOOL_CALL_*` 名额，Agent 工具复用 Registry 的运行预算和租约。
 
 知识文档上传与更新沿用请求体限额中间件，既检查声明的 `Content-Length`，也累计未声明长度的实际接收字节；超过 11 MiB 的 multipart 请求统一返回 HTTP 413，单文件仍限制为 10 MiB。请求日志对 `query`、`extracted_text`、`evidence_reference` 字段作脱敏处理，查询原文不写入 Run 检索审计。
 
@@ -1112,9 +1153,17 @@ ON yp_knowledge_chunk USING gin (to_tsvector('simple', search_terms));
 
 知识资源表及模型维度字段由 Alembic 迁移管理，表间无数据库外键。升级前备份业务库，运行 `uv run alembic upgrade head` 和 `uv run alembic check`，重启 API、worker 使路由和知识任务循环生效。降级会删除知识表和检索记录，应先备份所需知识数据；私有 Blob 另按存储备份/保留策略管理。
 
+### 如何判断是否使用了向量检索
+
+向量检索以本轮固定的已发布索引配置为准：混合模式且未指定 `keyword_only=true` 时，系统使用索引绑定的嵌入模型生成查询向量，默认筛选余弦相似度不低于 `0.7` 的候选；关键词与向量各最多召回八十个候选，以排名倒数融合后按 `top_k`、正文和解释的合计字节预算及原文去重返回。最终 `score` 是融合排名分值，不是余弦相似度。`auto/original/enhanced` 决定文档加工方式，不决定是否启用向量检索；使用向量还须选择混合检索并成功发布索引。
+
+对话的「本轮知识检索记录」和 `GET /runs/{run_id}/knowledge-retrievals` 返回 `embedding_usage`；成功记录中存在查询嵌入用量说明已执行查询向量生成和向量检索分支，但不能证明最终某个引用通过了向量阈值。现有审计仅保留融合后的引用、嵌入用量、耗时和总命中数，未保存逐片段关键词/向量召回来源、原始相似度及两路排名，历史记录无法据此还原当时的逐片段命中来源。检索返回片段也不等于模型最终一定采用了该片段。
+
+SQLite 的 `exact` 已支持向量召回，通过读取已保存的归一化向量逐条计算相似度实现，未建立数据库原生向量加速索引。切换 PostgreSQL 不会自动启用 `pgvector` 或创建 HNSW/IVFFlat；关键词 GIN 索引也不等于向量索引。逐片段召回解释和向量加速索引属于后续开发范围。
+
 ### 已知限制
 
-hybrid 知识库删除文档时会同步创建新索引任务，并重新校验嵌入配置。如果模型停用、被删除或独立验证失效，删除请求可能返回 HTTP 409 / 10005，整个事务回滚，文档仍未删除，关键词检索和旧引用仍可访问。调用方须确认删除请求成功；收到错误时不能将文档显示为已删除。实现见 [delete_knowledge_document()](app/api/v1/knowledge.py) 与 [enqueue_knowledge_index()](app/services/knowledge.py)；处理进度与复现证据见 `y-point-server-todo.md`。
+知识库删除文档时会同步创建新索引任务，并重新校验所配置的嵌入及加工模型。如果已配置模型停用、被删除或独立验证失效，删除请求可能返回 HTTP 409 / 10005，整个事务回滚，文档仍未删除，关键词检索和旧引用仍可访问。调用方须确认删除请求成功；收到错误时不能将文档显示为已删除。实现见 [delete_knowledge_document()](app/api/v1/knowledge.py) 与 [enqueue_knowledge_index()](app/services/knowledge.py)；处理进度与复现证据见 `y-point-server-todo.md`。
 
 ## Agent 对话业务流程
 

@@ -294,9 +294,19 @@ def test_revision_upload_limit_and_embedding_probe_permissions(tmp_path, monkeyp
                 },
             )
             assert generic_probe.status_code == 400
+            async with sessions.begin() as db:
+                model = await db.get(ModelCatalog, 2)
+                model.capabilities = [ModelCapability.TEXT]
+                model.verified_capabilities = []
+                model.embedding_dimensions = None
             monkeypatch.setattr(knowledge_api, "embed_texts", probe)
             response = await client.post("/api/v1/models/2/embedding-test", headers=owner)
             assert response.json()["data"]["dimensions"] == 3
+            async with sessions() as db:
+                model = await db.get(ModelCatalog, 2)
+                assert ModelCapability.EMBEDDING in model.capabilities
+                assert ModelCapability.EMBEDDING in model.verified_capabilities
+                assert model.capabilities.count(ModelCapability.EMBEDDING) == 1
 
             async def unavailable(*args, **kwargs):
                 """上游失败后不能继续沿用旧的嵌入验证。"""

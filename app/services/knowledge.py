@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_config
 from app.core.custom_exception import CustomException
-from app.core.enums import KnowledgeIndexState, KnowledgeJobState, KnowledgeRerank, KnowledgeSearchMode
+from app.core.enums import KnowledgeProcessingMode, KnowledgeIndexState, KnowledgeJobState, KnowledgeRerank, KnowledgeSearchMode
 from app.models.admin import Admin
 from app.models.base import shanghai_now
 from app.models.knowledge import (
@@ -31,6 +31,7 @@ from app.models.knowledge import (
     RunKnowledgeBase,
 )
 from app.schemas.knowledge import KnowledgeSearchIn
+from app.services.knowledge_enrichment import load_processing_model, processing_identity
 from app.services.embedding_adapter import embed_texts, embedding_identity, load_embedding_model
 from app.services.knowledge_backend import keyword_candidates, knowledge_tokens, vector_candidates
 from app.services.knowledge_parser import KnowledgeProcessingError
@@ -81,6 +82,24 @@ async def validate_knowledge_configuration(db: AsyncSession, values: dict) -> di
         if configuration["embedding_cost_budget"] is not None and model.input_price is None:
             raise CustomException(status_code=409, custom_code=10005, detail="启用嵌入费用预算前须配置输入价格")
         configuration["embedding_identity"] = embedding_identity(model, provider)
+    for key, default in (
+        ("processing_mode", KnowledgeProcessingMode.AUTO),
+        ("processing_model_id", None),
+        ("processing_token_budget", None),
+        ("processing_cost_budget", None),
+    ):
+        value = values.get(key, default)
+        configuration[key] = str(value) if key == "processing_cost_budget" and value is not None else value
+    if configuration["processing_mode"] == KnowledgeProcessingMode.ENHANCED and configuration["processing_model_id"] is None:
+        raise CustomException(status_code=409, custom_code=10005, detail="增强理解必须指定文档加工模型")
+    if configuration["processing_model_id"] is not None:
+        try:
+            model, provider = await load_processing_model(db, configuration["processing_model_id"])
+        except KnowledgeProcessingError:
+            raise CustomException(status_code=409, custom_code=10005, detail="文档加工模型未通过文本验证或当前不可用") from None
+        if configuration["processing_cost_budget"] is not None and (model.input_price is None or model.output_price is None):
+            raise CustomException(status_code=409, custom_code=10005, detail="启用加工费用预算前须配置模型输入和输出价格")
+        configuration["processing_identity"] = processing_identity(model, provider)
     return configuration
 
 
@@ -110,6 +129,16 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
     if len(versions) > MAX_KNOWLEDGE_DOCUMENTS or sum(version.byte_size for version in versions) > MAX_KNOWLEDGE_BYTES:
         raise CustomException(status_code=413, custom_code=10005, detail="知识库文档数量或总容量超限")
     configuration = await validate_knowledge_configuration(db, {column.key: getattr(item, column.key) for column in item.__table__.columns})
+    options = (
+        await db.execute(
+            select(KnowledgeDocument.id, KnowledgeDocument.processing_options).where(KnowledgeDocument.id.in_([version.document_id for version in versions])),
+        )
+    ).all()
+    configuration["document_options"] = {str(document_id): settings or {} for document_id, settings in options}
+    if configuration["processing_model_id"] is None and any(
+        settings.get("processing_mode") == KnowledgeProcessingMode.ENHANCED for _, settings in options if settings
+    ):
+        raise CustomException(status_code=409, custom_code=10005, detail="文档指定增强理解前须配置知识库加工模型")
     index = KnowledgeIndex(
         knowledge_base_id=item.id,
         revision=expected_revision + 1,
@@ -205,6 +234,8 @@ def _citation(chunk: KnowledgeChunk, version: KnowledgeDocumentVersion, index: K
         "page": chunk.page,
         "heading": chunk.heading,
         "content": chunk.content,
+        "source_locator": chunk.source_locator,
+        "knowledge_notes": chunk.knowledge_notes,
     }
 
 
@@ -310,7 +341,7 @@ async def search_knowledge(
             digest = hashlib.sha256(chunk.content.encode()).digest()
             if digest in seen_content:
                 continue
-            size = len(chunk.content.encode())
+            size = len(chunk.content.encode()) + len((chunk.knowledge_notes or "").encode())
             if size + byte_count > body.max_bytes or len(hits) >= body.top_k:
                 continue
             hit = _citation(chunk, version, by_index[chunk.index_id])
@@ -342,4 +373,48 @@ async def search_knowledge(
         "no_answer": not hits,
         "byte_count": byte_count,
         "untrusted_data": True,
+    }
+
+
+async def load_document_processing_preview(db: AsyncSession, actor_id: int, knowledge_base_id: int, document_id: int, after: int, limit: int) -> dict:
+    """按活动代分页预览原文证据及模型解释，旧代仍标明其真实版本和处理快照。"""
+    kb = await require_knowledge_base(db, knowledge_base_id, actor_id)
+    document = await db.scalar(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.id == document_id,
+            KnowledgeDocument.knowledge_base_id == knowledge_base_id,
+            KnowledgeDocument.is_deleted == 0,
+        ),
+    )
+    if document is None:
+        raise CustomException(status_code=404, custom_code=10002, detail="知识文档不存在")
+    index = await db.get(KnowledgeIndex, kb.active_index_id) if kb.active_index_id is not None else None
+    rows = (
+        (
+            await db.execute(
+                select(KnowledgeChunk, KnowledgeDocumentVersion)
+                .join(
+                    KnowledgeDocumentVersion,
+                    KnowledgeDocumentVersion.id == KnowledgeChunk.document_version_id,
+                )
+                .where(
+                    KnowledgeChunk.index_id == kb.active_index_id,
+                    KnowledgeChunk.document_id == document_id,
+                    KnowledgeChunk.position > after,
+                )
+                .order_by(KnowledgeChunk.position)
+                .limit(limit + 1),
+            )
+        ).all()
+        if index is not None and index.state == KnowledgeIndexState.READY
+        else []
+    )
+    return {
+        "index_id": index.id if index is not None else None,
+        "current_version": document.current_version,
+        "indexed_version": rows[0][1].version if rows else None,
+        "processing_options": index.configuration.get("document_options", {}).get(str(document_id), {}) if index is not None else {},
+        "items": [_citation(chunk, version, index) for chunk, version in rows[:limit]],
+        "has_more": len(rows) > limit,
+        "next_after": rows[min(limit, len(rows)) - 1][0].position if rows else after,
     }
