@@ -11,9 +11,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from app.core.enums import MessageRole, ModelCapability, SessionModelReason
+from app.core.enums import MessageRole, ModelCapability, RunState, SessionModelReason
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
-from app.schemas.run import RunCallOut, RunOut
+from app.schemas.run import RunMetricsOut, RunCallOut, RunOut
 
 
 SessionTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
@@ -89,6 +89,17 @@ class SessionRunCreateIn(BaseModel):
     )
 
 
+class SessionMetricsOut(BaseModel):
+    """整个会话所有轮次的累计时长和已报告用量。"""
+
+    run_count: int = Field(ge=0, description="会话全部轮次数，包含失败与取消", examples=[24])
+    active_run_count: int = Field(ge=0, description="尚未结束的轮次数，用于界面持续计时", examples=[1])
+    elapsed_ms: int = Field(ge=0, description="各轮提交至首次终态或统计时刻的耗时之和，排除轮次间空闲", examples=[123400])
+    total_tokens: int | None = Field(ge=0, description="每轮累计已报告 Token 之和；非空会话完全未报告时为空", examples=[18234])
+    missing_duration_runs: int = Field(ge=0, description="缺少终态事件而无法计算耗时的历史轮次数", examples=[0])
+    calculated_at: datetime = Field(description="统计时间，采用带时区的服务器时间", examples=["2026-11-11T22:00:00+08:00"])
+
+
 class SessionRunPageOut(BaseModel):
     items: list[RunOut] = Field(description="当前页运行", examples=[[]])
     total: int = Field(description="该会话运行总数", examples=[1])
@@ -106,6 +117,13 @@ class SessionMessageOut(BaseModel):
     provider_name: str | None = Field(default=None, description="模型供应商当前名称", examples=["本地 Ollama"])
     role: MessageRole = Field(description="消息角色", examples=["assistant"])
     content: str = Field(description="消息正文", examples=["已整理需求"])
+    reasoning_content: str = Field(default="", description="本轮模型显式公开的思考文本，按事件顺序恢复；旧轮次可能为空", examples=["先核对输入资料。"])
+    partial_content: str = Field(
+        default="", description="失败、超时或取消前已公开的正文；仅展示，不作为完成回答或后续模型上下文", examples=["已检查第一节，尚未完成。"]
+    )
+    run_state: RunState | None = Field(default=None, description="消息所属轮次的当前状态，用于标识未完成内容", examples=["failed"])
+    failure_code: str | None = Field(default=None, description="消息所属轮次的脱敏故障类别", examples=["model_output_limit_exceeded"])
+    metrics: RunMetricsOut | None = Field(default=None, description="本轮耗时和累计已报告用量", examples=[None])
     calls: list[RunCallOut] = Field(default_factory=list, description="消息所属运行实际调用的脱敏名称和状态；失败轮次可由用户消息恢复调用记录", examples=[[]])
     create_time: datetime = Field(description="消息创建时间", examples=["2026-10-26T22:00:00"])
     attachments: list[ArtifactReferenceOut] = Field(default_factory=list, description="用户消息引用的上传文件", examples=[[]])

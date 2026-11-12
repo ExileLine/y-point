@@ -284,7 +284,7 @@ def test_optional_output_wire_payload(monkeypatch: pytest.MonkeyPatch, kind: Pro
 
 
 def test_provider_required_limit_and_input_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    """必须指定额度的供应商拒绝空值，输入预算不暗中使用平台输出默认值。"""
+    """必须指定额度的供应商拒绝空值，空额度只预留上下文而不向供应商增加输出上限。"""
     monkeypatch.setattr(model_adapter, "decrypt_credentials", lambda _: ("test-key", {}))
     provider = ProviderConnection(id=1, kind=ProviderKind.ANTHROPIC, base_url="https://local.example/v1", status=1, is_deleted=0)
     catalog = ModelCatalog(id=1, provider_id=1, external_id="claude-test", verified_capabilities=[ModelCapability.TEXT], status=1, is_deleted=0)
@@ -298,7 +298,7 @@ def test_provider_required_limit_and_input_budget(monkeypatch: pytest.MonkeyPatc
     probe = build_chat_model(catalog, provider)
     assert probe.max_tokens == 1024
     config = RuntimeRunConfig(run_id="run", owner_id=1, thread_id="thread", model_id=1, tool_names=(), context_window=65536, max_output_tokens=None)
-    assert config.input_budget() == 65536 - CONTEXT_OVERHEAD_TOKENS
+    assert config.input_budget() == 65536 - 16384 - CONTEXT_OVERHEAD_TOKENS
     assert AgentCreateIn(name="保留默认", default_model_id=1).max_output_tokens == get_config().AGENT_DEFAULT_MAX_OUTPUT_TOKENS
 
 
@@ -335,3 +335,51 @@ def test_optional_output_migration(tmp_path: Path) -> None:
         assert connection.execute("SELECT max_output_tokens FROM yp_agent_config WHERE id=1").fetchone() == (4096,)
     migrate("upgrade", "head")
     subprocess.run([sys.executable, "-m", "alembic", "check"], cwd=root, env=env, capture_output=True, check=True, text=True)
+
+
+def test_uncapped_output_still_reserves_complete_request_headroom() -> None:
+    """未指定供应商输出额度时，系统指令和工具仍计入预留输出后的完整输入边界。"""
+    from unittest.mock import AsyncMock
+
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.summarization import ContextOverflowError
+    from langchain.agents.middleware.types import ModelRequest
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    from app.services.runtime_adapter import RuntimeSummarizationMiddleware, count_context_tokens
+    from tests.test_skills import SkillModel
+
+    async def exercise() -> None:
+        """构造能装入原始窗口但挤占输出空间的不可压缩单条请求。"""
+        config = RuntimeRunConfig("reserve-run", 1, "reserve-thread", 1, (), context_window=8192)
+        model = SkillModel(
+            responses=[AIMessage(content="unused")],
+            profile={
+                "max_input_tokens": 8192,
+            },
+        )
+        middleware = RuntimeSummarizationMiddleware(
+            allowed_names=frozenset(),
+            input_budget=config.input_budget(),
+            model=model,
+            backend=StateBackend(),
+            trigger=("tokens", 100000),
+            keep=("tokens", 128),
+            token_counter=count_context_tokens,
+        )
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="facts " * 1000)],
+            system_message=SystemMessage(content="rules " * 3600),
+            tools=[],
+            state={},
+        )
+        count = count_context_tokens([request.system_message, *request.messages])
+        assert config.input_budget() < count < int(8192 * 0.95)
+        handler = AsyncMock()
+        with pytest.raises(ContextOverflowError):
+            await middleware.awrap_model_call(request, handler)
+        handler.assert_not_called()
+        assert getattr(model, "max_tokens", None) is None
+
+    asyncio.run(exercise())

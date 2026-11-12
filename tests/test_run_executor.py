@@ -729,6 +729,7 @@ async def exercise_tool_timeout(database_path: Path, checkpoint_path: Path) -> N
             tool_events = [event for event in events if event.tool_call_id]
             assert [event.event_type for event in tool_events] == ["tool_started", "tool_failed"]
             assert tool_events[0].tool_call_id == tool_events[1].tool_call_id
+            assert tool_events[1].failure_code == "tool_timeout"
             assert events[-1].state == "timed_out" and events[-1].failure_code == "tool_execution_timeout"
             assert "private-input" not in str([event.to_dict() for event in events])
 
@@ -2429,11 +2430,11 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path
                 db.add(RunSkill(run_id=failed_run.id, skill_id=1, skill_version=1, status=1, is_deleted=0))
             original_append_tool_event = run_executor_module.append_tool_event
 
-            async def crash_before_skill_read_completion(db, run_id, lease_token, event_type, *args):
+            async def crash_before_skill_read_completion(db, run_id, lease_token, event_type, *args, **kwargs):
                 """模拟 Skill 已开始但完成事件尚未提交时 worker 退出。"""
                 if interrupt_skill_read and event_type == RunEventType.TOOL_COMPLETED:
                     raise SimulatedProcessCrash()
-                return await original_append_tool_event(db, run_id, lease_token, event_type, *args)
+                return await original_append_tool_event(db, run_id, lease_token, event_type, *args, **kwargs)
 
             with monkeypatch.context() as patcher:
                 patcher.setattr(run_executor_module, "append_tool_event", crash_before_skill_read_completion)

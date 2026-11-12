@@ -22,6 +22,7 @@ from app.core.enums import (
     MessageRole,
     ModelThinkingMode,
     RunEventType,
+    RunCallFailure,
     RunModelFailureReason,
     RunRuntimeFailureReason,
     RunState,
@@ -526,13 +527,39 @@ async def append_text_delta(db: AsyncSession, run_id: str, lease_token: str, con
     return await _append_running_event(db, run_id, lease_token, RunEventType.TEXT_DELTA, content=content)
 
 
-async def append_tool_event(db: AsyncSession, run_id: str, lease_token: str, event_type: str, tool_call_id: str, tool_name: str) -> AgentRunEvent:
-    """只持久化已授权工具的名称及服务端关联 ID，不保存参数和结果。"""
+async def append_reasoning_delta(db: AsyncSession, run_id: str, lease_token: str, content: str) -> AgentRunEvent:
+    """使用相同租约和游标保存上游公开思考文本，供授权浏览器重连回放。"""
+    if not content or len(content) > 2048:
+        raise ValueError("思考片段为空或超过长度限制")
+    return await _append_running_event(db, run_id, lease_token, RunEventType.REASONING_DELTA, content=content)
+
+
+async def append_tool_event(
+    db: AsyncSession,
+    run_id: str,
+    lease_token: str,
+    event_type: str,
+    tool_call_id: str,
+    tool_name: str,
+    *,
+    failure_code: RunCallFailure | None = None,
+) -> AgentRunEvent:
+    """持久化授权工具名称、关联 ID 和受控失败原因码，不保存参数、结果或异常原文。"""
     if event_type not in {RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED}:
         raise ValueError("不允许的工具事件类型")
     if len(tool_call_id) != 36 or not tool_name or len(tool_name) > 128:
         raise ValueError("无效的工具调用关联 ID 或工具名称")
-    return await _append_running_event(db, run_id, lease_token, event_type, tool_call_id=tool_call_id, tool_name=tool_name)
+    if failure_code is not None and (event_type != RunEventType.TOOL_FAILED or failure_code not in set(RunCallFailure)):
+        raise ValueError("不允许的工具失败原因")
+    return await _append_running_event(
+        db,
+        run_id,
+        lease_token,
+        event_type,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        failure_code=failure_code,
+    )
 
 
 async def _append_running_event(
@@ -544,6 +571,7 @@ async def _append_running_event(
     content: str | None = None,
     tool_call_id: str | None = None,
     tool_name: str | None = None,
+    failure_code: str | None = None,
 ) -> AgentRunEvent:
     """原子推进有效运行的事件序号并在同一事务写入公开事件。"""
     now = shanghai_now(naive=True)
@@ -566,6 +594,7 @@ async def _append_running_event(
         content=content,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
+        failure_code=failure_code,
     )
     db.add(event)
     await db.flush()

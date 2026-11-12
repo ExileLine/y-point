@@ -230,6 +230,7 @@ class RunCallKind(StrEnum):
     SKILL = "skill"
     TOOL = "tool"
     KNOWLEDGE = "knowledge"
+    MCP = "mcp"
 
 
 class RunCallStatus(StrEnum):
@@ -246,10 +247,32 @@ class RunEventType(StrEnum):
 
     STATE = "state"
     TEXT_DELTA = "text_delta"
+    REASONING_DELTA = "reasoning_delta"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TOOL_FAILED = "tool_failed"
     ARTIFACT_PUBLISHED = "artifact_published"
+
+
+class RunCallFailure(StrEnum):
+    """调用公开失败原因，只允许受控类别进入事件与会话页面。"""
+
+    TIMEOUT = "tool_timeout"
+    INVALID_ARGUMENTS = "invalid_tool_arguments"
+    INPUT_REJECTED = "script_input_rejected"
+    ARTIFACT_UNAVAILABLE = "generated_artifact_unavailable"
+    PERMISSION_DENIED = "permission_denied"
+    CONNECTION_FAILED = "connection_failed"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    RATE_LIMITED = "rate_limited"
+    REMOTE_ERROR = "remote_error"
+    CONFIGURATION_ERROR = "configuration_error"
+    SCRIPT_FAILED = "script_failed"
+    INVALID_OUTPUT = "invalid_output"
+    RESPONSE_LIMIT = "response_limit"
+    TOOL_CHANGED = "tool_changed"
+    EXECUTION_ERROR = "execution_error"
+    INTERRUPTED = "execution_interrupted"
 
 
 class ToolEnvironmentState(StrEnum):

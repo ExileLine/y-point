@@ -14,7 +14,7 @@ from app.core.config import get_config
 from app.schemas.runtime_limits import ModelTimeout, ToolTimeout
 
 
-from app.core.enums import ModelThinkingMode, ApprovalDecision, ApprovalState, MessageRole, RunCallKind, RunCallStatus, RunState
+from app.core.enums import ModelThinkingMode, ApprovalDecision, ApprovalState, MessageRole, RunCallFailure, RunCallKind, RunCallStatus, RunState
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 
 
@@ -62,6 +62,13 @@ class RunCreateIn(BaseModel):
     )
 
 
+class RunMetricsOut(BaseModel):
+    """本轮提交到终态的耗时及上游累计已报告用量。"""
+
+    elapsed_ms: int | None = Field(default=None, ge=0, description="从提交到终态的毫秒数，包含排队和审批；运行中为空", examples=[12340])
+    total_tokens: int | None = Field(default=None, ge=0, description="累计已报告 Token，可能不含失败请求或缺失用量的调用；未知时为空", examples=[1250])
+
+
 class RunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -95,13 +102,18 @@ class RunOut(BaseModel):
 
 
 class RunCallOut(BaseModel):
-    """只公开调用名称、类型和结果，不含参数、正文或内部执行数据。"""
+    """公开调用名称、类型、状态与耗时，不含参数、正文或内部执行数据。"""
 
     call_id: str = Field(description="本轮调用关联 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     kind: RunCallKind = Field(description="调用类型", examples=["skill"])
     name: str = Field(description="公开调用名称；知识库名称按当前权限过滤", examples=["travel-policy@v1"])
     status: RunCallStatus = Field(description="单次调用状态，不等同于整轮运行状态", examples=["succeeded"])
     sequence: int = Field(description="本次调用首次公开事件的序号", examples=[3])
+    started_at: datetime | None = Field(default=None, description="收到调用开始事件的时间，未知时为空", examples=["2026-11-11T21:00:00"])
+    finished_at: datetime | None = Field(default=None, description="收到调用完成或失败事件的时间，未知时为空", examples=["2026-11-11T21:00:01"])
+    elapsed_ms: int | None = Field(default=None, ge=0, description="调用开始至完成或失败的毫秒数；缺少任一事件时为空", examples=[1000])
+    failure_code: RunCallFailure | None = Field(default=None, description="受控失败原因码；旧记录可能为空", examples=["tool_timeout"])
+    failure_reason: str | None = Field(default=None, description="可安全展示的失败原因，不包含异常原文或工具输入输出", examples=["调用超过单次执行时限。"])
 
 
 class RunEventOut(BaseModel):

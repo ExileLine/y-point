@@ -163,6 +163,19 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                 add_event(db, run, call_id, "skill:policy@v1", RunEventType.TOOL_STARTED)
                 add_event(db, run, call_id, "skill:policy@v1", RunEventType.TOOL_COMPLETED)
                 db.add(AgentRunMessage(run_id=run.id, owner_id=1, role="assistant", content="完成"))
+                run.reported_total_tokens = 1250
+                run.event_seq += 1
+                db.add(
+                    AgentRunEvent(
+                        run_id=run.id,
+                        sequence=run.event_seq,
+                        event_type=RunEventType.REASONING_DELTA,
+                        state=RunState.RUNNING,
+                        content="模型公开返回的思考",
+                    ),
+                )
+                run.event_seq += 1
+                db.add(AgentRunEvent(run_id=run.id, sequence=run.event_seq, event_type=RunEventType.STATE, state=RunState.COMPLETED))
                 failed = await create_run(db, 1, input_text="失败轮次")
                 failed.agent_id = 1
                 failed.session_id = session.id
@@ -186,20 +199,46 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                 assert response.headers["cache-control"] == "no-store"
                 row = response.json()["data"][0]
                 assert row["name"] == "policy@v1" and row["status"] == "succeeded"
-                assert set(row) == {"call_id", "kind", "name", "status", "sequence"}
+                assert set(row) == {
+                    "call_id",
+                    "kind",
+                    "name",
+                    "status",
+                    "sequence",
+                    "started_at",
+                    "finished_at",
+                    "elapsed_ms",
+                    "failure_code",
+                    "failure_reason",
+                }
                 history = await client.get(f"/api/v1/agents/1/sessions/{session.id}/messages")
                 assert history.status_code == 200, history.text
                 messages = history.json()["data"]
                 assert len(messages) == 3
                 assert all(message["calls"] for message in messages)
+                answer = next(message for message in messages if message["role"] == "assistant")
+                assert answer["reasoning_content"] == "模型公开返回的思考"
+                assert answer["metrics"]["total_tokens"] == 1250
+                assert answer["metrics"]["elapsed_ms"] >= 0
+                assert "不应公开的参数和正文" not in history.text
                 assert messages[-1]["role"] == "user" and messages[-1]["calls"][0]["status"] == "failed"
+                totals_url = f"/api/v1/agents/1/sessions/{session.id}/metrics"
+                totals = await client.get(totals_url)
+                assert totals.status_code == 200, totals.text
+                assert totals.headers["cache-control"] == "no-store"
+                assert totals.json()["data"]["run_count"] == 2
+                assert totals.json()["data"]["total_tokens"] == 1250
+                assert totals.json()["data"]["missing_duration_runs"] == 1
+                assert messages[-1]["calls"][0]["failure_reason"] == "本次调用失败，历史记录未保存具体原因。"
                 actor_id = 2
+                assert (await client.get(totals_url)).status_code == 404
                 assert (await client.get(f"/api/v1/runs/{run.id}/calls")).status_code == 404
                 actor_id = 1
                 async with sessions.begin() as db:
                     await db.delete(await db.get(AgentShare, share.id))
                 assert (await client.get(f"/api/v1/runs/{run.id}/calls")).status_code == 404
                 assert (await client.get(f"/api/v1/agents/1/sessions/{session.id}/messages")).status_code == 404
+                assert (await client.get(totals_url)).status_code == 404
         finally:
             await engine.dispose()
 

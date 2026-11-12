@@ -10,7 +10,7 @@ import re
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import RunCallKind, RunCallStatus, RunEventType, Visibility
+from app.core.enums import RunCallFailure, RunCallKind, RunCallStatus, RunEventType, ToolKind, Visibility
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.models.knowledge import KnowledgeBase, RunKnowledgeBase
@@ -21,6 +21,7 @@ from app.services.user_tools import model_tool_name
 from app.schemas.run import RunCallOut
 from app.services.knowledge import knowledge_access
 from app.services.run_manager import TERMINAL_STATES
+from app.services.run_call_failures import call_failure_message, FAILURE_MESSAGES
 
 TOOL_EVENTS = (RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED)
 
@@ -72,6 +73,12 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
     for fixed, tool, binding, skill, version in managed:
         visible = not skill.is_deleted and skill.enabled and (skill.owner_id == owner_id or skill.visibility == Visibility.PUBLIC)
         script_names[(fixed.run_id, model_tool_name(tool))] = f"{skill.name}@v{version} / {binding.path}" if visible else "Skill 脚本（已不可用）"
+    mcp_tools = (
+        await db.execute(
+            select(RunTool.run_id, UserTool).join(UserTool, UserTool.id == RunTool.tool_id).where(RunTool.run_id.in_(run_ids), UserTool.kind == ToolKind.MCP)
+        )
+    ).all()
+    mcp_names = {(run_id, model_tool_name(tool)) for run_id, tool in mcp_tools}
     grouped: dict[str, dict[str, RunCallOut]] = {}
     for event, run_state in rows:
         calls = grouped.setdefault(event.run_id, {})
@@ -85,16 +92,27 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                 name = "、".join(knowledge_names.get(event.run_id, [])) or "知识库检索"
             else:
                 kind, name = RunCallKind.TOOL, script_names.get((event.run_id, tool_name), re.sub(r"^user_tool_\d+_", "", tool_name))
+            if (event.run_id, tool_name) in mcp_names:
+                kind = RunCallKind.MCP
             call = RunCallOut(
                 call_id=event.tool_call_id,
                 kind=kind,
                 name=name,
                 status=RunCallStatus.INTERRUPTED if run_state in TERMINAL_STATES else RunCallStatus.RUNNING,
                 sequence=event.sequence,
+                started_at=event.create_time if event.event_type == RunEventType.TOOL_STARTED else None,
             )
             calls[event.tool_call_id] = call
+        if event.event_type == RunEventType.TOOL_STARTED and call.started_at is None:
+            call.started_at = event.create_time
+        if event.event_type in {RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED}:
+            call.finished_at = event.create_time
+            if call.started_at is not None:
+                call.elapsed_ms = max(0, int((call.finished_at - call.started_at).total_seconds() * 1000))
         if event.event_type == RunEventType.TOOL_COMPLETED:
             call.status = RunCallStatus.SUCCEEDED
         elif event.event_type == RunEventType.TOOL_FAILED:
             call.status = RunCallStatus.FAILED
+            call.failure_code = RunCallFailure(event.failure_code) if event.failure_code in FAILURE_MESSAGES else None
+            call.failure_reason = call_failure_message(event.failure_code)
     return {run_id: list(calls.values()) for run_id, calls in grouped.items()}

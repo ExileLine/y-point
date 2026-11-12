@@ -365,6 +365,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     ],
                 }
                 correction_feedback = []
+                selection_feedback = []
 
                 class ReportCorrectionModel(SkillModel):
                     """校验模型能实际收到模板契约错误，并在同轮修正后继续完成报告。"""
@@ -372,6 +373,13 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
                         """确认错误以带字段提示的工具反馈传入模型，而非中断运行或伪装成功。"""
                         for message in messages:
+                            if isinstance(message, ToolMessage) and message.tool_call_id == "render-review-wrong-skill":
+                                assert message.status == "error"
+                                feedback = json.loads(message.content)
+                                assert feedback["error"] == "invalid_tool_arguments" and feedback["retryable"]
+                                assert feedback["issues"][0]["path"] == "/skill_id"
+                                assert feedback["allowed_skills"][0]["skill_id"] == skill_id
+                                selection_feedback.append(feedback)
                             if isinstance(message, ToolMessage) and message.tool_call_id == "render-review-invalid-fields":
                                 assert message.status == "error"
                                 feedback = json.loads(message.content)
@@ -392,6 +400,20 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                                         "file_path": "/skills/contract-review/SKILL.md",
                                     },
                                     "id": "read-review-skill",
+                                },
+                            ],
+                        ),
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "render_skill_document",
+                                    "args": {
+                                        "skill_id": skill_id + 10000,
+                                        "report_data": data,
+                                        "filename": "合同审查报告.docx",
+                                    },
+                                    "id": "render-review-wrong-skill",
                                 },
                             ],
                         ),
@@ -464,9 +486,10 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()
                     assert "".join(event.content or "" for event in events if event.event_type == RunEventType.TEXT_DELTA) == "已完成审查并生成报告。"
                     failed_renders = [event for event in events if event.tool_name == "render_skill_document" and event.event_type == RunEventType.TOOL_FAILED]
-                    assert len(failed_renders) == 1
-                    assert result.tool_call_count == 4
-                    assert correction_feedback
+                    assert len(failed_renders) == 2
+                    assert all(event.failure_code == "invalid_tool_arguments" for event in failed_renders)
+                    assert result.tool_call_count == 5
+                    assert correction_feedback and selection_feedback
                 assert (await client.post(path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
                 response = await client.get(path + "/messages", headers=owner)
                 assert response.status_code == 200, response.text

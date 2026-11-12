@@ -44,15 +44,23 @@ def count_context_tokens(messages: list[BaseMessage], *, tools: list[BaseTool | 
 class RuntimeSummarizationMiddleware(SummarizationMiddleware):
     """仅对平台实际开放的工具计入窗口，避免未授权的默认工具造成错误拒绝。"""
 
-    def __init__(self, allowed_names: frozenset[str], **kwargs) -> None:
+    def __init__(self, allowed_names: frozenset[str], input_budget: int | None = None, **kwargs) -> None:
         """保存平台工具名称并沿用 DeepAgents 的摘要和有界恢复实现。"""
         super().__init__(**kwargs)
         self.allowed_names = allowed_names
+        self.platform_input_budget = input_budget
 
     @property
     def name(self) -> str:
         """替换默认摘要中间件的位置，避免同时安装两套摘要策略。"""
         return "SummarizationMiddleware"
+
+    def _input_budget(self, request: ModelRequest) -> int | None:
+        """完整请求同时遵守 SDK 和平台输入预算，预留空间不转成供应商输出参数。"""
+        sdk_budget = super()._input_budget(request)
+        if self.platform_input_budget is None:
+            return sdk_budget
+        return min(sdk_budget, self.platform_input_budget) if sdk_budget is not None else self.platform_input_budget
 
     async def awrap_model_call(
         self,
@@ -112,10 +120,10 @@ class RuntimeRunConfig:
         )
 
     def input_budget(self) -> int | None:
-        """为已指定的输出额度及指令预留空间，未指定额度时由供应商校验实际窗口。"""
+        """按显式输出额度预留空间；留空时预留四分之一窗口，不改变供应商输出额度。"""
         if self.context_window is None:
             return None
-        output = self.max_output_tokens if self.max_output_tokens is not None else 0
+        output = self.max_output_tokens if self.max_output_tokens is not None else self.context_window // 4
         input_budget = self.context_window - output - CONTEXT_OVERHEAD_TOKENS
         if input_budget < MIN_CONTEXT_INPUT_TOKENS:
             raise ValueError("模型上下文窗口不足以容纳当前输出预算")
@@ -182,6 +190,7 @@ class DeepAgentsRuntimeAdapter:
             *middleware,
             RuntimeSummarizationMiddleware(
                 allowed_names=frozenset(config.tool_names),
+                input_budget=config.input_budget() if config.max_output_tokens is None else None,
                 model=model,
                 backend=backend,
                 trigger=trigger,

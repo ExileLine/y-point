@@ -393,8 +393,11 @@ async def exercise_run_api(database: Path) -> None:
                 model = await db.get(ModelCatalog, 1)
                 model.input_price = Decimal("2")
                 model.output_price = Decimal("4")
-            for invalid_timeout in (0, 121):
-                for field in ("model_timeout_seconds", "tool_timeout_seconds"):
+            for field, maximum in (
+                ("model_timeout_seconds", get_config().AGENT_MAX_MODEL_TIMEOUT_SECONDS),
+                ("tool_timeout_seconds", get_config().AGENT_MAX_TOOL_TIMEOUT_SECONDS),
+            ):
+                for invalid_timeout in (0, maximum + 1):
                     invalid = await client.post(
                         "/api/v1/runs",
                         headers=alice,
@@ -405,6 +408,17 @@ async def exercise_run_api(database: Path) -> None:
                         },
                     )
                     assert invalid.status_code == 400
+                accepted = await client.post(
+                    "/api/v1/runs",
+                    headers=alice,
+                    json={
+                        "model_id": 1,
+                        "input_text": "验证部署时限上限",
+                        field: maximum,
+                    },
+                )
+                assert accepted.status_code == 201 and accepted.json()["data"][field] == maximum
+                assert (await client.post(f"/api/v1/runs/{accepted.json()['data']['id']}/cancel", headers=alice)).status_code == 200
             for invalid_wait in (0, 86401):
                 invalid = await client.post(
                     "/api/v1/runs",

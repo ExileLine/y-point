@@ -330,7 +330,7 @@ async def stream_events(
     async def event_stream():
         """定期核对授权和数据库事件，并在空闲时发送 SSE 心跳。"""
         cursor = after
-        idle = 0
+        last_activity = last_heartbeat = time.monotonic()
         while not await request.is_disconnected():
             await db.rollback()
             user = await db.get(Admin, owner_id)
@@ -361,15 +361,17 @@ async def stream_events(
                 published = await db.scalar(select(Artifact.id).where(Artifact.run_id == run_id, Artifact.publication_key == "final-answer-v1").limit(1))
                 if published is not None:
                     break
+            now = time.monotonic()
             if events:
-                idle = 0
-            else:
-                idle += 1
-                if idle % 10 == 0:
-                    yield ": heartbeat\n\n"
-            if idle >= 60:
+                last_activity = now
+            elif now - last_heartbeat >= 10:
+                last_heartbeat = now
+                yield ": heartbeat\n\n"
+            if now - last_activity >= 60:
                 break
-            await asyncio.sleep(1)
+            # 有积压时连续追平；空闲时短轮询，心跳和空闲期限仍按实际秒数计算。
+            await db.rollback()
+            await asyncio.sleep(0 if events else 0.2)
         await db.rollback()
 
     return StreamingResponse(

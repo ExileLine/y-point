@@ -12,13 +12,14 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models.chat_models import BaseChatModel
 from openai import BadRequestError
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langchain_openai import AzureChatOpenAI
 
 from app.core.enums import ModelThinkingMode, ProviderKind
 from app.core.custom_exception import CustomException
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.provider_credentials import decrypt_credentials
+from app.services.model_stream import ReasoningChatOpenAI as ChatOpenAI
 
 
 def thinking_request_options(provider_kind: str, thinking_mode: str | None = ModelThinkingMode.AUTO) -> dict:

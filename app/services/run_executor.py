@@ -40,6 +40,7 @@ from app.core.enums import (
     ArtifactState,
     MessageRole,
     ModelCapability,
+    ModelThinkingMode,
     ModelOutputLimitReason,
     RunEventType,
     RunModelFailureReason,
@@ -56,11 +57,12 @@ from app.services.conversation_history import conversation_history_paths as _con
 from app.services.model_adapter import is_model_context_overflow
 from app.services.model_connection_retry import invoke_model_with_connection_retry
 from app.services.tool_arguments import is_tool_argument_error
+from app.services.run_call_failures import tool_exception_failure, tool_result_failure
+from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
 from app.models.admin import Admin
 from app.models.agent_run import AgentRun
-from app.models.agent_run_event import AgentRunEvent
 from app.models.tool import ToolInvocation
 from app.models.agent_run_message import AgentRunMessage
 from app.models.artifact import Artifact
@@ -71,6 +73,7 @@ from app.models.skill import RunSkill, Skill
 from app.services.agent_access import can_access_run_agent
 from app.services.artifact_intent import requested_artifact_suffixes
 from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context, load_model_image_context
+from app.services.model_stream import public_reasoning_text
 from app.services.run_manager import (
     CostBudgetExceeded,
     ModelCallBudgetExceeded,
@@ -80,6 +83,7 @@ from app.services.run_manager import (
     acknowledge_cancel,
     append_tool_event,
     append_text_delta,
+    append_reasoning_delta,
     claim_run,
     complete_run,
     create_approval_request,
@@ -487,13 +491,29 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                         invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_interrupted"
             with suppress(RunConflictError):
                 async with self.sessions.begin() as db:
-                    await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_FAILED, tool_call_id, event_name)
+                    await append_tool_event(
+                        db,
+                        self.run_id,
+                        self.lease_token,
+                        RunEventType.TOOL_FAILED,
+                        tool_call_id,
+                        event_name,
+                        failure_code=tool_exception_failure(exc),
+                    )
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
             raise
         event_type = RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
         async with self.sessions.begin() as db:
-            await append_tool_event(db, self.run_id, self.lease_token, event_type, tool_call_id, event_name)
+            await append_tool_event(
+                db,
+                self.run_id,
+                self.lease_token,
+                event_type,
+                tool_call_id,
+                event_name,
+                failure_code=tool_result_failure(result.content) if event_type == RunEventType.TOOL_FAILED else None,
+            )
             if activated_skill_id is not None and event_type == RunEventType.TOOL_COMPLETED:
                 from app.services.skill_reports import activate_skill_report
 
@@ -611,21 +631,27 @@ async def _stream_model_text(
     *,
     publish_text: bool = True,
     check_skill_reports: bool = False,
+    publish_reasoning: bool = True,
 ) -> None:
-    """提取可见文本；预算或已执行模板 Skill 的最终回复经交付校验后发布。"""
+    """分开发布正文与公开思考；正文仍遵守预算和模板交付保护。"""
     from app.services.skill_reports import required_report_skill_ids
 
     async for mode, payload in runtime.events(invocation):
-        if mode != "messages" or not publish_text:
+        if mode != "messages":
             continue
         message, metadata = payload
         if metadata.get("langgraph_node") != "model" or not isinstance(message, (AIMessage, AIMessageChunk)):
             continue
-        content = str(message.text)
-        for offset in range(0, len(content), 2048):
-            async with sessions.begin() as db:
-                if check_skill_reports and await required_report_skill_ids(db, run_id):
-                    continue
+        reasoning = public_reasoning_text(message) if publish_reasoning else ""
+        content = str(message.text) if publish_text else ""
+        if not reasoning and not content:
+            continue
+        async with sessions.begin() as db:
+            for offset in range(0, len(reasoning), 2048):
+                await append_reasoning_delta(db, run_id, lease_token, reasoning[offset : offset + 2048])
+            if check_skill_reports and await required_report_skill_ids(db, run_id):
+                continue
+            for offset in range(0, len(content), 2048):
                 await append_text_delta(db, run_id, lease_token, content[offset : offset + 2048])
 
 
@@ -739,43 +765,6 @@ async def _finish_interrupted(
         if latest is None:
             raise RunConflictError("运行已不存在")
         return latest
-
-
-async def _can_rewind_failed_run(db: AsyncSession, failed_run: AgentRun) -> bool:
-    """失败轮次无工具调用或仅读 Skill 文件与附件列表时，允许从已确认检查点开始新一轮。"""
-    if failed_run.tool_call_count == 0:
-        return True
-    has_skills = bool(await db.scalar(select(RunSkill.id).where(RunSkill.run_id == failed_run.id).limit(1)))
-    events = (
-        await db.scalars(
-            select(AgentRunEvent)
-            .where(
-                AgentRunEvent.run_id == failed_run.id,
-                AgentRunEvent.event_type.in_((RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED)),
-            )
-            .order_by(AgentRunEvent.sequence),
-        )
-    ).all()
-    started: dict[str, str] = {}
-    seen: set[str] = set()
-    for event in events:
-        if not event.tool_call_id or not event.tool_name:
-            return False
-        if event.tool_name != "list_session_artifacts" and not (has_skills and event.tool_name.startswith("skill:")):
-            return False
-        if event.event_type == RunEventType.TOOL_STARTED:
-            if event.tool_call_id in seen:
-                return False
-            seen.add(event.tool_call_id)
-            started[event.tool_call_id] = event.tool_name
-        elif event.event_type in (RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED):
-            if started.pop(event.tool_call_id, None) != event.tool_name:
-                return False
-        else:
-            return False
-    # Skill read_file 与附件列表均无副作用；worker 中断可能来不及保存结束事件。
-    # 核对全部已计数调用均有只读开始事件，后续从成功检查点分支，不重放失败轮次。
-    return len(seen) == failed_run.tool_call_count
 
 
 async def execute_text_run(
@@ -1072,6 +1061,7 @@ async def execute_text_run(
                         lease_token,
                         publish_text=(run.max_total_tokens is None and run.max_estimated_cost is None and (required_artifact_suffixes is None)),
                         check_skill_reports=any(tool.name == "render_skill_document" for tool in tools),
+                        publish_reasoning=run.agent_thinking_mode != ModelThinkingMode.DISABLED,
                     ),
                 )
                 watcher = asyncio.create_task(_watch_run(sessions, run_id, lease_token, task, poll_seconds=poll_seconds, lease_seconds=lease_seconds))

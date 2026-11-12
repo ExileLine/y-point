@@ -23,12 +23,12 @@ from jinja2.sandbox import SandboxedEnvironment
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from langchain_core.tools import ToolException, tool
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ArtifactOrigin, ArtifactState, ToolFeedbackFailure
+from app.core.enums import ArtifactOrigin, ArtifactState, ToolFeedbackFailure, Visibility
 from app.models.artifact import Artifact
-from app.models.skill import RunSkill
+from app.models.skill import RunSkill, Skill
 from app.models.skill_template import SkillTemplate
 from app.services.artifact_store import artifact_root, stage_generated_artifact
 from app.services.private_blob_store import read_blob
@@ -380,6 +380,55 @@ async def _report_template_for_version(db: AsyncSession, skill_id: int, version:
     )
 
 
+async def _report_skill_for_run(db: AsyncSession, context: ToolContext, skill_id: int) -> RunSkill:
+    """先核对运行绑定，误选 ID 只反馈当前可访问且有模板的绑定，不查询其他 Skill 是否存在。"""
+    fixed = await db.scalar(select(RunSkill).where(RunSkill.run_id == context.run_id, RunSkill.skill_id == skill_id))
+    if fixed is not None:
+        return fixed
+    rows = (
+        await db.execute(
+            select(RunSkill.skill_id, RunSkill.skill_version, SkillTemplate.template_key)
+            .join(Skill, Skill.id == RunSkill.skill_id)
+            .join(SkillTemplate, and_(SkillTemplate.skill_id == RunSkill.skill_id, SkillTemplate.skill_version == RunSkill.skill_version))
+            .where(
+                RunSkill.run_id == context.run_id,
+                Skill.is_deleted == 0,
+                Skill.enabled.is_(True),
+                or_(Skill.owner_id == context.owner_id, Skill.visibility == Visibility.PUBLIC),
+            )
+            .order_by(RunSkill.id, SkillTemplate.template_key),
+        )
+    ).all()
+    allowed = {}
+    for row in rows:
+        selected = allowed.setdefault(
+            row.skill_id,
+            {
+                "skill_id": row.skill_id,
+                "skill_version": row.skill_version,
+                "templates": [],
+            },
+        )
+        selected["templates"].append(row.template_key)
+    raise ToolArgumentsError(
+        json.dumps(
+            {
+                "error": ToolFeedbackFailure.INVALID_ARGUMENTS,
+                "message": "报告尚未生成。skill_id 必须使用本轮已读取 SKILL.md 中的固定 Skill ID；请从 allowed_skills 选择，不要使用示例或猜测的 ID。",
+                "retryable": True,
+                "allowed_skills": list(allowed.values()),
+                "issues": [
+                    {
+                        "path": "/skill_id",
+                        "rule": "run_skill_binding",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 def skill_document_tool(context: ToolContext):
     """创建只能使用本轮已授权 Skill 模板的幂等暂存工具。"""
 
@@ -393,10 +442,8 @@ def skill_document_tool(context: ToolContext):
             raise ValueError("报告必须是 DOCX，结构化数据最多 64 KiB")
         async with context.sessions() as db:
             await context.require_active(db, enabled=lambda run: run.session_id is not None)
+            fixed = await _report_skill_for_run(db, context, skill_id)
             available = await selected_skills(db, [skill_id], context.owner_id)
-            fixed = await db.scalar(select(RunSkill).where(RunSkill.run_id == context.run_id, RunSkill.skill_id == skill_id))
-            if fixed is None:
-                raise ValueError("Skill 未绑定本轮运行")
             template = await _report_template_for_version(db, skill_id, fixed.skill_version, template_name)
             source = await db.get(Artifact, template.artifact_id)
             if source is None or source.source != ArtifactOrigin.SKILL_RESOURCE or source.state != ArtifactState.READY or source.is_deleted:

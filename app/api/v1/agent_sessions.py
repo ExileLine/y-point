@@ -53,6 +53,7 @@ from app.services.message_attachments import (
 )
 from app.services.run_manager import RunConflictError, TERMINAL_STATES, create_run
 from app.services.run_calls import load_run_calls
+from app.services.run_presentation import load_run_presentation, load_session_metrics
 from app.services.skills import snapshot_run_skills
 from app.services.knowledge import snapshot_run_knowledge
 from app.services.user_tools import snapshot_run_tools
@@ -503,6 +504,16 @@ async def list_session_runs(
     return api_response(data=result.model_dump(mode="json"), datetime_format=False)
 
 
+@router.get("/{session_id}/metrics", summary="查询整个会话累计耗时与用量")
+async def get_session_metrics(agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """复核会话和 Agent 当前权限后汇总所有轮次，包含失败、取消和进行中的轮次。"""
+    await _session(db, agent_id, session_id, actor.id)
+    result = await load_session_metrics(db, actor.id, agent_id, session_id)
+    response = api_response(data=result.model_dump(mode="json"), datetime_format=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/{session_id}/messages", summary="按游标读取会话消息")
 async def list_session_messages(
     agent_id: int,
@@ -531,6 +542,7 @@ async def list_session_messages(
     by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
     by_artifact = await load_message_artifacts(db, actor.id, messages)
     calls = await load_run_calls(db, actor.id, list({item.run_id for item in messages}))
+    presentation = await load_run_presentation(db, actor.id, list({item.run_id for item in messages}))
     model_rows = await db.execute(
         select(AgentRun.id, AgentRun.model_id, ModelCatalog.display_name, ProviderConnection.name)
         .outerjoin(ModelCatalog, ModelCatalog.id == AgentRun.model_id)
@@ -548,5 +560,6 @@ async def list_session_messages(
         data["attachments"] = by_message.get(item.id, [])
         data["artifacts"] = by_artifact.get(item.id, [])
         data["calls"] = [call.model_dump(mode="json") for call in calls.get(item.run_id, [])]
+        data.update(presentation.get(item.run_id, {}))
         result.append(data)
     return api_response(data=result, is_pop=False)
