@@ -1,6 +1,8 @@
 import { request } from "./api";
 
 export type KnowledgeMode = "keyword" | "hybrid";
+export type KnowledgeProcessingMode = "auto" | "original" | "enhanced";
+export type KnowledgeDocumentOptions = { processing_mode?: KnowledgeProcessingMode | null; sheet_names?: string[]; header_rows?: number; pdf_mode?: "auto" | "text" | "ocr" };
 export type KnowledgeDraft = {
   name: string;
   description: string | null;
@@ -8,8 +10,12 @@ export type KnowledgeDraft = {
   embedding_model_id: number | null;
   chunk_size: number;
   chunk_overlap: number;
-  embedding_token_budget: number;
+  embedding_token_budget: number | null;
   embedding_cost_budget: string | null;
+  processing_mode: KnowledgeProcessingMode;
+  processing_model_id: number | null;
+  processing_token_budget: number | null;
+  processing_cost_budget: string | null;
 };
 export type KnowledgeBase = KnowledgeDraft & {
   id: number;
@@ -25,9 +31,10 @@ export type KnowledgeDocument = {
   knowledge_base_id: number;
   filename: string;
   current_version: number;
+  processing_options?: KnowledgeDocumentOptions;
   update_time: string;
 };
-export type KnowledgeJobState = "uploaded" | "parsing" | "chunking" | "embedding" | "indexing" | "completed" | "failed" | "cancel_requested" | "cancelled";
+export type KnowledgeJobState = "uploaded" | "parsing" | "chunking" | "enriching" | "embedding" | "indexing" | "completed" | "failed" | "cancel_requested" | "cancelled";
 export type KnowledgeJob = {
   id: number;
   index_id: number;
@@ -38,6 +45,11 @@ export type KnowledgeJob = {
   failure_code: string | null;
   progress: { stage: string; time: string; skipped?: boolean }[];
   reserved_tokens: number;
+  processing_reserved_tokens?: number;
+  processing_tokens?: number | null;
+  processing_call_count?: number;
+  processing_estimated_cost?: string | null;
+  processing_usage?: { model_id: number; total_tokens: number | null; cost: string | null; currency: string; elapsed_ms: number; failure_code: string | null }[];
   embedding_tokens: number;
   estimated_cost: string | null;
   create_time: string;
@@ -57,6 +69,12 @@ export type KnowledgeCitation = {
   page: number | null;
   heading: string | null;
   content: string;
+  source_locator?: {
+    kind: "table" | "text" | "pdf"; sheet?: string; range?: string; header_range?: string; columns?: string[]; hidden_excluded?: boolean; format?: string;
+    page?: number; page_kind?: "text" | "scan" | "mixed" | "blank"; extraction_method?: "native" | "ocr"; bbox?: number[];
+    page_width?: number; page_height?: number; confidence?: number | null; layout?: "text" | "table" | "unverified"; review_required?: boolean;
+  } | null;
+  knowledge_notes?: string | null;
 };
 export type KnowledgeSearchDraft = {
   query: string;
@@ -88,12 +106,24 @@ export const createKnowledgeBase = (draft: KnowledgeDraft): Promise<KnowledgeBas
 export const updateKnowledgeBase = (id: number, draft: KnowledgeDraft, revision: number): Promise<{ knowledge_base: KnowledgeBase; job_id: number }> => request(`/knowledge-bases/${id}`, { method: "PUT", body: JSON.stringify({ ...draft, expected_revision: revision }) });
 export const deleteKnowledgeBase = (id: number, revision: number): Promise<void> => request(`/knowledge-bases/${id}?expected_revision=${revision}`, { method: "DELETE" });
 export const listKnowledgeDocuments = (id: number): Promise<KnowledgeDocument[]> => request(`/knowledge-bases/${id}/documents`);
-export function uploadKnowledgeDocument(id: number, file: File, revision: number, documentId?: number): Promise<KnowledgeMutation & { document: KnowledgeDocument; deduplicated: boolean }> {
+export function uploadKnowledgeDocument(id: number, file: File, revision: number, documentId?: number, options?: KnowledgeDocumentOptions): Promise<KnowledgeMutation & { document: KnowledgeDocument; deduplicated: boolean }> {
   const body = new FormData();
   body.append("file", file);
   body.append("expected_revision", String(revision));
+  if (options) body.append("processing_options", JSON.stringify(options));
   return request(`/knowledge-bases/${id}/documents${documentId ? `/${documentId}` : ""}`, { method: documentId ? "PUT" : "POST", body });
 }
+export type KnowledgePdfMetadata = {
+  parser?: string; ocr_pages?: number; blank_pages?: number; languages?: string | null;
+  pages?: { page: number; kind: "text" | "scan" | "mixed" | "blank"; method: "native" | "ocr" | null; confidence: number | null; blocks: number }[];
+};
+export type KnowledgeProcessingPreview = {
+  index_id: number | null; current_version: number; indexed_version: number | null;
+  processing_options: KnowledgeDocumentOptions;
+  processing_metadata?: KnowledgePdfMetadata; items: KnowledgeCitation[]; has_more: boolean; next_after: number;
+};
+export const getKnowledgeProcessingPreview = (id: number, documentId: number, after = -1, signal?: AbortSignal): Promise<KnowledgeProcessingPreview> =>
+  request(`/knowledge-bases/${id}/documents/${documentId}/processing-preview?after=${after}&limit=10`, { signal, cache: "no-store" });
 export const deleteKnowledgeDocument = (id: number, documentId: number, revision: number): Promise<KnowledgeMutation> => request(`/knowledge-bases/${id}/documents/${documentId}?expected_revision=${revision}`, { method: "DELETE" });
 export const rebuildKnowledgeIndex = (id: number, revision: number): Promise<KnowledgeMutation> => request(`/knowledge-bases/${id}/rebuild`, { method: "POST", body: JSON.stringify({ expected_revision: revision }) });
 export const listKnowledgeJobs = (id: number): Promise<KnowledgeJob[]> => request(`/knowledge-bases/${id}/jobs`);

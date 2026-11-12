@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 
 const baseURL = process.env.WEB_BASE_URL || "http://127.0.0.1:5173";
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" }) });
-const output = new URL("../../docs/", import.meta.url);
+const output = process.env.KNOWLEDGE_SCREENSHOT_DIR ? new URL(`file://${process.env.KNOWLEDGE_SCREENSHOT_DIR.replace(/\/$/, "")}/`) : new URL("../../docs/", import.meta.url);
 await mkdir(output, { recursive: true });
 const now = "2026-11-03 20:30:00";
 const envelope = (data, code = 200, message = "操作成功") => ({ code, message, data });
@@ -41,8 +41,13 @@ async function fixture(page, opts = {}) {
     calls.push({ path, method, body, raw, search: url.search, headers: req.headers() });
     const send = (data, status = 200, text = "操作成功") => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(envelope(data, status, text)) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
+    if (path === "/agents/runtime-limits") return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5, recursion_limit: 9999,
+      mcp_connect_timeout_seconds: 10, mcp_discovery_timeout_seconds: 15, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 60,
+      knowledge_embedding_timeout_seconds: 60, script_execution_timeout_seconds: 30, script_test_timeout_seconds: 10,
+      default_model_timeout_seconds: 120, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600,
+      default_max_output_tokens: 4096, max_output_tokens: 65536 });
     if (path === "/auth/me") return send({ id: 1, username: "tester", nickname: "测试用户", role: opts.shared ? "user" : "admin" });
-    if (path === "/models") return send([{ id: 2, display_name: "embeddinggemma", external_id: "embeddinggemma:latest", status: 1, capabilities: ["embedding"], verified_capabilities: ["embedding"] }]);
+    if (path === "/models") return send(opts.models || [{ id: 2, display_name: "embeddinggemma", external_id: "embeddinggemma:latest", status: 1, capabilities: ["embedding"], verified_capabilities: ["embedding"] }]);
     if (path === "/models/2/embedding-test") return send({ success: true, failure_code: null, dimensions: 768, latency_ms: 77 });
     if (path === "/agents/share-targets") return send([{ user_id: 8, username: "colleague" }]);
     if (path === "/knowledge-bases" && method === "GET") {
@@ -98,10 +103,10 @@ async function fixture(page, opts = {}) {
     if (path === "/agents/11/sessions") return send({ items: [session], total: 1, page: 1, page_size: 20 });
     if (/\/sessions\/[^/]+\/models$/.test(path)) return send([]);
     if (path === "/agents/11/sessions/session-a") return send(session);
-    if (path === "/agents/11/sessions/session-a/messages") return send([{ id: 1, role: "assistant", run_id: "run-kb", content: "请在 15 个工作日内提交，参考 kb:1:i:2:c:16。", create_time: now, attachments: [], artifacts: [] }]);
+    if (path === "/agents/11/sessions/session-a/messages") return send([{ id: 1, role: "assistant", run_id: "run-kb", content: opts.answer || "请在 15 个工作日内提交，参考 kb:1:i:2:c:16。", create_time: now, attachments: [], artifacts: [] }]);
     if (path === "/agents/11/sessions/session-a/runs") return send({ items: [], total: 0, page: 1, page_size: 20 });
-    if (path === "/runs/run-kb/knowledge-retrievals") return send([{ id: 1, run_id: "run-kb", references: [citation], hit_count: 1, byte_count: 150, latency_ms: 20, embedding_usage: [{ model_id: 2, dimensions: 768, tokens: 12, cost: null }] }]);
-    const agent = { id: 11, name: "员工助手", description: "制度问答", system_prompt: "引用资料回答", welcome_message: "欢迎", default_model_id: 1, temperature: "1", max_output_tokens: 4096, model_timeout_seconds: 120, tool_timeout_seconds: 120, max_model_calls: null, max_tool_calls: null, max_total_tokens: null, max_estimated_cost: null, enabled: true, version: 2, skill_ids: [], tool_ids: [], knowledge_base_ids: [1], update_time: now };
+    if (path === "/runs/run-kb/knowledge-retrievals") return send(opts.noRetrieval ? [] : [{ id: 1, run_id: "run-kb", references: opts.noHits ? [] : [citation], hit_count: opts.noHits ? 0 : 1, byte_count: opts.noHits ? 0 : 150, latency_ms: 20, embedding_usage: [{ model_id: 2, dimensions: 768, tokens: 12, cost: null }] }]);
+    const agent = { id: 11, name: "员工助手", description: "制度问答", system_prompt: "引用资料回答", welcome_message: "欢迎", default_model_id: 1, temperature: "1", max_output_tokens: 4096, thinking_mode: "auto", model_timeout_seconds: 120, tool_timeout_seconds: 120, max_model_calls: null, max_tool_calls: null, max_total_tokens: null, max_estimated_cost: null, enabled: true, version: 2, skill_ids: [], tool_ids: [], knowledge_base_ids: [1], update_time: now };
     if (path === "/agents" && method === "GET") return send({ items: [agent], total: 1, page: 1, page_size: 20 });
     if (path === "/agents/shared") return send([]);
     if (path === "/agents/11" && method === "GET") return send(agent);
@@ -127,6 +132,36 @@ const confirm = async (page) => page.locator(".ant-popconfirm .ant-btn-primary")
 const uploadFile = (page) => page.locator('input[type="file"]').setInputFiles({ name: "测试资料.md", mimeType: "text/markdown", buffer: Buffer.from("# 差旅制度\n15 个工作日内提交报销申请。") });
 let scenarios = 0;
 try {
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const state = await fixture(page, {
+      base: { search_mode: "hybrid", embedding_model_id: null },
+      models: [
+        { id: 2, display_name: "embeddinggemma", status: 1, capabilities: ["text"], verified_capabilities: ["embedding"], embedding_dimensions: 768 },
+        { id: 3, display_name: "待验证嵌入", status: 1, capabilities: ["embedding"], verified_capabilities: [] },
+        { id: 4, display_name: "仅文本模型", status: 1, capabilities: ["text"], verified_capabilities: ["text"] },
+        { id: 5, display_name: "已停用嵌入", status: 0, capabilities: ["embedding"], verified_capabilities: ["embedding"] },
+      ],
+    });
+    await page.goto(`${baseURL}/knowledge-bases/1`);
+    const modelsResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/models");
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await modelsResponse;
+    const field = page.locator(".ant-form-item").filter({ has: page.getByText("嵌入模型", { exact: true }) });
+    await field.locator(".ant-select-selector").click();
+    const dropdown = page.locator(".ant-select-dropdown:visible");
+    await dropdown.waitFor();
+    const labels = await dropdown.innerText();
+    assert.ok(labels.includes("embeddinggemma · 已验证"), `${width}: 已验证但未声明的嵌入模型应可选，实际：${labels}`);
+    assert.ok(labels.includes("待验证嵌入 · 待验证"));
+    assert.ok(!labels.includes("仅文本模型") && !labels.includes("已停用嵌入"));
+    await dropdown.getByText("embeddinggemma · 已验证", { exact: true }).click();
+    await page.getByRole("button", { name: "保存并重建" }).click();
+    await page.getByRole("dialog", { name: "知识库设置" }).waitFor({ state: "hidden" });
+    assert.equal(state.calls.findLast(call => call.path === "/knowledge-bases/1" && call.method === "PUT").body.embedding_model_id, 2);
+    scenarios++;
+    await page.close();
+  }
   for (const [size, width, height] of [["desktop", 1280, 900], ["mobile", 375, 812]]) {
     const page = await browser.newPage({ viewport: { width, height } });
     const errors = [];
@@ -218,7 +253,11 @@ try {
     await page.getByText("还没有可访问的知识库").waitFor(); await noOverflow(page, 375); await shot(page, "empty-mobile"); scenarios++;
     await page.getByRole("button", { name: "创建第一个知识库" }).click(); await page.getByRole("textbox", { name: "名称", exact: true }).fill("测试知识库");
     await page.getByRole("button", { name: /^创\s*建$/ }).click(); await page.waitForURL(`${baseURL}/knowledge-bases/1`);
-    assert.equal(state.calls.findLast((call) => call.path === "/knowledge-bases" && call.method === "POST").body.search_mode, "keyword"); scenarios++; await page.close();
+    const created = state.calls.findLast((call) => call.path === "/knowledge-bases" && call.method === "POST").body;
+    assert.equal(created.search_mode, "keyword");
+    assert.equal(created.processing_token_budget, null);
+    assert.equal(created.embedding_token_budget, null);
+    scenarios++; await page.close();
   }
   // Failed jobs, cancel handshake, retry compare-and-swap; conflict keeps document visible.
   {
@@ -280,7 +319,7 @@ try {
     const page = await browser.newPage(); const state = await fixture(page);
     await page.goto(`${baseURL}/knowledge-bases/1`); await page.getByRole("button", { name: "更新版本", exact: true }).click();
     await page.locator('input[type="file"]').setInputFiles({ name: "错误格式.exe", mimeType: "application/octet-stream", buffer: Buffer.from("not a document") });
-    await page.getByText("仅支持 TXT、Markdown、PDF、DOCX", { exact: true }).waitFor();
+    await page.getByText("仅支持 TXT、Markdown、PDF、DOCX、XLSX、CSV", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "上传并建立索引" }).isDisabled(), true);
     await uploadFile(page); await page.getByRole("button", { name: "上传并建立索引" }).click();
     await page.getByRole("dialog", { name: /更新文档版本/ }).waitFor({ state: "hidden" });
@@ -328,6 +367,42 @@ try {
     state.denyCitation(); await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByText("知识引用不存在", { exact: true }).waitFor();
     assert.equal(await page.locator(".kb-quoted-content").count(), 0); scenarios++; await page.close();
+  }
+  {
+    const page = await browser.newPage({ viewport: { width: 375, height: 812 } }); await fixture(page, { noHits: true });
+    await page.goto(`${baseURL}/agents/11/sessions/session-a`);
+    await page.getByRole("button", { name: "本轮知识检索记录" }).click();
+    await page.getByText("未找到相关内容 · 20 ms", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: /^kb:/ }).count(), 0);
+    await noOverflow(page, 375); scenarios++; await page.close();
+  }
+  // 重放真实历史尾注：编号不能猜测绑定，入口按需读取本轮记录，无记录时也不借用其他轮次。
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const state = await fixture(page, {
+      answer: "根据知识库中的《差旅报销管理规定》，差旅报销申请须在**十五个工作日**内提交。\n\ncitation: [1]",
+      noRetrieval: width === 375,
+    });
+    await page.goto(`${baseURL}/agents/11/sessions/session-a`);
+    await page.getByRole("button", { name: "来源说明", exact: true }).waitFor();
+    assert.doesNotMatch(await page.locator(".session-message-content").innerText(), /citation:\s*\[1\]/);
+    assert.equal(state.calls.some(call => call.path.endsWith("/knowledge-retrievals")), false);
+    await shot(page, `legacy-source-${width}`);
+    await page.getByRole("button", { name: "来源说明", exact: true }).click();
+    await page.getByText("历史引用编号未与原文绑定", { exact: true }).waitFor();
+    assert.equal(state.calls.some(call => call.path.includes("/citations/")), false);
+    if (width === 375) {
+      await page.getByText("本轮没有知识检索记录", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: /^kb:/ }).count(), 0);
+    } else {
+      await page.getByRole("button", { name: "kb:1:i:2:c:16", exact: true }).click();
+      await page.locator(".kb-quoted-content").waitFor();
+      state.denyCitation(); await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await page.getByText("知识引用不存在", { exact: true }).waitFor();
+      assert.equal(await page.locator(".kb-quoted-content").count(), 0);
+    }
+    await noOverflow(page, width); await shot(page, `legacy-source-explanation-${width}`);
+    scenarios++; await page.close();
   }
   console.log(`知识库浏览器契约回归通过：${scenarios} 个场景，桌面 1280px / 手机 375px，截图已保存。使用拦截响应，未执行真实后端或模型验收。`);
 } finally { await browser.close(); }

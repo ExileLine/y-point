@@ -160,6 +160,7 @@ function AgentEditor({
       temperature: agent.temperature,
       max_output_tokens: agent.max_output_tokens,
       thinking_mode: agent.thinking_mode,
+      knowledge_mode: agent.knowledge_mode || "auto",
       model_timeout_seconds: agent.model_timeout_seconds,
       tool_timeout_seconds: agent.tool_timeout_seconds,
       max_model_calls: agent.max_model_calls,
@@ -179,6 +180,7 @@ function AgentEditor({
       temperature: "1",
       max_output_tokens: limits.default_max_output_tokens,
       thinking_mode: "auto",
+      knowledge_mode: "auto",
       model_timeout_seconds: limits.default_model_timeout_seconds,
       tool_timeout_seconds: limits.default_tool_timeout_seconds,
       max_model_calls: null,
@@ -211,6 +213,7 @@ function AgentEditor({
         if (Number(values.temperature) !== Number(agent.temperature)) changes.temperature = values.temperature;
         if ((values.max_output_tokens ?? null) !== agent.max_output_tokens) changes.max_output_tokens = values.max_output_tokens ?? null;
         if (values.thinking_mode !== agent.thinking_mode) changes.thinking_mode = values.thinking_mode;
+        if (values.knowledge_mode !== (agent.knowledge_mode || "auto")) changes.knowledge_mode = values.knowledge_mode;
         if (values.model_timeout_seconds !== agent.model_timeout_seconds) changes.model_timeout_seconds = values.model_timeout_seconds;
         if (values.tool_timeout_seconds !== agent.tool_timeout_seconds) changes.tool_timeout_seconds = values.tool_timeout_seconds;
         if ((values.max_model_calls ?? null) !== agent.max_model_calls) changes.max_model_calls = values.max_model_calls ?? null;
@@ -273,6 +276,9 @@ function AgentEditor({
         <Form.Item name="knowledge_base_ids" label="知识库" extra="最多 8 个；Agent 共享不会扩大知识库权限，接收方需要单独授权。未发布索引的资料暂不参与检索。">
           <Select mode="multiple" maxCount={8} loading={knowledgeLoading} disabled={knowledgeLoading || Boolean(knowledgeError)} optionFilterProp="label" placeholder="关联可访问的知识库"
             options={[...knowledgeBases.map((item) => ({ value: item.id, label: `${item.name}${item.active_index_id === null ? " · 未发布索引" : ""}` })), ...(agent?.knowledge_base_ids || []).filter((id) => !knowledgeBases.some((item) => item.id === id)).map((id) => ({ value: id, label: `知识库 #${id} · 当前不可访问` }))]} />
+        </Form.Item>
+        <Form.Item name="knowledge_mode" label="知识回答模式" rules={[{ required: true }]} extra="智能融合按问题相关性检索，一般问题直接回答；内部制度缺少证据时仍会说明。仅知识库适合严格依据资料回答的场景。保存后仅影响新提交的消息。">
+          <Select options={[{ value: "auto", label: "智能融合 · 按需检索" }, { value: "knowledge_only", label: "仅知识库 · 依据资料回答" }]} />
         </Form.Item>
         <Form.Item name="welcome_message" label="欢迎语"><Input.TextArea rows={3} maxLength={2048} /></Form.Item>
         <Collapse ghost items={[{ key: "runtime", label: "运行设置", forceRender: true, children: <>
@@ -543,6 +549,7 @@ export default function Agents() {
               { key: "prompt", label: "系统指令", children: <div className="detail-long-text">{detail.agent.system_prompt || "未设置"}</div> },
               { key: "temperature", label: "生成温度", children: detail.agent.temperature ?? "1" },
               { key: "output", label: "最大输出", children: detail.agent.max_output_tokens == null ? "由供应商决定" : `${detail.agent.max_output_tokens} Token` },
+              { key: "knowledge_mode", label: "知识回答", children: detail.agent.knowledge_mode === "knowledge_only" ? "仅知识库" : "智能融合 · 按需检索" },
               { key: "thinking", label: "模型思考", children: detail.agent.thinking_mode === "enabled" ? "启用思考" : detail.agent.thinking_mode === "disabled" ? "关闭思考" : "跟随模型" },
               { key: "timeouts", label: "模型 / 工具超时", children: `${detail.agent.model_timeout_seconds} / ${detail.agent.tool_timeout_seconds} 秒` },
               { key: "budget", label: "每轮预算", children: `模型 ${detail.agent.max_model_calls ?? "不限"} 次 · 工具 ${detail.agent.max_tool_calls ?? "不限"} 次 · Token ${detail.agent.max_total_tokens ?? "不限"} · 成本 ${detail.agent.max_estimated_cost ?? "不限"}` },

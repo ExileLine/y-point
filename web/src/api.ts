@@ -11,6 +11,8 @@ export type User = {
   role: string;
 };
 
+export type KnowledgeAnswerMode = "auto" | "knowledge_only";
+
 export type ModelThinkingMode = "auto" | "enabled" | "disabled";
 
 export type Agent = {
@@ -24,6 +26,7 @@ export type Agent = {
   temperature: string;
   max_output_tokens: number | null;
   thinking_mode: ModelThinkingMode;
+  knowledge_mode: KnowledgeAnswerMode;
   model_timeout_seconds: number;
   tool_timeout_seconds: number;
   max_model_calls: number | null;
@@ -269,6 +272,7 @@ export type AgentDraft = {
   temperature?: string;
   max_output_tokens?: number | null;
   thinking_mode?: ModelThinkingMode;
+  knowledge_mode?: KnowledgeAnswerMode;
   model_timeout_seconds?: number;
   tool_timeout_seconds?: number;
   max_model_calls?: number | null;
@@ -390,6 +394,12 @@ async function saveFileResponse(response: Response, fallback: string): Promise<v
   }
 }
 
+export async function getKnowledgePdfPage(baseId: number, chunkId: number, signal?: AbortSignal): Promise<Blob> {
+  const response = await fileRequest(`/knowledge-bases/${baseId}/citations/${chunkId}/page-image`, { signal, cache: "no-store" });
+  if (!response.headers.get("Content-Type")?.startsWith("image/png")) throw new ApiError("PDF 原页响应格式无效", 502);
+  return response.blob();
+}
+
 export async function downloadArtifact(artifactId: string, filename: string): Promise<void> {
   const response = await fileRequest(`/artifacts/${encodeURIComponent(artifactId)}/download`);
   await saveFileResponse(response, filename);
@@ -467,7 +477,7 @@ export type SessionMessage = {
   failure_code?: string | null;
   metrics?: RunMetrics | null;
 };
-export type SessionRun = { reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type SessionRun = { agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
 export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null; failure_code?: string | null };
 export type RunSnapshot = { run: SessionRun; events: RunStreamEvent[]; latest_sequence: number; next_after: number; has_more: boolean };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };

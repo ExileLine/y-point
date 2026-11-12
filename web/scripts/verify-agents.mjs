@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
+const screenshotDir = process.env.AGENT_SCREENSHOT_DIR || "../docs";
 const baseURL = process.env.WEB_BASE_URL || "http://127.0.0.1:5173";
 const browser = await chromium.launch({
   headless: true,
@@ -17,6 +18,8 @@ const owned = {
   default_model_id: 1,
   temperature: "1.00",
   max_output_tokens: 4096,
+  thinking_mode: "auto",
+  knowledge_mode: "auto",
   model_timeout_seconds: 120,
   tool_timeout_seconds: 120,
   max_model_calls: null,
@@ -75,6 +78,7 @@ async function withFixture(page, role) {
       lastDelete = pathname;
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope(null)) });
     }
+    if (pathname === "/api/v1/agents/runtime-limits") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ default_max_output_tokens: 4096, max_output_tokens: 1000000, default_model_timeout_seconds: 120, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600, recursion_limit: 9999, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 120, script_execution_timeout_seconds: 120 })) });
     const data = pathname === "/api/v1/auth/me" ? { id: 1, username: "tester", nickname: "测试用户", role }
       : pathname === "/api/v1/agents" ? { items: [owned], total: 1, page: 1, page_size: 20 }
       : pathname === "/api/v1/agents/shared" ? [shared]
@@ -94,7 +98,7 @@ try {
     const { getUpdate, getCreate, getGrant, getDelete } = await withFixture(page, "admin");
     await page.goto(`${baseURL}/agents`, { waitUntil: "networkidle" });
     await page.getByText("需求分析助手").first().waitFor();
-    await page.screenshot({ path: `../docs/web-agent-${name}.png`, fullPage: true });
+    await page.screenshot({ path: `${screenshotDir}/web-agent-${name}.png`, fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
 
     await page.getByRole("tab", { name: /共享给我/ }).click();
@@ -109,7 +113,7 @@ try {
     await page.getByText("请梳理需求").waitFor();
     await page.getByText("teammate", { exact: true }).waitFor();
     await page.waitForTimeout(350);
-    await page.screenshot({ path: `../docs/web-agent-detail-${name}.png`, fullPage: true });
+    await page.screenshot({ path: `${screenshotDir}/web-agent-detail-${name}.png`, fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     if (name === "desktop") {
       await page.getByRole("combobox", { name: "搜索用户名" }).fill("new");
@@ -124,14 +128,18 @@ try {
     await page.getByRole("button", { name: "编辑" }).last().click();
     await page.getByRole("textbox", { name: "名称" }).waitFor();
     await page.waitForTimeout(350);
-    await page.screenshot({ path: `../docs/web-agent-editor-${name}.png`, fullPage: true });
+    await page.screenshot({ path: `${screenshotDir}/web-agent-editor-${name}.png`, fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     await page.getByRole("textbox", { name: "名称" }).fill("需求分析助手新版");
+    await page.getByRole("combobox", { name: "知识回答模式" }).press("ArrowDown");
+    await page.getByText("仅知识库 · 依据资料回答", { exact: true }).click();
+    await page.locator(".ant-form-item").filter({ has: page.locator("#knowledge_mode") }).screenshot({ path: `${screenshotDir}/web-agent-knowledge-mode-${name}.png` });
     await page.getByRole("button", { name: /保\s*存/ }).click();
     await page.waitForFunction(() => !document.body.innerText.includes("编辑 Agent"));
     assert.equal(getUpdate()?.expected_version, 2);
     assert.equal(getUpdate()?.name, "需求分析助手新版");
-    assert.equal(Object.keys(getUpdate()).length, 2);
+    assert.equal(getUpdate()?.knowledge_mode, "knowledge_only");
+    assert.equal(Object.keys(getUpdate()).length, 3);
 
     if (name === "desktop") {
       await page.getByRole("button", { name: "新建 Agent" }).click();
@@ -147,6 +155,7 @@ try {
         throw new Error("创建抽屉未关闭");
       });
       assert.equal(getCreate()?.name, "新建助手");
+      assert.equal(getCreate()?.knowledge_mode, "auto");
       assert.equal(getCreate()?.default_model_id, 1);
       assert.equal(getCreate()?.max_output_tokens, 2048);
       assert.equal(getCreate()?.max_model_calls, 4);

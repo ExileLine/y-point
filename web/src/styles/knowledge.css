@@ -76,3 +76,12 @@
   .kb-job-row { align-items: flex-start !important; }
   .kb-page .ant-btn { min-height: var(--yp-touch-target); }
 }
+
+.kb-source-location { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; border-left: 2px solid var(--yp-color-brand); background: var(--yp-color-surface-muted); color: var(--yp-color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.kb-source-location strong { color: var(--yp-color-text); }
+.kb-generated-notes p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kb-generated-notes span { color: var(--yp-color-text-secondary); font-size: 12px; }
+
+.kb-pdf-page { position: relative; width: 100%; background: #fff; line-height: 0; }
+.kb-pdf-page img { width: 100%; height: auto; display: block; }
+.kb-pdf-highlight { position: absolute; border: 2px solid #b7791f; background: rgba(245, 180, 44, .18); pointer-events: none; box-sizing: border-box; }

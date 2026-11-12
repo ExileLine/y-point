@@ -5,7 +5,8 @@ import { createKnowledgeBase, testEmbeddingModel, updateKnowledgeBase, type Know
 
 const defaults: KnowledgeDraft = {
   name: "", description: null, search_mode: "keyword", embedding_model_id: null,
-  chunk_size: 800, chunk_overlap: 100, embedding_token_budget: 200000, embedding_cost_budget: null,
+  chunk_size: 800, chunk_overlap: 100, embedding_token_budget: null, embedding_cost_budget: null,
+  processing_mode: "auto", processing_model_id: null, processing_token_budget: null, processing_cost_budget: null,
 };
 
 export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
@@ -20,6 +21,7 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState(false);
   const mode = Form.useWatch("search_mode", form);
+  const processingMode = Form.useWatch("processing_mode", form);
   const modelId = Form.useWatch("embedding_model_id", form);
 
   useEffect(() => {
@@ -35,7 +37,11 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
     const draft: KnowledgeDraft = {
       ...values, name: values.name.trim(), description: values.description?.trim() || null,
       embedding_model_id: values.search_mode === "hybrid" ? values.embedding_model_id : null,
+      embedding_token_budget: values.embedding_token_budget ?? null,
       embedding_cost_budget: values.embedding_cost_budget || null,
+      processing_model_id: values.processing_model_id || null,
+      processing_token_budget: values.processing_token_budget ?? null,
+      processing_cost_budget: values.processing_cost_budget || null,
     };
     try {
       const id = item ? (await updateKnowledgeBase(item.id, draft, original!.revision)).knowledge_base.id : (await createKnowledgeBase(draft)).id;
@@ -59,7 +65,7 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
     finally { setTesting(false); }
   }
 
-  const options = models.filter((model) => model.status === 1 && model.capabilities.includes("embedding"))
+  const options = models.filter((model) => model.status === 1 && (model.capabilities.includes("embedding") || model.verified_capabilities.includes("embedding")))
     .map((model) => ({ value: model.id, label: `${model.display_name} · ${model.verified_capabilities.includes("embedding") ? "已验证" : "待验证"}` }));
   if (modelId && !options.some((option) => option.value === modelId)) options.unshift({ value: modelId, label: `模型 #${modelId}（请确认可用性）` });
 
@@ -72,6 +78,14 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
       <Form form={form} layout="vertical" initialValues={item ? { ...defaults, ...item } : defaults} onFinish={save} requiredMark={false} disabled={busy || testing}>
         <Form.Item name="name" label="名称" rules={[{ required: true, whitespace: true, message: "请输入知识库名称" }]}><Input maxLength={128} showCount /></Form.Item>
         <Form.Item name="description" label="用途说明"><Input.TextArea rows={3} maxLength={1024} showCount placeholder="例如：人事制度、差旅报销规则，供员工助手引用" /></Form.Item>
+        <Form.Item name="processing_mode" label="文档处理方式" rules={[{ required: true }]} extra="表格保留完整记录，PDF 保留页码与来源区域，模型解释单独保存。新配置在完整索引发布后生效。">
+          <Select options={[{ value: "auto", label: "自动处理 · 按格式选择" }, { value: "original", label: "保留原文 · 不调用加工模型" }, { value: "enhanced", label: "增强理解 · 文档语义解释" }]} />
+        </Form.Item>
+        <Alert className="kb-form-note" type="info" showIcon message={processingMode === "original" ? "按结构保留证据，不产生加工模型费用" : "表格与 PDF 的模型解释单独保存"} description="自动模式配置模型后加工表格及含 OCR／已识别表格的 PDF；纯文字 PDF 仅在增强模式下加工。PDF 本地 OCR 由页面提取选项决定，不消耗模型 Token。" />
+        <Form.Item name="processing_model_id" label="文档加工模型" rules={[{ required: processingMode === "enhanced", message: "增强理解需要选择加工模型" }]} extra="独立于嵌入模型和 Agent 对话模型。保留原文模式下也可预先配置，供文档覆盖策略使用。">
+          {user.role === "admin" ? <Select allowClear showSearch optionFilterProp="label" options={models.filter(model => model.status === 1 && model.verified_capabilities.includes("text")).map(model => ({ value: model.id, label: model.display_name }))} placeholder="选择已验证文本能力的模型" /> : <InputNumber min={1} precision={0} className="kb-full-width" placeholder="填写管理员提供的文本模型 ID" />}
+        </Form.Item>
+        {modelError && mode !== "hybrid" && <Alert type="warning" showIcon message={modelError} />}
         <Form.Item name="search_mode" label="检索策略" rules={[{ required: true }]} extra="关键词检索使用全文索引；混合检索融合关键词与向量候选，不随机切换。">
           <Select options={[{ value: "keyword", label: "关键词检索" }, { value: "hybrid", label: "混合检索 · 关键词 + 向量" }]} />
         </Form.Item>
@@ -83,13 +97,15 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
           {modelError && <Alert className="kb-form-note" type="warning" showIcon message={modelError} />}
         </>}
         <Collapse ghost items={[{ key: "advanced", label: "分块与索引预算", forceRender: true, children: <>
+          <Form.Item name="processing_token_budget" label="单次加工 Token 预留上限" rules={[{ type: "number", min: 1, max: 2000000 }]} extra="留空不限制累计 Token。填写时按输入与输出保守预留，失败和重试仍累计；模型单次请求限制与费用预算仍生效。"><InputNumber min={1} max={2000000} precision={0} placeholder="留空不限制累计 Token" className="kb-full-width" /></Form.Item>
+          <Form.Item name="processing_cost_budget" label="单次加工估算费用上限" extra="按加工模型币种计算，须配置输入和输出价格；与嵌入费用分别统计。"><InputNumber min="0.000001" max="999999999999.999999" precision={6} stringMode className="kb-full-width" /></Form.Item>
           <div className="kb-form-pair">
             <Form.Item name="chunk_size" label="片段大小（字符）" rules={[{ required: true, type: "number", min: 200, max: 2000 }]}><InputNumber min={200} max={2000} precision={0} className="kb-full-width" /></Form.Item>
             <Form.Item name="chunk_overlap" label="重叠字符" dependencies={["chunk_size"]} rules={[{ required: true, type: "number", min: 0, max: 500 }, { validator: async (_, value) => {
               if (value >= Math.floor(form.getFieldValue("chunk_size") / 2)) throw new Error("重叠须小于片段大小的一半");
             } }]}><InputNumber min={0} max={500} precision={0} className="kb-full-width" /></Form.Item>
           </div>
-          <Form.Item name="embedding_token_budget" label="单次索引嵌入 Token 预算" rules={[{ required: true, type: "number", min: 1, max: 2000000 }]}><InputNumber min={1} max={2000000} precision={0} className="kb-full-width" /></Form.Item>
+          <Form.Item name="embedding_token_budget" label="单次索引嵌入 Token 预算" rules={[{ type: "number", min: 1, max: 2000000 }]} extra="留空不限制累计 Token；模型单批输入限制与独立费用预算仍生效。"><InputNumber min={1} max={2000000} precision={0} placeholder="留空不限制累计 Token" className="kb-full-width" /></Form.Item>
           <Form.Item name="embedding_cost_budget" label="单次索引估算成本上限" extra="按模型配置币种计算；留空不设置金额上限。模型须配置价格。"><InputNumber min="0.000001" max="999999999999.999999" precision={6} stringMode className="kb-full-width" /></Form.Item>
         </> }]} />
       </Form>

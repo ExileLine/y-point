@@ -1,10 +1,12 @@
-import { memo, useRef, useState, type ComponentPropsWithoutRef } from "react";
+import { memo, useMemo, useRef, useState, type ComponentPropsWithoutRef } from "react";
 import { Button, Tooltip, message } from "antd";
 import { Check, Copy } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "../styles/message-content.css";
+import RunKnowledgeEvidence from "../knowledge/RunKnowledgeEvidence";
+import remarkLegacyCitation from "./remarkLegacyCitation";
 
 export function CopyButton({ text, label = "复制消息" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -56,6 +58,11 @@ function formatSource(text: string, streaming: boolean): string {
   return `${fence}${language}\n${text}\n${fence}`;
 }
 
-export const MessageContent = memo(function MessageContent({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  return <div className="message-markdown"><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={streaming ? [] : [rehypeHighlight]} components={components}>{formatSource(text, streaming)}</Markdown></div>;
+export const MessageContent = memo(function MessageContent({ text, streaming = false, runId }: { text: string; streaming?: boolean; runId?: string }) {
+  const messageComponents = useMemo(() => ({
+    ...components,
+    span: ({ node: _node, ...props }: ComponentPropsWithoutRef<"span"> & { node?: unknown }) => props.className === "message-citation-marker" && runId
+      ? <RunKnowledgeEvidence runId={runId} legacyCitation={props.title} /> : <span {...props} />,
+  }), [runId]);
+  return <div className="message-markdown"><Markdown remarkPlugins={runId ? [remarkGfm, [remarkLegacyCitation, { streaming }]] : [remarkGfm]} rehypePlugins={streaming ? [] : [rehypeHighlight]} components={messageComponents}>{formatSource(text, streaming)}</Markdown></div>;
 });

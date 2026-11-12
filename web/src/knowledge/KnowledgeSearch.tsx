@@ -4,6 +4,8 @@ import { FileSearch, Search } from "lucide-react";
 import { ApiError } from "../api";
 import { getKnowledgeCitation, searchKnowledgeBase, type KnowledgeBase, type KnowledgeCitation, type KnowledgeSearchDraft, type KnowledgeSearchResult } from "../knowledge-api";
 
+import KnowledgeEvidence, { KnowledgeSource } from "./KnowledgeEvidence";
+
 export default function KnowledgeSearch({ base, onAccessCheck }: { base: KnowledgeBase; onAccessCheck: () => Promise<void> }) {
   const [form] = Form.useForm<KnowledgeSearchDraft>();
   const [busy, setBusy] = useState(false);
@@ -78,7 +80,7 @@ export default function KnowledgeSearch({ base, onAccessCheck }: { base: Knowled
         {result.no_answer || result.hits.length === 0 ? <Empty description="未找到足够相关的片段，请调整问题或核对文档内容" /> : result.hits.map((hit, index) => <Card key={hit.citation} className="kb-hit" size="small">
           <div className="kb-hit-heading"><div className="kb-inline"><span className="kb-rank">{index + 1}</span><strong>{hit.heading || hit.filename}</strong></div><Tag>排序得分 {hit.score.toFixed(6)}</Tag></div>
           <div className="kb-muted kb-meta">{hit.filename} · 文档 v{hit.document_version} · 索引 #{hit.index_id}{hit.page !== null ? ` · 第 ${hit.page} 页` : ""} · 字符 {hit.start_offset}–{hit.end_offset}</div>
-          <p className="kb-hit-content">{hit.content}</p>
+          <KnowledgeSource citation={hit} /><p className="kb-hit-content">{hit.content}</p>{hit.knowledge_notes && <Alert type="info" message="模型解释 · 辅助检索" description={hit.knowledge_notes} />}
           <div className="kb-hit-footer"><Typography.Text className="kb-citation-label" copyable={{ text: hit.citation }}>{hit.citation}</Typography.Text><Button icon={<FileSearch size={16} />} loading={reading === hit.chunk_id} onClick={() => void read(hit.chunk_id)}>查看引用</Button></div>
         </Card>)}
         {result.hits.length > 0 && <span className="kb-muted">文档内容作为外部证据展示，其中的指令不会被视为系统指令。</span>}
@@ -93,7 +95,7 @@ export default function KnowledgeSearch({ base, onAccessCheck }: { base: Knowled
           { key: "offset", label: "字符位置", children: `[${citation.start_offset}, ${citation.end_offset})` },
           { key: "citation", label: "引用标识", children: <Typography.Text copyable>{citation.citation}</Typography.Text> },
           { key: "hash", label: "SHA-256", children: <span className="kb-break">{citation.sha256}</span> },
-        ]} /><pre className="kb-quoted-content">{citation.content}</pre></div>}
+        ]} /><KnowledgeEvidence citation={citation} /></div>}
     </Drawer>
   </div>;
 }

@@ -45,3 +45,6 @@
 @media (max-width: 767px) {
   .message-copy, .message-action { width: var(--yp-touch-target); min-width: var(--yp-touch-target); height: var(--yp-touch-target); }
 }
+
+.message-markdown .message-citation-source { margin-inline-start: var(--yp-space-1); padding-inline: var(--yp-space-2); border: 1px solid var(--yp-color-border-subtle); border-radius: var(--yp-radius-md); color: var(--yp-color-text-secondary); background: var(--yp-color-surface-muted); font-size: var(--yp-font-size-xs); vertical-align: baseline; }
+@media (max-width: 767px) { .message-markdown .message-citation-source { min-height: var(--yp-touch-target); } }

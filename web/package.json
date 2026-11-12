@@ -14,6 +14,7 @@
     "verify:knowledge": "node scripts/verify-knowledge.mjs",
     "verify:resources": "node scripts/verify-resources.mjs",
     "verify:chat": "node scripts/verify-chat.mjs",
+    "verify:citations": "node scripts/verify-citation.mjs",
     "verify:artifacts": "node scripts/verify-artifacts.mjs",
     "verify:previews": "node scripts/verify-previews.mjs",
     "verify:calls": "node scripts/verify-calls.mjs",
@@ -21,7 +22,9 @@
     "verify:uploads": "node scripts/verify-chat-uploads.mjs",
     "verify:skills": "node scripts/verify-skill-workspace.mjs",
     "verify:chat-activity": "node scripts/verify-chat-activity.mjs",
-    "verify:partial-output": "node scripts/verify-partial-output.mjs"
+    "verify:partial-output": "node scripts/verify-partial-output.mjs",
+    "verify:knowledge-processing": "node scripts/verify-knowledge-processing.mjs",
+    "verify:knowledge-pdf": "node scripts/verify-knowledge-pdf.mjs"
   },
   "dependencies": {
     "antd": "^5.29.1",
