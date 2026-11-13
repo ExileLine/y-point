@@ -1,0 +1,14 @@
+{
+  "version": "m64-formats-v1",
+  "cases": [
+    {"filename": "policy.html", "query": "十五个工作日", "contains": "报销申请须在十五个工作日内提交", "kind": "html"},
+    {"filename": "policy.html", "query": "甲供应商", "contains": "列2（单价）=3800；列3（数量）=50", "kind": "html"},
+    {"filename": "policy.json", "query": "财务部", "contains": "/service/approval_department", "kind": "config"},
+    {"filename": "policy.json", "query": "甲供应商", "contains": "/suppliers/0/unit_cny（int）= 3800", "kind": "config"},
+    {"filename": "policy.yaml", "query": "财务部", "contains": "/service/approval_department", "kind": "config"},
+    {"filename": "policy.yaml", "query": "甲供应商", "contains": "/suppliers/0/quantity（int）= 50", "kind": "config"},
+    {"filename": "policy.pptx", "query": "十五个工作日", "contains": "报销申请须在十五个工作日内提交", "kind": "slide"},
+    {"filename": "policy.pptx", "query": "原件", "contains": "讲解备注：报销凭证需保留原件", "kind": "slide"}
+  ],
+  "negative": ["导航噪声标记", "顶部广告标记", "正文脚本机密标记", "隐藏正文机密标记", "隐藏对象专用标记", "隐藏页专用标记"]
+}

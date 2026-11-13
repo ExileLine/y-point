@@ -43,6 +43,7 @@ from app.services.artifact_store import artifact_read_max_bytes, artifact_root
 from app.services.embedding_adapter import EMBEDDING_BATCH_SIZE, embed_texts, embedding_identity, load_embedding_model
 from app.services.knowledge import MAX_INDEX_CHUNKS, TERMINAL_KNOWLEDGE_JOBS
 from app.services.knowledge_enrichment import enrich_knowledge_chunks, load_processing_model, processing_fingerprint, processing_identity
+from app.services.knowledge_formats import ROUTED_MEDIA_TYPES, ROUTED_PARSER_VERSION
 from app.services.knowledge_tables import TABLE_MEDIA_TYPES, TABLE_PARSER_VERSION
 from app.services.knowledge_pdf import PDF_PARSER_VERSION, pdf_runtime_configuration
 from app.services.knowledge_backend import knowledge_tokens, remove_keyword_rows, write_keyword_rows
@@ -127,7 +128,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             runtime = configuration.get("pdf_runtime") or pdf_runtime_configuration() if is_pdf else None
             fingerprint = processing_fingerprint(
                 {
-                    "parser": PDF_PARSER_VERSION if is_pdf else TABLE_PARSER_VERSION,
+                    "parser": PDF_PARSER_VERSION if is_pdf else ROUTED_PARSER_VERSION if version.media_type in ROUTED_MEDIA_TYPES else TABLE_PARSER_VERSION,
                     "pdf_runtime": runtime,
                     "media_type": version.media_type,
                     "sha256": version.sha256,
@@ -140,7 +141,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                 and (
                     version.parser_fingerprint == fingerprint
                     or version.parser_fingerprint is None
-                    and version.media_type not in (*TABLE_MEDIA_TYPES, "application/pdf")
+                    and version.media_type not in (*TABLE_MEDIA_TYPES, *ROUTED_MEDIA_TYPES, "application/pdf")
                 )
             ):
                 parsed = ParsedKnowledge(version.extracted_text, version.blocks, version.processing_metadata or {})
@@ -155,7 +156,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
                 }
             parsed = (
                 await parse_knowledge_isolated(content, version.media_type, options)
-                if version.media_type in TABLE_MEDIA_TYPES or is_pdf
+                if version.media_type in TABLE_MEDIA_TYPES or version.media_type in ROUTED_MEDIA_TYPES or is_pdf
                 else await parse_knowledge_isolated(content, version.media_type)
             )
             async with sessions.begin() as db:
@@ -197,7 +198,7 @@ async def _build_knowledge_index(sessions, job_id: int, lease: str) -> None:
             "processing_mode",
             KnowledgeProcessingMode.ORIGINAL,
         )
-        supported = version.media_type in TABLE_MEDIA_TYPES or version.media_type == "application/pdf"
+        supported = version.media_type in TABLE_MEDIA_TYPES or version.media_type in ROUTED_MEDIA_TYPES or version.media_type == "application/pdf"
         complex_pdf = version.media_type == "application/pdf" and any(
             chunk.document_version_id == version.id
             and chunk.source_locator

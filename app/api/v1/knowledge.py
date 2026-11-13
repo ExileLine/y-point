@@ -49,13 +49,14 @@ from app.services.knowledge import (
 from app.services.knowledge_parser import KnowledgeProcessingError, render_pdf_page_isolated
 from app.schemas.knowledge import KnowledgeDocumentOptions
 from pydantic import ValidationError
+from app.services.knowledge_formats import ROUTED_MEDIA_TYPES
 from app.services.private_blob_store import delete_blob, read_blob
 from app.services.tool_execution import ToolCapacityError, tool_execution_slot
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
 embedding_router = APIRouter(prefix="/models", tags=["models"])
 retrieval_router = APIRouter(prefix="/runs", tags=["knowledge"])
-SUPPORTED_KNOWLEDGE_TYPES = frozenset(
+SUPPORTED_KNOWLEDGE_TYPES = ROUTED_MEDIA_TYPES | frozenset(
     {
         "text/plain",
         "text/markdown",
@@ -293,10 +294,14 @@ async def _upload_knowledge_document(
         raise CustomException(status_code=422, custom_code=10006, detail="文档处理选项无效，请检查策略、工作表名称及表头行数") from None
     saved = None
     try:
-        saved = await save_upload(file, actor_id, artifact_root(), max_bytes=10 * 1024 * 1024, allow_csv=True)
+        saved = await save_upload(file, actor_id, artifact_root(), max_bytes=10 * 1024 * 1024, allow_csv=True, allow_knowledge=True)
         artifact, _ = saved
         if artifact.media_type not in SUPPORTED_KNOWLEDGE_TYPES:
-            raise CustomException(status_code=400, custom_code=10006, detail="知识文档仅支持 TXT、Markdown、PDF、DOCX、XLSX 和 UTF-8 CSV")
+            raise CustomException(
+                status_code=400,
+                custom_code=10006,
+                detail="知识文档支持 TXT、Markdown、PDF、DOCX、XLSX、CSV、HTML、JSON、YAML、PPTX；文本须使用 UTF-8",
+            )
         item = await require_knowledge_base(db, knowledge_base_id, actor_id, manage=True, lock=True)
         if item.revision != expected_revision:
             raise CustomException(status_code=409, custom_code=10005, detail="知识库版本已变化")

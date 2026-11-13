@@ -36,6 +36,7 @@ from app.models.artifact import Artifact
 from app.models.artifact_source import ArtifactSource
 from app.models.base import shanghai_now
 from app.models.run_artifact_read import RunArtifactRead
+from app.services.knowledge_formats import KNOWLEDGE_EXTRA_MEDIA_TYPES
 from app.services.private_blob_store import delete_blob, old_blob_batches, store_blob, using_s3
 
 MAX_FILES = 5
@@ -96,7 +97,7 @@ def _validate_office(path: Path, suffix: str) -> None:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
             names = {info.filename for info in infos}
-            required = "word/document.xml" if suffix == ".docx" else "xl/workbook.xml"
+            required = "word/document.xml" if suffix == ".docx" else "ppt/presentation.xml" if suffix == ".pptx" else "xl/workbook.xml"
             if "[Content_Types].xml" not in names or required not in names or len(infos) > 1000 or len(names) != len(infos):
                 raise ArtifactValidationError("Office 文件结构无效")
             if sum(info.file_size for info in infos) > 50 * 1024 * 1024:
@@ -122,7 +123,7 @@ def _validate_office(path: Path, suffix: str) -> None:
         raise ArtifactValidationError("Office 文件损坏或不可读取") from exc
 
 
-def validate_file(path: Path, filename: str, *, generated: bool = False, allow_csv: bool = False) -> str:
+def validate_file(path: Path, filename: str, *, generated: bool = False, allow_csv: bool = False, allow_knowledge: bool = False) -> str:
     """核验扩展名和实际文件结构，返回可信媒体类型。"""
     if not filename or len(filename) > 255 or filename in {".", ".."}:
         raise ArtifactValidationError("文件名无效")
@@ -130,13 +131,15 @@ def validate_file(path: Path, filename: str, *, generated: bool = False, allow_c
         raise ArtifactValidationError("文件名包含非法字符")
     suffix = Path(filename).suffix.lower()
     allowed_types = MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES if generated else MEDIA_TYPES
+    if allow_knowledge:
+        allowed_types = allowed_types | KNOWLEDGE_EXTRA_MEDIA_TYPES
     if allow_csv:
         allowed_types = allowed_types | {
             ".csv": "text/csv",
         }
     if suffix not in allowed_types:
         raise ArtifactValidationError("不支持的文件格式")
-    if suffix in {".txt", ".md", ".html", ".csv", ".json"}:
+    if suffix in {".txt", ".md", ".html", ".htm", ".csv", ".json", ".yml", ".yaml"}:
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeError as exc:
@@ -235,7 +238,15 @@ def artifact_read_max_bytes() -> int:
     return max(upload_max_bytes(), MAX_GENERATED_FILE_BYTES)
 
 
-async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes: int | None = None, allow_csv: bool = False) -> tuple[Artifact, Path]:
+async def save_upload(
+    file: UploadFile,
+    owner_id: int,
+    root: Path,
+    *,
+    max_bytes: int | None = None,
+    allow_csv: bool = False,
+    allow_knowledge: bool = False,
+) -> tuple[Artifact, Path]:
     """限量写入临时文件，校验后原子转入私有目录。"""
     max_bytes = upload_max_bytes() if max_bytes is None else max_bytes
     filename = file.filename or ""
@@ -256,7 +267,7 @@ async def save_upload(file: UploadFile, owner_id: int, root: Path, *, max_bytes:
                 stream.write(chunk)
         if total == 0:
             raise ArtifactValidationError("文件不能为空")
-        media_type = validate_file(temporary, filename, allow_csv=allow_csv)
+        media_type = validate_file(temporary, filename, allow_csv=allow_csv, allow_knowledge=allow_knowledge)
         await scan_file(temporary)
         if using_s3():
             remote_attempted = True

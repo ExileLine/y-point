@@ -8,6 +8,7 @@
 import csv
 import io
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,7 +18,7 @@ from app.core.config import get_config
 from app.core.enums import KnowledgeFailure, KnowledgePdfExtraction, KnowledgePdfLayout, KnowledgePdfMode, KnowledgePdfPageKind, KnowledgeSourceKind
 from app.services.knowledge_parser import MAX_TEXT_CHARACTERS, KnowledgeProcessingError, ParsedKnowledge, _normalize
 
-PDF_PARSER_VERSION = "pdf-layout-ocr-v1"
+PDF_PARSER_VERSION = "pdf-layout-ocr-v2"
 MAX_PDF_PAGES = 200
 MAX_PDF_PIXELS = 12000000
 MAX_OCR_BYTES = 8 * 1024 * 1024
@@ -35,6 +36,11 @@ def pdf_runtime_configuration() -> dict:
         "max_ocr_pages": config.KNOWLEDGE_PDF_OCR_MAX_PAGES,
         "dpi": config.KNOWLEDGE_PDF_OCR_DPI,
     }
+
+
+def _normalize_pdf_line(text: str) -> str:
+    """合并同一提取行内汉字之间的分词空格，保留英文、数字及跨行边界。"""
+    return re.sub(r"(?<=[\u3400-\u9fff])[ \t]+(?=[\u3400-\u9fff])", "", _normalize(text))
 
 
 def _bbox(words: list[dict]) -> list[float]:
@@ -281,7 +287,7 @@ def parse_pdf_knowledge(content: bytes, options: dict | None = None) -> ParsedKn
                 method = KnowledgePdfExtraction.NATIVE
             beginning = len(blocks)
             for text, bbox, layout, table in evidence:
-                text = _normalize(text)
+                text = _normalize_pdf_line(text)
                 if not text:
                     continue
                 if len(text.encode()) > 8192:

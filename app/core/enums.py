@@ -333,6 +333,19 @@ class KnowledgeSourceKind(StrEnum):
     TEXT = "text"
     TABLE = "table"
     PDF = "pdf"
+    HTML = "html"
+    CONFIG = "config"
+    SLIDE = "slide"
+
+
+class KnowledgeContentRole(StrEnum):
+    """结构化证据的语义区域，正文与演讲者备注分开存储。"""
+
+    TEXT = "text"
+    HEADING = "heading"
+    TABLE = "table"
+    CODE = "code"
+    NOTES = "notes"
 
 
 class KnowledgePdfMode(StrEnum):

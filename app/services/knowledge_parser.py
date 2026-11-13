@@ -17,7 +17,7 @@ import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 
-from app.core.enums import KnowledgeFailure, KnowledgeSourceKind
+from app.core.enums import KnowledgeContentRole, KnowledgeFailure, KnowledgeSourceKind
 
 MAX_TEXT_CHARACTERS = 500000
 MAX_PARSER_BYTES = 8 * 1024 * 1024
@@ -53,6 +53,18 @@ def parse_knowledge(content: bytes, media_type: str, options: dict | None = None
         from app.services.knowledge_tables import parse_table_knowledge
 
         return parse_table_knowledge(content, media_type, options)
+    if media_type == "text/html":
+        from app.services.knowledge_html import parse_html_knowledge
+
+        return parse_html_knowledge(content)
+    if media_type in ("application/json", "application/yaml"):
+        from app.services.knowledge_config import parse_configuration
+
+        return parse_configuration(content, media_type)
+    if media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        from app.services.knowledge_slides import parse_pptx_knowledge
+
+        return parse_pptx_knowledge(content)
     units = []
     if media_type in ("text/plain", "text/markdown"):
         units = [(content.decode("utf-8-sig"), None, None)]
@@ -144,6 +156,32 @@ def chunk_knowledge(parsed: ParsedKnowledge, size: int, overlap: int) -> list[di
             }
             for position, block in enumerate(records)
         ]
+    if any(
+        block.get("source_locator", {}).get("kind") in {KnowledgeSourceKind.HTML, KnowledgeSourceKind.CONFIG, KnowledgeSourceKind.SLIDE}
+        for block in parsed.blocks
+    ):
+        chunks = []
+        for block in parsed.blocks:
+            source = block["source_locator"]
+            atomic = source["kind"] == KnowledgeSourceKind.CONFIG or source.get("role") == KnowledgeContentRole.TABLE or source.get("table") is not None
+            start = block["start"]
+            while start < block["end"]:
+                end = block["end"] if atomic else min(start + size, block["end"])
+                chunks.append(
+                    {
+                        "position": len(chunks),
+                        "content": parsed.text[start:end],
+                        "start_offset": start,
+                        "end_offset": end,
+                        "page": block["page"],
+                        "heading": block["heading"],
+                        "source_locator": dict(source),
+                    },
+                )
+                if end >= block["end"]:
+                    break
+                start = end - overlap
+        return chunks
     if any(block.get("source_locator") for block in parsed.blocks):
         # 只合并同一表格的完整记录，超长记录不再按字符截断，避免字段失去归属。
         records = []
