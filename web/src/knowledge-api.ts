@@ -95,6 +95,7 @@ export type KnowledgeSearchResult = {
   untrusted_data: boolean;
 };
 export type KnowledgeMutation = { revision: number; job_id: number | null };
+export type KnowledgeDocumentDeletion = KnowledgeMutation & { rebuild_required: boolean; rebuild_reason: string | null };
 
 export const listKnowledgeBases = (page = 1, pageSize = 20): Promise<KnowledgePage> => request(`/knowledge-bases?page=${page}&page_size=${pageSize}`);
 export async function listAllKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -130,7 +131,7 @@ export type KnowledgeProcessingPreview = {
 };
 export const getKnowledgeProcessingPreview = (id: number, documentId: number, after = -1, signal?: AbortSignal): Promise<KnowledgeProcessingPreview> =>
   request(`/knowledge-bases/${id}/documents/${documentId}/processing-preview?after=${after}&limit=10`, { signal, cache: "no-store" });
-export const deleteKnowledgeDocument = (id: number, documentId: number, revision: number): Promise<KnowledgeMutation> => request(`/knowledge-bases/${id}/documents/${documentId}?expected_revision=${revision}`, { method: "DELETE" });
+export const deleteKnowledgeDocument = (id: number, documentId: number, revision: number): Promise<KnowledgeDocumentDeletion> => request(`/knowledge-bases/${id}/documents/${documentId}?expected_revision=${revision}`, { method: "DELETE" });
 export const rebuildKnowledgeIndex = (id: number, revision: number): Promise<KnowledgeMutation> => request(`/knowledge-bases/${id}/rebuild`, { method: "POST", body: JSON.stringify({ expected_revision: revision }) });
 export const listKnowledgeJobs = (id: number): Promise<KnowledgeJob[]> => request(`/knowledge-bases/${id}/jobs`);
 export const cancelKnowledgeJob = (jobId: number): Promise<void> => request(`/knowledge-bases/jobs/${jobId}/cancel`, { method: "POST" });

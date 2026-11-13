@@ -1160,7 +1160,7 @@ HTML/配置解析最多 20000 节点（含别名实际展开量）、深度 48�
 
 ```bash
 uv sync --group dev
-.venv/bin/python -m pytest tests/test_knowledge_formats.py tests/test_knowledge_pdf_acceptance.py -q -rs
+.venv/bin/python -m pytest tests/test_knowledge_formats.py tests/test_knowledge_pdf_acceptance.py tests/test_knowledge_deletion.py -q -rs
 ```
 
 格式专项验证上传、索引、关键词检索、路径/页码与精确原文偏移、缓存复用、共享/撤权、失败更新保留旧代及正常删除；加工调用使用可控假模型验证 auto/original/enhanced 和用量分离。PDF 补充专项执行真实本地 OCR 并核对引用原页；需要安装 Tesseract 及 chi_sim/eng，环境缺失时测试会跳过，不能视为通过。上述检查不调用真实供应商模型，不代替真实业务解释质量、费用及目标数据库/存储环境验收。
@@ -1177,7 +1177,7 @@ uv sync --group dev
 | `POST/GET /knowledge-bases/{id}/shares`、`DELETE /knowledge-bases/{id}/shares/{user_id}` | 授予、查看或撤销指定用户只读权限；POST 传 `user_id`。 |
 | `POST /knowledge-bases/{id}/documents` | multipart 上传 `file`、`expected_revision` 及可选 `processing_options`，返回文档、最新 revision、任务 ID 和去重标记；新任务返回 HTTP 202。 |
 | `PUT /knowledge-bases/{id}/documents/{document_id}` | 以相同 multipart 字段上传该文档的新版本。 |
-| `GET /knowledge-bases/{id}/documents`、`DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=…` | 列出当前文档；删除成功提交后影响所有代的检索和引用，嵌入配置失效时的现有限制见下方已知问题。 |
+| `GET /knowledge-bases/{id}/documents`、`DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=…` | 列出当前文档；删除立即阻断所有代中的该文档及旧引用，模型失效不再阻断删除；返回是否需要修复配置后重建。 |
 | `GET /knowledge-bases/{id}/documents/{document_id}/processing-preview?after=-1&limit=20` | 重新鉴权分页读取已发布原始证据、来源及模型解释，最多五十段；返回当前上传版和已索引版，响应禁止缓存，不触发加工。 |
 | `POST /knowledge-bases/{id}/rebuild` | 传 `expected_revision`，固定当前文档版本清单，返回 HTTP 202 和新任务。 |
 | `GET /knowledge-bases/{id}/jobs`、`GET /knowledge-bases/jobs/{job_id}` | 创建者查看任务阶段、履历、跳过记录、尝试次数、用量与脱敏失败类别。 |
@@ -1381,9 +1381,17 @@ ON yp_knowledge_chunk USING gin (to_tsvector('simple', search_terms));
 
 SQLite 的 `exact` 已支持向量召回，通过读取已保存的归一化向量逐条计算相似度实现，未建立数据库原生向量加速索引。切换 PostgreSQL 不会自动启用 `pgvector` 或创建 HNSW/IVFFlat；关键词 GIN 索引也不等于向量索引。逐片段召回解释和向量加速索引属于后续开发范围。
 
-### 已知限制
+### 文档删除与索引恢复
 
-知识库删除文档时会同步创建新索引任务，并重新校验所配置的嵌入及加工模型。如果已配置模型停用、被删除或独立验证失效，删除请求可能返回 HTTP 409 / 10005，整个事务回滚，文档仍未删除，关键词检索和旧引用仍可访问。调用方须确认删除请求成功；收到错误时不能将文档显示为已删除。实现见 [delete_knowledge_document()](app/api/v1/knowledge.py) 与 [enqueue_knowledge_index()](app/services/knowledge.py)；处理进度与复现证据见 `y-point-server-todo.md`。
+删除文档不依赖加工或嵌入模型的当前可用性。`DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=…` 成功后递增知识库 revision，立即阻断所有索引代中的该文档、旧引用、加工预览及 PDF 原页访问，并请求取消旧索引任务与受影响的 Agent 运行；后台继续清理私有原文件、提取原文和片段。剩余文档继续使用既有索引，不重新开放已删除内容。
+
+响应保留 `revision`、`job_id`，并补充 `rebuild_required`、`rebuild_reason`：
+
+- 配置有效时，自动创建新索引任务，`job_id` 为任务 ID、`rebuild_required=false`、`rebuild_reason=null`。
+- 加工/嵌入模型或供应商停用、删除、验证失效，或其他索引配置校验不通过时，删除仍返回 HTTP 200；`job_id=null`、`rebuild_required=true`，`rebuild_reason` 返回可读原因。页面提示「文档已删除，索引重建暂缓」，可进入设置修复模型后保存并重建，不会误报已有新任务。
+- 此情况下删除最后一份文档会清空活动索引指针，空库检索直接返回无答案，不调用失效的向量模型。仍有文档时保留旧索引；混合检索仍需原向量模型可用，不会静默切换为关键词检索，可显式使用 `keyword_only=true` 核对剩余原文。
+
+版本冲突仍返回 409，未授权或已删除文档仍返回 404；数据库及其他服务异常也不会被转换成删除成功。调用方须以成功响应为准。上传、更新和手动重建继续严格校验模型配置，修复模型后重建不会恢复已删除文档。相关专项可运行 `.venv/bin/python -m pytest tests/test_knowledge_deletion.py -q`；真实业务与目标 PostgreSQL/Docker 环境验收仍需另行开展。
 
 ## Agent 对话业务流程
 

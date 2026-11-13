@@ -42,6 +42,7 @@ from app.services.knowledge import (
     knowledge_access,
     load_document_processing_preview,
     read_knowledge_citation,
+    remove_knowledge_document,
     require_knowledge_base,
     search_knowledge,
     validate_knowledge_configuration,
@@ -496,20 +497,22 @@ async def delete_knowledge_document(
     actor: Admin = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """先逻辑删除并重建新代，后台清理原文，旧代检索也必须过滤此文档。"""
+    """逻辑删除立即阻断旧代访问；模型无效时保留删除结果并提示修复后重建。"""
     item = await require_knowledge_base(db, knowledge_base_id, actor.id, manage=True, lock=True)
     document = await db.get(KnowledgeDocument, document_id)
     if document is None or document.knowledge_base_id != item.id or document.is_deleted != 0:
         raise CustomException(status_code=404, custom_code=10002, detail="知识文档不存在")
-    document.is_deleted = 1
-    job = await enqueue_knowledge_index(db, item, expected_revision)
+    await _cancel_index_jobs(db, item.id)
+    job, rebuild_reason = await remove_knowledge_document(db, item, document, expected_revision)
     await cancel_knowledge_runs(db, item.id)
     audit(db, "knowledge.document_deleted", actor_id=actor.id, target_id=document_id)
     await db.commit()
     return api_response(
         data={
             "revision": item.revision,
-            "job_id": job.id,
+            "job_id": job.id if job is not None else None,
+            "rebuild_required": job is None,
+            "rebuild_reason": rebuild_reason,
         },
     )
 

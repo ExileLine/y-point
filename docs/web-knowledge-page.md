@@ -32,7 +32,7 @@
 | 列表、创建、详情 | `GET/POST /knowledge-bases`；`GET /knowledge-bases/{id}` |
 | 更新、删除 | `PUT /knowledge-bases/{id}` 完整配置加 `expected_revision`；`DELETE /knowledge-bases/{id}?expected_revision=` |
 | 文档目录、上传、版本更新 | `GET/POST /knowledge-bases/{id}/documents`；`PUT /knowledge-bases/{id}/documents/{document_id}`，multipart `file`、`expected_revision` |
-| 文档删除 | `DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=` |
+| 文档删除 | `DELETE /knowledge-bases/{id}/documents/{document_id}?expected_revision=`；返回 revision、可空 job_id、rebuild_required 及 rebuild_reason，删除成功与重建暂缓分别展示。 |
 | 索引与任务 | `POST /knowledge-bases/{id}/rebuild`；`GET /knowledge-bases/{id}/jobs`；`POST /knowledge-bases/jobs/{job_id}/cancel`；`POST /knowledge-bases/jobs/{job_id}/retry?expected_attempts=` |
 | 检索与引用 | `POST /knowledge-bases/{id}/search`；`GET /knowledge-bases/{id}/citations/{chunk_id}` |
 | 共享 | `GET/POST /knowledge-bases/{id}/shares`；`DELETE /knowledge-bases/{id}/shares/{user_id}`；用户搜索复用 `GET /agents/share-targets?query=` |
@@ -59,3 +59,7 @@
 ## 新建默认检索策略（2026-11-13）
 
 新建知识库默认选择「混合检索 · 关键词 + 向量」，须选择或填写有效的嵌入模型后创建。没有可用的嵌入模型时可以明确改选关键词检索；页面不自动降级。编辑已有知识库保留原检索策略及模型配置。
+
+## 模型失效时删除（2026-11-13）
+
+删除成功后移除目录中的文档。模型配置失效导致无法创建新索引时，显示「文档已删除，索引重建暂缓」和服务端返回的原因；已删除文档及其旧引用继续不可访问。用户可通过「检查设置」修复模型并保存重建。提示不会被焦点刷新自动清除，保存配置或重新上传/重建成功后清除。版本冲突等实际失败仍保留文档与错误，不自动重试。

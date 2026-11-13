@@ -44,6 +44,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [operationError, setOperationError] = useState("");
+  const [rebuildNotice, setRebuildNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState("documents");
   const [editing, setEditing] = useState(false);
@@ -103,6 +104,14 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
     } finally { if (mounted.current) setBusy(false); }
   }
 
+  async function removeDocument(document: KnowledgeDocument) {
+    if (!base) return;
+    await perform(async () => {
+      const result = await deleteKnowledgeDocument(id, document.id, base.revision);
+      if (mounted.current) setRebuildNotice(result.rebuild_required ? result.rebuild_reason || "当前索引配置不可用" : "");
+    }, "文档已删除");
+  }
+
   async function upload() {
     if (!base || !file || !uploading) return;
     setBusy(true); setUploadError("");
@@ -110,7 +119,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
       const response = await uploadKnowledgeDocument(base.id, file, base.revision, uploading === "new" ? undefined : uploading.id, uploadOptions);
       if (!mounted.current) return;
       message.success(response.deduplicated ? "文档内容相同，已去重，无需重复索引" : `文档已保存，索引任务 #${response.job_id} 已排队`);
-      setUploading(null); setFile(null); if (response.job_id) { setTab("jobs"); setJobDetail(response.job_id); }
+      setRebuildNotice(""); setUploading(null); setFile(null); if (response.job_id) { setTab("jobs"); setJobDetail(response.job_id); }
       onChanged(); await refresh(true);
     } catch (failure) {
       if (!mounted.current) return;
@@ -131,7 +140,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
     {owned ? <>
     <Button type="link" size="small" disabled={busy} onClick={() => openUpload(item)}>更新版本</Button>
     <Popconfirm title={`删除「${item.filename}」？`} description="成功删除后，所有索引代中的该文档与旧引用都会不可访问。" okText="删除" cancelText="保留" disabled={busy}
-      onConfirm={() => perform(() => deleteKnowledgeDocument(id, item.id, base.revision), "文档已删除，新索引已排队")}>
+      onConfirm={() => removeDocument(item)}>
       <Button type="text" danger size="small" disabled={busy} aria-label={`删除文档 ${item.filename}`}>删除</Button>
     </Popconfirm></> : <Tag>只读</Tag>}</Space>;
 
@@ -141,6 +150,9 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
       <Space wrap><Button icon={<RefreshCw size={16} />} aria-label="刷新知识库" loading={loading} disabled={busy} onClick={() => void refresh()}>刷新</Button>{owned && <Button icon={<Settings2 size={16} />} disabled={busy} onClick={() => setEditing(true)}>设置</Button>}</Space>
     </div>
     {(error || operationError) && <Alert type="error" showIcon closable onClose={() => { setError(""); setOperationError(""); }} message={error || operationError} action={<Button size="small" onClick={() => void refresh()}>刷新</Button>} />}
+    {rebuildNotice && <Alert type="warning" showIcon closable onClose={() => setRebuildNotice("")} message="文档已删除，索引重建暂缓"
+      description={<div className="kb-stack-tight"><span>{rebuildNotice}。已删除文档及其旧引用已不可访问，旧索引不会恢复这些内容。请修复模型配置后保存并重建。</span>
+        <div><Button size="small" disabled={busy} onClick={() => setEditing(true)}>检查设置</Button></div></div>} />}
     <div className="kb-summary-grid">
       <div className="kb-summary"><span>文档</span><strong>{documents.length}<small> / 100</small></strong><span>目录为当前上传版本</span></div>
       <div className="kb-summary"><span>已发布索引</span><strong>{base.active_index_id ? `#${base.active_index_id}` : "尚未发布"}</strong><span>{pending ? base.active_index_id ? "新代构建中，原索引继续服务" : "首个索引构建中，尚不可检索" : base.active_index_id ? "检索使用此固定索引代" : "索引发布后可用于检索"}</span></div>
@@ -162,7 +174,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
         <Alert type="info" showIcon message="支持 TXT、Markdown、PDF、DOCX、XLSX、CSV、HTML、JSON、YAML、PPTX，单文件不超过 10 MiB" description="表格保留完整记录；PDF 支持文字层与本地 OCR；HTML 提取主文，JSON/YAML 保留配置路径，PPTX 区分正文、表格与备注。每次上传一个文件；相同文件及有效处理选项会去重，修改内容或提取方式请使用「更新版本」。" />
       </div> },
       ...(owned ? [{ key: "jobs", label: "索引任务", children: <div className="kb-stack">
-        <div className="kb-section-heading"><div><h2 className="kb-section-title">索引任务</h2><p className="kb-muted">显示最近 50 项。处理中每 3 秒刷新；完成并不保证此代仍是当前活动代。</p></div><Popconfirm title="按当前配置重建完整索引？" description="构建期间保留原索引；最新期望代完整成功后才会发布。" okText="重建" cancelText="取消" onConfirm={() => perform(() => rebuildKnowledgeIndex(id, base.revision), "重建任务已排队")}><Button icon={<RefreshCw size={16} />} disabled={busy}>重建索引</Button></Popconfirm></div>
+        <div className="kb-section-heading"><div><h2 className="kb-section-title">索引任务</h2><p className="kb-muted">显示最近 50 项。处理中每 3 秒刷新；完成并不保证此代仍是当前活动代。</p></div><Popconfirm title="按当前配置重建完整索引？" description="构建期间保留原索引；最新期望代完整成功后才会发布。" okText="重建" cancelText="取消" onConfirm={() => perform(async () => { await rebuildKnowledgeIndex(id, base.revision); if (mounted.current) setRebuildNotice(""); }, "重建任务已排队")}><Button icon={<RefreshCw size={16} />} disabled={busy}>重建索引</Button></Popconfirm></div>
         <List dataSource={jobs} locale={{ emptyText: <Empty description="暂无索引任务，上传文档后会自动创建" /> }} renderItem={(job) => <List.Item className="kb-job-row">
           <div className="kb-stack-tight"><div className="kb-inline"><strong>任务 #{job.id}</strong><Tag color={states[job.state]?.color}>{jobLabel(job.state)}</Tag>{job.index_id === base.active_index_id && <Tag color="blue">当前已发布</Tag>}</div><span className="kb-muted">索引 #{job.index_id} · 尝试 {job.attempts}/3 · {job.update_time}</span>{job.failure_code && <span className="kb-error-text">{job.failure_code}</span>}</div>
           <Space wrap><Button size="small" onClick={() => setJobDetail(job.id)}>详情</Button>{["failed", "cancelled"].includes(job.state) && job.attempts > 0 && job.attempts < 3 && <Button size="small" disabled={busy} onClick={() => void perform(() => retryKnowledgeJob(job.id, job.attempts), "任务已重新排队")}>重试</Button>}{isActiveKnowledgeJob(job) && job.state !== "cancel_requested" && <Popconfirm title="取消这个索引任务？" okText="请求取消" cancelText="继续处理" onConfirm={() => perform(() => cancelKnowledgeJob(job.id), "取消请求已提交，请等待任务终态")}><Button size="small" danger disabled={busy}>取消任务</Button></Popconfirm>}</Space>
@@ -178,7 +190,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
       }}><Button danger disabled={busy}>删除知识库</Button></Popconfirm></div> }] : []),
     ]} /></div>
     {previewDocument && <KnowledgeDocumentPreview key={`${id}:${base.active_index_id}:${previewDocument.id}`} baseId={id} document={previewDocument} onClose={() => setPreviewDocument(null)} />}
-    {editing && <KnowledgeEditor item={base} user={user} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onChanged(); void refresh(true); }} />}
+    {editing && <KnowledgeEditor item={base} user={user} onClose={() => setEditing(false)} onSaved={() => { setRebuildNotice(""); setEditing(false); onChanged(); void refresh(true); }} />}
     <Modal open={uploading !== null} title={uploading === "new" ? "上传文档" : `更新文档版本 · ${uploading?.filename || ""}`} okText="上传并建立索引" cancelText="取消" confirmLoading={busy} onOk={() => void upload()} okButtonProps={{ disabled: !file }} onCancel={busy ? undefined : () => setUploading(null)} closable={!busy} maskClosable={!busy} keyboard={!busy}>
       <div className="kb-stack">{uploadError && <Alert type="error" showIcon message={uploadError} />}
         <p className="kb-muted">文件将保存在私有存储中。上传成功后由独立 worker 解析、分块和构建索引。</p>

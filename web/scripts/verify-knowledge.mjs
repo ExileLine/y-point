@@ -74,8 +74,10 @@ async function fixture(page, opts = {}) {
         return send({ document: docs[0], revision: base.revision, job_id: 3, deduplicated: false }, 202);
       }
       if (path === "/knowledge-bases/1/documents/1" && method === "DELETE") {
-        if (conflict) return send(null, 409, "嵌入模型未通过独立验证或当前不可用");
-        docs = []; base.revision++; return send({ revision: base.revision, job_id: 3 });
+        if (conflict) return send(null, 409, "知识库版本已变化");
+        docs = []; base.revision++;
+        if (opts.deferredDeletion) base.active_index_id = null;
+        return send({ revision: base.revision, job_id: opts.deferredDeletion ? null : 3, rebuild_required: Boolean(opts.deferredDeletion), rebuild_reason: opts.deferredDeletion ? "嵌入模型未通过独立验证或当前不可用" : null });
       }
       if (path === "/knowledge-bases/1/rebuild") { base.revision++; return send({ revision: base.revision, job_id: 3 }, 202); }
       if (path === "/knowledge-bases/1/jobs") {
@@ -272,14 +274,37 @@ try {
     await page.getByText("已取消", { exact: true }).waitFor(); scenarios++;
     await tab(page, "文档 · 1").click(); state.setConflict(true);
     await page.getByRole("button", { name: `删除文档 ${citation.filename}` }).click(); await confirm(page);
-    await page.getByText(/嵌入模型未通过独立验证或当前不可用/).waitFor();
+    await page.getByText(/知识库版本已变化/).waitFor();
     await page.getByText(citation.filename, { exact: true }).waitFor();
     const refreshed = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/knowledge-bases/1");
     await page.evaluate(() => window.dispatchEvent(new Event("focus"))); await refreshed;
-    await page.getByText(/嵌入模型未通过独立验证或当前不可用/).waitFor(); scenarios++;
+    await page.getByText(/知识库版本已变化/).waitFor(); scenarios++;
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await page.getByRole("button", { name: "保存并重建" }).click(); await page.getByText("知识库版本已变化", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "保存并重建" }).isDisabled(), true); scenarios++; await page.close();
+  }
+  // Successful deletion is independent of the model required for the next index.
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const state = await fixture(page, { deferredDeletion: true });
+    await page.goto(`${baseURL}/knowledge-bases/1`);
+    await page.getByRole("button", { name: `删除文档 ${citation.filename}` }).click(); await confirm(page);
+    await page.getByText("文档已删除，索引重建暂缓", { exact: true }).waitFor();
+    await page.getByRole("button", { name: `删除文档 ${citation.filename}` }).waitFor({ state: "hidden" });
+    assert.equal(await page.getByText("文档已删除，新索引已排队", { exact: true }).count(), 0);
+    const warning = page.locator(".ant-alert-warning").filter({ hasText: "文档已删除，索引重建暂缓" });
+    assert.match(await warning.innerText(), /嵌入模型未通过独立验证或当前不可用/);
+    assert.match(await warning.innerText(), /已删除文档及其旧引用已不可访问/);
+    const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/knowledge-bases/1");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus"))); await refreshed;
+    await warning.waitFor();
+    await noOverflow(page, width); await shot(page, `deletion-deferred-${width}`);
+    await warning.getByRole("button", { name: "检查设置", exact: true }).click();
+    await page.getByRole("button", { name: "保存并重建", exact: true }).click();
+    await page.getByRole("button", { name: "保存并重建", exact: true }).waitFor({ state: "hidden" });
+    await warning.waitFor({ state: "hidden" });
+    assert.equal(state.calls.filter(call => call.method === "DELETE" && call.path === "/knowledge-bases/1/documents/1").length, 1);
+    scenarios++; await page.close();
   }
   // Upload stale revision, explicit retry with refreshed revision; dedup produces no new task.
   {

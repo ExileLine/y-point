@@ -106,8 +106,8 @@ async def validate_knowledge_configuration(db: AsyncSession, values: dict) -> di
     return configuration
 
 
-async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expected_revision: int) -> KnowledgeJob:
-    """先 CAS 更新期望代，再保存完整文档版本清单和持久化调度意图。"""
+async def _advance_knowledge_revision(db: AsyncSession, item: KnowledgeBase, expected_revision: int) -> None:
+    """通过 CAS 推进文档与配置版本，使旧索引任务无法继续发布。"""
     changed = await db.execute(
         update(KnowledgeBase)
         .where(KnowledgeBase.id == item.id, KnowledgeBase.revision == expected_revision, KnowledgeBase.is_deleted == 0)
@@ -116,7 +116,12 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
     )
     if changed.rowcount != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="知识库版本已变化")
+    item.revision = expected_revision + 1
     await db.flush()
+
+
+async def _prepare_knowledge_index(db: AsyncSession, item: KnowledgeBase) -> tuple[dict, list[int]]:
+    """读取当前有效文档并校验索引配置，返回固定配置与文档版本清单。"""
     versions = (
         await db.scalars(
             select(KnowledgeDocumentVersion)
@@ -142,11 +147,16 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
         settings.get("processing_mode") == KnowledgeProcessingMode.ENHANCED for _, settings in options if settings
     ):
         raise CustomException(status_code=409, custom_code=10005, detail="文档指定增强理解前须配置知识库加工模型")
+    return configuration, [version.id for version in versions]
+
+
+async def _save_knowledge_index(db: AsyncSession, item: KnowledgeBase, configuration: dict, version_ids: list[int]) -> KnowledgeJob:
+    """按已校验配置保存不可变索引代及后台调度意图，不调用外部模型。"""
     index = KnowledgeIndex(
         knowledge_base_id=item.id,
-        revision=expected_revision + 1,
+        revision=item.revision,
         configuration=configuration,
-        document_versions=[version.id for version in versions],
+        document_versions=version_ids,
         state=KnowledgeIndexState.BUILDING,
     )
     db.add(index)
@@ -164,8 +174,38 @@ async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expecte
     )
     db.add(job)
     await db.flush()
-    item.revision = expected_revision + 1
     return job
+
+
+async def enqueue_knowledge_index(db: AsyncSession, item: KnowledgeBase, expected_revision: int) -> KnowledgeJob:
+    """先 CAS 更新期望代，再校验完整配置并保存文档快照与持久化调度意图。"""
+    await _advance_knowledge_revision(db, item, expected_revision)
+    configuration, version_ids = await _prepare_knowledge_index(db, item)
+    return await _save_knowledge_index(db, item, configuration, version_ids)
+
+
+async def remove_knowledge_document(
+    db: AsyncSession,
+    item: KnowledgeBase,
+    document: KnowledgeDocument,
+    expected_revision: int,
+) -> tuple[KnowledgeJob | None, str | None]:
+    """删除与模型可用性解耦；配置有效时自动重建，无效时返回人工重建原因。"""
+    await _advance_knowledge_revision(db, item, expected_revision)
+    document.is_deleted = 1
+    await db.flush()
+    try:
+        configuration, version_ids = await _prepare_knowledge_index(db, item)
+    except CustomException as exc:
+        if exc.status_code != 409 or exc.custom_code != 10005:
+            raise
+        remaining = await db.scalar(
+            select(KnowledgeDocument.id).where(KnowledgeDocument.knowledge_base_id == item.id, KnowledgeDocument.is_deleted == 0).limit(1),
+        )
+        if remaining is None:
+            item.active_index_id = None
+        return None, str(exc.detail)
+    return await _save_knowledge_index(db, item, configuration, version_ids), None
 
 
 async def selected_knowledge_bases(db: AsyncSession, identifiers: list[int], actor_id: int) -> list[KnowledgeBase]:
