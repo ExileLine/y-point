@@ -70,8 +70,12 @@ export type KnowledgeCitation = {
   heading: string | null;
   content: string;
   source_locator?: {
-    kind: "table" | "text" | "pdf"; sheet?: string; range?: string; header_range?: string; columns?: string[]; hidden_excluded?: boolean; format?: string;
+    kind: "table" | "text" | "pdf" | "html" | "config" | "slide"; sheet?: string; range?: string; header_range?: string; columns?: string[]; hidden_excluded?: boolean; format?: string;
     page?: number; page_kind?: "text" | "scan" | "mixed" | "blank"; extraction_method?: "native" | "ocr"; bbox?: number[];
+    pointer?: string; paths?: string[]; line_start?: number | null; line_end?: number | null;
+    element?: string; element_id?: string | null; dom_path?: string; line?: number; heading_path?: string[];
+    slide?: number; slide_title?: string; shape_id?: string; role?: "text" | "heading" | "table" | "code" | "notes";
+    table?: number; row?: number; merged_cells?: boolean; reading_order?: string;
     page_width?: number; page_height?: number; confidence?: number | null; layout?: "text" | "table" | "unverified"; review_required?: boolean;
   } | null;
   knowledge_notes?: string | null;
@@ -113,14 +117,16 @@ export function uploadKnowledgeDocument(id: number, file: File, revision: number
   if (options) body.append("processing_options", JSON.stringify(options));
   return request(`/knowledge-bases/${id}/documents${documentId ? `/${documentId}` : ""}`, { method: documentId ? "PUT" : "POST", body });
 }
-export type KnowledgePdfMetadata = {
+export type KnowledgeProcessingMetadata = {
+  format?: string; block_count?: number; selection?: string; excluded_regions?: number; table_count?: number;
+  slide_count?: number; hidden_slides?: number; notes_blocks?: number; unsupported_visual_objects?: number; warnings?: string[];
   parser?: string; ocr_pages?: number; blank_pages?: number; languages?: string | null;
   pages?: { page: number; kind: "text" | "scan" | "mixed" | "blank"; method: "native" | "ocr" | null; confidence: number | null; blocks: number }[];
 };
 export type KnowledgeProcessingPreview = {
   index_id: number | null; current_version: number; indexed_version: number | null;
   processing_options: KnowledgeDocumentOptions;
-  processing_metadata?: KnowledgePdfMetadata; items: KnowledgeCitation[]; has_more: boolean; next_after: number;
+  processing_metadata?: KnowledgeProcessingMetadata; items: KnowledgeCitation[]; has_more: boolean; next_after: number;
 };
 export const getKnowledgeProcessingPreview = (id: number, documentId: number, after = -1, signal?: AbortSignal): Promise<KnowledgeProcessingPreview> =>
   request(`/knowledge-bases/${id}/documents/${documentId}/processing-preview?after=${after}&limit=10`, { signal, cache: "no-store" });

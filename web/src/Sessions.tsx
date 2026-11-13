@@ -132,6 +132,7 @@ export default function Sessions() {
   const attachmentPending = files.some(item => item.state !== "ready");
   const [pendingDraft, setPendingDraft] = useState<SessionRunDraft | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const inFlightSubmissions = useRef(new Set<string>());
   const [busy, setBusy] = useState(false);
   const [models, setModels] = useState<SessionModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -528,10 +529,11 @@ export default function Sessions() {
   }
 
   async function send(draft?: SessionRunDraft) {
-    if (!selected) return;
+    if (!selected || inFlightSubmissions.current.has(selected.id) || (!draft && !canSend)) return;
     const targetSessionId = selected.id;
     const next = draft || { input_text: composer.trim(), request_key: crypto.randomUUID(), publish_answer_artifact: false, artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []), context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []), model_id: selected.model_id ?? undefined, expected_session_version: selected.version };
     if (!next.input_text || (!draft && attachmentPending)) return;
+    inFlightSubmissions.current.add(targetSessionId);
     followLatest();
     setSubmitting(true);
     setRunError("");
@@ -561,7 +563,10 @@ export default function Sessions() {
         }).catch(() => undefined);
         getAgentSession(agentId, targetSessionId).then((current) => { if (currentSessionId.current === targetSessionId) setSelected(current); }).catch(() => undefined);
       }
-    } finally { if (currentSessionId.current === targetSessionId) setSubmitting(false); }
+    } finally {
+      inFlightSubmissions.current.delete(targetSessionId);
+      if (currentSessionId.current === targetSessionId) setSubmitting(false);
+    }
   }
 
   async function stopRun() {
@@ -650,8 +655,12 @@ export default function Sessions() {
               const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
             }} />
             {pendingDraft && <div className="sessions-retry"><Button size="small" loading={submitting} onClick={() => void send(pendingDraft)}>重试提交</Button><Button size="small" onClick={() => { setPendingDraft(null); setRunError(""); }}>放弃重试</Button></div>}
-            <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息"} rows={3} maxLength={32768} disabled={!canSend} />
-            <div className="sessions-composer-footer"><span>{selected.archived ? "已归档" : activeRun ? <RunStateLabel state={activeRun.state} /> : ""}</span><Button type="primary" icon={<SendHorizontal size={17} />} loading={submitting} disabled={!canSend || !composer.trim() || attachmentPending} onClick={() => void send()}>发送</Button></div>
+            <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息，Enter 发送，Shift + Enter 换行"} rows={3} maxLength={32768} disabled={!canSend} onKeyDown={event => {
+              if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              event.preventDefault();
+              if (!event.repeat && canSend && composer.trim() && !attachmentPending) void send();
+            }} />
+            <div className="sessions-composer-footer"><span>{selected.archived ? "已归档" : activeRun ? <RunStateLabel state={activeRun.state} /> : "Enter 发送 · Shift + Enter 换行"}</span><Button type="primary" icon={<SendHorizontal size={17} />} loading={submitting} disabled={!canSend || !composer.trim() || attachmentPending} onClick={() => void send()}>发送</Button></div>
           </div>
         </>}
       </section>

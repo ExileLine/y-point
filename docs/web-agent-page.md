@@ -26,12 +26,16 @@
 - 本地 API 的 `GET /api/v1/health` 返回 200；未登录 `GET /api/v1/agents` 返回 401。真实用户创建/编辑、模型权限与轮换令牌的端到端联调仍未验收。
 - Agent 页已按路由延迟加载；当前首页构建包约 654 KB，仍有 Vite 体积警告。后续 W0 优化模块拆分与首屏加载性能。
 
-![Agent 页面桌面版](web-agent-desktop.png)
+![Agent 页面桌面版](screenshots/web-agent-desktop.png)
 
-![Agent 页面手机版](web-agent-mobile.png)
+![Agent 页面手机版](screenshots/web-agent-mobile.png)
 
-![Agent 详情手机版](web-agent-detail-mobile.png)
+![Agent 详情手机版](screenshots/web-agent-detail-mobile.png)
 
-![Agent 编辑手机版](web-agent-editor-mobile.png)
+![Agent 编辑手机版](screenshots/web-agent-editor-mobile.png)
 
 本页等待用户确认信息层级、内容密度和移动端工具栏后，再进行第三步状态专项验收。
+
+## 新建表单默认值（2026-11-13）
+
+新建 Agent 的「最大输出 Token」默认留空，提交 `null`，由供应商决定默认输出额度；用户仍可填写具体上限。编辑已有 Agent 保留已保存的上限。留空不保证用满模型最大输出额度，供应商的必要参数、模型限制及单次超时继续生效。

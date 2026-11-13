@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
@@ -28,7 +29,7 @@ try {
     });
     const waitText = async text => { await page.getByText(text, { exact: true }).first().waitFor(); checks++; };
     const noOverflow = async () => { assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); checks++; };
-    const screenshot = async name => page.screenshot({ path: `/tmp/y-point-web-${name}-${label}.png`, fullPage: true, animations: 'disabled' });
+    const screenshot = async name => page.screenshot({ path: screenshotPath(`y-point-web-${name}-${label}.png`), fullPage: true, animations: 'disabled' });
     const close = async () => { await page.getByRole('button', { name: 'Close', exact: true }).click(); await page.locator('.ant-drawer-open').waitFor({ state: 'hidden' }); };
     const select = async (name, option) => { const input = page.getByRole('combobox', { name, exact: true }); await page.locator('.ant-select').filter({ has: input }).click(); await page.locator('.ant-select-dropdown:visible').getByText(option, { exact: true }).click(); };
     await page.goto(`${base}/skills`); await waitText(skill.name); await noOverflow();
@@ -38,6 +39,14 @@ try {
     await screenshot('skills');
     await page.keyboard.press('Tab'); assert.equal(await page.locator('.skip-link').evaluate(el => el === document.activeElement), true); checks++;
     if (width < 768) assert.equal(await page.locator('.resource-mobile-list').count(), 1); else assert.equal(await page.locator('.ant-table').count(), 1); checks++;
+    await page.getByRole('button', { name: '新建 Skill', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '新建 Skill 工作区' });
+    assert.match(await modal.getByRole('textbox', { name: 'Skill 名称', exact: true }).getAttribute('placeholder'), /例如：contract-review/); checks++;
+    assert.match(await modal.getByRole('textbox', { name: 'Skill 适用场景', exact: true }).getAttribute('placeholder'), /例如：审查合同/); checks++;
+    await modal.getByRole('textbox', { name: 'Skill 名称', exact: true }).click();
+    await noOverflow(); await page.screenshot({ path: screenshotPath(`web-skill-create-${label}.png`), animations: 'disabled' });
+    await modal.getByRole('button', { name: /^取\s*消$/ }).click();
+    await modal.waitFor({ state: 'hidden' }); checks++;
     await page.getByRole('textbox', { name: '搜索 Skill' }).fill('不存在'); await waitText('没有匹配的 Skill，请调整筛选条件');
     await page.getByRole('textbox', { name: '搜索 Skill' }).fill('');
     await select('Skill 归属', '我的 Skill'); await page.getByText('公开知识整理', { exact: true }).waitFor({ state: 'hidden' }); checks++;
@@ -51,7 +60,7 @@ try {
     await page.getByRole('button', { name: '编辑', exact: true }).first().click();
     await page.getByLabel('用途', { exact: true }).fill('修改后的用途'); await page.getByRole('button', { name: /保\s*存/ }).click(); await waitText('工具版本已变化');
     assert.equal(await page.getByLabel('用途', { exact: true }).inputValue(), '修改后的用途'); checks++;
-    await noOverflow(); await page.screenshot({ path: `/tmp/y-point-web-tools-editor-${label}.png`, fullPage: false, animations: 'disabled' }); await close();
+    await noOverflow(); await page.screenshot({ path: screenshotPath(`y-point-web-tools-editor-${label}.png`), fullPage: false, animations: 'disabled' }); await close();
     await page.getByRole('tab', { name: '内置 Tool (1)' }).click(); await waitText('search_knowledge_base'); await noOverflow();
     await page.getByRole('button', { name: '新建 Tool', exact: true }).click(); await page.getByRole('button', { name: /保\s*存/ }).click(); await waitText('请填写名称和用途'); await close();
     await page.emulateMedia({ reducedMotion: 'no-preference' });

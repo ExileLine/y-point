@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
@@ -61,7 +62,7 @@ try {
     await preview.getByRole('button', { name: '加载更多证据' }).click();
     await preview.getByText('乙公司', { exact: false }).waitFor();
     check(await preview.locator('.kb-quoted-content').count() === 2, `${width} 预览分页接续`);
-    await page.screenshot({ path: `/tmp/y-point-knowledge-processing-${width}.png`, fullPage: false, animations: 'disabled' });
+    await page.screenshot({ path: screenshotPath(`y-point-knowledge-processing-${width}.png`), fullPage: false, animations: 'disabled' });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await preview.getByRole('button', { name: '加载更多证据' }).waitFor();
     previewIndex = 3;

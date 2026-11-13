@@ -178,7 +178,7 @@ function AgentEditor({
       welcome_message: null,
       default_model_id: undefined,
       temperature: "1",
-      max_output_tokens: limits.default_max_output_tokens,
+      max_output_tokens: null,
       thinking_mode: "auto",
       knowledge_mode: "auto",
       model_timeout_seconds: limits.default_model_timeout_seconds,
@@ -286,7 +286,7 @@ function AgentEditor({
           <Form.Item name="temperature" label="生成温度" extra="必填，范围 0–2；影响生成随机性，不控制输出长度或超时，供应商可能有额外限制。" rules={[{ required: true }]}><InputNumber min={0} max={2} step={0.1} precision={2} stringMode className="agent-number-input" /></Form.Item>
           <Form.Item name="max_output_tokens" label="最大输出 Token" extra="清空后使用供应商默认额度，不保证用满模型最大输出能力；思考和工具参数也可能消耗额度。Anthropic 要求填写，模型上限和单次超时仍生效。" rules={[{ type: "number", min: 1, max: limits?.max_output_tokens }, { validator: async (_, value) => {
             if (value != null && selectedModel?.context_window && Number(value) + 1024 > selectedModel.context_window) throw new Error("输出上限需为上下文保留至少 1024 Token");
-          } }]}><InputNumber min={1} max={limits?.max_output_tokens} precision={0} className="agent-number-input" /></Form.Item>
+          } }]}><InputNumber placeholder="留空由供应商决定" min={1} max={limits?.max_output_tokens} precision={0} className="agent-number-input" /></Form.Item>
           <div className="agent-form-pair">
             <Form.Item name="model_timeout_seconds" label="单次模型超时（秒）" extra="必填，包含一次调用的思考、正文和工具参数生成；历史摘要同样受限。长任务还需检查供应商请求超时。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
             <Form.Item name="tool_timeout_seconds" label="单次工具超时（秒）" extra="必填；MCP、知识检索和脚本还受各自部署时限约束，仅调大此值可能仍会提前超时。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_tool_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>

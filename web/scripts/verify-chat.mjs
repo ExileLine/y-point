@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
@@ -112,7 +113,7 @@ try {
     await page.locator('.ant-message-notice').waitFor({state:'hidden'});
     await page.mouse.move(0,0);
     await body.locator('.message-code-block').first().evaluate(el=>{const h=el.closest('.sessions-history');h.scrollTop+=el.getBoundingClientRect().top-h.getBoundingClientRect().top-12;});
-    await page.screenshot({path:`../docs/web-chat-rich-${layout}.png`,fullPage:true,animations:'disabled'});
+    await page.screenshot({path:screenshotPath(`web-chat-rich-${layout}.png`),fullPage:true,animations:'disabled'});
     assert.deepEqual(errors,[]); assertions++;
     await context.close();console.log(`${layout}: 消息稳定同步、阅读位置、流式分帧、左右布局、Markdown/代码复制与安全渲染通过`);
   }

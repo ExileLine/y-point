@@ -4,7 +4,7 @@ import { ApiError, listModels, type Model, type User } from "../api";
 import { createKnowledgeBase, testEmbeddingModel, updateKnowledgeBase, type KnowledgeBase, type KnowledgeDraft } from "../knowledge-api";
 
 const defaults: KnowledgeDraft = {
-  name: "", description: null, search_mode: "keyword", embedding_model_id: null,
+  name: "", description: null, search_mode: "hybrid", embedding_model_id: null,
   chunk_size: 800, chunk_overlap: 100, embedding_token_budget: null, embedding_cost_budget: null,
   processing_mode: "auto", processing_model_id: null, processing_token_budget: null, processing_cost_budget: null,
 };
@@ -78,10 +78,10 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
       <Form form={form} layout="vertical" initialValues={item ? { ...defaults, ...item } : defaults} onFinish={save} requiredMark={false} disabled={busy || testing}>
         <Form.Item name="name" label="名称" rules={[{ required: true, whitespace: true, message: "请输入知识库名称" }]}><Input maxLength={128} showCount /></Form.Item>
         <Form.Item name="description" label="用途说明"><Input.TextArea rows={3} maxLength={1024} showCount placeholder="例如：人事制度、差旅报销规则，供员工助手引用" /></Form.Item>
-        <Form.Item name="processing_mode" label="文档处理方式" rules={[{ required: true }]} extra="表格保留完整记录，PDF 保留页码与来源区域，模型解释单独保存。新配置在完整索引发布后生效。">
+        <Form.Item name="processing_mode" label="文档处理方式" rules={[{ required: true }]} extra="按格式保留表格记录、PDF 区域、主文标题、配置路径或幻灯片来源，模型解释单独保存。新配置在完整索引发布后生效。">
           <Select options={[{ value: "auto", label: "自动处理 · 按格式选择" }, { value: "original", label: "保留原文 · 不调用加工模型" }, { value: "enhanced", label: "增强理解 · 文档语义解释" }]} />
         </Form.Item>
-        <Alert className="kb-form-note" type="info" showIcon message={processingMode === "original" ? "按结构保留证据，不产生加工模型费用" : "表格与 PDF 的模型解释单独保存"} description="自动模式配置模型后加工表格及含 OCR／已识别表格的 PDF；纯文字 PDF 仅在增强模式下加工。PDF 本地 OCR 由页面提取选项决定，不消耗模型 Token。" />
+        <Alert className="kb-form-note" type="info" showIcon message={processingMode === "original" ? "按结构保留证据，不产生加工模型费用" : "模型解释与原始结构证据分别保存"} description="自动模式配置模型后加工表格及含 OCR／已识别表格的 PDF；HTML、JSON/YAML、PPTX 和纯文字 PDF 仅在增强模式下加工。PDF 本地 OCR 由页面提取选项决定，不消耗模型 Token。" />
         <Form.Item name="processing_model_id" label="文档加工模型" rules={[{ required: processingMode === "enhanced", message: "增强理解需要选择加工模型" }]} extra="独立于嵌入模型和 Agent 对话模型。保留原文模式下也可预先配置，供文档覆盖策略使用。">
           {user.role === "admin" ? <Select allowClear showSearch optionFilterProp="label" options={models.filter(model => model.status === 1 && model.verified_capabilities.includes("text")).map(model => ({ value: model.id, label: model.display_name }))} placeholder="选择已验证文本能力的模型" /> : <InputNumber min={1} precision={0} className="kb-full-width" placeholder="填写管理员提供的文本模型 ID" />}
         </Form.Item>

@@ -52,6 +52,14 @@ export default function KnowledgeDocumentPreview({ baseId, document, onClose }: 
         {preview.processing_metadata?.pages && <Alert type="info" showIcon message={`PDF 共 ${preview.processing_metadata.pages.length} 页 · OCR ${preview.processing_metadata.ocr_pages || 0} 页 · 空白 ${preview.processing_metadata.blank_pages || 0} 页`}
           description={<div>{preview.processing_metadata.pages.map(page => <div key={page.page}>第 {page.page} 页 · {{ text: "文字页", scan: "扫描页", mixed: "混合页", blank: "空白页（跳过）" }[page.kind]}
             {page.method && ` · ${page.method === "ocr" ? "OCR" : "文字层"}`}{page.confidence != null && ` · 置信度 ${page.confidence.toFixed(1)}%`}</div>)}</div>} />}
+        {preview.processing_metadata?.format && preview.processing_metadata.format !== "pdf" && <Alert type="info" showIcon
+          message={`${preview.processing_metadata.format.toUpperCase()} · 已按文档结构提取 ${preview.processing_metadata.block_count || 0} 条证据`}
+          description={<div>
+            {preview.processing_metadata.format === "html" && <div>优先提取 main/article 主文，已排除 {preview.processing_metadata.excluded_regions || 0} 个噪声区域；不加载网页资源或执行脚本。</div>}
+            {["json", "yaml"].includes(preview.processing_metadata.format) && <div>按配置路径和父对象组织字段，数组记录分开；值来自文件，不代表系统实际运行状态。</div>}
+            {preview.processing_metadata.format === "pptx" && <div>共 {preview.processing_metadata.slide_count || 0} 页 · 排除隐藏页 {preview.processing_metadata.hidden_slides || 0} 页 · 备注证据 {preview.processing_metadata.notes_blocks || 0} 条</div>}
+            {preview.processing_metadata.warnings?.map(warning => <div key={warning}>{warning}</div>)}
+          </div>} />}
         {preview.indexed_version !== null && <span className="kb-muted">索引 #{preview.index_id} · 已索引文档 v{preview.indexed_version} · 当前上传 v{preview.current_version}</span>}
         {preview.indexed_version !== null && preview.indexed_version !== preview.current_version && <Alert type="warning" showIcon message="当前展示旧版本，新版本尚未完整发布" />}
         {!preview.items.length && <Empty description="此文档尚无已发布的证据，请先检查索引任务" />}

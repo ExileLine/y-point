@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -142,10 +143,10 @@ try {
     check(sizes.thought !== sizes.body, '思考与正文字体不同');
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}px 无页面横向溢出`);
     await page.locator('[data-call-id="tool"]').scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `/tmp/y-point-chat-failure-${width}.png`, fullPage: true });
-    await page.screenshot({ path: `/tmp/y-point-chat-activity-${width}.png`, fullPage: true });
+    await page.screenshot({ path: screenshotPath(`y-point-chat-failure-${width}.png`), fullPage: true });
+    await page.screenshot({ path: screenshotPath(`y-point-chat-activity-${width}.png`), fullPage: true });
     await page.locator('.sessions-history').evaluate(node => { node.scrollTop = node.scrollHeight; });
-    await page.screenshot({ path: `/tmp/y-point-chat-metrics-${width}.png`, fullPage: true });
+    await page.screenshot({ path: screenshotPath(`y-point-chat-metrics-${width}.png`), fullPage: true });
     check(errors.length === 0, `页面无异常：${errors.join(', ')}`);
     check(unexpected.length === 0, `接口均有契约：${unexpected.join(', ')}`);
     for (const socket of sockets) socket.end();

@@ -1,6 +1,6 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -204,7 +204,7 @@ try {
     assert.equal(await live.locator('.run-call').count(), 4); assertions += 3;
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); assertions++;
     await live.scrollIntoViewIfNeeded(); await page.mouse.move(0, 0);
-    await page.screenshot({ path: join(tmpdir(), `y-point-run-calls-${layout}.png`), animations: 'disabled' });
+    await page.screenshot({ path: screenshotPath(`y-point-run-calls-${layout}.png`), animations: 'disabled' });
     f.complete();
     await page.locator('[data-message-id="7"]').waitFor({ timeout: 12000 });
     const final = page.locator('[data-message-id="7"]');

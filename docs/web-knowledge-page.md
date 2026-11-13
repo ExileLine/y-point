@@ -48,10 +48,14 @@
 
 截图均来自契约回归中的虚构账号与资料，不能替代真实模型或多用户后端验收。
 
-![知识库列表（桌面）](web-knowledge-desktop.png)
+![知识库列表（桌面）](screenshots/web-knowledge-desktop.png)
 
-![知识库详情（手机）](web-knowledge-detail-mobile.png)
+![知识库详情（手机）](screenshots/web-knowledge-detail-mobile.png)
 
-![检索测试（桌面）](web-knowledge-search-desktop.png)
+![检索测试（桌面）](screenshots/web-knowledge-search-desktop.png)
 
-![固定引用（手机）](web-knowledge-citation-mobile.png)
+![固定引用（手机）](screenshots/web-knowledge-citation-mobile.png)
+
+## 新建默认检索策略（2026-11-13）
+
+新建知识库默认选择「混合检索 · 关键词 + 向量」，须选择或填写有效的嵌入模型后创建。没有可用的嵌入模型时可以明确改选关键词检索；页面不自动降级。编辑已有知识库保留原检索策略及模型配置。

@@ -1,10 +1,10 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const baseURL = process.env.WEB_BASE_URL || 'http://127.0.0.1:5174';
-const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
 let assertions = 0;
 const check = (condition, label) => { assert.ok(condition, label); assertions++; };
 function crc(buffer) {
@@ -24,7 +24,10 @@ const header = Buffer.alloc(13); header.writeUInt32BE(600); header.writeUInt32BE
 const pixels = Buffer.alloc(800 * (600 * 3 + 1), 255);
 for (let row = 0; row < 800; row++) pixels[row * 1801] = 0;
 const png = process.env.KNOWLEDGE_PDF_PAGE_FIXTURE ? readFileSync(process.env.KNOWLEDGE_PDF_PAGE_FIXTURE) : Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header), chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]);
+const evidenceFixture = process.env.KNOWLEDGE_PDF_EVIDENCE_FIXTURE ? JSON.parse(readFileSync(process.env.KNOWLEDGE_PDF_EVIDENCE_FIXTURE, "utf8")) : null;
+assert.ok(!evidenceFixture || process.env.KNOWLEDGE_PDF_PAGE_FIXTURE, '真实证据 JSON 必须配合对应的原页 PNG');
 const now = new Date().toISOString();
+const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
 try {
   for (const width of [1280, 390]) {
     const page = await browser.newPage({ viewport: { width, height: 920 } });
@@ -41,6 +44,10 @@ try {
       sha256: 'a'.repeat(64), start_offset: 0, end_offset: 32, page: 1, heading: '第 1 页', content: 'Hotel allowance: 5000 CNY per trip.', knowledge_notes: null,
       source_locator: { kind: 'pdf', format: 'pdf', page: 1, page_kind: 'scan', extraction_method: 'ocr', bbox: [48, 138, 400, 155], page_width: 600, page_height: 800,
         confidence: 91.2, layout: 'unverified', review_required: true } };
+    if (evidenceFixture) {
+      for (const field of ["content", "sha256", "start_offset", "end_offset", "source_locator"]) evidence[field] = evidenceFixture[field];
+    }
+    const confidence = evidence.source_locator.confidence;
     const job = { id: 2, index_id: 2, state: 'failed', owner_id: 1, attempts: 1, failure_code: 'ocr_low_confidence', progress: [], reserved_tokens: 0, embedding_tokens: 0,
       estimated_cost: null, processing_call_count: 0, processing_reserved_tokens: 0, processing_usage: [], create_time: now, update_time: now };
     await page.route('**/api/v1/**', async route => {
@@ -50,7 +57,7 @@ try {
       if (path.endsWith('/auth/me')) return send({ id: 1, role: 'admin', username: 'pdf-reviewer' });
       if (path === '/api/v1/knowledge-bases/1') return send(base);
       if (path.endsWith('/documents/1/processing-preview')) return send({ index_id: 2, current_version: 1, indexed_version: 1, processing_options: document.processing_options,
-        processing_metadata: { ocr_pages: 1, blank_pages: 1, pages: [{ page: 1, kind: 'scan', method: 'ocr', confidence: 91.2, blocks: 1 }, { page: 2, kind: 'blank', method: null, confidence: null, blocks: 0 }] },
+        processing_metadata: { ocr_pages: 1, blank_pages: 1, pages: [{ page: 1, kind: 'scan', method: 'ocr', confidence, blocks: 1 }, { page: 2, kind: 'blank', method: null, confidence: null, blocks: 0 }] },
         items: [evidence], has_more: false, next_after: 0 });
       if (path.endsWith('/citations/16/page-image')) return denied ? send(null, 404) : route.fulfill({ status: 200, contentType: 'image/png', headers: { 'Cache-Control': 'no-store' }, body: png });
       if (path.endsWith('/documents') && request.method() === 'POST') return send({ revision: 4, job_id: 2, document }, 202);
@@ -63,7 +70,7 @@ try {
     const preview = page.getByRole('dialog', { name: `加工结果 · ${document.filename}` });
     await preview.getByText('PDF 共 2 页 · OCR 1 页 · 空白 1 页', { exact: true }).waitFor();
     check((await preview.innerText()).includes('空白页（跳过）'), `${width} 空白页摘要`);
-    check((await preview.innerText()).includes('91.2%'), `${width} OCR 置信度`);
+    check((await preview.innerText()).includes(`${confidence.toFixed(1)}%`), `${width} OCR 置信度`);
     check((await preview.innerText()).includes('布局关系待核对'), `${width} OCR 布局提示`);
     check((await preview.innerText()).includes('原点为页面左上角'), `${width} 坐标方向`);
     await preview.getByRole('button', { name: '查看 PDF 原页 · 第 1 页' }).click();
@@ -72,7 +79,7 @@ try {
     await original.locator('img').evaluate(image => image.decode());
     check(await original.getByLabel('证据所在区域').count() === 1, `${width} 原页高亮`);
     check(requests.findLast(row => row.path.endsWith('page-image')).auth === 'Bearer fixture', `${width} 原页使用鉴权请求`);
-    await page.screenshot({ path: `/tmp/y-point-knowledge-pdf-${width}.png`, fullPage: false, animations: 'disabled' });
+    await page.screenshot({ path: screenshotPath(`y-point-knowledge-pdf-${width}.png`), fullPage: false, animations: 'disabled' });
     denied = true;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await original.waitFor({ state: 'hidden' });

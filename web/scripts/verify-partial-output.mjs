@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -92,7 +93,7 @@ try {
       }
       if (state === 'failed') {
         await saved.evaluate(node => node.scrollIntoView({ block: 'start' }));
-        await page.screenshot({ path: `/tmp/y-point-partial-output-${width}.png`, fullPage: true });
+        await page.screenshot({ path: screenshotPath(`y-point-partial-output-${width}.png`), fullPage: true });
       }
       nextRound = true;
       await page.reload();

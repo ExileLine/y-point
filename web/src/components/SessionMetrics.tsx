@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Tooltip } from "antd";
 import { Clock3, Gauge, Layers3 } from "lucide-react";
 import { ApiError, getSessionMetrics, type SessionMetrics as Metrics } from "../api";
@@ -11,11 +11,25 @@ export default function SessionMetrics({ agentId, sessionId, refreshKey, active 
   const [now, setNow] = useState(performance.now());
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const activeRef = useRef(active);
+  const refreshRef = useRef(() => {});
   useEffect(() => {
     let current = true;
     let timer: number | undefined;
+    let loading = false;
+    let refreshPending = false;
     const controller = new AbortController();
+    // 同一会话的刷新合并到在途请求之后，只有离开会话才取消请求。
+    function refresh() {
+      window.clearTimeout(timer);
+      if (loading) { refreshPending = true; return; }
+      // 下一事件循环启动，使 StrictMode 的挂载检查可以先完成清理。
+      timer = window.setTimeout(() => void load(), 0);
+    }
+    refreshRef.current = refresh;
     async function load() {
+      loading = true;
+      refreshPending = false;
       let denied = false;
       try {
         const metrics = await getSessionMetrics(agentId, sessionId, controller.signal);
@@ -32,11 +46,23 @@ export default function SessionMetrics({ agentId, sessionId, refreshKey, active 
           setError(denied ? "会话统计不可访问" : "会话统计暂时无法同步");
         }
       } finally {
-        if (current && !denied && active) timer = window.setTimeout(() => void load(), 2500);
+        loading = false;
+        if (current && !denied) {
+          if (refreshPending) refresh();
+          else if (activeRef.current) timer = window.setTimeout(() => void load(), 2500);
+        }
       }
     }
-    void load();
-    return () => { current = false; controller.abort(); window.clearTimeout(timer); };
+    return () => {
+      current = false;
+      refreshRef.current = () => {};
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [agentId, sessionId]);
+  useEffect(() => {
+    activeRef.current = active;
+    refreshRef.current();
   }, [agentId, sessionId, refreshKey, active, retry]);
   useEffect(() => {
     if (!active || !snapshot?.metrics.active_run_count || error) return;

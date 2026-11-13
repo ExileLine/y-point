@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
@@ -122,7 +123,7 @@ try {
     const frame = page.frameLocator('iframe[title="文档内容预览"]');
     await frame.getByRole('heading', { name: '报告模板 {{ title }}', exact: true }).waitFor(); checks++;
     const download = page.waitForEvent('download'); await page.getByRole('button', { name: '下载当前文件', exact: true }).click(); assert.equal((await download).suggestedFilename(), 'report.docx'); checks++;
-    await page.screenshot({ path: `/tmp/y-point-skill-workspace-${width}.png`, fullPage: true, animations: 'disabled' });
+    await page.screenshot({ path: screenshotPath(`y-point-skill-workspace-${width}.png`), fullPage: true, animations: 'disabled' });
     await section('脚本试运行');
     await page.getByText('待试运行', { exact: true }).waitFor();
     await page.getByRole('button', { name: '试运行脚本', exact: true }).click();
@@ -141,4 +142,4 @@ try {
     console.log(`width ${width}: passed`); await context.close();
   }
   console.log(`Skill 工作区 ${checks} 项浏览器断言通过（桌面和移动端，受控 API）`);
-} catch (failure) { if (activePage) { await activePage.screenshot({ path: '/tmp/y-point-skill-failure.png', fullPage: true }); console.error(await activePage.locator('body').innerText()); } throw failure; } finally { await browser.close(); }
+} catch (failure) { if (activePage) { await activePage.screenshot({ path: screenshotPath('y-point-skill-failure.png'), fullPage: true }); console.error(await activePage.locator('body').innerText()); } throw failure; } finally { await browser.close(); }

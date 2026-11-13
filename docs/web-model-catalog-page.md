@@ -2,6 +2,10 @@
 
 管理员页面位于 `/models`。标签顺序为「供应商 → 模型」，默认打开供应商；手机端使用逐项列表。创建连接按 `GET /api/v1/providers/kinds` 的字段清单显示表单。编辑时仅提交变更字段，密钥与自定义请求头留空即保留原值，界面只展示“已配置”。
 
+新建连接的文本、密钥、地址、超时和备注等字段提供中文输入提示与示例；接口地址优先显示该供应商类型建议的地址。
+
+「录入模型」选择连接后自动调用 `GET /api/v1/providers/{id}/available-models`，在可搜索的候选框中显示模型名称及供应商模型 ID。选择候选会带入准确 ID，并在未自定义名称时带入显示名称；已录入候选不可重复选择。加载期间禁用模型 ID 与保存，失败或空列表提供重新发现与手动填写入口；切换连接清除旧 ID、候选及自动名称，保留用户自定义名称，并取消旧请求、忽略过期响应。新录入表单默认选中全部六项声明能力，声明后仍需逐项验证；编辑现有模型保留其配置。
+
 | 操作 | 接口 | 状态与边界 |
 | --- | --- | --- |
 | 连接列表与配置 | `GET/POST /api/v1/providers`、`PUT/DELETE /api/v1/providers/{id}` | 管理员权限；409 显示活跃 Agent 引用或关联模型冲突。 |
@@ -13,13 +17,13 @@
 
 `npm run verify:models` 在模拟接口下检查连接创建/编辑、连接测试、模型发现/导入、文本能力验证、设默认及模型编辑的请求体。Chrome 1280×800 与 375×812 检查了无页面横向溢出及页面错误。`uv run pytest tests/test_provider_catalog.py -q` 覆盖目录权限、验证前后和连接配置变更后的筛选。真实上游凭据和真实账号的浏览器联调尚未验收。
 
-![模型页面桌面版](web-models-desktop.png)
+![模型页面桌面版](screenshots/web-models-desktop.png)
 
-![模型页面手机版](web-models-mobile.png)
+![模型页面手机版](screenshots/web-models-mobile.png)
 
-![供应商页面桌面版](web-providers-desktop.png)
+![供应商页面桌面版](screenshots/web-providers-desktop.png)
 
-![供应商页面手机版](web-providers-mobile.png)
+![供应商页面手机版](screenshots/web-providers-mobile.png)
 
 ## 2026-11-03 标签配色
 

@@ -1,6 +1,6 @@
 import { useRuntimeLimits } from "./runtime-limits";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Button, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Select, Skeleton, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AutoComplete, Button, Checkbox, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Select, Skeleton, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Check, CheckCircle2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Star, Trash2, Unplug } from "lucide-react";
 import {
@@ -36,6 +36,14 @@ const failureLabels: Record<string, string> = {
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "操作失败";
 }
+
+const providerFieldHints: Record<string, string> = {
+  name: "例如：公司生产环境连接",
+  base_url: "例如：https://api.example.com/v1",
+  api_key: "填写供应商控制台生成的 API 密钥",
+  api_version: "例如：2024-10-21，以供应商要求为准",
+  region: "例如：us-east-1",
+};
 
 type ProviderValues = ProviderDraft & { custom_headers_text?: string; enabled: boolean };
 
@@ -105,11 +113,11 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
   function field(name: string) {
     const required = spec?.required_fields.includes(name) && !(provider && name === "api_key" && provider.has_api_key);
     if (name === "status") return <Form.Item key={name} name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>;
-    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} extra="必填，新连接通常默认 15 秒。独立于 Agent 单次模型超时；长时间思考或等待首包时，应同步调整此值。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} className="catalog-full-input" /></Form.Item>;
-    if (name === "remark") return <Form.Item key={name} name={name} label={fieldLabels[name]}><Input.TextArea rows={2} maxLength={512} /></Form.Item>;
-    if (name === "custom_headers") return <Form.Item key={name} name="custom_headers_text" label={fieldLabels[name]} extra={provider?.has_custom_headers ? "已配置；留空保留原值" : "JSON 对象，例如 {\"X-Tenant\":\"tenant\"}"}><Input.TextArea rows={3} /></Form.Item>;
+    if (name === "timeout_seconds") return <Form.Item key={name} name={name} label={fieldLabels[name]} extra="必填，新连接通常默认 15 秒。独立于 Agent 单次模型超时；长时间思考或等待首包时，应同步调整此值。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} className="catalog-full-input" placeholder="例如：60" /></Form.Item>;
+    if (name === "remark") return <Form.Item key={name} name={name} label={fieldLabels[name]}><Input.TextArea rows={2} maxLength={512} placeholder="例如：用于内部知识问答，连接由平台团队维护" /></Form.Item>;
+    if (name === "custom_headers") return <Form.Item key={name} name="custom_headers_text" label={fieldLabels[name]} extra={provider?.has_custom_headers ? "已配置；留空保留原值" : "JSON 对象，例如 {\"X-Tenant\":\"tenant\"}"}><Input.TextArea rows={3} placeholder={'{"X-Tenant": "your-team"}'} /></Form.Item>;
     return <Form.Item key={name} name={name} label={fieldLabels[name]} rules={required ? [{ required: true, whitespace: true, message: `请输入${fieldLabels[name]}` }] : undefined} extra={name === "api_key" && provider?.has_api_key ? "已配置；留空保留原值" : undefined}>
-      <Input type={name === "api_key" ? "password" : "text"} autoComplete={name === "api_key" ? "new-password" : undefined} maxLength={name === "base_url" ? 512 : name === "name" ? 128 : 64} />
+      <Input placeholder={name === "base_url" ? spec?.suggested_base_url || providerFieldHints.base_url : providerFieldHints[name]} type={name === "api_key" ? "password" : "text"} autoComplete={name === "api_key" ? "new-password" : undefined} maxLength={name === "base_url" ? 512 : name === "name" ? 128 : 64} />
     </Form.Item>;
   }
 
@@ -118,7 +126,7 @@ function ProviderEditor({ open, provider, kinds, onClose, onSaved }: {
     {limitsError && <Alert type="error" showIcon message={`运行配置加载失败：${limitsError}`} action={<Button size="small" onClick={retryLimits}>重试</Button>} />}
     {error && <Alert className="catalog-alert" type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void save(values)}>
-      <Form.Item name="kind" label="供应商类型" rules={[{ required: true }]}><Select disabled={Boolean(provider)} options={kinds.map((item) => ({ value: item.kind, label: item.display_name }))} onChange={(value) => { if (!provider) form.setFieldValue("base_url", kinds.find((item) => item.kind === value)?.suggested_base_url || undefined); }} /></Form.Item>
+      <Form.Item name="kind" label="供应商类型" rules={[{ required: true }]}><Select placeholder="请选择供应商类型" disabled={Boolean(provider)} options={kinds.map((item) => ({ value: item.kind, label: item.display_name }))} onChange={(value) => { if (!provider) form.setFieldValue("base_url", kinds.find((item) => item.kind === value)?.suggested_base_url || undefined); }} /></Form.Item>
       {fields.map(field)}
     </Form>
   </Drawer>;
@@ -132,16 +140,60 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
   const [form] = Form.useForm<ModelValues & { provider_id: number }>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const providerId = Form.useWatch("provider_id", form);
+  const [discovered, setDiscovered] = useState<DiscoveryResult["models"]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState("");
+  const [discoveryRevision, setDiscoveryRevision] = useState(0);
+  const automaticName = useRef<string | null>(null);
   useEffect(() => {
     if (!open) return;
     setError("");
+    automaticName.current = null;
     form.resetFields();
     form.setFieldsValue(model ? {
       provider_id: model.provider_id, external_id: model.external_id, display_name: model.display_name,
       capabilities: model.capabilities, context_window: model.context_window, input_price: model.input_price,
       output_price: model.output_price, price_currency: model.price_currency, enabled: model.status === 1,
-    } : { provider_id: initialProvider, capabilities: ["text"], price_currency: "USD", enabled: true });
+    } : { provider_id: initialProvider, capabilities: capabilities.map(item => item.value), price_currency: "USD", enabled: true });
   }, [form, initialProvider, model, open]);
+
+  useEffect(() => {
+    setDiscovered([]);
+    setDiscoveryError("");
+    setDiscovering(false);
+    if (!open || model || !providerId) return;
+    const controller = new AbortController();
+    let active = true;
+    setDiscovering(true);
+    void discoverModels(providerId, controller.signal).then(result => {
+      if (!active) return;
+      if (!result.available) {
+        setDiscoveryError(`模型发现暂不可用：${failureLabels[result.failure || ""] || "供应商未提供可用列表"}。可重试，或填写供应商提供的模型标识。`);
+        return;
+      }
+      setDiscovered(result.models);
+    }).catch(failure => {
+      if (active) setDiscoveryError(`发现模型失败：${errorText(failure)}。可重试，或填写供应商提供的模型标识。`);
+    }).finally(() => { if (active) setDiscovering(false); });
+    return () => { active = false; controller.abort(); };
+  }, [open, model, providerId, discoveryRevision]);
+
+  function changeProvider() {
+    form.setFieldValue("external_id", undefined);
+    if (form.getFieldValue("display_name") === automaticName.current) form.setFieldValue("display_name", undefined);
+    automaticName.current = null;
+    setDiscovered([]);
+    setDiscoveryError("");
+  }
+
+  function chooseModel(externalId: string) {
+    const selected = discovered.find(item => item.external_id === externalId);
+    if (!selected) return;
+    const name = form.getFieldValue("display_name");
+    if (!name || name === automaticName.current) form.setFieldValue("display_name", selected.display_name);
+    automaticName.current = selected.display_name;
+  }
 
   async function save(values: ModelValues & { provider_id: number }) {
     setSaving(true);
@@ -175,11 +227,21 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
     }
   }
 
-  return <Drawer title={model ? "编辑模型" : "录入模型"} open={open} onClose={onClose} width="min(100vw, var(--yp-detail-width))" extra={<Button type="primary" loading={saving} onClick={() => form.submit()}>保存</Button>}>
+  return <Drawer title={model ? "编辑模型" : "录入模型"} open={open} onClose={onClose} width="min(100vw, var(--yp-detail-width))" extra={<Button type="primary" disabled={discovering} loading={saving} onClick={() => form.submit()}>保存</Button>}>
     {error && <Alert className="catalog-alert" type="error" showIcon message={error} />}
     <Form form={form} layout="vertical" requiredMark={false} onFinish={(values) => void save(values)}>
-      <Form.Item name="provider_id" label="供应商连接" rules={[{ required: true }]}><Select disabled={Boolean(model)} options={providers.map((item) => ({ value: item.id, label: item.name, disabled: item.status !== 1 }))} /></Form.Item>
-      <Form.Item name="external_id" label="供应商模型 ID" extra="须与供应商实际开放的模型标识一致；显示名称可自行命名。" rules={[{ required: true, whitespace: true }]}><Input maxLength={255} /></Form.Item>
+      <Form.Item name="provider_id" label="供应商连接" rules={[{ required: true, message: "请选择供应商连接" }]}><Select placeholder="选择连接后自动发现模型" disabled={Boolean(model)} onChange={changeProvider} options={providers.map((item) => ({ value: item.id, label: item.name, disabled: item.status !== 1 }))} /></Form.Item>
+      <Form.Item name="external_id" label="供应商模型 ID" extra={model ? "供应商实际开放的模型标识；显示名称可自行命名。" : <>
+        <span role="status">{!providerId ? "先选择供应商连接，随后可搜索并选择模型，无需记忆模型 ID。" : discovering ? "正在从该连接发现模型…" : discoveryError || (discovered.length ? `已发现 ${discovered.length} 个模型，选择后自动带入 ID 和显示名称；已录入的模型不可重复选择。` : "未发现可用模型，可重试或填写供应商提供的模型标识。")}</span>
+        {providerId && !discovering && <Button type="link" size="small" onClick={() => setDiscoveryRevision(value => value + 1)}>重新发现</Button>}
+      </>} rules={[{ required: true, whitespace: true, message: "请选择或填写供应商模型 ID" }]}>
+        {model ? <Input maxLength={255} /> : <AutoComplete disabled={!providerId || discovering} status={discoveryError ? "warning" : undefined}
+          options={discovered.map(item => ({ value: item.external_id, label: `${item.display_name} · ${item.external_id}${item.already_added ? "（已录入）" : ""}`, disabled: item.already_added }))}
+          filterOption={(input, option) => String(option?.label || "").toLocaleLowerCase().includes(input.toLocaleLowerCase())}
+          onSelect={chooseModel} placeholder={!providerId ? "请先选择供应商连接" : discovering ? "正在发现模型…" : "搜索并选择模型，或填写模型 ID"}>
+          <Input maxLength={255} aria-label="供应商模型 ID" />
+        </AutoComplete>}
+      </Form.Item>
       <Form.Item name="display_name" label="显示名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={128} /></Form.Item>
       <Form.Item name="capabilities" label="声明能力" extra="声明后仍需逐项验证；Agent 会检查已验证的文本能力，使用 Skill、Tool 或知识库还需要工具能力。"><Select mode="multiple" options={capabilities} /></Form.Item>
       <Form.Item name="context_window" label="上下文窗口（Token）" extra="填写当前部署实际允许的窗口，包含输入与输出。留空表示未知，平台无法据此可靠预检；调大此值不会扩容模型。"><InputNumber min={1} precision={0} className="catalog-full-input" /></Form.Item>

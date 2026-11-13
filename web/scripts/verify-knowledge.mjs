@@ -1,11 +1,10 @@
+import { screenshotDirectory } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const baseURL = process.env.WEB_BASE_URL || "http://127.0.0.1:5173";
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" }) });
-const output = process.env.KNOWLEDGE_SCREENSHOT_DIR ? new URL(`file://${process.env.KNOWLEDGE_SCREENSHOT_DIR.replace(/\/$/, "")}/`) : new URL("../../docs/", import.meta.url);
-await mkdir(output, { recursive: true });
+const output = await screenshotDirectory(process.env.KNOWLEDGE_SCREENSHOT_DIR);
 const now = "2026-11-03 20:30:00";
 const envelope = (data, code = 200, message = "操作成功") => ({ code, message, data });
 const seed = { id: 1, owner_id: 1, name: "员工制度知识库", description: "员工手册、差旅与报销制度，让每个问题都有据可查。", revision: 3, active_index_id: 2, search_mode: "hybrid", embedding_model_id: 2, chunk_size: 800, chunk_overlap: 100, embedding_token_budget: 200000, embedding_cost_budget: null, create_time: now, update_time: now };
@@ -124,7 +123,7 @@ const shot = async (page, name) => {
     const rect = node.getBoundingClientRect();
     return rect.left >= -1 && rect.right <= window.innerWidth + 1;
   }));
-  await page.screenshot({ path: new URL(`web-knowledge-${name}.png`, output).pathname, fullPage: !overlay, animations: "disabled" });
+  await page.screenshot({ path: `${output}/web-knowledge-${name}.png`, fullPage: !overlay, animations: "disabled" });
 };
 const noOverflow = async (page, width) => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
 const tab = (page, name) => page.getByRole("tab", { name, exact: true });
@@ -252,9 +251,13 @@ try {
     state.setListError(false); await page.getByRole("button", { name: /^重\s*试$/ }).click();
     await page.getByText("还没有可访问的知识库").waitFor(); await noOverflow(page, 375); await shot(page, "empty-mobile"); scenarios++;
     await page.getByRole("button", { name: "创建第一个知识库" }).click(); await page.getByRole("textbox", { name: "名称", exact: true }).fill("测试知识库");
+    assert.equal(await page.locator("#search_mode").locator("xpath=ancestor::div[contains(@class,'ant-select-selector')]").innerText(), "混合检索 · 关键词 + 向量");
+    await page.getByRole("combobox", { name: "嵌入模型", exact: true }).click();
+    await page.locator(".ant-select-dropdown:visible").getByText("embeddinggemma · 已验证", { exact: true }).click();
     await page.getByRole("button", { name: /^创\s*建$/ }).click(); await page.waitForURL(`${baseURL}/knowledge-bases/1`);
     const created = state.calls.findLast((call) => call.path === "/knowledge-bases" && call.method === "POST").body;
-    assert.equal(created.search_mode, "keyword");
+    assert.equal(created.search_mode, "hybrid");
+    assert.equal(created.embedding_model_id, 2);
     assert.equal(created.processing_token_budget, null);
     assert.equal(created.embedding_token_budget, null);
     scenarios++; await page.close();
@@ -319,7 +322,7 @@ try {
     const page = await browser.newPage(); const state = await fixture(page);
     await page.goto(`${baseURL}/knowledge-bases/1`); await page.getByRole("button", { name: "更新版本", exact: true }).click();
     await page.locator('input[type="file"]').setInputFiles({ name: "错误格式.exe", mimeType: "application/octet-stream", buffer: Buffer.from("not a document") });
-    await page.getByText("仅支持 TXT、Markdown、PDF、DOCX、XLSX、CSV", { exact: true }).waitFor();
+    await page.getByText("支持 TXT、Markdown、PDF、DOCX、XLSX、CSV、HTML、JSON、YAML、PPTX", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "上传并建立索引" }).isDisabled(), true);
     await uploadFile(page); await page.getByRole("button", { name: "上传并建立索引" }).click();
     await page.getByRole("dialog", { name: /更新文档版本/ }).waitFor({ state: "hidden" });

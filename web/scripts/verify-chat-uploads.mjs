@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
@@ -18,6 +19,7 @@ try {
       const request = route.request(), path = new URL(request.url()).pathname;
       const send = (data, status = 200, message = '操作成功') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status < 400 ? status : 10006, message, data }) });
       if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
+      if (path === '/api/v1/agents/runtime-limits') return send({ upload_max_bytes: 33554432, context_max_bytes: 16384, max_files: 5, recursion_limit: 50, default_model_timeout_seconds: 120, max_model_timeout_seconds: 600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 600, default_max_output_tokens: 4096, max_output_tokens: 65536 });
       if (path.endsWith('/auth/me')) return send({ id: 1, username: 'reviewer', role: 'user' });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '合同审查助手', enabled: true, default_model_id: 1 });
       if (path.endsWith('/sessions')) return send({ items: [session], total: 1, page: 1, page_size: 20 });
@@ -53,6 +55,8 @@ try {
     await input.setInputFiles({ name: '待审合同.txt', mimeType: 'text/plain', buffer: Buffer.from('合同正文：15个工作日内报销') });
     await page.getByText('测试上传失败', { exact: false }).waitFor();
     assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isDisabled(), true); checks++;
+    await page.getByRole('textbox', { name: '消息内容' }).press('Enter');
+    assert.equal(submissions.length, 0, '附件上传失败时按回车不能提交'); checks++;
     uploadFail = false;
     await page.getByRole('button', { name: '重试上传 待审合同.txt' }).click();
     await page.getByText('上传完成', { exact: false }).waitFor();
@@ -61,14 +65,14 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('.chat-file').length === 5 && [...document.querySelectorAll('.chat-file small')].every(item => item.textContent.includes('上传完成')));
     assert.equal(uploads.length, 6); checks++;
     assert.equal(await page.locator('.chat-file').count(), 5); checks++;
-    await page.screenshot({ path: `/tmp/y-point-chat-upload-multiple-${width}.png`, animations: "disabled" });
+    await page.screenshot({ path: screenshotPath(`y-point-chat-upload-multiple-${width}.png`), animations: "disabled" });
     const sendBox = await page.getByRole('button', { name: '发送', exact: true }).boundingBox();
     assert.ok(sendBox && sendBox.y + sendBox.height <= 1000); checks++;
     for (const index of [2, 3, 4, 5]) await page.getByRole('button', { name: `移除 附件${index}.txt` }).click();
 
-    await page.screenshot({ path: `/tmp/y-point-chat-upload-${width}.png`, animations: "disabled" });
+    await page.screenshot({ path: screenshotPath(`y-point-chat-upload-${width}.png`), animations: "disabled" });
     assert.equal(await page.getByRole('checkbox', { name: '供模型读取' }).isChecked(), true); checks++;
-    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await page.getByRole('textbox', { name: '消息内容' }).press('Enter');
     await page.getByText('附件正文超过 16 KiB，请拆分', { exact: false }).waitFor();
     assert.deepEqual(preflights[0], { artifact_ids: ['uploaded-file'], context_artifact_ids: ['uploaded-file'] }, '附件检查只能发送两个附件 ID 列表，不能发送完整 Run 草稿'); checks++;
     assert.equal(submissions.length, 0); checks++;

@@ -28,7 +28,7 @@ const failures: Record<string, string> = {
   timeout: "处理超时，请检查模型与 worker 后重试。", authentication: "模型服务鉴权失败，请由管理员检查凭据。",
   rate_limit: "模型服务触发限流，请稍后重试。", upstream: "模型服务异常，请检查模型服务。",
   invalid_knowledge: "加工模型返回了缺失、越界或截断的结果，旧索引保持不变，请核对模型后重试。",
-  invalid_structure: "表格结构或选择范围无效，请核对工作表、表头行数及 CSV 字段数量。",
+  invalid_structure: "文档结构无效，请检查表格字段、配置重复键/循环别名/不支持的标签，或 PPTX 内部结构。",
   invalid_embedding: "嵌入响应不符合要求，请重新验证模型。", model_unavailable: "处理模型不可用，请检查模型与供应商配置。",
   budget_exceeded: "超出 Token 或费用预算，请调整预算或文档。", storage_unavailable: "文档存储不可用，请检查私有存储。",
 };
@@ -159,7 +159,7 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
           { title: "更新时间", dataIndex: "update_time", render: (value: string) => <span className="kb-muted">{value}</span> },
           { title: "操作", render: (_: unknown, item: KnowledgeDocument) => documentActions(item) },
         ]} /> : <List dataSource={documents} locale={{ emptyText: <Empty description="暂无文档" /> }} renderItem={(item) => <List.Item className="kb-mobile-document"><div className="kb-document-name"><FileText size={17} /><strong>{item.filename}</strong></div><div className="kb-muted">v{item.current_version} · {item.update_time}</div>{documentActions(item)}</List.Item>} />}
-        <Alert type="info" showIcon message="支持 TXT、Markdown、PDF、DOCX、XLSX、UTF-8 CSV，单文件不超过 10 MiB" description="表格按完整记录与表头处理，配置加工模型后可增加语义解释；PDF 可按页自动提取或执行本地 OCR，识别质量不足时不发布新索引。每次上传一个文件；相同文件及有效处理选项会去重，修改内容或提取方式请使用「更新版本」。" />
+        <Alert type="info" showIcon message="支持 TXT、Markdown、PDF、DOCX、XLSX、CSV、HTML、JSON、YAML、PPTX，单文件不超过 10 MiB" description="表格保留完整记录；PDF 支持文字层与本地 OCR；HTML 提取主文，JSON/YAML 保留配置路径，PPTX 区分正文、表格与备注。每次上传一个文件；相同文件及有效处理选项会去重，修改内容或提取方式请使用「更新版本」。" />
       </div> },
       ...(owned ? [{ key: "jobs", label: "索引任务", children: <div className="kb-stack">
         <div className="kb-section-heading"><div><h2 className="kb-section-title">索引任务</h2><p className="kb-muted">显示最近 50 项。处理中每 3 秒刷新；完成并不保证此代仍是当前活动代。</p></div><Popconfirm title="按当前配置重建完整索引？" description="构建期间保留原索引；最新期望代完整成功后才会发布。" okText="重建" cancelText="取消" onConfirm={() => perform(() => rebuildKnowledgeIndex(id, base.revision), "重建任务已排队")}><Button icon={<RefreshCw size={16} />} disabled={busy}>重建索引</Button></Popconfirm></div>
@@ -182,8 +182,8 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
     <Modal open={uploading !== null} title={uploading === "new" ? "上传文档" : `更新文档版本 · ${uploading?.filename || ""}`} okText="上传并建立索引" cancelText="取消" confirmLoading={busy} onOk={() => void upload()} okButtonProps={{ disabled: !file }} onCancel={busy ? undefined : () => setUploading(null)} closable={!busy} maskClosable={!busy} keyboard={!busy}>
       <div className="kb-stack">{uploadError && <Alert type="error" showIcon message={uploadError} />}
         <p className="kb-muted">文件将保存在私有存储中。上传成功后由独立 worker 解析、分块和构建索引。</p>
-        <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.csv" multiple={false} maxCount={1} disabled={busy} fileList={file ? [{ uid: "selected", name: file.name }] : []} onRemove={() => { setFile(null); return true; }} beforeUpload={(selected) => {
-          if (!/\.(txt|md|pdf|docx|xlsx|csv)$/i.test(selected.name)) { message.error("仅支持 TXT、Markdown、PDF、DOCX、XLSX、CSV"); return Upload.LIST_IGNORE; }
+        <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.csv,.html,.htm,.json,.yaml,.yml,.pptx" multiple={false} maxCount={1} disabled={busy} fileList={file ? [{ uid: "selected", name: file.name }] : []} onRemove={() => { setFile(null); return true; }} beforeUpload={(selected) => {
+          if (!/\.(txt|md|pdf|docx|xlsx|csv|html|htm|json|yaml|yml|pptx)$/i.test(selected.name)) { message.error("支持 TXT、Markdown、PDF、DOCX、XLSX、CSV、HTML、JSON、YAML、PPTX"); return Upload.LIST_IGNORE; }
           if (selected.size === 0 || selected.size > 10 * 1024 * 1024) { message.error("文件须非空且不超过 10 MiB"); return Upload.LIST_IGNORE; }
           if (!/\.xlsx$/i.test(selected.name)) setUploadOptions(current => ({ ...current, sheet_names: [], ...(!/\.csv$/i.test(selected.name) ? { header_rows: 1 } : {}) }));
           if (!/\.pdf$/i.test(selected.name)) setUploadOptions(current => ({ ...current, pdf_mode: "auto" }));
@@ -194,6 +194,8 @@ export default function KnowledgeWorkspace({ id, user, onBack, onUnavailable, on
             <Select<KnowledgeProcessingMode | "inherit"> aria-label="本文件处理方式" value={uploadOptions.processing_mode || "inherit"} disabled={busy} onChange={value => setUploadOptions(current => ({ ...current, processing_mode: value === "inherit" ? null : value }))}
               options={[{ value: "inherit", label: "跟随知识库设置" }, { value: "auto", label: "自动处理" }, { value: "original", label: "保留原文" }, { value: "enhanced", label: "增强理解" }]} />
           </Form.Item>
+          {file && /\.(html?|json|ya?ml|pptx)$/i.test(file.name) && <Alert type="info" showIcon message="按格式保留可追溯结构"
+            description={/\.html?$/i.test(file.name) ? "HTML 仅提取主文、标题和表格，不执行脚本或加载外链资源。" : /\.pptx$/i.test(file.name) ? "PPTX 保留页码、表格与演讲者备注，排除隐藏页和隐藏对象；图片、图表不作语义识别。" : "配置按路径、字段类型和值建立证据，不执行标签或变量替换；重复键、循环别名及 YAML 合并键会拒绝发布。"} />}
           {file && /\.pdf$/i.test(file.name) && <>
             <Form.Item label="PDF 页面提取" extra="自动按页判断文字层与扫描内容；OCR 在服务器本地运行。仅提取文字层不会识别扫描页，强制 OCR 可用于文字层乱码。">
               <Select aria-label="PDF 页面提取" value={uploadOptions.pdf_mode || "auto"} disabled={busy}

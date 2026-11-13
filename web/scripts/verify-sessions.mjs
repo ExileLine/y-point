@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
@@ -103,6 +104,38 @@ function fixture(page, shared = false, options = {}) {
 }
 
 try {
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 850 } });
+    const { calls } = fixture(page, false, { holdCompletion: true });
+    await page.goto(`${baseURL}/agents/11/sessions/session-a`, { waitUntil: "networkidle" });
+    const input = page.getByRole("textbox", { name: "消息内容" });
+    const submissions = () => calls.filter(call => call.method === "POST" && call.path.endsWith("/session-a/runs"));
+    await input.fill("   ");
+    await input.press("Enter");
+    assert.equal(submissions().length, 0);
+    await input.fill("第一行");
+    await input.press("Shift+Enter");
+    await page.keyboard.insertText("第");
+    assert.equal(await input.inputValue(), "第一行\n第");
+    assert.equal(submissions().length, 0);
+    await input.evaluate(element => {
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true }));
+    });
+    assert.equal(submissions().length, 0);
+    await input.fill("第一行\n第二行");
+    // Two events in the same tick must create only one request.
+    await input.evaluate(element => {
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await page.getByText("正在生成的内容", { exact: false }).waitFor();
+    assert.equal(submissions().length, 1);
+    assert.equal(submissions()[0].body.input_text, "第一行\n第二行");
+    console.log(`${width}: Enter sends once, Shift+Enter newline, IME/empty/repeat guards passed`);
+    await page.close();
+  }
   const racePage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const raceFixture = fixture(racePage, false, { pollCompletesBeforeStream: true });
   await racePage.goto(`${baseURL}/agents/11/sessions/session-a`, { waitUntil: "networkidle" });
@@ -123,7 +156,7 @@ try {
     await streamingPage.getByText("正在生成的内容").waitFor({ timeout: 5000 });
     assert.ok(streamingFixture.calls.some((call) => call.path === "/api/v1/runs/run-new/stream"));
     assert.equal(await streamingPage.evaluate(() => document.documentElement.scrollWidth), width);
-    await streamingPage.screenshot({ path: `/tmp/y-point-streaming-${name}.png`, fullPage: true });
+    await streamingPage.screenshot({ path: screenshotPath(`y-point-streaming-${name}.png`), fullPage: true });
     console.log(`${name}: partial answer visible before run completion`);
     await streamingPage.close();
   }
@@ -146,11 +179,11 @@ try {
     const { calls } = fixture(page);
     await page.goto(`${baseURL}/agents/11/sessions`, { waitUntil: "networkidle" });
     await page.locator(".sessions-list-open", { hasText: "需求讨论" }).waitFor();
-    await page.screenshot({ path: `../docs/web-sessions-list-${name}.png`, fullPage: true });
+    await page.screenshot({ path: screenshotPath(`web-sessions-list-${name}.png`), fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     await page.locator(".sessions-list-open", { hasText: "需求讨论" }).click();
     await page.getByText("已有回答").waitFor();
-    await page.screenshot({ path: `../docs/web-sessions-chat-${name}.png`, fullPage: true });
+    await page.screenshot({ path: screenshotPath(`web-sessions-chat-${name}.png`), fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     await page.getByRole("textbox", { name: "消息内容" }).fill("新的问题");
     await page.getByRole("button", { name: "发送" }).click();

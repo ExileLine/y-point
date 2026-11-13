@@ -22,7 +22,9 @@
     "verify:uploads": "node scripts/verify-chat-uploads.mjs",
     "verify:skills": "node scripts/verify-skill-workspace.mjs",
     "verify:chat-activity": "node scripts/verify-chat-activity.mjs",
+    "verify:session-metrics": "node scripts/verify-session-metrics.mjs",
     "verify:partial-output": "node scripts/verify-partial-output.mjs",
+    "verify:knowledge-formats": "node scripts/verify-knowledge-formats.mjs",
     "verify:knowledge-processing": "node scripts/verify-knowledge-processing.mjs",
     "verify:knowledge-pdf": "node scripts/verify-knowledge-pdf.mjs"
   },

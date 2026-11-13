@@ -28,14 +28,14 @@
 ## 验收记录
 
 - `npm run build` 通过。
-- Chrome 1280×800 和 375×812 截图：`web-layout-desktop.png`、`web-layout-mobile.png`；手机抽屉截图：`web-layout-mobile-nav.png`。
+- Chrome 1280×800 和 375×812 截图：`screenshots/web-layout-desktop.png`、`screenshots/web-layout-mobile.png`；手机抽屉截图：`screenshots/web-layout-mobile-nav.png`。
 - 1280px 页面滚动宽度为 1280px；侧栏可在 240px 与 72px 间切换。375px 页面滚动宽度为 375px；抽屉可打开并按 Escape 关闭。图像均加载成功，浏览器无页面异常。
 
-![桌面全局布局](web-layout-desktop.png)
+![桌面全局布局](screenshots/web-layout-desktop.png)
 
-![手机全局布局](web-layout-mobile.png)
+![手机全局布局](screenshots/web-layout-mobile.png)
 
-![手机导航抽屉](web-layout-mobile-nav.png)
+![手机导航抽屉](screenshots/web-layout-mobile-nav.png)
 
 全局骨架已由用户确认；代表性 Agent 页的实现与验收记录见 `web-agent-page.md`。
 

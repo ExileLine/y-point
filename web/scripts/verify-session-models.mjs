@@ -1,3 +1,4 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
@@ -85,7 +86,7 @@ try {
     await chooseB(page);
     assert.match(await page.getByRole('dialog').innerText(), /历史文字会发送给目标供应商/); assertions++;
     await page.getByRole('dialog').getByRole('button', { name: /取\s*消/ }).hover();
-    await page.screenshot({ path: `/tmp/y-point-session-model-${layout}.png`, animations: "disabled" });
+    await page.screenshot({ path: screenshotPath(`y-point-session-model-${layout}.png`), animations: "disabled" });
     await page.getByRole('button', { name: /取\s*消/ }).click();
     assert.equal(f.calls.filter(call => call.method === 'PUT').length, 0); assertions++;
     await chooseB(page);

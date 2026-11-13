@@ -254,7 +254,7 @@ export const createProvider = (draft: ProviderDraft): Promise<Provider> => reque
 export const updateProvider = (id: number, draft: Partial<ProviderDraft>): Promise<Provider> => request(`/providers/${id}`, { method: "PUT", body: JSON.stringify(draft) });
 export const deleteProvider = (id: number): Promise<void> => request(`/providers/${id}`, { method: "DELETE" });
 export const testProvider = (id: number): Promise<ProbeResult> => request(`/providers/${id}/test`, { method: "POST" });
-export const discoverModels = (id: number): Promise<DiscoveryResult> => request(`/providers/${id}/available-models`);
+export const discoverModels = (id: number, signal?: AbortSignal): Promise<DiscoveryResult> => request(`/providers/${id}/available-models`, { signal });
 export const createModel = (draft: ModelDraft): Promise<Model> => request("/models", { method: "POST", body: JSON.stringify(draft) });
 export const updateModel = (id: number, draft: Partial<ModelDraft>): Promise<Model> => request(`/models/${id}`, { method: "PUT", body: JSON.stringify(draft) });
 export const deleteModel = (id: number): Promise<void> => request(`/models/${id}`, { method: "DELETE" });

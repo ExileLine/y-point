@@ -1,7 +1,8 @@
+import { screenshotDirectory } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
-const screenshotDir = process.env.AGENT_SCREENSHOT_DIR || "../docs";
+const screenshotDir = await screenshotDirectory(process.env.AGENT_SCREENSHOT_DIR);
 const baseURL = process.env.WEB_BASE_URL || "http://127.0.0.1:5173";
 const browser = await chromium.launch({
   headless: true,
@@ -148,7 +149,7 @@ try {
       await page.getByText("主要模型").last().click();
       await page.getByText("运行设置", { exact: true }).click();
       await page.getByRole("spinbutton", { name: "模型调用上限" }).fill("4");
-      await page.getByRole("spinbutton", { name: "最大输出 Token" }).fill("2048");
+      assert.equal(await page.getByRole("spinbutton", { name: "最大输出 Token" }).inputValue(), "");
       await page.getByRole("button", { name: /保\s*存/ }).click();
       await page.locator(".ant-drawer-open").waitFor({ state: "hidden", timeout: 3000 }).catch(async () => {
         console.log("create diagnostic", JSON.stringify({ request: getCreate(), drawer: await page.locator(".ant-drawer-open").innerText() }));
@@ -157,7 +158,7 @@ try {
       assert.equal(getCreate()?.name, "新建助手");
       assert.equal(getCreate()?.knowledge_mode, "auto");
       assert.equal(getCreate()?.default_model_id, 1);
-      assert.equal(getCreate()?.max_output_tokens, 2048);
+      assert.equal(getCreate()?.max_output_tokens, null);
       assert.equal(getCreate()?.max_model_calls, 4);
       await page.getByRole("button", { name: "查看详情" }).first().click();
       await page.getByRole("button", { name: "删除 Agent" }).click();

@@ -2,6 +2,8 @@
 
 会话入口位于 Agent 卡片、表格与详情，路由为 `/agents/{agent_id}/sessions`。桌面展示会话栏和消息区，手机在列表与当前会话间切换。所有者与被共享用户分别拥有自己的会话；共享用户读取的是 Agent 安全摘要。
 
+消息输入框使用 Enter 发送，Shift+Enter 换行；中文输入法组合输入与确认候选词、长按回车、空白内容及附件未就绪时不触发提交。键盘与发送按钮复用同一发送流程，同一会话正在提交时由即时引用锁阻止重复请求；失败后释放锁，原有同键重试继续有效。
+
 | 操作 | 接口 | 前端处理 |
 | --- | --- | --- |
 | Agent 资料 | `GET /api/v1/agents/{id}`，共享时回退 `GET /api/v1/agents/shared/{id}` | 共享页不读取或显示系统指令；404 清除失效会话内容。 |
@@ -19,13 +21,13 @@
 
 `npm run verify:sessions` 以模拟接口验证创建、重命名、归档/恢复、删除、搜索、分页、发送、运行中 SSE 预览、状态接口抢先完成时仍保留流预览、断线快照续接和去重、最终消息、失败后同键重试、模型切换冲突引导、切换会话时忽略过期刷新响应、共享用户安全摘要及 1280×800/375×812 布局。`uv run pytest tests/test_agent_sessions.py -q` 覆盖服务端会话隔离与运行约束。真实账号、worker 与上游模型的完整浏览器联调尚未验收。
 
-![桌面会话列表](web-sessions-list-desktop.png)
+![桌面会话列表](screenshots/web-sessions-list-desktop.png)
 
-![桌面对话](web-sessions-chat-desktop.png)
+![桌面对话](screenshots/web-sessions-chat-desktop.png)
 
-![手机会话列表](web-sessions-list-mobile.png)
+![手机会话列表](screenshots/web-sessions-list-mobile.png)
 
-![手机对话](web-sessions-chat-mobile.png)
+![手机对话](screenshots/web-sessions-chat-mobile.png)
 
 ## 2026-11-03 对话体验与消息格式
 
@@ -39,9 +41,9 @@
 
 新增 `npm run verify:chat`：桌面 1280px、手机 375px 的长历史、发送后台同步、阅读位置、终态衔接、分帧更新、左右布局、Markdown/HTML/JSON/未知语言、复制与安全渲染，以及减少动画设置。该脚本使用虚构拦截响应；真实模型流式节奏与真实账号/网络联调仍待验收。
 
-![桌面消息格式与代码](web-chat-rich-desktop.png)
+![桌面消息格式与代码](screenshots/web-chat-rich-desktop.png)
 
-![手机消息格式与代码](web-chat-rich-mobile.png)
+![手机消息格式与代码](screenshots/web-chat-rich-mobile.png)
 
 ## 消息操作栏（2026-11-04）
 

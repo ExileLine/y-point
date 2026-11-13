@@ -71,10 +71,10 @@ export default function Skills({ userId }: { userId: number }) {
         renderCard={(item) => <ResourceCard icon={<FileArchive size={20} />} title={item.name} meta={item.category || "未分组"} description={item.description} tags={tags(item)} actions={actions(item)} />}
       />}
     </section>
-    <Modal title="新建 Skill 工作区" open={newOpen} onCancel={() => !busy && setNewOpen(false)} confirmLoading={busy} okText="创建草稿" onOk={() => void create()}>
+    <Modal title="新建 Skill 工作区" open={newOpen} onCancel={() => !busy && setNewOpen(false)} confirmLoading={busy} cancelText="取消" cancelButtonProps={{ disabled: busy }} okText="创建草稿" onOk={() => void create()}>
       {formError && <Alert type="error" showIcon message={formError} />}
-      <label className="resource-field"><span>名称</span><Input aria-label="Skill 名称" maxLength={64} placeholder="contract-review" value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label className="resource-field"><span>适用场景</span><Input.TextArea aria-label="Skill 适用场景" maxLength={1024} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+      <label className="resource-field"><span>名称</span><Input aria-label="Skill 名称" maxLength={64} placeholder="例如：contract-review（合同审查）" value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label className="resource-field"><span>适用场景</span><Input.TextArea aria-label="Skill 适用场景" placeholder="例如：审查合同条款，识别风险并生成审查报告" maxLength={1024} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       <p>先创建私有草稿。添加文件、校验并发布后，可关联 Agent。</p>
     </Modal>
     <Modal title="导入 Skill 文件包" open={uploadOpen} onCancel={() => !busy && setUploadOpen(false)} footer={null}>

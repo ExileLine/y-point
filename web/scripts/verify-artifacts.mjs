@@ -1,7 +1,6 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
@@ -100,7 +99,7 @@ try {
     assert.deepEqual(await bytes(report), binary); assertions += 2;
     await page.waitForFunction(() => !document.querySelector('[aria-label="下载 原始报告.docx"]').classList.contains('ant-btn-loading'));
     assert.equal(await page.locator('.sessions-history').evaluate(el => el.scrollTop), position); assertions++;
-    await page.screenshot({ path: join(tmpdir(), `y-point-artifacts-${layout}.png`), animations: 'disabled' });
+    await page.screenshot({ path: screenshotPath(`y-point-artifacts-${layout}.png`), animations: 'disabled' });
     for (const [label, name, content] of [
       ['页面.html', 'report.html', html], ['数据.json', '数据.json', '{"ok":true}'],
       ['参考.md', '参考.md', 'file:input'], ['刷新令牌.txt', '刷新令牌.txt', 'file:expired'],

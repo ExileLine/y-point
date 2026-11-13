@@ -1,7 +1,6 @@
+import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
 const now = '2026-11-04T12:00:00+08:00';
@@ -102,7 +101,7 @@ try {
       }
       if (id === 'large') { await drawer().getByText('内容较长，仅展示部分预览；请下载原件查看完整内容。', { exact: true }).waitFor(); checks++; }
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); checks++;
-      if (id === 'xlsx' || id === 'markdown') await page.screenshot({ path: join(tmpdir(), `y-point-preview-${id}-${layout}.png`), animations: 'disabled' });
+      if (id === 'xlsx' || id === 'markdown') await page.screenshot({ path: screenshotPath(`y-point-preview-${id}-${layout}.png`), animations: 'disabled' });
       const position = await page.locator('.sessions-history').evaluate(el => el.scrollTop);
       await close();
       assert.equal(await page.locator('.sessions-history').evaluate(el => el.scrollTop), position); checks++;
