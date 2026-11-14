@@ -32,10 +32,11 @@ def _redirect_output_to_log() -> None:
     """在加载业务模块前收集执行器输出，按容量循环保留最新日志。"""
     env_name = normalize_env(os.getenv("FAST_API_ENV"))
     config = BaseConfig(_env_file=[str(path) for path in resolve_env_files(env_name)])
-    log_path = Path(config.WORKER_LOG_FILE).expanduser()
-    if not log_path.is_absolute():
-        log_path = BASE_DIR / log_path
-    WorkerLogCapture(log_path, config.WORKER_LOG_MAX_BYTES)
+    if not config.WORKER_LOG_STDOUT:
+        log_path = Path(config.WORKER_LOG_FILE).expanduser()
+        if not log_path.is_absolute():
+            log_path = BASE_DIR / log_path
+        WorkerLogCapture(log_path, config.WORKER_LOG_MAX_BYTES)
     signal.signal(signal.SIGTERM, _exit_on_termination)
 
 
@@ -127,6 +128,7 @@ async def run_worker(
     async with open_async_checkpointer(checkpoint_path) as checkpointer:
         await checkpointer.setup()
     worker_id = str(uuid4()) if not once else None
+    health_file = Path(get_config().WORKER_HEALTH_FILE) if get_config().WORKER_HEALTH_FILE and not once else None
     heartbeat_task = None
     environment_task = None
     resource_task = None
@@ -134,6 +136,8 @@ async def run_worker(
     if worker_id is not None:
         async with AsyncSessionLocal.begin() as db:
             await register_worker(db, worker_id)
+        if health_file is not None:
+            health_file.write_text(worker_id, encoding="utf-8")
         heartbeat_task = asyncio.create_task(_heartbeat_loop(worker_id, heartbeat_seconds))
         resource_task = asyncio.create_task(_tool_resource_loop())
         knowledge_task = asyncio.create_task(_knowledge_loop(idle_seconds))
@@ -194,6 +198,8 @@ async def run_worker(
             if run is None:
                 await asyncio.sleep(idle_seconds)
     finally:
+        if health_file is not None:
+            health_file.unlink(missing_ok=True)
         if knowledge_task is not None:
             knowledge_task.cancel()
             with suppress(asyncio.CancelledError):

@@ -297,7 +297,7 @@ async def issue_stream_ticket(run_id: str, request: Request, actor: Admin = Depe
         value=make_stream_ticket(actor, request.state.auth_session_id, run_id),
         max_age=STREAM_TICKET_SECONDS,
         path=f"/api/v1/runs/{run_id}/stream",
-        secure=get_config().ENV_NAME not in {"development", "test"},
+        secure=get_config().stream_cookie_secure,
         httponly=True,
         samesite="strict",
     )

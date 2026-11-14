@@ -64,128 +64,39 @@ uv run alembic check
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-## Docker 部署准备（含 PDF OCR）
+## Docker 部署（API、worker、前端与 PostgreSQL）
 
-本机已安装的 Homebrew、Tesseract 和 Python 虚拟环境不会自动进入容器。当前仓库根目录的 `Dockerfile` 只有 Python 基础镜像及维护者声明，尚未包含依赖安装、源码复制与启动命令；`Dockerfile.sandbox` 是脚本 Tool 的独立执行镜像。部署服务端时需准备下面的 API/worker 镜像、配置与持久化存储，不能直接把现有根 Dockerfile 当作完整发布镜像。
+完整操作步骤见 **[部署手册](docs/deployment-guide.md)**，覆盖本机模拟、内网服务器、可选 HTTPS、管理员创建、日志、数据、更新和排查。设计与配置细节见 [部署架构与配置参考](docs/deployment.md)。
 
-### 系统依赖与进程分工
-
-| 准备项 | 安装或配置位置 | 用途与边界 |
-| --- | --- | --- |
-| Python 3.12、按 `uv.lock` 安装的 Python 依赖 | API 和 worker 镜像 | 包含 pdfplumber、pypdfium2、Pillow 等；在目标 Linux/CPU 架构中安装，不复制 macOS 的 `.venv`。 |
-| `libstdc++6`、Fontconfig、中文字体 `fonts-noto-cjk` | API 和 worker 镜像 | PDFium 动态库运行及原页字体回退；未嵌入中文字体的 PDF 尤其需要字体，避免渲染成方框。字体不能修复源文件本身错误的文字映射。 |
-| `tesseract-ocr`、`tesseract-ocr-chi-sim`、`tesseract-ocr-eng` | 执行索引任务的 worker 镜像 | 默认 OCR 使用 `chi_sim+eng`，两种语言包必须都存在；只有引擎或只装英文包仍不满足配置。API 不执行 OCR；使用统一镜像时一起安装即可。 |
-| `ca-certificates` | API 和 worker 镜像 | 模型、嵌入、MCP、对象存储等 HTTPS 连接使用系统信任链；内网服务使用私有 CA 时需将其加入容器信任链。 |
-| Alembic | 执行数据库迁移的镜像/一次性任务 | 当前列在 `dev` 依赖组，单独 `uv sync --no-dev` 不会安装；下面示例保留该组供迁移使用，精简运行镜像时须另备迁移镜像。 |
-| PostgreSQL 或持久化 SQLite、业务库迁移 | 数据库及迁移任务 | API 和 worker 必须连接同一业务数据库。业务库换成 PostgreSQL 不会自动切换 Checkpointer，后者需单独配置。 |
-| Poppler / `pdftoppm` | 可选测试环境 | 用于人工渲染核对测试文件；当前在线 OCR 和原页预览由 PDFium 渲染，不要求生产安装 Poppler。 |
-
-当前本地 OCR 不需要 GPU、额外 OCR 服务或 OCR API Key。安装完成后识别本身可离线执行；模型加工、混合索引嵌入及其他外部工具仍需要各自的模型配置、凭据与网络。OCR 只在知识 PDF 处理链中启用，不会因为容器安装了 Tesseract 就自动对所有聊天附件执行 OCR。
-
-### API / worker 镜像示例
-
-以下为 Debian Bookworm 基础镜像示例，可保存为 `Dockerfile.deploy` 后按目标架构构建。API 与 worker 使用同一镜像、不同启动命令；示例包含数据库迁移工具，不包含前端静态服务或脚本 Tool 的 Docker CLI/引擎接入。
-
-```dockerfile
-FROM ghcr.io/astral-sh/uv:0.11.16 AS uv
-FROM python:3.12-slim-bookworm
-
-COPY --from=uv /uv /usr/local/bin/uv
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates libstdc++6 fontconfig fonts-noto-cjk \
-        tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --group dev --no-install-project
-COPY app ./app
-COPY migrations ./migrations
-COPY alembic.ini ./
-COPY sandbox ./sandbox
-COPY scripts ./scripts
-
-RUN groupadd --gid 10001 appuser \
-    && useradd --create-home --uid 10001 --gid 10001 appuser \
-    && mkdir -p /app/.run-private /app/.logs \
-    && chown -R 10001:10001 /app/.run-private /app/.logs
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-USER 10001:10001
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-构建前准备 `.dockerignore`，至少排除 `.git/`、`.venv/`、`.env*`、`.run-private/`、`.logs/`、`*.db`、`*.db-shm`、`*.db-wal`、`web/node_modules/` 和 `web/dist/`。不要将本机数据库、凭据、上传文件或 Homebrew 安装目录打入镜像；上面使用显式 `COPY`，生产配置在运行时只读挂载。uv 和基础镜像版本在正式发布中应固定，跨架构交付应在目标架构重新构建和检查 PDFium。
+在项目根目录执行，一键完成 Docker 检查、初始化、配置校验、镜像构建、启动和健康等待：
 
 ```bash
-docker build -f Dockerfile.deploy -t y-point-server:ocr .
-docker run --rm y-point-server:ocr tesseract --list-langs
-docker run --rm y-point-server:ocr fc-match 'sans:lang=zh-cn'
-docker run --rm y-point-server:ocr python -c "import pdfplumber, pypdfium2; from PIL import Image; print('PDF runtime ready')"
+# 本机模拟生产，新配置默认 HTTP：http://127.0.0.1:18080。
+python3 scripts/deploy_all.py
+
+# 首次内网服务器部署；按实际访问范围选择监听 IP，密码在终端输入。
+python3 scripts/deploy_all.py --environment production --http \
+  --bind-ip 0.0.0.0 --http-port 18080 --create-admin admin
 ```
 
-语言列表应同时包含 `chi_sim` 和 `eng`；字体应匹配已安装的中文字体；Python 检查需成功加载 PDFium 动态库。不能只检查宿主机的 `tesseract --version`。使用发行版标准语言包路径安装；当前 OCR 子进程使用受限环境，不会自动继承自定义 `TESSDATA_PREFIX`，只设置该环境变量不能替代标准路径中的语言包。
+服务器访问 `http://服务器内网IP:18080`。新部署无需域名和证书；HTTPS 按需用 `--https` 开启，staging/production 首次需成对提供证书/私钥。已有配置默认保留原协议和密钥，重复部署不重复创建管理员；本机脚本沙箱通过 `--sandbox` 显式启用。所有参数见 `python3 scripts/deploy_all.py --help`。
 
-### 生产配置、共享存储与启动顺序
+### 部署文件与执行过程
 
-准备独立的生产配置文件，例如宿主机 `/srv/y-point/config/production.env`，授予容器 UID/GID `10001:10001` 读取权限，运行时只读挂载到 `/run/config/production.env`。当前配置加载器要求至少有一个真实配置文件，**仅传 Docker `--env-file` 注入环境变量仍不足以满足配置文件存在检查**。容器环境另传 `FAST_API_ENV=production` 和 `ENV_FILE=/run/config/production.env`；文件内使用 `ENV=production`、`DEBUG=False`，避免沿用开发配置。后续可由部署平台以同等方式挂载 Secret。
+以下按之前逐步搭建的顺序解释文件职责。操作时可对照 [手动部署步骤](docs/deployment-guide.md#3-手动部署理解一键脚本执行的步骤)。
 
-API 和 worker 应使用同一份业务配置，至少核对：
+1. **先构建后端镜像：根 `Dockerfile`。** 多阶段构建先用 uv 按 `uv.lock` 安装依赖，再把依赖和代码复制到运行镜像。`FROM` 选择基础镜像，`WORKDIR` 设置容器内目录，`COPY` 复制构建上下文里的文件，`RUN` 在构建时执行命令；`USER` 指定运行身份，`ENTRYPOINT` 指定启动入口，`CMD` 提供默认服务命令。API 和 worker 共用一个镜像，通过不同启动命令区分职责。
+2. **理解后端启动：`deploy/entrypoint.sh`。** 容器启动时先运行 `preflight.py` 核对密钥、目录权限及启用时的沙箱条件，再通过 `exec "$@"` 运行服务，使退出信号交给主进程。一次性数据库迁移由独立 migrate 服务完成，不塞进每个 API 启动过程。
+3. **再构建前端镜像：`web/Dockerfile`。** Node 阶段执行 TypeScript/Vite 生产构建，Nginx 阶段只带静态页面和网关配置；运行时不启动 Vite。前后端默认在同一主机的不同容器中，镜像可独立构建和升级；跨主机 upstream、共享文件与可信代理需要额外配置。
+4. **理解 Nginx 启动：`deploy/nginx/start.sh`。** 根据保存的协议选择 HTTP 或 HTTPS 模板，生成配置后前台启动 Nginx。`locations.conf` 共用页面回退、缓存、API、SSE、上传限制及请求 ID 规则。HTTP 不读取证书；只有可选 HTTPS 配置才挂载证书并启用 HTTP 跳转。
+5. **编排服务：`docker-compose.yml`。** PostgreSQL 健康后启动一次性迁移，迁移成功后启动 API/worker，API 健康后启动 Web。只有 Web 发布宿主端口，数据库与 API 留在内部网络。`ports` 左边是宿主端口、右边是容器端口；`mem_limit` 是每容器内存上限，`cpus` 限制可使用的 CPU 时间额度，例如 `1.0` 约为一颗 CPU 的持续计算额度，不表示固定绑到某个核心。
+6. **给容器补运行约束。** 非 root、只读根目录、tmpfs、健康检查、资源上限和重启策略由 Compose 配置。`init: true` 负责回收子进程；API 直接运行 Uvicorn，后台任务由独立 worker 执行，不再引入 supervisor。Uvicorn 的 `--workers 1` 是当前默认，可按负载调整；多 API 进程不会增加后台任务 worker 数量，扩容前仍需压测与资源核对。
+7. **持久化数据。** `postgres-data` 是 Docker 命名卷，不是项目目录；普通 Linux rootful Docker 常见于 `/var/lib/docker/volumes/<项目名>_postgres-data/_data`，实际用 `docker volume inspect` 查询，Docker Desktop 位于 VM 内。上传文件和脚本目录通过本环境的 `data/` 绑定挂载。普通 `down` 保留数据，`down -v` 会删除数据库卷。
+8. **选择环境并初始化：`scripts/deploy.py init`。** `--environment` 明确选择 local/staging/production，省略为 local，不自动猜测机器环境。每个环境生成独立 `compose.env`、`application.env`、`database.env`、密钥和数据目录；HTTPS 才需要 `tls/`。local 也使用关闭 DEBUG 的 production 应用配置。重复初始化保留密码和密钥，显式传入协议、监听地址或端口时更新对应字段。
+9. **合并配置并启动：`scripts/deploy.py compose`。** 脚本用多个 `-f` 按顺序组合基础配置、production 资源覆盖、可选 HTTPS 和显式沙箱覆盖，再透传 build/up/logs 等子命令。协议从 `compose.env` 读取；`--sandbox` 只启用本机 Docker 接入，用户脚本容器在调用时临时创建。启用沙箱后，后续 compose/一键部署命令继续带该参数。
+10. **管理镜像和日志。** `:local` 是默认值，初始化按环境生成镜像标签；可以在 `compose.env` 修改 `YPOINT_SERVER_IMAGE` / `YPOINT_WEB_IMAGE`。标准流由 Docker `local` 驱动按每容器 `20m × 5` 轮转压缩；这不限制整个磁盘。Nginx 请求 ID 对应 API 的 `rid`，Run ID 关联后台执行，业务审计保存在数据库；更新前需要备份数据库、文件和同一套密钥。
 
-| 配置或存储 | 生产准备 |
-| --- | --- |
-| 数据库 | `DB_BACKEND=postgresql` 及 `POSTGRESQL_HOSTNAME/PORT/USERNAME/PASSWORD/DATABASE`；主机名使用容器网络中的数据库服务名，端口通常为容器内部的 5432。容器内 `127.0.0.1` 指向该容器自身。SQLite 部署则将 `SQLITE_DATABASE` 指向共享持久目录，例如 `/app/.run-private/y_point.db`。 |
-| Checkpointer | 使用 PostgreSQL 时另设 `CHECKPOINT_BACKEND=postgres`、`CHECKPOINT_POSTGRES_DSN`，DSN 使用 Checkpointer 接受的 `postgresql://…` 地址，账号需具备初始化检查点表的权限。保留 SQLite 时持久化 `.run-private/checkpoints.sqlite`，多容器需访问同一文件，不把各自容器的临时副本当作共享检查点。 |
-| 上传原件与产物 | 本地存储时显式设置 `ARTIFACT_STORAGE_DIR=/app/.run-private/artifacts`，API 与 worker 挂载同一卷；API 要读取原 PDF 生成页面预览，不能只给 worker 挂载。使用 S3 时两者配置同一后端/桶/前缀及访问权限，仍需可写的本地临时目录。 |
-| 密钥 | 注入有效 `SECRET_KEY` 和 `CREDENTIAL_ENCRYPTION_KEY`，不要使用示例占位值；迁移已有供应商数据时保留原凭据加密密钥，否则旧凭据无法解密。生成方式见前面的本地运行说明。 |
-| OCR | 两者配置相同的 `KNOWLEDGE_PDF_OCR_*`；容器命令使用 `tesseract` 或 `/usr/bin/tesseract`，不填 macOS 的 `/opt/homebrew/bin/tesseract`。默认语言、置信度、页数和 DPI 见 PDF 章节。 |
-| 运行目录与日志 | `.run-private/`、`.logs/` 及 `/tmp` 必须对运行用户可写，持久卷权限匹配 UID/GID；`WORKER_LOG_FILE` 默认 `/app/.logs/worker.log`，worker 标准输出被收集到该文件，不能仅依赖 `docker logs` 判断执行情况。原件、检查点和日志按各自保留策略备份。 |
-| 向量后端 | `KNOWLEDGE_VECTOR_BACKEND=exact` 无需额外向量数据库。只有显式选择 `pgvector` 时，才在 PostgreSQL 服务端安装并启用对应扩展；它与 OCR 安装无关。 |
-
-当前新增迁移依次为 `052 → 053 → 054`：`052` 保存文档解析摘要，`053` 按已发布索引固定摘要，`054` 为 Agent 及 Run 增加知识回答模式，既有记录默认 `auto`。升级时更新 Python 依赖并执行 `alembic upgrade head`，不能只完成 PDF 的 `053` 后就启动当前版本；升级保留原有会话、回答与活动索引，不会自动 OCR 或重建已发布资料。需要按新 PDF 规则重新处理旧资料时，再显式重建知识库。
-
-下面的启动示例假定：已保存并构建上面的发布 Dockerfile；数据库与 API/worker 加入现有 `y-point` Docker 网络；已准备上述配置文件并填写数据库及密钥；本地文件存储使用两个共享命名卷。升级已有环境前先等待活跃任务结束、停止旧 API/worker，并备份业务库、检查点和私有文件。
-
-```bash
-# 先迁移：PDF 解析摘要/发布快照需要 052、053，知识回答模式需要 054；始终升至当前代码版本 head。
-docker run --rm --network y-point \
-  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
-  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
-  y-point-server:ocr sh -ec 'alembic upgrade head && alembic check'
-
-# API：生产启动不使用 local_run.py 的 reload 模式。
-docker run -d --name y-point-api --init --restart unless-stopped \
-  --network y-point -p 127.0.0.1:8000:8000 \
-  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
-  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
-  --mount type=volume,src=y-point-private,dst=/app/.run-private \
-  --mount type=volume,src=y-point-logs,dst=/app/.logs \
-  y-point-server:ocr
-
-# worker：独立进程领取对话和索引任务，不能只启动 API。
-docker run -d --name y-point-worker --init --restart unless-stopped \
-  --network y-point \
-  -e FAST_API_ENV=production -e ENV_FILE=/run/config/production.env \
-  --mount type=bind,src=/srv/y-point/config/production.env,dst=/run/config/production.env,readonly \
-  --mount type=volume,src=y-point-private,dst=/app/.run-private \
-  --mount type=volume,src=y-point-logs,dst=/app/.logs \
-  y-point-server:ocr python -m app.cli.run_worker
-```
-
-此示例按 PostgreSQL 业务库执行一次性迁移；如果改用 SQLite，迁移容器也必须挂载同一个 `y-point-private` 卷。Alembic 只升级目标库结构，**不会把本机 SQLite 业务数据、检查点或上传原件自动搬到 PostgreSQL/服务器**；保留本机数据需要独立的数据迁移、文件复制与核对方案，不能通过修改 `DB_BACKEND` 代替迁移。
-
-OCR 会创建可终止子进程、读写临时 PNG/TSV，容器须允许创建子进程和向其进程组发送信号；启用只读根文件系统时仍要为 `/tmp` 与业务目录提供可写挂载。不要把脚本沙箱的 128 MiB 内存/8 MiB 临时目录限制直接套给 API/worker。Linux 解析子进程有 768 MiB 地址空间上限，容器总资源还需覆盖服务进程、OCR、渲染和并发任务；CPU、内存、PID 与临时空间额度应按目标机器的并发实测配置。只提高容器额度不会取消单页 1200 万像素、默认 20 页 OCR、单页 35 秒及文档解析 120 秒等业务限制。
-
-前端使用 `npm --prefix web ci`、`npm --prefix web run build` 生成 `web/dist`，交给 Nginx 等静态服务；当前 API 镜像不会自动托管 Web 应用，生产不运行 `make dev`/Vite。反向代理需转发 `/api/v1`，保留 SSE 流式传输，并允许知识上传至少 11 MiB 的 multipart 请求；整个站点还须匹配已配置的多附件上传上限，不能只按知识 PDF 的 10 MiB 设置代理限额。
-
-已有脚本 Tool 还需额外准备 Docker CLI、可访问的 Docker 引擎及 `y-point-script-sandbox:1` 镜像，参见“基础镜像与离线部署”。API 的脚本试运行与 worker 的正式调用都可能使用 Docker；仅运行本节 OCR 不需要 Docker 管理接口。服务本身容器化后，Docker 引擎解释的是其所在主机的挂载源路径，源码临时目录、依赖目录等须在相同绝对路径对该引擎可见；当前代码没有自动的宿主机路径映射或跨主机缓存分发。上面的命名卷示例只覆盖 API/worker、知识库和对话文件，不代表脚本 Tool 的容器化接入已经完成；不要直接把管理接口挂入用户脚本执行容器。
-
-首次发布在目标镜像内检查语言包、中文字体和 PDFium，再确认 `/api/v1/health` 与 `/api/v1/health/worker` 都返回 200。页面先用“关键词检索 + 保留原文 + 自动提取”上传中文扫描 PDF，核对逐页摘要、检索结果和原页高亮；随后验证不清晰扫描件失败时保留旧索引。最后再验证加工模型、嵌入模型和脚本 Tool。首次从旧版升级的 PDF 需成功重建后显示新摘要与原页入口，安装引擎不会自动重建历史索引。
-
-离线交付须在与目标 CPU 架构一致的联网构建环境中，把应用依赖、PDFium、Tesseract、语言包及字体构建进镜像后 `docker save`，目标服务器 `docker load`，同时交付配置、数据库/文件备份及所需脚本沙箱镜像。不要依赖容器启动时临时下载语言包。
+一键脚本复用上述流程。手动执行的主线是 `init → config --quiet → build → up --wait → 首次创建管理员`，完整操作以 [部署手册](docs/deployment-guide.md) 为准。基础镜像包含 PDFium、Tesseract 中英文语言包和中文字体；迁移/升级、沙箱权限及日志保留边界见 [配置参考](docs/deployment.md)。部署就绪不代表真实模型、容量或目标环境总验收完成。
 
 ## 附件容量与运行参数配置
 

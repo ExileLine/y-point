@@ -1,0 +1,185 @@
+name: ${COMPOSE_PROJECT_NAME:-y-point-local}
+
+# x- 开头的字段用于存放扩展配置，本身不会启动容器。
+# &server 给这段配置起一个引用名称。
+# *server 引用这段配置。
+# <<: *server 将这段配置合并到当前位置。
+
+# init: true 加入轻量初始化进程，帮助转发信号、回收子进程
+# user: 指定运行用户，与挂载目录权限配合
+# volumes: 将宿主机配置文件和持久化目录挂入容器
+# read_only: true 将容器根文件系统设为只读
+# tmpfs  为 /tmp 提供临时可写空间
+# mem_limit、cpus、pids_limit  限制单个容器使用的资源
+# stop_grace_period: 90s  停止时提供正常退出的等待窗口
+# networks: [backend]  接入项目内部网络
+
+# api
+# --proxy-headers：读取代理传来的客户端地址、原始协议等信息
+# --forwarded-allow-ips "*"  信任所有能连接到该 API 的来源提供的代理信息；当前配置配合 API 不发布宿主端口使用
+# --no-access-log：关闭 Uvicorn 自带的访问日志
+# --timeout-graceful-shutdown 60  正常关闭时，最多等待 60 秒完成正在处理的请求和任务
+# test  在容器内执行指定检查命令，API 的健康检查
+# interval: 10s  检查间隔为 10 秒
+# timeout: 5s  单次检查超过 5 秒视为失败
+# retries: 6  连续失败达到 6 次后标记为不健康
+# start_period: 30s  启动宽限期，期间的检查失败不计入失败次数
+
+# worker
+# 调用 healthcheck.py，但传入的是 worker。
+# 这时检查逻辑会：
+# 1. 读取本容器登记的 worker ID。
+# 2. 在数据库中查找对应的心跳。
+# 3. 判断心跳是否过期，或者该 worker 是否已经停止。
+
+# web
+# 端口映射
+# 使用当前默认值时，就是：
+# 127.0.0.1:18080 → Nginx 容器的 8080
+# 本机浏览器默认访问：http://localhost:18080
+# 启用 HTTPS 后，docker-compose.https.yml 额外映射：
+# 127.0.0.1:18443 → Nginx 容器的 8443
+# 浏览器改用 https://localhost:18443，并通过 target: /run/tls 挂载证书目录
+# service_completed_successfully：一次性任务成功执行完毕
+# service_healthy：持续运行的服务通过健康检查
+
+# 声明了一个网络：backend
+
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "${YPOINT_LOG_MAX_SIZE:-20m}"
+    max-file: "${YPOINT_LOG_MAX_FILES:-5}"
+    compress: "true"
+
+x-server: &server
+  image: ${YPOINT_SERVER_IMAGE:-y-point-server:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  user: "${YPOINT_UID:-10001}:${YPOINT_GID:-10001}"
+  env_file:
+    - ${YPOINT_APP_ENV:?请先运行 python3 scripts/deploy.py init}
+  environment:
+    FAST_API_ENV: ${YPOINT_ENV:-production}
+    ENV_FILE: /run/config/application.env
+  volumes:
+    - type: bind
+      source: ${YPOINT_APP_ENV}
+      target: /run/config/application.env
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${YPOINT_DATA_DIR:?缺少持久化目录}
+      target: ${YPOINT_DATA_DIR}
+      bind:
+        create_host_path: false
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+  cap_drop: [ ALL ]
+  security_opt: [ no-new-privileges:true ]
+  pids_limit: 256
+  mem_limit: ${YPOINT_SERVER_MEMORY:-2g}
+  cpus: ${YPOINT_SERVER_CPUS:-2.0}
+  stop_grace_period: 90s
+  logging: *logging
+  networks: [ backend ]
+
+services:
+  db:
+    image: ${YPOINT_POSTGRES_IMAGE:-postgres:16}
+    env_file:
+      - ${YPOINT_DB_ENV:?请先生成数据库配置}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"' ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    command: [ postgres, -c, log_destination=stderr, -c, logging_collector=off, -c, log_statement=none ]
+    restart: unless-stopped
+    stop_grace_period: 60s
+    shm_size: 128m
+    mem_limit: ${YPOINT_DB_MEMORY:-1g}
+    cpus: ${YPOINT_DB_CPUS:-1.0}
+    logging: *logging
+    networks: [ backend ]
+
+  migrate:
+    <<: *server # 使用后端共用镜像、环境和挂载
+    command: [ alembic, upgrade, head ]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy # 等待数据库健康后执行
+
+  api:
+    <<: *server
+    command: [ uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --workers, "1", --proxy-headers, --forwarded-allow-ips, "*", --no-access-log, --timeout-graceful-shutdown, "60" ]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ CMD, python, /app/deploy/healthcheck.py, api ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  worker:
+    <<: *server
+    command: [ python, -m, app.cli.run_worker ]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ CMD, python, /app/deploy/healthcheck.py, worker ]
+      interval: 15s
+      timeout: 8s
+      retries: 4
+      start_period: 45s
+
+  web:
+    image: ${YPOINT_WEB_IMAGE:-y-point-web:local}
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    init: true
+    user: "${YPOINT_UID:-10001}:${YPOINT_GID:-10001}"
+    environment:
+      YPOINT_HTTPS_ENABLED: "false"
+    ports:
+      - "${YPOINT_BIND_IP:-127.0.0.1}:${YPOINT_HTTP_PORT:-18080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+    cap_drop: [ ALL ]
+    security_opt: [ no-new-privileges:true ]
+    pids_limit: 128
+    mem_limit: ${YPOINT_WEB_MEMORY:-256m}
+    cpus: ${YPOINT_WEB_CPUS:-1.0}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [ CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/healthz ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    stop_grace_period: 30s
+    logging: *logging
+    networks: [ backend ]
+
+networks:
+  backend:
+
+volumes:
+  postgres-data:

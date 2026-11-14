@@ -163,6 +163,8 @@ class BaseConfig(BaseSettings):
     # 开发日志配置参数
     WORKER_LOG_FILE: str = ".logs/worker.log"
     WORKER_LOG_MAX_BYTES: int = Field(default=50 * 1024 * 1024, gt=0, description="worker 日志文件容量上限，单位字节", examples=[52428800])
+    WORKER_LOG_STDOUT: bool = Field(default=False, description="容器部署直接输出标准流，由容器日志驱动控制容量", examples=[True])
+    WORKER_HEALTH_FILE: str = Field(default="", description="当前 worker 心跳标识文件，留空不写入，容器探针逐进程核对", examples=["/tmp/y-point-worker-id"])
 
     # AGENT配置参数
     AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数", examples=[300])
@@ -190,6 +192,18 @@ class BaseConfig(BaseSettings):
     SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS: int = 180
     SCRIPT_EXECUTION_TIMEOUT_SECONDS: int = Field(default=30, gt=0, description="单次正式脚本执行时限", examples=[120])
     SCRIPT_TEST_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="Tool 及 Skill 脚本试运行时限", examples=[30])
+    SCRIPT_SANDBOX_STORAGE_DIR: str = Field(
+        default=".run-private/tool-sandbox",
+        min_length=1,
+        description="脚本临时目录，须以同一绝对路径对 Docker 引擎可见",
+        examples=["/srv/y-point/data/tool-sandbox"],
+    )
+    SCRIPT_PACKAGE_PROXY_FILE: str = Field(
+        default="sandbox/package_proxy.py",
+        min_length=1,
+        description="受信任的依赖下载代理脚本，须以同一绝对路径对 Docker 引擎可见",
+        examples=["/srv/y-point/data/runtime/package_proxy.py"],
+    )
 
     # MCP配置参数
     MCP_CONNECT_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="MCP HTTP 建连、写入及连接池等待超时秒数", examples=[10])
@@ -231,6 +245,9 @@ class BaseConfig(BaseSettings):
     TOOL_RESOURCE_RECONCILE_SECONDS: int = Field(default=60, ge=1, description="工具资源核对间隔秒数", examples=[60])
     TOOL_RESOURCE_GRACE_SECONDS: int = Field(default=300, ge=30, description="过期资源清理宽限秒数", examples=[300])
 
+    # SSE 票据 Cookie 配置参数
+    STREAM_COOKIE_SECURE: bool | None = Field(default=None, description="SSE 票据 Cookie 是否仅通过 HTTPS 发送；未配置时由应用环境决定")
+
     @model_validator(mode="after")
     def validate_runtime_defaults(self) -> "BaseConfig":
         """启动时拒绝默认值大于对应可配置上限的配置。"""
@@ -264,6 +281,11 @@ class BaseConfig(BaseSettings):
     def IS_STAGING(self) -> bool:
         """判断当前是否为预发布环境。"""
         return self.ENV_NAME == "staging"
+
+    @property
+    def stream_cookie_secure(self) -> bool:
+        """显式协议配置优先，未配置时保留生产和预发布的 Secure Cookie 默认值。"""
+        return self.STREAM_COOKIE_SECURE if self.STREAM_COOKIE_SECURE is not None else self.ENV_NAME not in {"development", "test"}
 
     @property
     def MASK_SENSITIVE_HEADERS(self) -> bool:

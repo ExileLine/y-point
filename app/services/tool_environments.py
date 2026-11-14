@@ -225,7 +225,9 @@ async def _package_network(image: str):
         raise EnvironmentBuildError(ToolEnvironmentFailure.CONFIGURATION_ERROR)
     network = f"yp-deps-net-{uuid4().hex}"
     proxy = f"yp-deps-proxy-{uuid4().hex}"
-    script = BASE_DIR / "sandbox" / "package_proxy.py"
+    script = Path(config.SCRIPT_PACKAGE_PROXY_FILE).expanduser()
+    if not script.is_absolute():
+        script = BASE_DIR / script
     try:
         await _docker_output("network", "create", *resource_labels(config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS), "--internal", network)
         await _docker_output(
@@ -233,6 +235,7 @@ async def _package_network(image: str):
             "--detach",
             "--pull=never",
             "--rm",
+            "--log-driver=none",
             "--name",
             proxy,
             *resource_labels(config.SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS),
@@ -288,6 +291,7 @@ async def _run_preparer(image: str, stage: Path, mounts: list[str], command: lis
         "run",
         "--pull=never",
         "--rm",
+        "--log-driver=none",
         "--name",
         name,
         *resource_labels(get_config().SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS),

@@ -1,0 +1,12 @@
+# 与基础配置共用拓扑；单独生成 production 的私有配置与项目名，HTTPS 证书可选。
+# 按访问范围设置 YPOINT_BIND_IP；启用 HTTPS 时另配正式证书及域名。
+services:
+  api:
+    mem_limit: ${YPOINT_SERVER_MEMORY:-4g}
+    cpus: ${YPOINT_SERVER_CPUS:-2.0}
+  worker:
+    mem_limit: ${YPOINT_SERVER_MEMORY:-4g}
+    cpus: ${YPOINT_SERVER_CPUS:-2.0}
+  db:
+    mem_limit: ${YPOINT_DB_MEMORY:-2g}
+    cpus: ${YPOINT_DB_CPUS:-2.0}

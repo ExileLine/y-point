@@ -127,3 +127,38 @@ os.write(2, b'\\nlatest-long-line\\n')
         assert stream.read(30).decode("utf-8")
         stream.seek(-64, os.SEEK_END)
         assert b"latest-long-line" in stream.read()
+
+
+def test_container_worker_keeps_standard_streams_and_child_output(tmp_path: Path) -> None:
+    """容器模式向 Docker 保留标准流和子进程输出，退出时不创建本机日志文件。"""
+    log_path = tmp_path / "worker.log"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "WORKER_LOG_FILE": str(log_path),
+            "WORKER_LOG_STDOUT": "true",
+        },
+    )
+    script = """
+import os
+import signal
+import subprocess
+import sys
+from app.cli.run_worker import _redirect_output_to_log
+
+_redirect_output_to_log()
+print('container-stdout', flush=True)
+print('container-stderr', file=sys.stderr, flush=True)
+subprocess.run([sys.executable, '-c', "print('container-child', flush=True)"], check=True)
+try:
+    os.kill(os.getpid(), signal.SIGTERM)
+finally:
+    print('container-shutdown', flush=True)
+"""
+    completed = subprocess.run([sys.executable, "-c", script], env=environment, capture_output=True, timeout=30)
+    assert completed.returncode == 128 + signal.SIGTERM
+    assert b"container-stdout" in completed.stdout
+    assert b"container-child" in completed.stdout
+    assert b"container-shutdown" in completed.stdout
+    assert b"container-stderr" in completed.stderr
+    assert not log_path.exists()

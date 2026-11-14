@@ -7,6 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import "../styles/message-content.css";
 import RunKnowledgeEvidence from "../knowledge/RunKnowledgeEvidence";
 import remarkLegacyCitation from "./remarkLegacyCitation";
+import { copyText } from "../browser-compat";
 
 export function CopyButton({ text, label = "复制消息" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
@@ -14,7 +15,7 @@ export function CopyButton({ text, label = "复制消息" }: { text: string; lab
   async function copy() {
     const revision = ++copyRevision.current;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       if (revision === copyRevision.current) setCopied(true);
     } catch { message.error("复制失败，请手动选择文本复制"); }
   }
@@ -28,7 +29,7 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
     ? String((children.props as { className?: string }).className || "").match(/language-([\w+-]+)/)?.[1] : undefined;
   const [copied, setCopied] = useState(false);
   async function copy() {
-    try { await navigator.clipboard.writeText(ref.current?.textContent || ""); setCopied(true); }
+    try { await copyText(ref.current?.textContent || ""); setCopied(true); }
     catch { message.error("代码复制失败，请手动选择复制"); }
   }
   return <div className="message-code-block"><div className="message-code-header"><span>{language || "代码"}</span>

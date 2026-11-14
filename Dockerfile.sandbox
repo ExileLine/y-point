@@ -1,4 +1,9 @@
 # 构建阶段准备受信任依赖；执行阶段保持禁网、只读和非特权策略。
+# PYTHONDONTWRITEBYTECODE=1  避免 Python 自动写入 .pyc 字节码文件，便于在只读环境运行
+# PYTHONUNBUFFERED=1  及时输出 Python 标准输出和错误输出
+# WORKDIR /app  默认工作目录为 /app
+# USER 65534:65534  默认使用指定的非 root 用户和用户组
+
 FROM python:3.12-slim-bookworm
 COPY sandbox/requirements.txt /opt/sandbox/requirements.txt
 RUN python -m pip install --no-cache-dir -r /opt/sandbox/requirements.txt

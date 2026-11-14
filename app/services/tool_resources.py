@@ -155,9 +155,12 @@ def _prune_directories(referenced: set[str], active_lease: bool, scope: str, cut
     removed = 0
     root = dependency_root()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sandbox_root = Path(get_config().SCRIPT_SANDBOX_STORAGE_DIR).expanduser()
+    if not sandbox_root.is_absolute():
+        sandbox_root = BASE_DIR / sandbox_root
     with (root / ".capacity.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        for parent in (root, BASE_DIR / ".run-private" / "tool-sandbox"):
+        for parent in (root, sandbox_root):
             if not parent.is_dir():
                 continue
             for path in parent.iterdir():

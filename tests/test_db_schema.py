@@ -520,3 +520,44 @@ def test_skill_package_migration_guards_downgrade(tmp_path: Path) -> None:
     migrate("downgrade", "045")
     migrate("upgrade", "head")
     migrate("check")
+
+
+def test_alembic_ignores_only_independently_managed_checkpoint_tables(tmp_path: Path) -> None:
+    """同库检查点表不应生成删除迁移，意外业务表和正常结构漂移仍必须被发现。"""
+    database = tmp_path / "migration-scope.sqlite"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "DB_BACKEND": "sqlite",
+            "SQLITE_DATABASE": str(database),
+        },
+    )
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(*arguments: str) -> subprocess.CompletedProcess:
+        """在全新临时业务库执行真实 Alembic 命令并保留检查退出码。"""
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *arguments],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    upgraded = migrate("upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    with sqlite3.connect(database) as connection:
+        for table in ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes"):
+            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+    clean = migrate("check")
+    assert clean.returncode == 0, clean.stderr
+    assert migrate("downgrade", "054").returncode == 0
+    assert migrate("upgrade", "head").returncode == 0
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE yp_deployment_unexpected (id INTEGER PRIMARY KEY)")
+    drift = migrate("check")
+    assert drift.returncode != 0
+    assert "yp_deployment_unexpected" in drift.stdout + drift.stderr
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0

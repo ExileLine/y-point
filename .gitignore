@@ -257,3 +257,6 @@ __marimo__/
 /web/playwright/.auth/
 /web/.playwright/.auth/
 /docs/screenshots/
+
+# Docker 部署的私有配置、证书与隔离数据
+/.deployment/

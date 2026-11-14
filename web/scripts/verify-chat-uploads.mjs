@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
 const now = '2026-11-05T10:00:00+08:00';
-const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
+const browser = await chromium.launch({ headless: true, args: process.env.WEB_HTTP_COMPAT === "1" ? ["--host-resolver-rules=MAP ypoint-http.test 127.0.0.1", "--no-proxy-server"] : [], ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
 let checks = 0;
 try {
   for (const width of [1280, 390]) {
@@ -49,6 +49,10 @@ try {
       throw new Error(`未定义接口 ${path}`);
     });
     await page.goto(`${base}/agents/11/sessions/review`);
+    if (process.env.WEB_HTTP_COMPAT === "1") {
+      assert.equal(await page.evaluate(() => isSecureContext), false); checks++;
+      assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined"); checks++;
+    }
     await page.getByRole('textbox', { name: '消息内容' }).fill('请审查附件并按模板生成报告');
     assert.equal(await page.getByRole('combobox', { name: '指定报告 Skill' }).count(), 0, '对话不提供报告 Skill 选择，由模型按任务读取 Skill'); checks++;
     const input = page.locator('.chat-attachments input[type=file]');

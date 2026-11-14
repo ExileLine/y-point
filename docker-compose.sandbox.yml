@@ -1,0 +1,20 @@
+# 仅向受信任的 API/worker 开放宿主 Docker；用户脚本容器绝不挂载此 socket。
+# 该接口具有管理宿主 Docker 的权限；公网生产应使用专用执行主机/引擎。
+x-docker-access: &docker-access
+  group_add:
+    - "${YPOINT_DOCKER_GID:-0}"
+  environment:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    YPOINT_SANDBOX_REQUIRED: "1"
+  volumes:
+    - type: bind
+      source: ${YPOINT_DOCKER_SOCKET:-/var/run/docker.sock}
+      target: /var/run/docker.sock
+      bind:
+        create_host_path: false
+
+services:
+  api:
+    <<: *docker-access
+  worker:
+    <<: *docker-access

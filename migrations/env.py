@@ -22,7 +22,15 @@ target_metadata = Base.metadata
 
 
 def include_schema_object(_object, name, type_, _reflected, _compare_to) -> bool:
-    """全文虚拟表辅助结构及手工方言索引不参与 ORM 业务结构差异比较。"""
+    """排除全文辅助结构及 LangGraph 自管表，业务表和字段继续正常比较。"""
+    checkpoint_tables = {
+        "checkpoint_migrations",
+        "checkpoints",
+        "checkpoint_blobs",
+        "checkpoint_writes",
+    }
+    if type_ == "table" and _reflected and _compare_to is None and name in checkpoint_tables:
+        return False
     if type_ == "table" and name.startswith("yp_knowledge_fts"):
         return False
     return not (type_ == "index" and name == "ix_yp_knowledge_native_terms")

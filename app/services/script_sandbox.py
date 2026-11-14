@@ -18,7 +18,9 @@ from app.services.tool_resources import managed_workspace, resource_labels
 from app.core.config import get_config
 
 MAX_OUTPUT_BYTES = 64 * 1024
-SANDBOX_ROOT = Path(__file__).resolve().parents[2] / ".run-private" / "tool-sandbox"
+SANDBOX_ROOT = Path(get_config().SCRIPT_SANDBOX_STORAGE_DIR).expanduser()
+if not SANDBOX_ROOT.is_absolute():
+    SANDBOX_ROOT = Path(__file__).resolve().parents[2] / SANDBOX_ROOT
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ async def run_script(
             "run",
             "--pull=never",
             "--rm",
+            "--log-driver=none",
             "--name",
             container_name,
             *resource_labels(timeout_seconds),

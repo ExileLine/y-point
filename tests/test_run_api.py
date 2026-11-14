@@ -131,7 +131,7 @@ def test_duplicate_submit_recovers_unique_constraint_race(tmp_path: Path, monkey
     asyncio.run(exercise())
 
 
-async def exercise_run_api(database: Path) -> None:
+async def exercise_run_api(database: Path, base_url: str = "http://test") -> None:
     """通过真实路由验证运行创建、隔离、取消和终态回放。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -186,7 +186,7 @@ async def exercise_run_api(database: Path) -> None:
 
     app.dependency_overrides[get_db_session] = test_session
     try:
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url) as client:
 
             async def login(username: str) -> dict[str, str]:
                 """登录指定测试用户并返回 Bearer 请求头。"""
@@ -662,6 +662,7 @@ async def exercise_run_api(database: Path) -> None:
             assert ticket_response.headers["cache-control"] == "no-store"
             cookie_header = ticket_response.headers["set-cookie"]
             assert "HttpOnly" in cookie_header and "SameSite=strict" in cookie_header
+            assert ("; Secure" in cookie_header) == base_url.startswith("https://")
             assert f"Path=/api/v1/runs/{run_id}/stream" in cookie_header
             stream_ticket = ticket_response.cookies[STREAM_COOKIE_NAME]
             cookie_stream = await client.get(
@@ -863,6 +864,14 @@ async def exercise_run_api(database: Path) -> None:
         await engine.dispose()
 
 
-def test_run_api(tmp_path: Path) -> None:
-    """运行公开接口的完整 HTTP 集成场景。"""
-    asyncio.run(exercise_run_api(tmp_path / "run-api.db"))
+@pytest.mark.parametrize(("cookie_secure", "scheme"), [(False, "http"), (True, "https"), (None, "https")])
+def test_run_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cookie_secure: bool | None, scheme: str) -> None:
+    """生产环境分别验证 HTTP、HTTPS 和旧默认值下的登录、票据 Cookie 与 SSE 自动携带。"""
+    configured = get_config().model_copy(
+        update={
+            "ENV": "production",
+            "STREAM_COOKIE_SECURE": cookie_secure,
+        }
+    )
+    monkeypatch.setattr(runs_api, "get_config", lambda: configured)
+    asyncio.run(exercise_run_api(tmp_path / "run-api.db", base_url=f"{scheme}://test"))

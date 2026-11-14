@@ -2,6 +2,7 @@ import { Alert, Button, Checkbox, Spin, Tag, Tooltip, Upload, message } from "an
 import { FilePlus2, Paperclip, RotateCcw, X } from "lucide-react";
 import { uploadChatFile, type UploadedArtifact } from "../api";
 
+import { createClientId } from "../browser-compat";
 import { formatMiB, useRuntimeLimits } from "../runtime-limits";
 
 export type ChatFile = { key: string; file: File; state: "uploading" | "ready" | "failed"; started?: boolean; artifact?: UploadedArtifact; context: boolean; error?: string };
@@ -27,7 +28,7 @@ export default function ChatAttachments({ items, onChange, disabled }: {
         if (!limits) return false;
         if (items.length + batch.indexOf(file) >= limits.max_files) { if (items.length + batch.indexOf(file) === limits.max_files) message.warning(`本轮最多附加 ${limits.max_files} 个文件`); return false; }
         if (file.size > limits.upload_max_bytes) { message.error(`每个文件最多 ${formatMiB(limits.upload_max_bytes)}`); return false; }
-        const item: ChatFile = { key: crypto.randomUUID(), file, state: "uploading", context: true };
+        const item: ChatFile = { key: createClientId(), file, state: "uploading", context: true };
         // 同一批多选使用函数更新核对总数，避免连续选择绕过五个文件上限。
         onChange(current => current.length < limits.max_files ? [...current, item] : current);
         return false;

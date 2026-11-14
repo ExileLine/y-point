@@ -1,0 +1,6 @@
+# 内网 HTTP 模式：直接提供页面与 API，不要求证书。
+server {
+    listen 8080;
+    server_name _;
+    include /opt/y-point/locations.conf;
+}

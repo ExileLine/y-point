@@ -18,6 +18,7 @@ import ReasoningPanel from "./components/ReasoningPanel";
 import RunMetrics from "./components/RunMetrics";
 import SessionMetrics from "./components/SessionMetrics";
 import RunKnowledgeEvidence from "./knowledge/RunKnowledgeEvidence";
+import { createClientId } from "./browser-compat";
 import "./styles/sessions.css";
 import "./styles/chat-activity.css";
 
@@ -531,7 +532,7 @@ export default function Sessions() {
   async function send(draft?: SessionRunDraft) {
     if (!selected || inFlightSubmissions.current.has(selected.id) || (!draft && !canSend)) return;
     const targetSessionId = selected.id;
-    const next = draft || { input_text: composer.trim(), request_key: crypto.randomUUID(), publish_answer_artifact: false, artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []), context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []), model_id: selected.model_id ?? undefined, expected_session_version: selected.version };
+    const next = draft || { input_text: composer.trim(), request_key: createClientId(), publish_answer_artifact: false, artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []), context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []), model_id: selected.model_id ?? undefined, expected_session_version: selected.version };
     if (!next.input_text || (!draft && attachmentPending)) return;
     inFlightSubmissions.current.add(targetSessionId);
     followLatest();

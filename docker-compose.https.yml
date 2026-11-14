@@ -1,0 +1,15 @@
+# 显式开启 HTTPS 时由 deploy.py 加载；基础配置可独立使用 HTTP，不挂载证书。
+services:
+  web:
+    environment:
+      YPOINT_HTTPS_ENABLED: "true"
+      YPOINT_HTTPS_PORT: ${YPOINT_HTTPS_PORT:-18443}
+    ports:
+      - "${YPOINT_BIND_IP:-127.0.0.1}:${YPOINT_HTTPS_PORT:-18443}:8443"
+    volumes:
+      - type: bind
+        source: ${YPOINT_TLS_DIR:?启用 HTTPS 前请先准备证书}
+        target: /run/tls
+        read_only: true
+        bind:
+          create_host_path: false
