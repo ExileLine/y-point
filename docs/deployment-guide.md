@@ -1,6 +1,6 @@
 # Y-Point 部署手册
 
-本文用于从项目源码部署到本机 Docker 或单台 Linux 服务器。先完成基础部署与管理员创建，再在页面配置模型。Dockerfile、Compose、进程、日志与安全边界的设计说明见 [部署架构与配置参考](deployment.md)，逐步学习说明见 [README](../README.md#部署文件与执行过程)。
+本文用于从项目源码部署到本机 Docker 或单台 Linux 服务器。先完成基础部署与管理员创建，再在页面配置模型。Dockerfile、Compose、进程、日志与安全边界的设计说明见 [部署架构与配置参考](deployment.md)，逐步学习说明见 [Docker 部署逐步讲解](deployment-walkthrough.md#部署文件与执行过程)。
 
 ## 1. 准备部署主机
 

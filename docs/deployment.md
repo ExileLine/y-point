@@ -1,6 +1,6 @@
 # Y-Point Docker 部署架构与配置参考
 
-首次部署和一键脚本操作见 **[部署手册](deployment-guide.md)**；本文说明文件职责、配置和设计边界。逐步学习提要见 [README](../README.md#部署文件与执行过程)。
+首次部署和一键脚本操作见 **[部署手册](deployment-guide.md)**；本文说明文件职责、配置和设计边界。逐步学习提要见 [Docker 部署逐步讲解](deployment-walkthrough.md#部署文件与执行过程)。
 
 本方案把前端 Nginx、API、worker、PostgreSQL 拆成独立服务，用同一套 Compose 在单机交付。前后端独立构建与升级，首次部署可以放在同一台机器；不把 Vite、API、worker 塞进一个容器。默认 PostgreSQL 16 同时保存业务表和独立的 LangGraph 检查点表，原始文件及工具目录单独持久化。当前向量后端为 exact，不要求安装 pgvector。Redis、Celery 和 supervisor 均不作为这套运行链的依赖。
 
