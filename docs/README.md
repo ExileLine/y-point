@@ -8,7 +8,7 @@
 
 | 你想做什么 | 从哪里开始 |
 | --- | --- |
-| 先运行完整服务 | [项目快速开始](../README.md#快速开始) |
+| 运行服务及脚本工具沙箱 | [项目快速开始](../README.md#快速开始)，首次部署与后续更新均携带 `--sandbox`。 |
 | 部署到内网服务器，设置端口或 HTTPS | [部署手册](deployment-guide.md) |
 | 修改代码并运行开发服务 | [本地开发](local-development.md) |
 | 配置管理员、供应商与模型 | [认证、授权与模型配置](authentication-and-models.md) |

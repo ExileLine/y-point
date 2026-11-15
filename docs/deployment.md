@@ -26,6 +26,8 @@
 
 ## 本机启动
 
+完整功能的推荐命令见[项目快速开始](../README.md#快速开始)：首次使用 `python3 scripts/deploy_all.py --sandbox --create-admin admin`，后续更新使用 `python3 scripts/deploy_all.py --sandbox`。本节以下手动示例仅启动基础服务，不包含 Python/Bash Tool 与 Skill 受管脚本执行；需要脚本功能时，按[启用本机真实脚本沙箱](#启用本机真实脚本沙箱)构建镜像，并在后续 Compose 命令中始终携带 `--sandbox`。
+
 需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。本机已验证 Engine 29.8.0 / Compose 5.5.1；镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Redis 512 MiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
 
 在项目根目录：
@@ -87,6 +89,8 @@ Linux socket 的 GID 与运行用户不同时，初始化可传 `--docker-gid <g
 用户脚本容器沿用禁网、只读根、无 capabilities、非 root、资源上限与超时，不挂载 socket。脚本、依赖准备及受信任下载代理容器显式使用 `--log-driver=none`；有界输出仍通过 attach 管道交给既有业务审计，避免临时容器另写无界 daemon 日志。没有启用覆盖配置时，聊天、知识库等不依赖 Docker 的能力仍可使用；脚本试运行/依赖准备/正式执行不可用，资源核对可能报告 Docker 不可达。
 
 ## 环境与配置
+
+以下环境、协议和 Redis 专题示例沿用基础配置，命令本身不启用脚本沙箱。已使用脚本功能的部署应在每条 Compose 命令的 `--` 分隔符前继续带 `--sandbox`；首次启用还需先构建沙箱镜像，完整操作见[部署手册](deployment-guide.md)。
 
 每个环境独立生成 `.deployment/<environment>/compose.env`、`application.env`、`database.env`、`redis.env` 和 `data/`，仅 HTTPS 创建 `tls/`，Compose 项目名、PostgreSQL 卷和 Redis 卷也随之隔离。每份环境使用独立的 JWT、供应商 Fernet 加密密钥、数据库密码和 Redis 密码。所有私有文件默认 0600、目录 0700，并通过运行 UID/GID 访问。
 

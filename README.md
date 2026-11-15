@@ -25,15 +25,17 @@ Y-Point 提供 React 工作台和 FastAPI 服务端。你可以接入模型供�
 
 ## 快速开始
 
-推荐先使用 Docker 在本机运行完整服务。需要已启动的 Docker Engine/Desktop、Docker Compose 插件 v2.24+ 和 Python 3.12+；无需在宿主机安装项目的 Node/Python 依赖。
+推荐先使用 Docker 在自己控制的本机运行，以下命令包含 Python/Bash Tool 与 Skill 受管脚本所需的沙箱。需要已启动的 Docker Engine/Desktop、Docker Compose 插件 v2.24+ 和 Python 3.12+；无需在宿主机安装项目的 Node/Python 依赖。
 
 ```bash
 git clone https://github.com/ExileLine/y-point.git
 cd y-point
 
-# 首次部署：构建镜像、启动服务，并交互创建首位管理员。
-python3 scripts/deploy_all.py --create-admin admin
+# 首次部署：构建应用和脚本沙箱镜像、启动服务，并交互创建首位管理员。
+python3 scripts/deploy_all.py --sandbox --create-admin admin
 ```
+
+**`--sandbox` 是脚本工具执行的必要参数**：它为 API/worker 接入宿主 Docker，用于脚本依赖准备、试运行及正式执行；只部署聊天、知识库和内置文件生成时可省略，Python/Bash Tool 与 Skill 受管脚本将不可用。此方式适用于受信任的本机或单机环境，正式多租户隔离要求见[沙箱部署说明](docs/deployment-guide.md#可选本机脚本沙箱)。
 
 启动后打开 **http://127.0.0.1:18080**，使用刚创建的管理员账号登录。密码在终端中输入，不作为命令参数传递。新部署默认 HTTP，不需要证书；已有部署保留原协议和配置。
 
@@ -43,7 +45,7 @@ python3 scripts/deploy_all.py --create-admin admin
 2. 创建 Agent，选择可用模型；按需关联知识库、Skill 或 Tool。
 3. 进入会话，发送消息或上传资料，查看回答、引用和生成文件。
 
-后续更新可重新运行 `python3 scripts/deploy_all.py`，已有管理员无需重复创建。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
+后续更新运行 `python3 scripts/deploy_all.py --sandbox`，已有管理员无需重复创建。**沙箱开关不会自动记住，后续部署继续带 `--sandbox`；遗漏会按基础配置重建服务并移除脚本执行所需的 Docker 接入。** 如果之前已省略它部署，现在重新运行带 `--sandbox` 的命令即可补开，无需再次创建管理员；请在无运行中任务时更新。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
 
 | 使用场景 | 入口 |
 | --- | --- |

@@ -11,21 +11,21 @@
 在项目根目录执行，一键完成 Docker 检查、初始化、配置校验、镜像构建、启动和健康等待：
 
 ```bash
-# 本机模拟生产，新配置默认 HTTP：http://127.0.0.1:18080。
-python3 scripts/deploy_all.py
+# 首次本机部署，包含脚本沙箱并创建管理员；默认 HTTP：http://127.0.0.1:18080。
+python3 scripts/deploy_all.py --sandbox --create-admin admin
 
 # 首次内网服务器部署；按实际访问范围选择监听 IP，密码在终端输入。
-python3 scripts/deploy_all.py --environment production --http \
+python3 scripts/deploy_all.py --environment production --sandbox --http \
   --bind-ip 0.0.0.0 --http-port 18080 --create-admin admin
 ```
 
-服务器访问 `http://服务器内网IP:18080`。新部署无需域名和证书；HTTPS 按需用 `--https` 开启，staging/production 首次需成对提供证书/私钥。已有配置默认保留原协议和密钥，重复部署不重复创建管理员；本机脚本沙箱通过 `--sandbox` 显式启用。所有参数见 `python3 scripts/deploy_all.py --help`。
+服务器访问 `http://服务器内网IP:18080`。新部署无需域名和证书；HTTPS 按需用 `--https` 开启，staging/production 首次需成对提供证书/私钥。已有配置默认保留原协议和密钥，重复部署不重复创建管理员；示例已携带脚本执行必需的 `--sandbox`；后续更新继续携带，无需再次创建管理员。只运行基础功能才省略该参数，Python/Bash Tool 与 Skill 受管脚本将不可用；Docker 接入权限与隔离边界见[部署手册](deployment-guide.md#可选本机脚本沙箱)。所有参数见 `python3 scripts/deploy_all.py --help`。
 
 ### 部署文件与执行过程
 
 以下按构建到运行的顺序解释文件职责。操作时可对照 [手动部署步骤](deployment-guide.md#3-手动部署理解一键脚本执行的步骤)。
 
-1. **先构建后端镜像：根 `Dockerfile`。** 多阶段构建先用 uv 按 `uv.lock` 安装依赖，再把依赖和代码复制到运行镜像。`FROM` 选择基础镜像，`WORKDIR` 设置容器内目录，`COPY` 复制构建上下文里的文件，`RUN` 在构建时执行命令；`USER` 指定运行身份，`ENTRYPOINT` 指定启动入口，`CMD` 提供默认服务命令。API 和 worker 共用一个镜像，通过不同启动命令区分职责。
+1. **先构建后端镜像：根 `Dockerfile`。** 多阶段构建先用 uv 按 `uv.lock` 安装依赖，再把依赖和代码复制到运行镜像。`FROM` 选择基础镜像，`WORKDIR` 设置容器内目录，`COPY` 复制构建上下文里的文件，`RUN` 在构建时执行命令；`USER` 指定运行身份，`ENTRYPOINT` 指定启动入口，`CMD` 提供默认服务命令。API 和 worker 共用一个镜像，通过不同启动命令区分职责。脚本执行另用 `Dockerfile.sandbox` 构建临时执行镜像；一键脚本在带 `--sandbox` 时自动构建，手动流程必须额外构建该镜像。
 2. **理解后端启动：`deploy/entrypoint.sh`。** 容器启动时先运行 `preflight.py` 核对密钥、目录权限及启用时的沙箱条件，再通过 `exec "$@"` 运行服务，使退出信号交给主进程。一次性数据库迁移由独立 migrate 服务完成，不塞进每个 API 启动过程。
 3. **再构建前端镜像：`web/Dockerfile`。** Node 阶段执行 TypeScript/Vite 生产构建，Nginx 阶段只带静态页面和网关配置；运行时不启动 Vite。前后端默认在同一主机的不同容器中，镜像可独立构建和升级；跨主机 upstream、共享文件与可信代理需要额外配置。
 4. **理解 Nginx 启动：`deploy/nginx/start.sh`。** 根据保存的协议选择 HTTP 或 HTTPS 模板，生成配置后前台启动 Nginx。`locations.conf` 共用页面回退、缓存、API、SSE、上传限制及请求 ID 规则。HTTP 不读取证书；只有可选 HTTPS 配置才挂载证书并启用 HTTP 跳转。
