@@ -32,7 +32,7 @@ def test_deployment_initialization_preserves_secrets_and_does_not_repair_partial
     directory = tmp_path / "private"
     first = initialize(directory)
     assert first.returncode == 0, first.stderr
-    files = [directory / name for name in ("application.env", "database.env", "compose.env")]
+    files = [directory / name for name in ("application.env", "database.env", "compose.env", "redis.env")]
     assert not (directory / "tls").exists()
     original = [path.read_bytes() for path in files]
     for path in files:
@@ -98,6 +98,18 @@ def test_compose_sandbox_is_explicit_and_keeps_server_configuration(tmp_path: Pa
         assert {port["target"] for port in web["ports"]} == ({8080, 8443} if https else {8080})
         assert any(volume["target"] == "/run/tls" for volume in web.get("volumes", [])) == https
         assert "ports" not in config["services"]["db"]
+        redis = config["services"]["redis"]
+        assert "ports" not in redis and redis["user"] == "redis"
+        assert redis["read_only"] and redis["logging"]["driver"] == "local"
+        assert redis["environment"]["REDISCLI_AUTH"] == config["services"]["api"]["environment"]["REDIS_PWD"]
+        assert "SECRET_KEY" not in redis["environment"] and "POSTGRES_PASSWORD" not in redis["environment"]
+        assert "REDISCLI_AUTH" not in " ".join(redis["command"])
+        assert "redis-cli --raw ping" in redis["healthcheck"]["test"][-1]
+        assert any(volume["type"] == "volume" and volume["target"] == "/data" for volume in redis["volumes"])
+        for service in ("api", "worker"):
+            assert config["services"][service]["environment"]["REDIS_ENABLED"] == "True"
+            assert config["services"][service]["environment"]["REDIS_HOST"] == "redis"
+            assert config["services"][service]["depends_on"]["redis"]["condition"] == "service_healthy"
         assert config["services"]["api"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
 
 
@@ -322,3 +334,140 @@ def test_worker_probe_rejects_own_stale_heartbeat_even_with_another_live_worker(
     marker.write_text("other-worker", encoding="utf-8")
     live = subprocess.run(command, env=environment, capture_output=True, timeout=15)
     assert live.returncode == 0
+
+
+@pytest.mark.parametrize("environment", ["local", "staging", "production"])
+def test_redis_password_is_independent_private_and_stable(tmp_path: Path, environment: str) -> None:
+    """各环境启用托管 Redis，密码独立且重复初始化不会轮换或泄露。"""
+    from scripts.deploy import read_private_values
+
+    directory = tmp_path / environment
+    first = initialize(directory, "--environment", environment)
+    assert first.returncode == 0, first.stderr
+    application = read_private_values(directory / "application.env")
+    redis = read_private_values(directory / "redis.env")
+    assert application["REDIS_ENABLED"] == "True" and application["REDIS_HOST"] == "redis"
+    assert application["REDIS_PORT"] == "6379" and application["REDIS_DB"] == "0"
+    assert application["REDIS_PWD"] == redis["REDISCLI_AUTH"]
+    assert application["REDIS_PWD"] != application["POSTGRESQL_PASSWORD"]
+    assert application["REDIS_PWD"] not in first.stdout + first.stderr
+    assert (directory / "redis.env").stat().st_mode & 0o077 == 0
+    before = {path.name: path.read_bytes() for path in directory.glob("*.env")}
+    second = initialize(directory, "--environment", environment)
+    assert second.returncode == 0, second.stderr
+    assert before == {path.name: path.read_bytes() for path in directory.glob("*.env")}
+
+
+def test_legacy_deployment_adds_redis_without_rotating_business_credentials(tmp_path: Path) -> None:
+    """旧三文件部署补齐 Redis，已有数据库、JWT 和供应商密钥及镜像配置均保留。"""
+    from scripts.deploy import read_private_values
+
+    directory = tmp_path / "legacy-redis"
+    assert initialize(directory).returncode == 0
+    compose_path = directory / "compose.env"
+    compose_path.write_text("\n".join(line for line in compose_path.read_text().splitlines() if not line.startswith("YPOINT_REDIS_")) + "\n")
+    application_path = directory / "application.env"
+    application_path.write_text(
+        "\n".join(line for line in application_path.read_text().splitlines() if not line.startswith("REDIS_")) + "\nREDIS_ENABLED=False\n",
+    )
+    (directory / "redis.env").unlink()
+    before = read_private_values(application_path)
+    database = (directory / "database.env").read_bytes()
+    result = initialize(directory)
+    assert result.returncode == 0, result.stderr
+    after = read_private_values(application_path)
+    assert after["REDIS_ENABLED"] == "True" and after["REDIS_HOST"] == "redis"
+    assert {key: value for key, value in after.items() if not key.startswith("REDIS_")} == {
+        key: value for key, value in before.items() if not key.startswith("REDIS_")
+    }
+    assert (directory / "database.env").read_bytes() == database
+    assert after["REDIS_PWD"] == read_private_values(directory / "redis.env")["REDISCLI_AUTH"]
+    assert read_private_values(compose_path)["YPOINT_REDIS_ENV"] == str(directory / "redis.env")
+
+
+@pytest.mark.parametrize("damage", ["missing", "empty", "mismatch"])
+def test_damaged_managed_redis_configuration_is_not_regenerated(tmp_path: Path, damage: str) -> None:
+    """托管 Redis 凭据缺失、为空或不匹配时拒绝修改配置，防止隐式密码轮换。"""
+    directory = tmp_path / "damaged-redis"
+    assert initialize(directory).returncode == 0
+    path = directory / "redis.env"
+    if damage == "missing":
+        path.unlink()
+    elif damage == "empty":
+        path.write_text("REDISCLI_AUTH=\n")
+    else:
+        path.write_text("REDISCLI_AUTH=different-password\n")
+    before = {file.name: file.read_bytes() for file in directory.glob("*.env")}
+    result = initialize(directory)
+    assert result.returncode != 0
+    assert before == {file.name: file.read_bytes() for file in directory.glob("*.env")}
+    assert "Redis" in result.stderr
+
+
+def test_legacy_external_redis_configuration_is_preserved(tmp_path: Path) -> None:
+    """旧部署已指定外部 Redis 时，仅补容器私有配置，保留原连接参数。"""
+    from scripts.deploy import read_private_values, update_private_values
+
+    directory = tmp_path / "external-redis"
+    assert initialize(directory).returncode == 0
+    compose = directory / "compose.env"
+    compose.write_text("\n".join(line for line in compose.read_text().splitlines() if not line.startswith("YPOINT_REDIS_")) + "\n")
+    (directory / "redis.env").unlink()
+    update_private_values(
+        directory / "application.env",
+        {
+            "REDIS_HOST": "redis.internal",
+            "REDIS_PWD": "existing-external-password",
+            "REDIS_PORT": "6380",
+            "REDIS_DB": "3",
+        },
+    )
+    before = (directory / "application.env").read_bytes()
+    result = initialize(directory)
+    assert result.returncode == 0, result.stderr
+    assert (directory / "application.env").read_bytes() == before
+    assert read_private_values(directory / "redis.env")["REDISCLI_AUTH"] != "existing-external-password"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="需要 Docker Compose")
+@pytest.mark.parametrize("environment", ["local", "staging", "production"])
+def test_redis_resource_defaults_reserve_memory_for_persistence(tmp_path: Path, environment: str) -> None:
+    """Compose 环境覆盖同时调整容器上限与数据内存，为 AOF 和客户端缓冲预留空间。"""
+    directory = tmp_path / environment
+    assert initialize(directory, "--environment", environment).returncode == 0
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/deploy.py"),
+            "compose",
+            "--environment",
+            environment,
+            "--directory",
+            str(directory),
+            "--",
+            "config",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    redis = json.loads(result.stdout)["services"]["redis"]
+    production = environment == "production"
+    assert int(redis["mem_limit"]) == (1024 if production else 512) * 1024 * 1024
+    assert redis["environment"]["REDIS_MAXMEMORY"] == ("512mb" if production else "256mb")
+
+
+def test_orphaned_redis_credentials_do_not_trigger_new_database_keys(tmp_path: Path) -> None:
+    """只剩 Redis 私有文件时拒绝初始化，避免部分恢复被误认为全新部署。"""
+    directory = tmp_path / "orphaned"
+    directory.mkdir()
+    path = directory / "redis.env"
+    path.write_text("REDISCLI_AUTH=preserved-password\n")
+    result = initialize(directory)
+    assert result.returncode != 0
+    assert path.read_text() == "REDISCLI_AUTH=preserved-password\n"
+    assert not (directory / "application.env").exists()
+    assert not (directory / "database.env").exists()

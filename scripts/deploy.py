@@ -77,8 +77,30 @@ def update_private_values(path: Path, updates: dict[str, str]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def redis_configuration(directory: Path, previous: dict[str, str], application: dict[str, str]) -> tuple[Path, str]:
+    """复用 Redis 凭据；允许旧三文件部署升级，已托管的凭据丢失时拒绝轮换。"""
+    path = Path(previous.get("YPOINT_REDIS_ENV", str(directory / "redis.env")))
+    if not previous and path.exists():
+        raise SystemExit("部署配置不完整：仅存在 Redis 私有配置，请恢复完整配置或使用新的独立目录")
+    if "YPOINT_REDIS_ENV" in previous and not path.is_file():
+        raise SystemExit("Redis 私有配置缺失：请恢复 redis.env，不能自动轮换现有 Redis 密码")
+    if path.exists():
+        password = read_private_values(path).get("REDISCLI_AUTH", "")
+        if not password:
+            raise SystemExit("Redis 私有配置缺少 REDISCLI_AUTH，请恢复完整凭据")
+    else:
+        password = application.get("REDIS_PWD", "") if application.get("REDIS_HOST") == "redis" else ""
+        password = password or secrets.token_urlsafe(36)
+    # 生成的口令使用 URL 安全字符，兼容 dotenv、Redis 配置及现有 Redis URL 拼接。
+    if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in password):
+        raise SystemExit("托管 Redis 密码仅支持字母、数字、下划线和短横线，请恢复初始化生成的密码")
+    if application.get("REDIS_HOST") == "redis" and application.get("REDIS_PWD") != password:
+        raise SystemExit("application.env 与 redis.env 的 Redis 密码不一致，请恢复同一套配置")
+    return path, password
+
+
 def initialize(args: argparse.Namespace, directory: Path) -> None:
-    """生成部署配置；显式切换 HTTP/HTTPS 时仅更新协议和 Cookie，不轮换业务凭据。"""
+    """生成部署配置并升级旧版 Redis 配置；协议切换保留现有业务凭据。"""
     if any(char in str(directory) for char in ("\n", "\r", '"', "'", "$")):
         raise SystemExit("部署目录不能包含换行、引号或 $ 字符")
     data = directory / "data"
@@ -112,6 +134,8 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             raise SystemExit("部署 TLS 证书缺失，请恢复证书、提供新证书或使用 init --http 切换协议")
         if args.environment != "local":
             raise SystemExit("staging/production 启用 HTTPS 时必须传入 --tls-cert 和 --tls-key 正式证书路径")
+    application = read_private_values(files[1]) if all(existing) else {}
+    redis_path, redis_password = redis_configuration(directory, previous, application)
     uid = args.uid if args.uid is not None else int(previous.get("YPOINT_UID", os.getuid() or 10001))
     gid = args.gid if args.gid is not None else int(previous.get("YPOINT_GID", os.getgid() if os.getuid() else 10001))
     directories = [directory, data, data / "runtime", data / "artifacts", data / "tool-environments", data / "tool-sandbox"]
@@ -155,17 +179,31 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             path.chmod(0o600)
             if os.getuid() == 0:
                 os.chown(path, uid, gid)
+    if not redis_path.exists():
+        private_file(redis_path, f"REDISCLI_AUTH={redis_password}\n", uid, gid)
     if all(existing):
         compose_updates = {
             "YPOINT_HTTPS_ENABLED": f"'{str(https).lower()}'",
+            "YPOINT_REDIS_ENV": f"'{redis_path}'",
         }
+        if "YPOINT_REDIS_ENV" not in previous and application.get("REDIS_HOST", "redis") == "redis":
+            update_private_values(
+                files[1],
+                {
+                    "REDIS_ENABLED": "True",
+                    "REDIS_HOST": "redis",
+                    "REDIS_PORT": "6379",
+                    "REDIS_PWD": redis_password,
+                    "REDIS_DB": application.get("REDIS_DB", "0"),
+                },
+            )
         for key, value in (("YPOINT_BIND_IP", args.bind_ip), ("YPOINT_HTTP_PORT", args.http_port), ("YPOINT_HTTPS_PORT", args.https_port)):
             if value is not None:
                 compose_updates[key] = f"'{value}'"
         update_private_values(files[0], compose_updates)
         if args.https is not None or certificates or "STREAM_COOKIE_SECURE" not in read_private_values(files[1]):
             update_private_values(files[1], {"STREAM_COOKIE_SECURE": str(https)})
-        print("保留现有数据库密码、JWT 密钥和供应商加密密钥；同步协议与 SSE Cookie 配置。")
+        print("保留现有数据库密码、JWT 密钥和供应商加密密钥；补齐 Redis 部署配置，同步协议与 SSE Cookie 配置。")
     else:
         password = secrets.token_urlsafe(36)
         values = {
@@ -173,6 +211,7 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             "SECRET_KEY": secrets.token_urlsafe(48),
             "CREDENTIAL_ENCRYPTION_KEY": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
             "DB_PASSWORD": password,
+            "REDIS_PASSWORD": redis_password,
             "DATA_DIR": str(data),
             "STREAM_COOKIE_SECURE": str(https),
         }
@@ -187,6 +226,7 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             "YPOINT_GID": str(gid),
             "YPOINT_APP_ENV": str(directory / "application.env"),
             "YPOINT_DB_ENV": str(directory / "database.env"),
+            "YPOINT_REDIS_ENV": str(redis_path),
             "YPOINT_DATA_DIR": str(data),
             "YPOINT_TLS_DIR": str(tls),
             "YPOINT_BIND_IP": str(args.bind_ip or "127.0.0.1"),
@@ -195,6 +235,7 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             "YPOINT_HTTPS_ENABLED": str(https).lower(),
             "YPOINT_SERVER_IMAGE": f"y-point-server:{args.environment}",
             "YPOINT_WEB_IMAGE": f"y-point-web:{args.environment}",
+            "YPOINT_REDIS_IMAGE": "redis:7.4-alpine",
             "YPOINT_DOCKER_SOCKET": str(socket),
             "YPOINT_DOCKER_GID": str(args.docker_gid if args.docker_gid is not None else (socket.stat().st_gid if socket.exists() else 0)),
             "YPOINT_LOG_MAX_SIZE": "20m",

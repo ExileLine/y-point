@@ -10,3 +10,7 @@ services:
   db:
     mem_limit: ${YPOINT_DB_MEMORY:-2g}
     cpus: ${YPOINT_DB_CPUS:-2.0}
+  redis:
+    mem_limit: ${YPOINT_REDIS_MEMORY:-1g}
+    environment:
+      REDIS_MAXMEMORY: ${YPOINT_REDIS_MAXMEMORY:-512mb}

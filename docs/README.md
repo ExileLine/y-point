@@ -51,7 +51,7 @@
 
 以下文档记录特定日期、环境和测试边界。当前操作以部署手册和专题文档为准；历史通过结果不自动代表其他平台或正式环境已验收。
 
-- 部署：[方案资料核实](deployment-research.md)、[2026-11-13 本机部署验证](deployment-validation-20261113.md)、[2026-11-14 HTTP / HTTPS 验证](deployment-http-20261114.md)。
+- 部署：[方案资料核实](deployment-research.md)、[2026-11-13 本机部署验证](deployment-validation-20261113.md)、[2026-11-14 HTTP / HTTPS 验证](deployment-http-20261114.md)、[2026-11-15 Redis 部署验证](deployment-redis-20261115.md)。
 - 知识库：[PDF 第二阶段验证](m64-phase2-acceptance-20261113.md)、[多格式第三阶段记录](m64-phase3-implementation-20261113.md)、[文档删除与重建分离](m64-deletion-fix-20261113.md)。
 
 ## 维护约定

@@ -30,7 +30,7 @@ python3 scripts/deploy_all.py
 
 首次运行默认部署 local 环境，HTTP 地址为 `http://127.0.0.1:18080`。local 是部署配置的名字，应用仍使用关闭 DEBUG 的 production 配置。
 
-脚本依次检查 Docker/Compose、初始化配置、校验 Compose、构建镜像、启动服务、等待健康检查并显示状态和访问地址。不传协议参数时，新配置默认 HTTP，已有配置保留原来的 HTTP/HTTPS。
+脚本依次检查 Docker/Compose、初始化配置、校验 Compose、构建镜像、启动 PostgreSQL、Redis、迁移、API、worker 和 Web，等待健康检查并显示状态和访问地址。不传协议参数时，新配置默认 HTTP，已有配置保留原来的 HTTP/HTTPS。
 
 首次部署也可以同时创建管理员：
 
@@ -114,9 +114,9 @@ python3 scripts/deploy.py init --environment production --http \
   --bind-ip 0.0.0.0 --http-port 18080
 ```
 
-生成 `.deployment/production/compose.env`、`application.env`、`database.env` 以及 `data/`。默认 HTTP 不创建 `tls/`；HTTPS 才准备证书。初始化不启动容器，不导入开发机数据，不创建账号。
+生成 `.deployment/production/compose.env`、`application.env`、`database.env`、`redis.env` 以及 `data/`。默认 HTTP 不创建 `tls/`；HTTPS 才准备证书。初始化不启动容器，不导入开发机数据，不创建账号。
 
-重复执行保留数据库密码、JWT 密钥、供应商凭据加密密钥、已有配置和数据。协议、监听地址和端口只在显式传参时调整；缺损配置必须恢复原配置，不自动生成一套新密钥。
+重复执行保留数据库与 Redis 密码、JWT 密钥、供应商凭据加密密钥、已有配置和数据。协议、监听地址和端口只在显式传参时调整；缺损配置必须恢复原配置，不自动生成一套新密钥。
 
 ### 第二步：校验 Compose
 
@@ -141,7 +141,7 @@ python3 scripts/deploy.py compose --environment production -- up -d --wait --wai
 python3 scripts/deploy.py compose --environment production -- ps
 ```
 
-数据库健康后执行一次性 Alembic 迁移；迁移成功后启动 API 和 worker；API 健康后启动 Web。四个常驻服务应为 healthy，migrate 正常退出为 0，不需要持续运行。
+数据库健康后执行一次性 Alembic 迁移；迁移成功且 Redis 认证健康检查通过后启动 API 和 worker；API 健康后启动 Web。五个常驻服务应为 healthy，migrate 正常退出为 0，不需要持续运行。
 
 ### 第五步：创建首位管理员
 
@@ -165,7 +165,7 @@ python3 scripts/deploy.py compose --environment production -- exec api python -m
 | staging | `.deployment/staging` | `y-point-staging` | `y-point-server:staging`、`y-point-web:staging` |
 | production | `.deployment/production` | `y-point-production` | `y-point-server:production`、`y-point-web:production` |
 
-默认项目名也决定数据库卷名；自定义环境变量 `COMPOSE_PROJECT_NAME` 会覆盖项目名。不要给同一主机上的不同部署使用相同项目名。不同配置目录本身不会生成新的项目名；同一环境多实例需要显式管理项目名和端口。
+默认项目名也决定 PostgreSQL 与 Redis 卷名；自定义环境变量 `COMPOSE_PROJECT_NAME` 会覆盖项目名。不要给同一主机上的不同部署使用相同项目名。不同配置目录本身不会生成新的项目名；同一环境多实例需要显式管理项目名和端口。
 
 - `compose.env`：镜像名、监听地址/端口、协议、挂载路径、UID/GID、CPU/内存及日志轮转参数。
 - `application.env`：应用运行配置、JWT/供应商密钥、数据库连接、模型预算、文件和脚本目录等。
@@ -207,12 +207,27 @@ python3 scripts/deploy_all.py --environment production --http
 
 如果 HTTPS 由外层网关终止、项目内部用 HTTP，可在 `application.env` 手动设置 `STREAM_COOKIE_SECURE=True` 并重建服务；后续不带 `--http`/`--https` 的初始化会保留这个值。显式切换协议会重新配套设置 Cookie。切换后若浏览器仍保留旧 Secure 票据，清理站点 Cookie 后重新登录。
 
+## Redis 配置与旧部署升级
+
+默认部署包含带独立随机密码的 Redis，API/worker 等待其健康后启动。Redis 不发布宿主端口，应用通过内部地址 `redis:6379` 访问。首次部署无需额外参数；已有部署更新代码后，在维护窗口执行：
+
+```bash
+# 会更新部署容器；本机环境省略 --environment production。
+python3 scripts/deploy_all.py --environment production
+python3 scripts/deploy.py compose --environment production -- exec -T redis redis-cli ping
+```
+
+返回 `PONG` 表示认证连接成功。一键脚本会为旧三文件配置补齐 `redis.env` 和连接参数，保留数据库密码、业务密钥和协议。已有沙箱部署继续添加 `--sandbox`。已托管 Redis 配置损坏时应从备份恢复，不要删除凭据重新生成。
+
+内存/CPU、AOF、日志和备份说明见 [Redis 配置参考](deployment.md#redis-连接持久化与容量)。应用与 Redis 密码分别位于 `application.env`、`redis.env`，两者必须一致，不能提交到 Git；健康检查自动从环境读取密码，日常无需手动复制。
+
 ## 6. 数据位置与日常运维
 
-数据库和检查点保存在 PostgreSQL 命名卷；上传文件、依赖及运行文件在本环境 `data/` 下。宿主机通过 Docker 查询卷路径：
+数据库和检查点保存在 PostgreSQL 命名卷，Redis AOF 保存在独立 `redis-data` 命名卷；上传文件、依赖及运行文件在本环境 `data/` 下。宿主机通过 Docker 查询卷路径：
 
 ```bash
 docker volume inspect y-point-production_postgres-data --format '{{.Mountpoint}}'
+docker volume inspect y-point-production_redis-data --format '{{.Mountpoint}}'
 ```
 
 普通 Linux rootful Docker 的常见路径是 `/var/lib/docker/volumes/y-point-production_postgres-data/_data`；自定义 Docker data-root 或 rootless 模式会不同，以 inspect 为准。Docker Desktop 的路径在 Linux VM 内，不等于 macOS 同路径。通过数据库工具备份，不直接编辑运行中的 PostgreSQL 数据文件。
@@ -221,7 +236,7 @@ docker volume inspect y-point-production_postgres-data --format '{{.Mountpoint}}
 
 ```bash
 python3 scripts/deploy.py compose --environment production -- ps
-python3 scripts/deploy.py compose --environment production -- logs --since 15m --timestamps api worker web
+python3 scripts/deploy.py compose --environment production -- logs --since 15m --timestamps api worker web redis
 python3 scripts/deploy.py compose --environment production -- logs --follow --tail 100 worker
 df -h .deployment/production/data
 du -sh .deployment/production/data
@@ -236,11 +251,11 @@ Nginx 请求 ID 对应 API 的 `rid`，Run ID 用于追踪后台执行。业务�
 python3 scripts/deploy.py compose --environment production -- down
 ```
 
-普通停止不要加 `-v`：`down -v` 会删除数据库卷。删除私有部署目录还会丢失文件和加密密钥。
+普通停止不要加 `-v`：`down -v` 会删除 PostgreSQL 与 Redis 卷。删除私有部署目录还会丢失文件和加密密钥。
 
 ## 7. 更新、备份与排查
 
-更新前备份数据库、检查点、`data/`、三份私有配置及启用 HTTPS 时的证书，并安排业务维护窗口。数据库和文件需要取一致的备份点，完整要求见 [备份与恢复](deployment.md#迁移升级备份与恢复)。
+更新前备份数据库、检查点、Redis 数据卷、`data/`、四份私有配置及启用 HTTPS 时的证书，并安排业务维护窗口。数据库和文件需要取一致的备份点，完整要求见 [备份与恢复](deployment.md#迁移升级备份与恢复)。
 
 保留私有目录更新代码后，重新执行原来的一键部署命令；已有管理员不再带 `--create-admin`，沙箱部署继续带 `--sandbox`。脚本会复用配置，构建镜像并执行所需迁移。回退镜像不会自动回退数据库结构，版本回退前必须核对迁移兼容性。
 
@@ -255,6 +270,7 @@ python3 scripts/deploy.py compose --environment production -- down
 | HTTPS 证书报错 | 核对证书和私钥配对、有效期、域名；local 自签证书需浏览器信任。 |
 | 脚本 Tool 不可用 | 核对是否显式启用 `--sandbox`、沙箱镜像和 socket 权限；Linux GID 处理见架构参考。 |
 | 日志显示迁移或数据库密码错误 | 恢复与数据库卷匹配的配置；不要删除配置重新 init 生成不同密码。 |
+| Redis 不健康或提示 NOAUTH / WRONGPASS | 先重新执行 init 补齐旧配置，再核对 application.env 与 redis.env 是否来自同一套备份；Redis 密码不通过命令行传入。 |
 | 自动化终端不能创建管理员 | 部署时省略 `--create-admin`，完成后通过 SSH 交互终端单独创建。 |
 
 部署就绪只说明服务启动和探针通过；实际供应商连接、完整模型会话、目标容量与备份恢复需按实际环境验证。本机的可选只读核对脚本为 `scripts/verify_deployment.py`，使用前核对其 localhost/本机证书假设，不把本机探针直接视为任意域名的生产验收。

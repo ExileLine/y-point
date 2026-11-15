@@ -94,13 +94,13 @@ def main(argv: list[str] | None = None) -> None:
                 run(["docker", "build", "-f", str(ROOT / "Dockerfile.sandbox"), "-t", image, str(ROOT)])
         if not args.skip_build:
             run([*compose, "build"])
-        print("[4/5] 启动数据库、迁移、API、worker 和 Web，等待健康检查", flush=True)
+        print("[4/5] 启动数据库、Redis、迁移、API、worker 和 Web，等待健康检查", flush=True)
         run([*compose, "up", "-d", "--no-build", "--wait", "--wait-timeout", str(args.wait_timeout)])
         print("[5/5] 查看服务状态", flush=True)
         run([*compose, "ps"])
     except subprocess.CalledProcessError as error:
         print(f"部署中止：命令退出码 {error.returncode}；已保留配置、数据和容器，便于修复后重新执行。", file=sys.stderr)
-        print(f"查看日志：{shlex.join([*compose, 'logs', '--tail', '100', 'api', 'worker', 'web', 'db'])}", file=sys.stderr)
+        print(f"查看日志：{shlex.join([*compose, 'logs', '--tail', '100', 'api', 'worker', 'web', 'db', 'redis'])}", file=sys.stderr)
         raise SystemExit(error.returncode) from error
 
     web = config["services"]["web"]

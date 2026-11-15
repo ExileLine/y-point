@@ -86,7 +86,7 @@ def main() -> None:
     assert b'<div id="root">' not in body
     check("/assets/not-a-real-asset.js", 404)
     print(f"{'HTTPS 与 HTTP 跳转' if https_enabled else 'HTTP（无证书）'}、SPA、API、worker 和错误路由通过。")
-    for service in ("api", "worker", "web", "db"):
+    for service in ("api", "worker", "web", "db", "redis"):
         identifier = compose("ps", "-q", service).strip()
         result = subprocess.run(
             ["docker", "inspect", "--format", "{{json .HostConfig.LogConfig}}", identifier],
@@ -99,6 +99,23 @@ def main() -> None:
         assert logging["Type"] == "local"
         assert logging["Config"]["max-size"] == values["YPOINT_LOG_MAX_SIZE"]
         assert logging["Config"]["max-file"] == values["YPOINT_LOG_MAX_FILES"]
+    assert compose("exec", "-T", "redis", "redis-cli", "--raw", "ping").strip() == "PONG"
+    redis_probe = """
+import asyncio
+from app.core.config import get_config
+from redis.asyncio import Redis
+async def check_redis():
+    config = get_config()
+    if config.REDIS_ENABLED:
+        client = Redis.from_url(config.redis_url, socket_connect_timeout=3, socket_timeout=3)
+        try:
+            assert await client.ping()
+        finally:
+            await client.aclose()
+asyncio.run(check_redis())
+"""
+    compose("exec", "-T", "api", "python", "-c", redis_probe)
+    print("Redis 带认证探针、应用连接与日志轮转通过。")
     compose("exec", "-T", "api", "alembic", "check")
     compose("exec", "-T", "worker", "python", "/app/deploy/healthcheck.py", "worker")
     compose("exec", "-T", "worker", "python", "-c", "from pathlib import Path; assert not Path('/app/.logs/worker.log').exists()")

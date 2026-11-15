@@ -2,7 +2,7 @@
 
 首次部署和一键脚本操作见 **[部署手册](deployment-guide.md)**；本文说明文件职责、配置和设计边界。逐步学习提要见 [Docker 部署逐步讲解](deployment-walkthrough.md#部署文件与执行过程)。
 
-本方案把前端 Nginx、API、worker、PostgreSQL 拆成独立服务，用同一套 Compose 在单机交付。前后端独立构建与升级，首次部署可以放在同一台机器；不把 Vite、API、worker 塞进一个容器。默认 PostgreSQL 16 同时保存业务表和独立的 LangGraph 检查点表，原始文件及工具目录单独持久化。当前向量后端为 exact，不要求安装 pgvector。Redis、Celery 和 supervisor 均不作为这套运行链的依赖。
+本方案把前端 Nginx、API、worker、PostgreSQL、Redis 拆成独立服务，用同一套 Compose 在单机交付。前后端独立构建与升级，首次部署可以放在同一台机器；不把 Vite、API、worker 塞进一个容器。默认 PostgreSQL 16 同时保存业务表和独立的 LangGraph 检查点表，原始文件及工具目录单独持久化。当前向量后端为 exact，不要求安装 pgvector。默认部署启用 Redis 连接池并提供独立 Redis 服务；Run 队列、租约和 worker 心跳仍使用业务数据库，未改用 Redis/Celery，也不引入 supervisor。
 
 这是部署前置准备与本机验证基线，不代表 M8/M11、目标服务器、真实模型、容量或容灾总验收通过。Docker 官方资料和限制见 [deployment-research.md](deployment-research.md)。
 
@@ -12,20 +12,21 @@
 | --- | --- |
 | 根 `Dockerfile` | Python 3.12，uv 锁定依赖，多阶段构建；带 Alembic、Docker CLI、PDFium 所需库、Tesseract 中英文语言包和中文字体。API 与 worker 共用该镜像。 |
 | `web/Dockerfile` | Node 构建静态资源，再交给无 root 权限的 Nginx；运行时不包含 Node/npm/Vite。 |
-| `docker-compose.yml` | db → migrate → API/worker，API 就绪后启动 web。只有 web 暴露端口，数据库和 API 留在 Compose 网络。 |
+| `docker-compose.yml` | db → migrate；Redis 独立通过认证健康检查，两者就绪后启动 API/worker，再启动 web。只有 web 暴露端口，数据库、Redis 和 API 留在 Compose 网络。 |
 | `docker-compose.sandbox.yml` | 显式启用本机 Docker socket，赋予 API 试运行和 worker 正式运行所需的管理权限。 |
 | `docker-compose.https.yml` | 可选 HTTPS 监听、证书挂载及 HTTP 跳转；由持久化协议开关自动选择。 |
 | `docker-compose.production.yml` | 正式环境资源起点，与同一拓扑和独立 production 私有配置组合。资源值必须按目标机器实测调整。 |
 | `scripts/deploy_all.py` | 一键检查、初始化、构建、启动并等待健康；可交互创建首位管理员，内部复用 deploy.py。 |
 | `scripts/deploy.py` | 生成私有配置、证书、独立密钥；选择环境并透传 Compose 命令，避免漏传配置文件。 |
 | `deploy/entrypoint.sh` / `preflight.py` | 密钥、目录权限和启用时的沙箱前置检查，然后 `exec` 主进程。迁移不藏在每个 API 启动流程里。 |
+| `deploy/redis-entrypoint.sh` | 使用 Redis 普通用户，把认证和 AOF 配置写入 tmpfs，再执行 Redis；口令不放入命令参数。 |
 | `deploy/healthcheck.py` | API 检查业务健康协议；worker 核对本容器 UUID 对应的数据库心跳，不能由其他 worker 的心跳冒充健康。 |
 
 每个常驻服务使用 Docker `init: true` 回收子进程，`restart: unless-stopped` 管理退出重启；API 直接运行一个 Uvicorn 进程，worker 使用原生 CLI。默认一个 API、一个 worker，不引入 supervisor/Gunicorn。将来按并发压测增加 API 容器，比再增加一层进程管理器更清楚。正常关闭提供 90 秒窗口；故障后仍沿用租约、检查点和副作用不自动重放的业务规则，不能承诺所有在途 Run 无损继续。
 
 ## 本机启动
 
-需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。本机已验证 Engine 29.8.0 / Compose 5.5.1；镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
+需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。本机已验证 Engine 29.8.0 / Compose 5.5.1；镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Redis 512 MiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
 
 在项目根目录：
 
@@ -33,7 +34,7 @@
 # 创建 .deployment/local，默认 HTTP；配置和数据均被 Git 与镜像构建排除。
 python3 scripts/deploy.py init
 
-# 基础 Web / API / worker / 数据库部署，不授予宿主 Docker 管理权限。
+# 基础 Web / API / worker / PostgreSQL / Redis 部署，不授予宿主 Docker 管理权限。
 python3 scripts/deploy.py compose -- config --quiet
 python3 scripts/deploy.py compose -- build
 python3 scripts/deploy.py compose -- up -d --wait --wait-timeout 180
@@ -65,7 +66,7 @@ python3 scripts/deploy.py compose -- exec api python -m app.cli.create_admin adm
 python3 scripts/deploy.py compose -- down
 ```
 
-普通 `down` 保留 PostgreSQL 命名卷及 bind 数据。`down -v` 会删除命名卷中的数据库和检查点；删除 `.deployment/local` 会丢失文件和加密密钥，都不能当成普通停止操作。
+普通 `down` 保留 PostgreSQL、Redis 命名卷及 bind 数据。`down -v` 会删除命名卷中的数据库、检查点和 Redis 数据；删除 `.deployment/local` 会丢失文件和加密密钥，都不能当成普通停止操作。
 
 ## 启用本机真实脚本沙箱
 
@@ -87,7 +88,7 @@ Linux socket 的 GID 与运行用户不同时，初始化可传 `--docker-gid <g
 
 ## 环境与配置
 
-每个环境独立生成 `.deployment/<environment>/compose.env`、`application.env`、`database.env` 和 `data/`，仅 HTTPS 创建 `tls/`，Compose 项目名和数据库卷也随之隔离。每份环境使用独立的 JWT、供应商 Fernet 加密密钥和数据库密码。所有私有文件默认 0600、目录 0700，并通过运行 UID/GID 访问。
+每个环境独立生成 `.deployment/<environment>/compose.env`、`application.env`、`database.env`、`redis.env` 和 `data/`，仅 HTTPS 创建 `tls/`，Compose 项目名、PostgreSQL 卷和 Redis 卷也随之隔离。每份环境使用独立的 JWT、供应商 Fernet 加密密钥、数据库密码和 Redis 密码。所有私有文件默认 0600、目录 0700，并通过运行 UID/GID 访问。
 
 local 的应用配置仍为 `production`，关闭 DEBUG、SQL echo 和接口文档；staging 使用 `staging`。协议与环境独立，新部署都默认 HTTP。内网生产首次部署不需要域名或证书：
 
@@ -112,7 +113,7 @@ python3 scripts/deploy.py compose --environment production -- up -d --wait
 
 默认监听为 `127.0.0.1`。需要其他内网机器或公网访问时，在该环境的 `compose.env` 设置 `YPOINT_BIND_IP` 为服务器网卡 IP 或 `0.0.0.0`，并按实际访问范围放行 HTTP/HTTPS 端口。HTTPS 证书更新后重建 web；重新传证书执行 init 可以复制新证书。当前 Nginx 覆盖来路的 X-Forwarded-For 与请求 ID，API 不发布宿主端口；外层 HTTPS 网关需要另行统一真实客户端 IP 和协议的可信代理链，不能直接透传任意外来代理头。
 
-`compose.env` 供 Compose 插值，两个应用/数据库 env 文件用于运行配置。容器只读挂载应用 env；镜像不包含 `.env.production`、本机密钥或数据。`docker compose config` 的完整输出会展开秘密，日常使用 `config --quiet`。协议写入 `YPOINT_HTTPS_ENABLED='true'/'false'`，compose 命令自动选择 HTTPS 覆盖文件，无需每次重复传协议参数。建议通过 init 切换，使 Nginx 和 SSE Cookie 同步；HTTPS 终止在外部网关时，可按浏览器实际使用协议单独设置 `application.env` 的 `STREAM_COOKIE_SECURE`，重复无协议参数的 init 保留该显式值。
+`compose.env` 供 Compose 插值；`application.env`、`database.env`、`redis.env` 分别用于应用、PostgreSQL 和 Redis 运行配置。Redis 容器只接收自己的凭据，不接收 JWT、数据库或供应商密钥。容器只读挂载应用 env；镜像不包含 `.env.production`、本机密钥或数据。`docker compose config` 的完整输出会展开秘密，日常使用 `config --quiet`。协议写入 `YPOINT_HTTPS_ENABLED='true'/'false'`，compose 命令自动选择 HTTPS 覆盖文件，无需每次重复传协议参数。建议通过 init 切换，使 Nginx 和 SSE Cookie 同步；HTTPS 终止在外部网关时，可按浏览器实际使用协议单独设置 `application.env` 的 `STREAM_COOKIE_SECURE`，重复无协议参数的 init 保留该显式值。
 
 已有部署切换协议（以下示例为 local，生产环境在每条命令加 `--environment production`）：
 
@@ -130,6 +131,35 @@ python3 scripts/deploy.py compose -- up -d --wait
 init 可通过 `--bind-ip` / `--http-port` / `--https-port` 设置或更新监听参数，省略时保留已有值；仅支持 IPv4 监听参数。
 
 CPU/内存、监听端口、镜像名、日志阈值通过 `compose.env` 的 `YPOINT_*` 参数配置；业务预算与模型限额在 `application.env` 配置。正式发布可通过 Dockerfile 的镜像构建参数与 Compose 镜像变量固定 digest/发布标签；仓库当前固定主要版本起点，尚未建立发布制品签名或镜像漏洞扫描流水线，不将 tag 视为不可变制品。
+
+## Redis 连接、持久化与容量
+
+默认镜像为 `redis:7.4-alpine`，可用 `YPOINT_REDIS_IMAGE` 指定标签或 digest。服务仅在 Compose 网络监听 6379，不映射宿主端口。应用使用 `REDIS_ENABLED=True`、`REDIS_HOST=redis`、`REDIS_PORT=6379`、`REDIS_DB=0`，密码由初始化随机生成，与 PostgreSQL 密码独立。
+
+应用密码保存在 `application.env` 的 `REDIS_PWD`，Redis 使用独立 `redis.env` 中的 `REDISCLI_AUTH`；两者必须一致。文件权限为 0600，不提交到 Git。启动脚本以普通 `redis` 用户生成 `/tmp/y-point-redis.conf`，配置位于 tmpfs，不把密码拼到进程参数。Redis 使用 `redis-cli` 自动读取认证环境变量，健康检查只有返回 `PONG` 才算通过。API/worker 同时等待数据库迁移成功和 Redis 健康；Redis 不是 Run 队列或检查点的存储后端。
+
+| 参数 | local / staging 默认 | production 默认 | 用途 |
+| --- | --- | --- | --- |
+| `YPOINT_REDIS_IMAGE` | `redis:7.4-alpine` | 同左 | Redis 镜像。 |
+| `YPOINT_REDIS_MEMORY` | `512m` | `1g` | 容器内存上限。 |
+| `YPOINT_REDIS_MAXMEMORY` | `256mb` | `512mb` | Redis 数据内存阈值，需为客户端缓冲、AOF 及重写留空间。 |
+| `YPOINT_REDIS_CPUS` | `1.0` | `1.0` | 容器 CPU 时间上限。 |
+
+这些 `YPOINT_*` 参数在本环境 `compose.env` 中修改，重建容器后生效。`maxmemory-policy=noeviction` 避免自动逐出业务键，超过内存阈值时可能拒绝写入；应监控容量，而非把容器硬上限直接作为数据内存阈值。
+
+`redis-data` 命名卷保存 `/data` 下的 AOF，`appendfsync everysec` 按秒同步，异常断电仍可能丢失最近约一秒的数据，不等于强同步或备份。AOF 重写和数据增长仍需要额外磁盘，内存上限与日志轮转都不限制整个卷的磁盘占用。停止 Redis 后备份该卷，或采用经过恢复验证的在线备份方案；不要直接复制正在改写的 AOF 作为一致性备份。
+
+旧部署升级时先备份并重新执行 `init`，或运行一键脚本。旧版没有 Redis 参数且显式关闭 Redis 的三文件部署会补齐 `redis.env`、连接参数和 Compose 路径，保留原数据库、JWT、供应商密钥及协议；已有外部 `REDIS_HOST` 配置保持原样，内置 Redis 容器仍会启动。已托管的 `redis.env` 丢失、密码为空或内置连接密码不匹配时，初始化会报错，必须恢复同一套凭据，不会自动轮换。初始化本身不重启当前服务。
+
+```bash
+# 示例为 production；本机省略 --environment production。
+python3 scripts/deploy.py init --environment production
+python3 scripts/deploy.py compose --environment production -- config --quiet
+python3 scripts/deploy.py compose --environment production -- up -d --wait --wait-timeout 180
+python3 scripts/deploy.py compose --environment production -- exec -T redis redis-cli ping
+```
+
+最后一条应返回 `PONG`，无需手动输入密码。已有脚本沙箱部署继续给每条 Compose 命令加 `--sandbox`。原生开发仍可通过 `REDIS_ENABLED=False` 关闭 Redis；这不改变默认 Docker 拓扑。补充验证见 [2026-11-15 Redis 部署验证](deployment-redis-20261115.md)。
 
 ## 前后端一起与分开部署
 
@@ -156,6 +186,7 @@ python3 scripts/deploy.py compose -- up -d api worker
 | API 日志 | 既有脱敏请求日志，包含同一 `rid`；关闭 Uvicorn 重复访问日志。Nginx 在 API 响应返回 `X-Request-ID`。 | Docker `local` 驱动轮转，不另写应用日志副本。 |
 | worker 日志与子进程标准流 | `WORKER_LOG_STDOUT=True`，含现有 Run ID/故障码；本地 `make dev` 默认仍写原容量受控日志文件。 | Docker `local` 驱动轮转；不产生容器内 `.logs/worker.log`。 |
 | PostgreSQL 日志 | stderr，不启用数据库内部 logging collector，不开启 SQL 全语句日志。 | Docker `local` 驱动轮转。 |
+| Redis 日志 | stdout，仅服务启动、持久化与故障等运行信息；不启用 MONITOR 或命令明细日志。 | Docker `local` 驱动轮转。 |
 | 业务审计 | 认证/资源操作、Run 事件、模型调用、ToolInvocation 与知识检索记录保存在 PostgreSQL；请求 ID用于 HTTP 排查，Run ID用于执行链追踪。 | 随数据库备份和业务保留策略管理；不能用容器日志代替业务审计，也未宣称实现统一 request_id 到每张审计表的关联。 |
 
 每容器默认 `max-size=20m`、`max-file=5`、压缩开启，按日志量约保留 100 MiB 的消息，而非保证保留固定天数或提供整个磁盘硬配额。修改阈值需重建容器；应用自行写其他文件不受该驱动约束。删除或重建容器后，旧容器日志不保证保留；正式跨发布追踪需先接入日志采集/远端聚合，临时诊断可在维护前导出所需范围日志到受限备份位置。Nginx 错误日志保留代理诊断，可能包含请求行；不要把凭据放进 URL。
@@ -173,7 +204,7 @@ docker system df
 
 排查顺序：从浏览器响应 `X-Request-ID` 找 Nginx/API 同一次请求，再由响应里的 `run_id` 查 worker、Run 详情/调用记录和业务审计。不要为了排查直接打印模型提示词、工具参数、原文件、Bearer 或供应商 Key。Docker 日志归 Docker 管理，不手工截断其内部文件。
 
-文件、数据库、检查点、工具依赖缓存、镜像与构建缓存仍会增长。项目已有文件配额及工具存储预算/最小剩余空间检查，但没有整个宿主磁盘的硬配额或自动扩容。本机使用 `df`、`du`、`docker system df` 检查；目标环境需接入磁盘 80%/90%、最小剩余空间、服务 unhealthy、worker 失联和失败率告警，并明确数据库/事件保留周期。Compose 的 unhealthy 不会自动触发退出重启策略；不要用无差别自动重启掩盖数据库、磁盘或工具副作用问题。不执行全局 `docker system prune`，也不删除仍被业务版本引用的依赖目录。
+文件、数据库、检查点、Redis AOF、工具依赖缓存、镜像与构建缓存仍会增长。项目已有文件配额及工具存储预算/最小剩余空间检查，但没有整个宿主磁盘的硬配额或自动扩容。本机使用 `df`、`du`、`docker system df` 检查；目标环境需接入磁盘 80%/90%、最小剩余空间、服务 unhealthy、worker 失联和失败率告警，并明确数据库/事件保留周期。Compose 的 unhealthy 不会自动触发退出重启策略；不要用无差别自动重启掩盖数据库、磁盘或工具副作用问题。不执行全局 `docker system prune`，也不删除仍被业务版本引用的依赖目录。
 
 ## 迁移、升级、备份与恢复
 
@@ -192,7 +223,7 @@ python3 scripts/deploy.py compose -- exec api alembic check
 
 使用脚本沙箱的部署在上述每次 Compose 调用都带 `--sandbox`。数据库迁移与检查点库不是一个跨库事务；这里放在同一 PostgreSQL 实例只简化备份，不改变业务补偿规则。
 
-备份必须同时覆盖 PostgreSQL（包含业务与 LangGraph 检查点表）、`data/` 下私有正文/依赖、三个私有 env 文件、供应商 Fernet 密钥及启用 HTTPS 时的证书。停止 API/worker 写入后，`pg_dump -Fc` 导出并同步备份文件目录；备份保存到本机以外的受限位置并加密。示例导出目标需先创建，避免把备份写进镜像或 stdout 日志：
+备份必须同时覆盖 PostgreSQL（包含业务与 LangGraph 检查点表）、`data/` 下私有正文/依赖、四个私有 env 文件（含 `redis.env`）和 Redis 数据卷、供应商 Fernet 密钥及启用 HTTPS 时的证书。停止 API/worker 写入后，`pg_dump -Fc` 导出并同步备份文件目录；备份保存到本机以外的受限位置并加密。示例导出目标需先创建，避免把备份写进镜像或 stdout 日志：
 
 ```bash
 mkdir -p .deployment/local/backups

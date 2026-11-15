@@ -59,6 +59,7 @@ flowchart LR
     Browser["浏览器工作台"] --> Web["Nginx：页面与同源代理"]
     Web --> API["FastAPI：认证、资源与运行接口"]
     API --> DB[("业务数据库：队列、消息与事件")]
+    API --> Redis[("Redis：连接池基础设施")]
     Worker["独立 worker：执行任务与构建索引"] <--> DB
     Worker --> Models["模型供应商 / 本地模型"]
     Worker --> Tools["授权 Tool、Skill 与知识检索"]
@@ -67,7 +68,7 @@ flowchart LR
     Worker --> Files
 ```
 
-默认 Docker 部署使用 PostgreSQL；本地开发默认使用 SQLite，业务数据库也支持 MySQL。文件正文保存到私有本地目录或 S3。API 与 worker 独立运行，当前主执行链无需 Redis、Celery 或 supervisor。
+默认 Docker 部署使用 PostgreSQL；本地开发默认使用 SQLite，业务数据库也支持 MySQL。文件正文保存到私有本地目录或 S3。API 与 worker 独立运行，Docker 部署同时提供启用认证和持久化的 Redis；Run 队列仍由数据库承载，无需 Celery 或 supervisor。
 
 主要技术：Python 3.12+、FastAPI、SQLAlchemy / Alembic、DeepAgents / LangGraph、React、TypeScript、Ant Design、Vite。模块职责与数据边界见 [架构文档](docs/architecture.md)。
 

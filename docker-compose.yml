@@ -110,6 +110,42 @@ services:
     logging: *logging
     networks: [ backend ]
 
+  redis:
+    image: ${YPOINT_REDIS_IMAGE:-redis:7.4-alpine}
+    user: redis
+    init: true
+    env_file:
+      - ${YPOINT_REDIS_ENV:?请先运行 python3 scripts/deploy.py init 生成 Redis 配置}
+    environment:
+      REDIS_MAXMEMORY: ${YPOINT_REDIS_MAXMEMORY:-256mb}
+    command: [ /bin/sh, /usr/local/bin/y-point-redis-entrypoint.sh ]
+    volumes:
+      - redis-data:/data
+      - type: bind
+        source: ./deploy/redis-entrypoint.sh
+        target: /usr/local/bin/y-point-redis-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
+    cap_drop: [ ALL ]
+    security_opt: [ no-new-privileges:true ]
+    healthcheck:
+      test: [ CMD-SHELL, 'test "$$(redis-cli --raw ping)" = PONG' ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    pids_limit: 64
+    mem_limit: ${YPOINT_REDIS_MEMORY:-512m}
+    cpus: ${YPOINT_REDIS_CPUS:-1.0}
+    logging: *logging
+    networks: [ backend ]
+
   migrate:
     <<: *server # 使用后端共用镜像、环境和挂载
     command: [ alembic, upgrade, head ]
@@ -125,6 +161,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: [ CMD, python, /app/deploy/healthcheck.py, api ]
       interval: 10s
@@ -139,6 +177,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: [ CMD, python, /app/deploy/healthcheck.py, worker ]
       interval: 15s
@@ -183,3 +223,4 @@ networks:
 
 volumes:
   postgres-data:
+  redis-data:
