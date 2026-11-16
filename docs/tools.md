@@ -91,6 +91,11 @@ sequenceDiagram
 
 依赖环境由固定基础镜像中的 Python 解释器和独立安装目录组成。准备时，`pip download --only-binary=:all:` 获取直接及传递依赖，生成精确版本和 wheel 哈希锁；另一个禁网容器使用 `pip install --no-index --no-deps --ignore-installed --require-hashes --no-compile --target=/site` 安装。已安装文件发布到 `SCRIPT_DEPENDENCY_STORAGE_DIR/<environment_key>/`，版本记录保存依赖锁、镜像 ID 和文件清单。宽泛约束也会复用已有锁定缓存，需要不同版本时应修改约束；新版本不会覆盖旧版环境。
 
+依赖版本固定的是实际镜像 ID，而不是 `SCRIPT_SANDBOX_IMAGE` 的可变标签。准备环境时会为镜像保存 `y-point-script-sandbox-pinned:<镜像ID的64位摘要>` 标签；一键部署也会在重建沙箱前保留当前镜像，并在构建后保留新镜像，避免旧镜像因失去标签而成为默认悬空清理的目标。这不是镜像备份，强制删除、Docker Desktop 数据重置或清理所有未使用镜像仍可能删除历史版本所需镜像。
+
+执行前同时验证依赖文件和固定镜像是否可用。若文件完整但固定镜像已经缺失，页面仍可能保留先前准备成功的 `ready` 状态，执行会拒绝继续，不会自动换用同名标签的新镜像。此时可以导入包含原镜像 ID 的备份；没有原镜像时，在工具页面重新准备环境，基于当前镜像生成新版本，再试运行，并在智能体设置中重新保存工具绑定。已提交运行仍固定旧版本，应重新发起运行；不要直接修改旧版本的 `environment_image` 或依赖锁。
+
+
 执行时将该目录只读挂载为 `/opt/tool-deps`，并设置 `PYTHONPATH`。Python 在容器内通过 `site.addsitedir('/opt/tool-deps')` 加载依赖，再由 `runpy.run_path('/app/main.py', run_name='__main__')` 执行脚本；`.pth` 等导入行为只发生在最终脚本沙箱中。无额外依赖时直接使用基础镜像执行。
 
 脚本从标准输入读取参数，标准输出须为单个 JSON 值；日志应写标准错误，避免混入结果。例如：

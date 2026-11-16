@@ -80,6 +80,8 @@ python3 scripts/deploy.py compose --sandbox -- config --quiet
 python3 scripts/deploy.py compose --sandbox -- up -d --wait --wait-timeout 180
 ```
 
+一键部署在重建沙箱镜像前，会将现存镜像保留为 `y-point-script-sandbox-pinned:<镜像ID的64位摘要>`，构建完成后同样保留新镜像；`--skip-build` 也会保留当前镜像。依赖准备任务会为所用镜像添加相同的内容标签。历史 Tool 版本固定实际镜像 ID，不能仅备份可变的 `y-point-script-sandbox:1` 标签，也不要删除仍被版本引用的内容标签。标签不能防止强制删除或清理所有未使用镜像；完整备份仍需交付所需镜像。固定镜像已缺失时的恢复与新版本重建步骤见[Tool 管理与沙箱](tools.md#tool-管理与沙箱)。
+
 启用后持续使用同一个 `--sandbox` 参数，包括查看、更新、停止部署。沙箱源文件、依赖环境和受信任下载代理脚本使用 `.deployment/local/data` 下的绝对路径，API、worker 和宿主 Docker 以同一路径访问；初始化脚本将代理源码原子复制到 `data/runtime/package_proxy.py`。不要随意把 bind 目录改成容器内不同路径，也不要把这一方案直接用于远程 daemon。移动部署数据目录或更换主机需要停机迁移，并核对数据库中持久化的依赖路径。
 
 Linux socket 的 GID 与运行用户不同时，初始化可传 `--docker-gid <gid>`；Docker Desktop 通常使用容器内 GID 0。若权限失败，检查 socket 在容器中的实际 GID，再修改私有 `compose.env` 的 `YPOINT_DOCKER_GID` 并重建 API/worker。应用无需改成 root。

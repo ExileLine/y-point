@@ -7,6 +7,7 @@
 
 import argparse
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -22,6 +23,19 @@ def run(command: list[str], *, capture: bool = False) -> str:
     print(f"$ {shlex.join(command)}", flush=True)
     completed = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=capture)
     return completed.stdout if capture else ""
+
+
+def retain_sandbox_image(image: str, *, allow_missing: bool = False) -> None:
+    """为沙箱镜像保存按内容 ID 命名的标签，避免更新可变标签后成为悬空镜像。"""
+    try:
+        identifier = run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture=True).strip()
+    except subprocess.CalledProcessError as error:
+        if allow_missing and error.returncode == 1 and "No such image" in (error.stderr or ""):
+            return
+        raise
+    if re.fullmatch(r"sha256:[a-f0-9]{64}", identifier) is None:
+        raise SystemExit("Docker 未返回有效的沙箱镜像 ID，停止部署以免丢失历史镜像引用")
+    run(["docker", "image", "tag", identifier, f"y-point-script-sandbox-pinned:{identifier.removeprefix('sha256:')}"])
 
 
 def positive_integer(value: str) -> int:
@@ -88,10 +102,10 @@ def main(argv: list[str] | None = None) -> None:
         print("[3/5] 准备运行镜像", flush=True)
         if args.sandbox:
             image = config["services"]["api"]["environment"]["SCRIPT_SANDBOX_IMAGE"]
-            if args.skip_build:
-                run(["docker", "image", "inspect", image], capture=True)
-            else:
+            if not args.skip_build:
+                retain_sandbox_image(image, allow_missing=True)
                 run(["docker", "build", "-f", str(ROOT / "Dockerfile.sandbox"), "-t", image, str(ROOT)])
+            retain_sandbox_image(image)
         if not args.skip_build:
             run([*compose, "build"])
         print("[4/5] 启动数据库、Redis、迁移、API、worker 和 Web，等待健康检查", flush=True)

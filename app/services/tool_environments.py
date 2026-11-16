@@ -171,6 +171,10 @@ async def require_script_environment(version: UserToolVersion) -> ScriptEnvironm
         site = await asyncio.to_thread(_verify_environment, version.environment_key, version.environment_manifest)
     except (EnvironmentBuildError, OSError) as exc:
         raise SandboxConfigurationError("依赖环境缺失或校验失败，请重新准备环境") from exc
+    try:
+        await _docker_output("image", "inspect", version.environment_image)
+    except (EnvironmentBuildError, OSError, TimeoutError) as exc:
+        raise SandboxConfigurationError("当前 Tool 版本固定的沙箱镜像不可用，请恢复原镜像，或重新准备环境、试运行并绑定新版本") from exc
     return ScriptEnvironment(version.environment_image, site)
 
 
@@ -528,6 +532,9 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
         async with asyncio.timeout(timeout):
             metadata = json.loads(await _docker_output("image", "inspect", config.SCRIPT_SANDBOX_IMAGE))
             image = metadata[0]["Id"]
+            if re.fullmatch(r"sha256:[a-f0-9]{64}", image) is None:
+                raise EnvironmentBuildError(ToolEnvironmentFailure.IMAGE_UNAVAILABLE)
+            await _docker_output("image", "tag", image, f"y-point-script-sandbox-pinned:{image.removeprefix('sha256:')}")
             identity = {
                 "requirements": requirements,
                 "image": image,

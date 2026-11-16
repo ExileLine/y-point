@@ -506,6 +506,34 @@ def test_environment_migration_preserves_existing_versions(tmp_path: Path) -> No
     migrate("check")
 
 
+def test_ready_environment_rejects_missing_pinned_image(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """依赖文件有效时，执行前仍必须拒绝已缺失的固定镜像，不回退到可变标签。"""
+    config = get_config()
+    monkeypatch.setattr(config, "SCRIPT_DEPENDENCY_STORAGE_DIR", str(tmp_path))
+    key = "a" * 64
+    site = tmp_path / key
+    site.mkdir()
+    (site / "demo.py").write_text("VALUE = 42\n")
+    version = SimpleNamespace(
+        requirements=["demo"],
+        environment_state=ToolEnvironmentState.READY,
+        environment_image="sha256:" + "b" * 64,
+        environment_key=key,
+        environment_manifest=tool_environments._file_manifest(site),
+    )
+    inspected = []
+
+    async def missing_image(*arguments):
+        """仅记录固定镜像查询，并模拟其已被 Docker 删除。"""
+        inspected.append(arguments)
+        raise tool_environments.EnvironmentBuildError(ToolEnvironmentFailure.IMAGE_UNAVAILABLE)
+
+    monkeypatch.setattr(tool_environments, "_docker_output", missing_image)
+    with pytest.raises(SandboxConfigurationError, match="固定.*镜像"):
+        asyncio.run(require_script_environment(version))
+    assert inspected == [("image", "inspect", version.environment_image)]
+
+
 @pytest.mark.parametrize(
     ("operation", "errors", "expected_code", "expected_detail"),
     [
