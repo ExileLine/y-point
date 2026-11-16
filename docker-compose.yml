@@ -94,6 +94,8 @@ services:
     image: ${YPOINT_POSTGRES_IMAGE:-postgres:16}
     env_file:
       - ${YPOINT_DB_ENV:?请先生成数据库配置}
+    ports:
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
