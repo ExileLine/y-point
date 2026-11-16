@@ -9,12 +9,19 @@ import {
   type DiscoveryResult, type Model, type ModelDraft, type Provider, type ProviderDraft, type ProviderKind,
 } from "./api";
 import { PageHeader } from "./components/ResourcePage";
+import { testEmbeddingModel } from "./knowledge-api";
 import "./styles/model-catalog.css";
 
-const capabilities = [
+const chatCapabilities = [
   { value: "text", label: "文本" }, { value: "streaming", label: "流式" }, { value: "tools", label: "工具" },
   { value: "structured_output", label: "结构化输出" }, { value: "vision", label: "视觉" }, { value: "reasoning_summary", label: "推理摘要" },
 ];
+const capabilities = [...chatCapabilities, { value: "embedding", label: "嵌入" }];
+function modelAvailability(model: Model): string {
+  if (model.verified_capabilities.includes("text")) return "可用于 Agent";
+  if (model.verified_capabilities.includes("embedding")) return "可用于知识库";
+  return "待验证";
+}
 function CapabilityTags({ model }: { model: Model }) {
   return <div className="catalog-capabilities">{model.capabilities.length ? model.capabilities.map((capability) => {
     const verified = model.verified_capabilities.includes(capability);
@@ -31,6 +38,7 @@ const failureLabels: Record<string, string> = {
   authentication: "凭据无效", rate_limit: "上游限流", model_list_unavailable: "模型列表不可用",
   model_not_found: "模型不存在", invalid_request: "请求无效", timeout: "连接超时", network: "网络故障",
   upstream: "上游故障", invalid_response: "响应无效", unsupported_capability: "能力不受支持",
+  invalid_embedding: "嵌入响应无效", model_unavailable: "嵌入模型或供应商不可用",
 };
 
 function errorText(error: unknown): string {
@@ -155,7 +163,7 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
       provider_id: model.provider_id, external_id: model.external_id, display_name: model.display_name,
       capabilities: model.capabilities, context_window: model.context_window, input_price: model.input_price,
       output_price: model.output_price, price_currency: model.price_currency, enabled: model.status === 1,
-    } : { provider_id: initialProvider, capabilities: capabilities.map(item => item.value), price_currency: "USD", enabled: true });
+    } : { provider_id: initialProvider, capabilities: chatCapabilities.map(item => item.value), price_currency: "USD", enabled: true });
   }, [form, initialProvider, model, open]);
 
   useEffect(() => {
@@ -243,7 +251,7 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
         </AutoComplete>}
       </Form.Item>
       <Form.Item name="display_name" label="显示名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={128} /></Form.Item>
-      <Form.Item name="capabilities" label="声明能力" extra="声明后仍需逐项验证；Agent 会检查已验证的文本能力，使用 Skill、Tool 或知识库还需要工具能力。"><Select mode="multiple" options={capabilities} /></Form.Item>
+      <Form.Item name="capabilities" label="声明能力" extra="嵌入模型请选择「嵌入」，保存后通过「验证能力 → 验证嵌入」独立验证；Agent 对话使用文本能力，调用工具还需工具能力。"><Select mode="multiple" options={capabilities} /></Form.Item>
       <Form.Item name="context_window" label="上下文窗口（Token）" extra="填写当前部署实际允许的窗口，包含输入与输出。留空表示未知，平台无法据此可靠预检；调大此值不会扩容模型。"><InputNumber min={1} precision={0} className="catalog-full-input" /></Form.Item>
       <div className="catalog-form-row">
         <Form.Item name="input_price" label="输入价格 / 百万 Token" extra="留空表示价格未知；0 表示按零价格估算。与输出价格一起用于 Agent 成本预算。"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
@@ -302,12 +310,12 @@ export default function ModelCatalog() {
     }
   }
 
-  async function probe(key: string, action: () => Promise<{ available: boolean; latency_ms: number; failure: string | null }>, name: string) {
+  async function probe(key: string, action: () => Promise<{ available: boolean; latency_ms: number; failure: string | null; detail?: string }>, name: string) {
     setBusy(key);
     setError("");
     try {
       const result = await action();
-      setTestResult(`${name}：${result.available ? "可用" : failureLabels[result.failure || ""] || "不可用"} · ${result.latency_ms} ms`);
+      setTestResult(`${name}：${result.available ? "可用" : failureLabels[result.failure || ""] || "不可用"} · ${result.latency_ms} ms${result.available && result.detail ? ` · ${result.detail}` : ""}`);
       await reload();
     } catch (failure) {
       setError(errorText(failure));
@@ -348,7 +356,11 @@ export default function ModelCatalog() {
 
   function modelActions(row: Model) {
     return <Space size="small">
-      <Dropdown menu={{ items: capabilities.map((item) => ({ key: item.value, label: `验证${item.label}`, onClick: () => void probe(`model-${row.id}`, async () => (await testModelCapability(row.id, item.value)).result, row.display_name) })) }} trigger={["click"]} disabled={row.status !== 1 || !providerEnabled(row.provider_id)}>
+      <Dropdown menu={{ items: capabilities.map((item) => ({ key: item.value, label: `验证${item.label}`, onClick: () => void probe(`model-${row.id}`, async () => {
+        if (item.value !== "embedding") return (await testModelCapability(row.id, item.value)).result;
+        const result = await testEmbeddingModel(row.id);
+        return { available: result.success, latency_ms: result.latency_ms, failure: result.failure_code, detail: `${result.dimensions} 维` };
+      }, row.display_name) })) }} trigger={["click"]} disabled={row.status !== 1 || !providerEnabled(row.provider_id)}>
         <Tooltip title="验证能力（可能产生上游费用）"><Button aria-label={`验证能力 ${row.display_name}`} icon={<CheckCircle2 size={16} />} loading={busy === `model-${row.id}`} /></Tooltip>
       </Dropdown>
       <Tooltip title="设为全局默认"><Button aria-label={`设为默认 ${row.display_name}`} icon={<Star size={16} />} disabled={row.is_default || row.status !== 1 || !providerEnabled(row.provider_id) || !row.verified_capabilities.includes("text")} onClick={() => void perform(`default-${row.id}`, () => setDefaultModel(row.id), "默认模型已更新")} /></Tooltip>
@@ -374,7 +386,7 @@ export default function ModelCatalog() {
     { title: "连接", key: "provider", width: 150, render: (_, row) => providerName(row.provider_id) },
     { title: "能力", key: "capabilities", width: 190, render: (_, row) => <CapabilityTags model={row} /> },
     { title: "窗口 / 价格", key: "pricing", width: 175, render: (_, row) => <div className="catalog-primary"><span>{row.context_window?.toLocaleString() || "未设置"} Token</span><span>{row.input_price && row.output_price ? `${row.price_currency} ${row.input_price} / ${row.output_price}` : "未设置价格"}</span></div> },
-    { title: "状态", key: "status", width: 90, render: (_, row) => <Tag color={row.status !== 1 || !providerEnabled(row.provider_id) ? "default" : row.verified_capabilities.includes("text") ? "success" : "warning"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : row.verified_capabilities.includes("text") ? "可用于 Agent" : "待验证"}</Tag> },
+    { title: "状态", key: "status", width: 90, render: (_, row) => <Tag color={row.status !== 1 || !providerEnabled(row.provider_id) ? "default" : modelAvailability(row) !== "待验证" ? "success" : "warning"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : modelAvailability(row)}</Tag> },
     { title: "操作", key: "actions", width: 150, render: (_, row) => modelActions(row) },
   ];
 
@@ -390,7 +402,7 @@ export default function ModelCatalog() {
       </> : <>
         <div className="catalog-toolbar"><div className="catalog-filters"><Select aria-label="筛选供应商连接" allowClear placeholder="全部连接" value={providerFilter} onChange={setProviderFilter} options={providers.map((item) => ({ value: item.id, label: item.name }))} /><Input aria-label="搜索模型" prefix={<Search size={16} />} placeholder="搜索模型" value={query} onChange={(event) => setQuery(event.target.value)} allowClear /></div><Button type="primary" icon={<Plus size={17} />} disabled={!providers.some((item) => item.status === 1)} onClick={() => setModelEditor("new")}>录入模型</Button></div>
         <p className="catalog-capability-note">能力标签表示模型配置；带 ✓ 的能力已通过验证，虚线边框表示待验证。</p>
-        {loading ? <Skeleton active /> : filteredModels.length ? <><div className="catalog-desktop-table"><Table rowKey="id" columns={modelColumns} dataSource={filteredModels} pagination={{ pageSize: 20, showSizeChanger: false }} scroll={{ x: "max-content" }} /></div><div className="catalog-mobile-items">{filteredModels.map((row) => <div className="catalog-mobile-item" key={row.id}><div className="catalog-mobile-head"><strong>{row.display_name}</strong><Tag color={row.status === 1 && providerEnabled(row.provider_id) && row.verified_capabilities.includes("text") ? "success" : "default"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : row.verified_capabilities.includes("text") ? "可用于 Agent" : "待验证"}</Tag></div><div className="catalog-mobile-meta">{row.external_id} · {providerName(row.provider_id)}</div><div className="catalog-mobile-meta">{row.context_window?.toLocaleString() || "未设置"} Token · <CapabilityTags model={row} /></div><div className="catalog-mobile-actions">{modelActions(row)}</div></div>)}</div></> : <Empty description={query || providerFilter ? "没有符合条件的模型" : "还没有模型"} />}
+        {loading ? <Skeleton active /> : filteredModels.length ? <><div className="catalog-desktop-table"><Table rowKey="id" columns={modelColumns} dataSource={filteredModels} pagination={{ pageSize: 20, showSizeChanger: false }} scroll={{ x: "max-content" }} /></div><div className="catalog-mobile-items">{filteredModels.map((row) => <div className="catalog-mobile-item" key={row.id}><div className="catalog-mobile-head"><strong>{row.display_name}</strong><Tag color={row.status === 1 && providerEnabled(row.provider_id) && modelAvailability(row) !== "待验证" ? "success" : "default"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : modelAvailability(row)}</Tag></div><div className="catalog-mobile-meta">{row.external_id} · {providerName(row.provider_id)}</div><div className="catalog-mobile-meta">{row.context_window?.toLocaleString() || "未设置"} Token · <CapabilityTags model={row} /></div><div className="catalog-mobile-actions">{modelActions(row)}</div></div>)}</div></> : <Empty description={query || providerFilter ? "没有符合条件的模型" : "还没有模型"} />}
       </>}
     </div>
     <ProviderEditor open={providerEditor !== null} provider={providerEditor === "new" ? null : providerEditor} kinds={kinds} onClose={() => setProviderEditor(null)} onSaved={() => { setProviderEditor(null); void reload(); }} />

@@ -15,6 +15,7 @@ function fixture(page, options = {}) {
   let providers = [{ id: 1, name: "本地 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", has_api_key: false, has_custom_headers: false, api_version: null, region: null, timeout_seconds: 15, remark: null, status: 1 }];
   if (options.discovery) providers.push({ ...providers[0], id: 9, name: "远程连接" });
   let models = [{ id: 3, provider_id: 1, external_id: "llama3.2", display_name: "Llama 3.2", capabilities: ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"], verified_capabilities: [], capabilities_verified: false, context_window: 8192, input_price: null, output_price: null, price_currency: "USD", is_default: false, status: 1 }];
+  if (options.embedding) models = [{ ...models[0], capabilities: ["text"], verified_capabilities: [] }];
   page.addInitScript(() => {
     sessionStorage.setItem("yp.access_token", "fixture-access");
     sessionStorage.setItem("yp.refresh_token", "fixture-refresh");
@@ -30,6 +31,12 @@ function fixture(page, options = {}) {
     else if (pathname === "/api/v1/providers/kinds") data = kinds;
     else if (pathname === "/api/v1/providers" && method === "GET") data = providers;
     else if (pathname === "/api/v1/models" && method === "GET") data = models;
+    else if (pathname === "/api/v1/knowledge-bases" && method === "GET") data = { items: [], total: 0, page: 1, page_size: 20 };
+    else if (pathname === "/api/v1/models/3/embedding-test" && method === "POST") {
+      const success = !options.embeddingFailure;
+      models = models.map(item => ({ ...item, verified_capabilities: success ? ["embedding"] : [], embedding_dimensions: success ? 768 : null }));
+      data = { success, failure_code: success ? null : "invalid_embedding", dimensions: success ? 768 : null, latency_ms: 35 };
+    }
     else if (pathname === "/api/v1/providers" && method === "POST") {
       data = { ...providers[0], ...body, id: 2, has_api_key: Boolean(body.api_key) };
       providers = [...providers, data];
@@ -68,6 +75,46 @@ function fixture(page, options = {}) {
 }
 
 try {
+  // An imported embedding model starts as text-only; declare it, probe the dedicated endpoint, then select it in a knowledge base.
+  for (const [width, failed] of [[1280, false], [375, false], [1280, true]]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const calls = fixture(page, { embedding: true, embeddingFailure: failed });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`);
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "更多操作 Llama 3.2" }).click();
+    await page.getByText("编辑模型", { exact: true }).click();
+    await page.getByRole("combobox", { name: "声明能力" }).click();
+    const option = page.locator(".ant-select-dropdown:visible").getByText("嵌入", { exact: true });
+    assert.equal(await option.count(), 1, "模型录入/编辑必须提供嵌入能力，避免知识库下拉框无法选择已录入的模型");
+    await option.click();
+    await page.getByRole("textbox", { name: "显示名称" }).click();
+    await page.getByRole("button", { name: /^保\s*存$/ }).click();
+    await page.getByRole("dialog", { name: "编辑模型" }).waitFor({ state: "hidden" });
+    assert.deepEqual(calls.find(call => call.method === "PUT" && call.pathname === "/api/v1/models/3").body.capabilities, ["text", "embedding"]);
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/knowledge-bases`);
+    await page.getByRole("button", { name: "新建知识库", exact: true }).click();
+    await page.getByRole("combobox", { name: "嵌入模型", exact: true }).click();
+    await page.locator(".ant-select-dropdown:visible").getByText("Llama 3.2 · 待验证", { exact: true }).click();
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`);
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "验证能力 Llama 3.2" }).click();
+    await page.mouse.move(0, 0);
+    await page.locator(".ant-tooltip:visible").waitFor({ state: "hidden" });
+    await page.getByText("验证嵌入", { exact: true }).click();
+    await page.getByText(failed ? /Llama 3.2：嵌入响应无效/ : /Llama 3.2：可用.*768 维/).waitFor();
+    assert.equal(calls.filter(call => call.pathname.endsWith("/embedding-test")).length, 1);
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 0);
+    if (!failed) {
+      await page.locator(".catalog-desktop-table:visible, .catalog-mobile-items:visible").getByText("可用于知识库", { exact: true }).waitFor();
+      await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/knowledge-bases`);
+      await page.getByRole("button", { name: "新建知识库", exact: true }).click();
+      await page.getByRole("combobox", { name: "嵌入模型", exact: true }).click();
+      await page.locator(".ant-select-dropdown:visible").getByText("Llama 3.2 · 已验证", { exact: true }).click();
+    } else assert.equal(await page.getByText("可用于知识库", { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.close();
+    console.log(`${width}: embedding declaration, dedicated ${failed ? "failed" : "successful"} probe and knowledge selection passed`);
+  }
   // Exercise discovery inside the manual model editor, including unavailable lists and switching.
   for (const width of [1280, 375]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });

@@ -197,7 +197,7 @@ uv sync --group dev
 
 ### 使用与接口
 
-先启动 API 和独立 worker。关键词模式无需嵌入服务；混合模式先由管理员创建嵌入模型，调用 `POST /api/v1/models/{model_id}/embedding-test`，以实际响应验证 `embedding` 能力和维度。通用 `/capabilities/test` 不接受 embedding，聊天、流式或工具能力验证不能替代嵌入验证；探测失败会撤销嵌入标记。嵌入探测成功时同时记录声明能力与已验证能力，模型目录响应中的 `embedding_dimensions` 是探测所得值。知识库设置的嵌入下拉框包含已声明或已验证 `embedding` 的启用模型，兼容历史上仅保存验证结果的模型；只有已通过验证且有实际维度的模型才能用于混合检索构建。适配器支持 Ollama、OpenAI、OpenAI Compatible 和 Azure OpenAI 的嵌入协议；具体上游服务须分别验证。
+先启动 API 和独立 worker。关键词模式无需嵌入服务；混合模式先由管理员在模型管理页录入模型并声明「嵌入」能力（候选导入默认只有 `text`，不会按模型名称推断能力），再通过「验证能力 → 验证嵌入」调用 `POST /api/v1/models/{model_id}/embedding-test`，以实际响应验证 `embedding` 能力和维度。通用 `/capabilities/test` 不接受 embedding，聊天、流式或工具能力验证不能替代嵌入验证；探测失败会撤销嵌入标记。嵌入探测成功时同时记录声明能力与已验证能力，模型目录响应中的 `embedding_dimensions` 是探测所得值。知识库设置的嵌入下拉框包含已声明或已验证 `embedding` 的启用模型，兼容历史上仅保存验证结果的模型；只有已通过验证且有实际维度的模型才能用于混合检索构建。适配器支持 Ollama、OpenAI、OpenAI Compatible 和 Azure OpenAI 的嵌入协议；具体上游服务须分别验证。
 
 | 接口（统一以 `/api/v1` 为前缀） | 行为 |
 | --- | --- |

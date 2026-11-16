@@ -90,7 +90,7 @@ export default function KnowledgeEditor({ item, user, onClose, onSaved }: {
           <Select options={[{ value: "keyword", label: "关键词检索" }, { value: "hybrid", label: "混合检索 · 关键词 + 向量" }]} />
         </Form.Item>
         {mode === "hybrid" && <>
-          <Form.Item name="embedding_model_id" label="嵌入模型" rules={[{ required: true, message: "请选择或填写嵌入模型 ID" }]} extra="模型须通过独立嵌入验证；文本生成能力验证不能替代此验证。">
+          <Form.Item name="embedding_model_id" label="嵌入模型" rules={[{ required: true, message: "请选择或填写嵌入模型 ID" }]} extra="请先在模型管理中声明「嵌入」能力，保存后重新打开此窗口选择模型，并完成独立嵌入验证。文本生成验证不能替代嵌入验证。">
             {user.role === "admin" ? <Select showSearch optionFilterProp="label" options={options} placeholder="选择已配置的嵌入模型" /> : <InputNumber min={1} precision={0} className="kb-full-width" placeholder="填写管理员提供的嵌入模型 ID" />}
           </Form.Item>
           {user.role === "admin" && <Space className="kb-form-note" wrap><Button loading={testing} disabled={!modelId || busy} onClick={() => void probe()}>验证嵌入能力</Button><span className="kb-muted">会调用该模型的嵌入接口</span></Space>}
