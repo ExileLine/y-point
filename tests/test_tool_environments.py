@@ -19,6 +19,9 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import venv
+from contextlib import asynccontextmanager
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import timedelta
 from pathlib import Path
 from threading import Thread
@@ -501,6 +504,120 @@ def test_environment_migration_preserves_existing_versions(tmp_path: Path) -> No
         assert row == ("a" * 64, 1)
     migrate("upgrade", "head")
     migrate("check")
+
+
+@pytest.mark.parametrize(
+    ("operation", "errors", "expected_code", "expected_detail"),
+    [
+        ("download", b"ProxyError('Cannot connect to proxy')\nERROR: No matching distribution found for httpx", "dependency_network_error", None),
+        ("download", b"SSLError('certificate verify failed')\nERROR: No matching distribution found for httpx", "dependency_network_error", None),
+        ("download", b"ReadTimeoutError: Read timed out at https://user:secret@private.example/token", "dependency_network_error", None),
+        ("download", b"NewConnectionError: Failed to establish a new connection", "dependency_network_error", None),
+        ("download", b"too many 503 error responses", "dependency_network_error", None),
+        ("download", b"ERROR: No matching distribution found for httpx==999999", "dependencies_unavailable", "httpx==999999"),
+        ("install", b"ProxyError: untrusted package metadata", "install_failed", None),
+    ],
+)
+def test_preparer_distinguishes_network_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    errors: bytes,
+    expected_code: str,
+    expected_detail: str | None,
+) -> None:
+    """真实子进程的下载错误应区分网络故障与缺失包，且不公开原始错误中的凭据。"""
+    start_process = asyncio.create_subprocess_exec
+
+    async def failed_process(*args, **kwargs):
+        """用实际 stderr 和退出状态模拟失败的准备容器。"""
+        return await start_process(sys.executable, "-c", "import sys; sys.stderr.write(sys.argv[1]); sys.exit(1)", errors.decode(), **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_process)
+    with pytest.raises(tool_environments.EnvironmentBuildError) as caught:
+        asyncio.run(tool_environments._run_preparer("unused", tmp_path, [], ["python", "-m", "pip", operation], None, "test-preparer"))
+    assert caught.value.code == expected_code
+    assert caught.value.detail == expected_detail
+    assert "secret" not in str(caught.value)
+    assert "private.example" not in str(caught.value)
+
+
+def test_dependency_download_recovers_from_temporary_index_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 pip 遇到包索引首次 503 后应重试成功，完成哈希锁定与离线安装。"""
+    wheels = _offline_config(monkeypatch, tmp_path)
+    _wheel(wheels, "retry_demo", "1.0", "VALUE = 42\n")
+    config = get_config()
+    monkeypatch.setattr(config, "SCRIPT_DEPENDENCY_ALLOW_NETWORK", True)
+    monkeypatch.setattr(config, "SCRIPT_DEPENDENCY_WHEELHOUSE", "")
+    monkeypatch.setattr(config, "SCRIPT_DEPENDENCY_INDEX_URL", "https://pypi.org/simple")
+    pip_root = tmp_path / "pip"
+    venv.EnvBuilder(with_pip=True).create(pip_root)
+
+    class PackageIndex(SimpleHTTPRequestHandler):
+        """提供仅首次返回 503 的本地包索引，不依赖公网。"""
+
+        attempts = 0
+
+        def __init__(self, *args, **kwargs):
+            """将 wheel 下载限定到临时测试目录。"""
+            super().__init__(*args, directory=str(wheels), **kwargs)
+
+        def log_message(self, format: str, *args) -> None:
+            """测试不输出请求日志。"""
+
+        def do_GET(self) -> None:
+            """第一次索引请求模拟短暂服务故障，其后提供可安装 wheel。"""
+            if self.path == "/simple/retry-demo/":
+                type(self).attempts += 1
+                if self.attempts == 1:
+                    self.send_error(503)
+                    return
+                body = b'<a href="/retry_demo-1.0-py3-none-any.whl">retry-demo</a>'
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PackageIndex)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    @asynccontextmanager
+    async def local_network(image):
+        """在测试边界将受限下载网络替换为回环包索引。"""
+        yield "test-network"
+
+    async def local_preparer(image, stage, mounts, command, network, name):
+        """保留正式 pip 参数与完整构建流程，仅将容器挂载映射为宿主临时路径。"""
+        mapped = list(command)
+        mapped[0] = str(pip_root / "bin" / "python")
+        for mount in mounts:
+            if mount == "--mount":
+                continue
+            fields = dict(part.split("=", 1) for part in mount.split(",") if "=" in part)
+            mapped = [item.replace(fields["dst"], fields["src"]) for item in mapped]
+        if "--index-url" in mapped:
+            mapped[mapped.index("--index-url") + 1] = f"http://127.0.0.1:{server.server_port}/simple"
+            proxy = mapped.index("--proxy")
+            del mapped[proxy : proxy + 2]
+        result = await asyncio.to_thread(subprocess.run, mapped, capture_output=True, timeout=30)
+        assert result.returncode == 0, result.stderr.decode()
+
+    monkeypatch.setattr(tool_environments, "_package_network", local_network)
+    monkeypatch.setattr(tool_environments, "_run_preparer", local_preparer)
+    try:
+        key, lock, manifest = asyncio.run(tool_environments._build_environment(["retry-demo==1.0"], "unused", "test-spec"))
+        assert PackageIndex.attempts == 2
+        assert [(item["name"], item["version"]) for item in lock] == [("retry-demo", "1.0")]
+        site = tool_environments._verify_environment(key, manifest)
+        assert (site / "retry_demo.py").read_text() == "VALUE = 42\n"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
 
 
 def test_package_proxy_rejects_unapproved_destinations(monkeypatch: pytest.MonkeyPatch) -> None:

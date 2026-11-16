@@ -121,6 +121,19 @@ docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
 
 默认下载阶段经临时内部 Docker 网络中的代理访问 `SCRIPT_DEPENDENCY_INDEX_URL` 源站和 `SCRIPT_DEPENDENCY_ALLOWED_HOSTS` 允许的 HTTPS/443 目标，默认包括 `pypi.org`、`files.pythonhosted.org`。包源由维护者统一配置，不接受用户自定义地址；内网包仓库需配置相应 HTTPS 地址及下载域名，当前不支持包源内嵌凭据。安装阶段禁网，只接受兼容 wheel，不执行源码构建或用户安装钩子。
 
+下载请求的连接或包源临时故障最多重试 2 次，单次网络等待 15 秒；所有尝试仍受 `SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS`（默认 180 秒）的总时限约束。失败不会自动重新排队；在 Tool 页面点击重试，会重新准备当前失败版本，无须先修改依赖或新建工具。
+
+准备失败时可按 `environment.failure_code` 排查：
+
+| 失败类别 | 排查方向 |
+| --- | --- |
+| `dependency_network_error` | 包源或下载代理无法连接、DNS 解析失败、TLS 证书错误、连接超时，或包源持续返回 502/503/504。先重试；持续失败时检查 Docker 下载代理到允许仓库域名的连通性。 |
+| `dependencies_unavailable` | 包名或版本不存在、当前 Python/Linux/CPU 架构没有兼容 wheel，或离线 wheel 集合不完整。检查声明与安装包；pip 最终的“找不到包”也可能由未识别的上游错误导致。 |
+| `image_unavailable` / `configuration_error` | 沙箱镜像、Docker 访问权限、包源配置、离线安装目录或代理脚本挂载异常。 |
+| `build_timeout` | 完整准备流程超过总时限，检查网络和依赖规模。 |
+
+worker 日志记录失败版本的 `version_id` 和脱敏 `failure_code`，不记录原始 pip 输出、仓库路径或认证信息。Docker 部署可使用 `python3 scripts/deploy.py compose --sandbox -- logs --tail 100 worker` 查看。既有失败记录不包含原始网络错误，修复网络或配置后需要重新准备，才能获得当前分类结果。
+
 完全离线环境需同时交付基础镜像和用户依赖的完整 wheel 集合。在与目标 Python、Linux 系统及 CPU 架构一致的联网环境准备：
 
 ```bash

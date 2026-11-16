@@ -16,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit
 
+from loguru import logger
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from sqlalchemy import select, update
@@ -50,6 +51,7 @@ ENVIRONMENT_FIELDS = (
 FAILURE_MESSAGES = {
     ToolEnvironmentFailure.IMAGE_UNAVAILABLE: "基础镜像不可用，请联系维护者准备沙箱镜像后重试",
     ToolEnvironmentFailure.DEPENDENCIES_UNAVAILABLE: "依赖获取失败：请检查包名、版本约束、包源及兼容 wheel；离线部署请补充安装包后重试",
+    ToolEnvironmentFailure.DEPENDENCY_NETWORK_ERROR: "依赖下载网络连接失败：请稍后重试；持续失败时请联系维护者检查包源、下载代理、DNS 和 TLS 证书配置",
     ToolEnvironmentFailure.INSTALL_FAILED: "依赖安装失败，请检查依赖版本兼容性及镜像中的系统库",
     ToolEnvironmentFailure.BUILD_TIMEOUT: "依赖环境准备超时，可稍后重试或缩小依赖范围",
     ToolEnvironmentFailure.SIZE_LIMIT: "依赖环境超过文件数量或容量限制",
@@ -215,6 +217,34 @@ def _missing_dependency(errors: bytes) -> str | None:
     return None
 
 
+def _preparation_error(command: list[str], errors: bytes) -> EnvironmentBuildError:
+    """优先识别下载网络错误，仅持久化固定类别及经校验的包声明。"""
+    if "download" not in command:
+        return EnvironmentBuildError(ToolEnvironmentFailure.INSTALL_FAILED)
+    network_markers = (
+        b"ProxyError",
+        b"SSLError",
+        b"NewConnectionError",
+        b"ReadTimeoutError",
+        b"ConnectTimeoutError",
+        b"ConnectionError",
+        b"RemoteDisconnected",
+        b"ConnectionResetError",
+        b"Failed to establish a new connection",
+        b"Temporary failure in name resolution",
+        b"Name or service not known",
+        b"Network is unreachable",
+        b"Read timed out",
+        b"Connection broken:",
+        b"too many 502 error responses",
+        b"too many 503 error responses",
+        b"too many 504 error responses",
+    )
+    if any(marker in errors for marker in network_markers):
+        return EnvironmentBuildError(ToolEnvironmentFailure.DEPENDENCY_NETWORK_ERROR)
+    return EnvironmentBuildError(ToolEnvironmentFailure.DEPENDENCIES_UNAVAILABLE, _missing_dependency(errors))
+
+
 @asynccontextmanager
 async def _package_network(image: str):
     """通过隔离网络和域名白名单代理获取 wheel，退出时回收临时网络。"""
@@ -323,8 +353,7 @@ async def _run_preparer(image: str, stage: Path, mounts: list[str], command: lis
             await asyncio.to_thread(_check_build_size, stage)
         _, errors, _ = await readers
         if process.returncode:
-            code = ToolEnvironmentFailure.DEPENDENCIES_UNAVAILABLE if "download" in command else ToolEnvironmentFailure.INSTALL_FAILED
-            raise EnvironmentBuildError(code, _missing_dependency(errors))
+            raise _preparation_error(command, errors)
     finally:
         if process.returncode is None:
             await _remove_container(name)
@@ -361,7 +390,7 @@ async def _build_environment(requirements: list[str], image: str, spec_hash: str
             "--disable-pip-version-check",
             "--no-cache-dir",
             "--only-binary=:all:",
-            "--retries=0",
+            "--retries=2",
             "--timeout=15",
             "--dest=/wheels",
             "-r",
@@ -553,6 +582,7 @@ async def prepare_next_tool_environment(sessions: async_sessionmaker[AsyncSessio
                 else ToolEnvironmentFailure.CONFIGURATION_ERROR
             )
         )
+        logger.warning("Tool 依赖环境准备失败 version_id={} failure_code={}", version_id, code)
         result = {
             "environment_state": ToolEnvironmentState.FAILED,
             "environment_error_code": code,

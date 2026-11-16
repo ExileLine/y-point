@@ -297,6 +297,7 @@ class ToolEnvironmentFailure(StrEnum):
 
     IMAGE_UNAVAILABLE = "image_unavailable"
     DEPENDENCIES_UNAVAILABLE = "dependencies_unavailable"
+    DEPENDENCY_NETWORK_ERROR = "dependency_network_error"
     INSTALL_FAILED = "install_failed"
     BUILD_TIMEOUT = "build_timeout"
     SIZE_LIMIT = "size_limit"
