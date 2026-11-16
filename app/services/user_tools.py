@@ -73,7 +73,7 @@ def validate_mcp_url(url: str) -> str:
 
 
 def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, str, bool, str]:
-    """校验脚本或 MCP 执行定义，并返回固定策略及摘要。"""
+    """校验脚本或 MCP 执行定义，并返回读写属性、审批策略及摘要。"""
     if TOOL_NAME_RE.fullmatch(name) is None:
         raise ValueError("Tool 名称只能使用小写字母、数字和下划线，且以字母开头")
     schema = fields.get("input_schema")
@@ -99,7 +99,7 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
                 ast.parse(source)
             except SyntaxError as exc:
                 raise ValueError("Python 脚本语法无效") from exc
-        effect, approval = ToolEffect.READ, False
+        effect, approval = ToolEffect.READ, fields.get("requires_approval", False)
         fields["recovery_policy"] = RecoveryPolicy.SAFE
         fields["idempotency_key_field"] = None
     elif kind == ToolKind.MCP:
@@ -111,7 +111,7 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             raise ValueError("MCP Tool 不能包含脚本源码")
         if fields.get("visibility") == Visibility.PUBLIC and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
             raise ValueError("公开 MCP Tool 需明确授权共享连接凭据")
-        effect, approval = fields.get("effect") or ToolEffect.WRITE, True
+        effect, approval = fields.get("effect") or ToolEffect.WRITE, fields.get("requires_approval", False)
         policy = fields.get("recovery_policy") or (RecoveryPolicy.SAFE if effect == ToolEffect.READ else RecoveryPolicy.MANUAL)
         key = fields.get("idempotency_key_field")
         if effect == ToolEffect.READ and policy != RecoveryPolicy.SAFE:
@@ -142,9 +142,12 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
         "encrypted_credentials",
         "recovery_policy",
         "idempotency_key_field",
+        "requires_approval",
     )
     fields = {key: getattr(previous, key) if previous is not None else None for key in keys}
     fields.update({key: value for key, value in body.items() if key in keys})
+    if previous is None and "requires_approval" not in body:
+        fields["requires_approval"] = False
     fields["effect"] = body.get("effect", previous.effect if previous is not None else None)
     if body.get("clear_mcp_credentials"):
         if body.get("mcp_bearer_token"):
@@ -198,7 +201,7 @@ async def agent_tool_rows(db: AsyncSession, agent_id: int) -> list[AgentTool]:
 
 
 async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor_id: int) -> None:
-    """为本轮固定当前用户有权使用的 Agent Tool；共享 Agent 的私有 Tool 自动排除。"""
+    """固定 Agent 的执行版本及当前发布的审批设置；共享 Agent 的私有 Tool 自动排除。"""
     rows = await agent_tool_rows(db, agent_id)
     if not rows:
         return
@@ -220,12 +223,23 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
         version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version))
         if version is None or not version.verified:
             continue
+        current_number = by_id[row.tool_id].current_version
+        policy = (
+            version
+            if version.version == current_number
+            else await db.scalar(
+                select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == current_number),
+            )
+        )
+        if policy is None:
+            raise CustomException(status_code=409, custom_code=10005, detail="Tool 当前审批配置不可用")
         db.add(
             RunTool(
                 run_id=run_id,
                 tool_id=row.tool_id,
                 tool_version=row.tool_version,
                 content_hash=version.content_hash,
+                requires_approval=policy.requires_approval,
                 is_deleted=0,
                 status=1,
             ),

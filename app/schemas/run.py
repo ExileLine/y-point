@@ -198,6 +198,13 @@ class ApprovalDecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: ApprovalDecision = Field(description="审批决定：同意或拒绝", examples=["approve"])
+    expected_approval_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=36,
+        description="页面已展示的审批请求 ID，防止旧页面决定同一运行中的后续审批；省略时兼容旧调用方",
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
 
 
 class ApprovalActionOut(BaseModel):

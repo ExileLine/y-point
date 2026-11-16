@@ -128,6 +128,7 @@ async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: As
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     fields.pop("visibility")
     fields.pop("effect", None)
+    fields.pop("requires_approval", None)
     return fields, effect, approval, digest
 
 

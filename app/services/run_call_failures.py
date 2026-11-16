@@ -24,7 +24,7 @@ FAILURE_MESSAGES = {
     RunCallFailure.CONNECTION_FAILED: "无法连接工具服务，请检查服务状态和网络连接。",
     RunCallFailure.AUTHENTICATION_FAILED: "工具服务认证失败或拒绝访问，请检查工具连接配置与凭据。",
     RunCallFailure.RATE_LIMITED: "工具服务触发请求频率限制，请稍后重新提交。",
-    RunCallFailure.REMOTE_ERROR: "远端工具服务返回错误，请检查服务状态与工具版本。",
+    RunCallFailure.REMOTE_ERROR: "远端工具服务返回错误，请检查调用参数、工具版本与服务状态。",
     RunCallFailure.CONFIGURATION_ERROR: "脚本依赖环境或沙箱镜像不可用，请检查工具配置并重新准备环境。",
     RunCallFailure.SCRIPT_FAILED: "脚本进程执行失败，请检查脚本逻辑及所需依赖。",
     RunCallFailure.INVALID_OUTPUT: "脚本返回内容不是有效 JSON，请检查脚本的标准输出格式。",
@@ -33,6 +33,10 @@ FAILURE_MESSAGES = {
     RunCallFailure.EXECUTION_ERROR: "工具执行失败，未提供可安全展示的具体原因，请检查工具配置或联系维护者。",
     RunCallFailure.INTERRUPTED: "调用执行被中断，无法确认最终执行结果，请核实后再决定是否重新提交。",
 }
+
+
+class ToolExecutionError(Exception):
+    """标识工具执行终止，避免被归为模型供应商失败且不保留远端异常正文。"""
 
 
 def call_failure_message(code: str | None) -> str:

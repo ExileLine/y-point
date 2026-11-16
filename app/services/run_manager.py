@@ -801,12 +801,14 @@ async def get_owned_approval(db: AsyncSession, run_id: str, owner_id: int) -> Ru
     return approval
 
 
-async def decide_approval(db: AsyncSession, run_id: str, owner_id: int, decision: str) -> RunApproval:
+async def decide_approval(db: AsyncSession, run_id: str, owner_id: int, decision: str, *, expected_approval_id: str | None = None) -> RunApproval:
     """仅允许运行所有者决定一次审批；拒绝时同步结束运行。"""
     if decision not in {ApprovalDecision.APPROVE, ApprovalDecision.REJECT}:
         raise ValueError("无效的审批决定")
     run = await get_owned_run(db, run_id, owner_id)
     approval = await get_owned_approval(db, run_id, owner_id)
+    if expected_approval_id is not None and approval.id != expected_approval_id:
+        raise RunConflictError("审批请求已变化，请刷新后确认最新请求")
     now = shanghai_now(naive=True)
     if run.state != RunState.WAITING_FOR_APPROVAL or run.checkpoint_id != approval.checkpoint_id or approval.state != ApprovalState.PENDING:
         raise RunConflictError("运行或审批状态已变化")

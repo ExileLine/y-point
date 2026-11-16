@@ -221,7 +221,7 @@ async def submit_approval_decision(
     """只允许所有者对未过期的待处理请求提交一次同意或拒绝。"""
     await _owned_run(db, run_id, actor.id)
     try:
-        approval = await decide_approval(db, run_id, actor.id, body.decision)
+        approval = await decide_approval(db, run_id, actor.id, body.decision, expected_approval_id=body.expected_approval_id)
         await db.commit()
     except RunNotFoundError:
         raise CustomException(status_code=404, custom_code=10002, detail="审批请求不存在") from None

@@ -330,7 +330,7 @@ def test_legacy_failed_report_does_not_poison_following_turn(tmp_path: Path, has
                 lease_seconds=10,
                 poll_seconds=0.05,
             )
-            assert broken.state == RunState.FAILED and broken.failure_code == "model_error"
+            assert broken.state == RunState.FAILED and broken.failure_code == "tool_error"
             async with sessions.begin() as db:
                 # 已失败的后续请求不改变失败检查点归属，下一轮仍应找回原始安全失败。
                 rejected = await create_conversation_run(db, "previous blocked followup")

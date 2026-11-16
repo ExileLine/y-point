@@ -47,7 +47,6 @@ from app.core.enums import (
     RunRuntimeFailureReason,
     RunState,
     RunTimeoutReason,
-    ToolFeedbackFailure,
     ToolInvocationState,
     ToolEffect,
     ToolLeaseKind,
@@ -57,7 +56,7 @@ from app.services.conversation_history import conversation_history_paths as _con
 from app.services.model_adapter import is_model_context_overflow
 from app.services.model_connection_retry import invoke_model_with_connection_retry
 from app.services.tool_arguments import is_tool_argument_error
-from app.services.run_call_failures import tool_exception_failure, tool_result_failure
+from app.services.run_call_failures import ToolExecutionError, tool_exception_failure, tool_result_failure
 from app.services.knowledge_policy import load_knowledge_scope
 from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
@@ -489,7 +488,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
                     if invocation is not None:
                         invocation.state = ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED
-                        invocation.failure_code = "tool_timeout" if isinstance(exc, TimeoutError) else "execution_interrupted"
+                        invocation.failure_code = tool_exception_failure(exc)
             with suppress(RunConflictError):
                 async with self.sessions.begin() as db:
                     await append_tool_event(
@@ -503,6 +502,8 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     )
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
+            if isinstance(exc, Exception):
+                raise ToolExecutionError("工具执行失败") from None
             raise
         event_type = RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
         async with self.sessions.begin() as db:
@@ -528,7 +529,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     else ToolInvocationState.COMPLETED
                 )
                 invocation.failure_code = (
-                    ToolFeedbackFailure.INVALID_ARGUMENTS if argument_error else "execution_error" if event_type == RunEventType.TOOL_FAILED else None
+                    tool_result_failure(result.content) if event_type == RunEventType.TOOL_FAILED else None
                 )
         return result
 
@@ -1247,6 +1248,10 @@ async def execute_text_run(
             RunRuntimeFailureReason.TOOL_CAPACITY,
             catalog_model=catalog_model,
             started=started,
+        )
+    except ToolExecutionError:
+        return await _finish_interrupted(
+            sessions, run_id, lease_token, RunRuntimeFailureReason.TOOL, catalog_model=catalog_model, started=started,
         )
     except ToolExecutionTimeoutError:
         return await _finish_interrupted(

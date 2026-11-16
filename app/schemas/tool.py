@@ -40,6 +40,7 @@ class ToolCreateIn(BaseModel):
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="远端 MCP 工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="MCP Bearer 凭据，仅写入时接收", examples=["token-value"])
     share_credentials: bool = Field(default=False, description="公开 MCP 工具时明确允许他人使用该凭据", examples=[False])
+    requires_approval: bool = Field(default=False, strict=True, description="工具调用前是否需要人工审批，默认不需要", examples=[False])
     effect: ToolEffect | None = Field(default=None, description="MCP 读写属性；远端未提供声明时仅管理员可确认只读", examples=["read"])
     recovery_policy: RecoveryPolicy | None = Field(default=None, description="恢复策略，外部写需配置可核对的幂等契约", examples=["idempotent"])
     idempotency_key_field: str | None = Field(
@@ -79,6 +80,7 @@ class ToolUpdateIn(BaseModel):
     mcp_bearer_token: str | None = Field(default=None, description="替换 MCP Bearer 凭据，留空时保留", examples=["new-token"])
     share_credentials: bool | None = Field(default=None, description="公开时是否授权共享凭据", examples=[True])
     clear_mcp_credentials: bool = Field(default=False, description="清除新版本凭据并撤销历史凭据版本，与替换密钥互斥", examples=[True])
+    requires_approval: bool | None = Field(default=None, strict=True, description="新版工具调用前是否需要审批；省略时保留原设置", examples=[False])
     effect: ToolEffect | None = Field(default=None, description="新版 MCP 读写属性", examples=["read"])
     recovery_policy: RecoveryPolicy | None = Field(default=None, description="新版调用恢复策略", examples=["idempotent"])
     idempotency_key_field: str | None = Field(default=None, min_length=1, max_length=128, description="远端幂等键字符串参数名", examples=["request_id"])

@@ -102,6 +102,7 @@ class RunTool(CustomBaseModel):
     tool_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="Tool ID")
     tool_version: Mapped[int] = mapped_column(Integer, nullable=False, comment="运行固定版本号")
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, comment="运行固定执行定义摘要")
+    requires_approval: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="提交时审批设置快照，空值沿用历史工具版本")
 
 
 class ToolInvocation(CustomBaseModel):

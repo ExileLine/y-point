@@ -166,3 +166,12 @@
 .sessions-composer { flex-shrink: 0; max-height: 70%; overflow-y: auto; overscroll-behavior: contain; }
 .chat-file-list { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
 @media (max-width: 600px) { .sessions-composer { max-height: 70%; } .chat-file-list { max-height: 160px; } }
+
+.run-approval { width: min(100%, var(--yp-message-max-width)); margin: var(--yp-space-3) auto; padding: var(--yp-space-3); border: 1px solid var(--yp-color-border); border-radius: var(--yp-radius-md); background: var(--yp-color-surface); overflow-wrap: anywhere; }
+.run-approval > .ant-alert { margin-bottom: var(--yp-space-2); }
+.run-approval-actions { margin: var(--yp-space-3) 0; padding-left: var(--yp-space-5); }
+.run-approval-actions li { margin-bottom: var(--yp-space-2); }
+.run-approval-actions strong, .run-approval-actions span { display: block; }
+.run-approval-actions details, .run-approval-expiry { color: var(--yp-color-text-secondary); font-size: var(--yp-font-size-sm); }
+.run-approval-actions summary { cursor: pointer; }
+.run-approval-actions code { overflow-wrap: anywhere; }

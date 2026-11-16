@@ -92,7 +92,15 @@ async def snapshot_skill_scripts(db: AsyncSession, run_id: str, agent_id: int, a
             )
             if fixed is None or not fixed.verified or fixed.content_hash != version.content_hash:
                 raise CustomException(status_code=409, custom_code=10005, detail="Skill 包内脚本尚未验证")
-            db.add(RunTool(run_id=run_id, tool_id=binding.tool_id, tool_version=binding.tool_version, content_hash=fixed.content_hash))
+            db.add(
+                RunTool(
+                    run_id=run_id,
+                    tool_id=binding.tool_id,
+                    tool_version=binding.tool_version,
+                    content_hash=fixed.content_hash,
+                    requires_approval=fixed.requires_approval,
+                ),
+            )
     await require_dependencies(db, versions, verified_tools)
 
 

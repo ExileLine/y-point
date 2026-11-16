@@ -27,13 +27,14 @@ type Editor = {
   remoteName: string;
   bearerToken: string;
   shareCredentials: boolean;
+  requiresApproval: boolean;
 };
 
 function blankEditor(): Editor {
   return {
     item: null, kind: "script", name: "", description: "", visibility: "private", enabled: true,
     schema: defaultSchema, language: "python", source: defaultSource, requirements: "",
-    url: "", remoteName: "", bearerToken: "", shareCredentials: false,
+    url: "", remoteName: "", bearerToken: "", shareCredentials: false, requiresApproval: false,
   };
 }
 
@@ -127,7 +128,7 @@ export default function Tools({ userId }: { userId: number }) {
         schema: JSON.stringify(full.input_schema || {}, null, 2), language: full.script_language || "python",
         requirements: (full.requirements || []).join("\n"),
         source: full.source_code || "", url: full.mcp_url || "", remoteName: full.mcp_tool_name || "",
-        bearerToken: "", shareCredentials: Boolean(full.share_credentials),
+        bearerToken: "", shareCredentials: Boolean(full.share_credentials), requiresApproval: Boolean(full.requires_approval),
       });
     } catch (failure) { message.error(errorText(failure)); }
   }
@@ -169,6 +170,7 @@ export default function Tools({ userId }: { userId: number }) {
       const draft: ToolDraft = {
         name: editor.name.trim(), description: editor.description.trim(), kind: editor.kind,
         visibility: editor.kind === "script" && !editor.item ? "private" : editor.visibility,
+        requires_approval: editor.requiresApproval,
       };
       if (editor.kind === "script") {
         draft.input_schema = JSON.parse(editor.schema) as Record<string, unknown>;
@@ -317,6 +319,8 @@ export default function Tools({ userId }: { userId: number }) {
             placeholder={editor.remoteName || "选择发现的工具"} /></label>
           {editor.visibility === "public" && <label className="resource-switch-row">允许其他用户使用此连接凭据<Switch aria-label="共享连接凭据" checked={editor.shareCredentials} onChange={(shareCredentials) => update({ shareCredentials })} /></label>}
         </>}
+        <label className="resource-switch-row">调用前需要审批<Switch aria-label="调用前需要审批" checked={editor.requiresApproval} onChange={(requiresApproval) => update({ requiresApproval })} /></label>
+        <Typography.Text type="secondary">默认关闭，Agent 可直接调用。开启后，每次调用需在会话中手动确认。保存后下一轮对话生效；已开始的轮次保持原设置。</Typography.Text>
       </Space>}
     </Drawer>
     <Modal title="试运行结果" open={testResult !== null} footer={<Button onClick={() => setTestResult(null)}>关闭</Button>}

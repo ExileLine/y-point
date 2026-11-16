@@ -758,11 +758,22 @@ async def exercise_run_api(database: Path, base_url: str = "http://test") -> Non
             async with sessions.begin() as db:
                 with pytest.raises(RunConflictError):
                     await resume_approved_run(db, pending_id)
+            stale_decision = await client.post(
+                f"/api/v1/runs/{pending_id}/approval/decision",
+                headers=alice,
+                json={
+                    "decision": "approve",
+                    "expected_approval_id": str(uuid4()),
+                },
+            )
+            assert stale_decision.status_code == 409
+            assert (await client.get(f"/api/v1/runs/{pending_id}/approval", headers=alice)).json()["data"]["state"] == "pending"
             decision = await client.post(
                 f"/api/v1/runs/{pending_id}/approval/decision",
                 headers=alice,
                 json={
                     "decision": "reject",
+                    "expected_approval_id": approval["id"],
                 },
             )
             assert decision.status_code == 200 and decision.json()["data"]["state"] == "rejected"

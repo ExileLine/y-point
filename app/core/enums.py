@@ -63,6 +63,7 @@ class ToolFeedbackFailure(StrEnum):
     INVALID_ARGUMENTS = "invalid_tool_arguments"
     SCRIPT_INPUT_REJECTED = "script_input_rejected"
     GENERATED_ARTIFACT_UNAVAILABLE = "generated_artifact_unavailable"
+    REMOTE_ERROR = "remote_error"
 
 
 class RunState(StrEnum):
@@ -183,6 +184,7 @@ class RunRuntimeFailureReason(StrEnum):
 
     GRAPH_STEP_LIMIT = "graph_step_limit_exceeded"
     TOOL_CAPACITY = "tool_capacity_exceeded"
+    TOOL = "tool_error"
 
 
 class RunModelFailureReason(StrEnum):

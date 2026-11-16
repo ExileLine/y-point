@@ -16,6 +16,7 @@ import RunCalls, { ActiveRunCalls } from "./components/RunCalls";
 import StreamingMessage from "./components/StreamingMessage";
 import ReasoningPanel from "./components/ReasoningPanel";
 import RunMetrics from "./components/RunMetrics";
+import RunApproval from "./components/RunApproval";
 import SessionMetrics from "./components/SessionMetrics";
 import RunKnowledgeEvidence from "./knowledge/RunKnowledgeEvidence";
 import { createClientId } from "./browser-compat";
@@ -28,6 +29,8 @@ const stateLabels: Record<string, string> = {
   completed: "已完成", failed: "运行失败", cancelled: "已取消", timed_out: "已超时",
 };
 const failureLabels: Record<string, string> = {
+  approval_rejected: "你已拒绝本次工具调用，本轮运行已取消",
+  approval_expired: "工具审批已过期，请重新发起请求",
   provider_timeout: "模型供应商响应超时，可稍后重新发送；持续超时请检查供应商超时设置或切换模型",
   model_execution_timeout: "本次模型调用超时，可调整智能体的单次模型超时或切换模型后重试",
   execution_timeout: "运行被执行调用方的时限保护中断，可检查任务记录后重试",
@@ -36,6 +39,7 @@ const failureLabels: Record<string, string> = {
   model_output_limit_exceeded: "模型已达到本次输出额度，回答或工具参数可能未完成。可提高智能体最大输出 Token 或留空交由供应商决定；已留空时需检查供应商默认额度与模型输出上限，必要时分批审查或切换模型",
   empty_response: "模型未返回可展示的正文，请重新发送或切换模型",
   model_error: "模型请求失败，可重新发送或切换模型；如持续失败请检查供应商连接",
+  tool_error: "工具执行失败，请展开失败的工具调用查看原因，并检查工具参数、服务状态或配置",
   summary_error: "上下文摘要失败", checkpoint_mismatch: "会话状态不一致", attachment_unavailable: "附件不可用",
   artifact_required: "需要文件", context_window_exceeded: "超出模型上下文窗口",
 };
@@ -371,6 +375,9 @@ export default function Sessions() {
       }
       if (["tool_started", "tool_completed", "tool_failed"].includes(payload.event_type)) setCallsRevision(value => value + 1);
       if (payload.event_type === "artifact_published") setMessageRevision((value) => value + 1);
+      if (payload.event_type === "state" && payload.state && !terminalStates.has(payload.state)) {
+        setActiveRun(current => current?.id === runId ? { ...current, state: payload.state!, failure_code: payload.failure_code ?? null } : current);
+      }
       if (payload.event_type === "state" && payload.state && terminalStates.has(payload.state)) {
         setLastRun((current) => ({ ...(current?.id === runId ? current : subscribedRun), state: payload.state!, failure_code: payload.failure_code ?? null }));
         setActiveRun(null);
@@ -397,6 +404,8 @@ export default function Sessions() {
           setRevision((value) => value + 1);
           return;
         }
+        setActiveRun(snapshot.run);
+        setLastRun(snapshot.run);
         await issueRunStreamTicket(runId);
         if (!active) return;
         stream = new EventSource(runStreamUrl(runId, cursor));
@@ -632,6 +641,12 @@ export default function Sessions() {
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
             {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} streamCache={streamCache} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
             {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><PartialRunNotice state={currentRun?.state} failureCode={currentRun?.failure_code} /><ReasoningPanel key={`reasoning-${pendingRunId}`} text={streamReasoning?.runId === pendingRunId ? streamReasoning.text : ""} active={activeRun?.id === pendingRunId && Boolean(streamReasoning?.thinking)} onProgress={followContent} /><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={visible => { streamCache.current = { runId: preview.runId, text: visible }; followContent(); }} /> : <MessageContent text={preview.text} runId={preview.runId} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}<RunMetrics run={currentRun} active={activeRun?.id === pendingRunId} /></div></div></div>}
+            {activeRun?.state === "waiting_for_approval" && <RunApproval key={activeRun.id} runId={activeRun.id} onRunChanged={updated => {
+              if (currentSessionId.current !== updated.session_id) return;
+              setLastRun(updated);
+              setActiveRun(terminalStates.has(updated.state) ? null : updated);
+              if (terminalStates.has(updated.state)) { setMessageRevision(value => value + 1); setRevision(value => value + 1); }
+            }} />}
             {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
             {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
             </div>

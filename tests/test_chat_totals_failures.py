@@ -22,7 +22,7 @@ from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run import AgentRun
 from app.models.agent_run_message import AgentRunMessage
 from app.models.base import Base, shanghai_now
-from app.services.run_call_failures import call_failure_message, tool_exception_failure, tool_result_failure
+from app.services.run_call_failures import ToolExecutionError, call_failure_message, tool_exception_failure, tool_result_failure
 from app.services.run_calls import load_run_calls
 from app.services.run_executor import AuthorizedToolsMiddleware, ToolExecutionTimeoutError
 from app.services.run_manager import append_tool_event, claim_run, create_run
@@ -116,7 +116,7 @@ def test_failure_event_and_summary_roundtrip(tmp_path: Path, mode: str) -> None:
                 runtime=None,
             )
             if mode == "exception":
-                with pytest.raises(PermissionError):
+                with pytest.raises(ToolExecutionError):
                     await middleware._execute_authorized_tool_call(request, handler)
                 expected = RunCallFailure.PERMISSION_DENIED
             elif mode == "timeout":

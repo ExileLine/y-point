@@ -33,6 +33,7 @@ from app.models.artifact import Artifact
 from app.models.run_artifact_read import RunArtifactRead
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
+from app.models.tool import RunTool
 from app.services.attachment_text import GENERATED_CONTEXT_MEDIA_TYPES, extract_context_text
 from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact, render_text_artifact
 from app.services.artifact_store import artifact_read_max_bytes, artifact_root, stage_generated_artifact, storage_path
@@ -429,6 +430,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 )
         builtins, approvals = await registry.resolve(db, run, sessions)
         user_tools = await load_run_tools(db, run.id, run.owner_id)
+        approval_policies = dict((await db.execute(select(RunTool.tool_id, RunTool.requires_approval).where(RunTool.run_id == run.id))).all())
         for definition, version in user_tools:
             tool_name = model_tool_name(definition)
 
@@ -522,7 +524,10 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     handle_tool_error=tool_argument_error_content,
                 ),
             )
-            if version.requires_approval:
+            requires_approval = approval_policies.get(definition.id)
+            if requires_approval is None:
+                requires_approval = version.requires_approval
+            if requires_approval:
                 approvals[tool_name] = True
         return builtins, approvals
 

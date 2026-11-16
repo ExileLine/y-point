@@ -296,14 +296,14 @@ export type UserTool = {
   kind: "script" | "mcp"; visibility: "private" | "public"; enabled: boolean; current_version: number;
   input_schema?: Record<string, unknown>; script_language?: "python" | "bash" | null;
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
-  has_credentials?: boolean; share_credentials?: boolean;
+  has_credentials?: boolean; share_credentials?: boolean; requires_approval?: boolean;
   verified?: boolean; requirements?: string[]; environment?: ToolEnvironment;
 };
 export type ToolDraft = {
   name: string; description: string; kind: "script" | "mcp"; visibility: "private" | "public";
   input_schema?: Record<string, unknown> | null; script_language?: "python" | "bash" | null;
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
-  mcp_bearer_token?: string; share_credentials?: boolean; requirements?: string[];
+  mcp_bearer_token?: string; share_credentials?: boolean; requires_approval?: boolean; requirements?: string[];
 };
 export type ToolCatalog = {
   builtin: { model_name: string; description: string; kind: "builtin"; visibility: "builtin" }[];
@@ -478,6 +478,11 @@ export type SessionMessage = {
   metrics?: RunMetrics | null;
 };
 export type SessionRun = { agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type RunApproval = {
+  id: string; run_id: string; state: "pending" | "approved" | "rejected" | "expired" | "cancelled";
+  actions: { name: string; arguments_hash: string; resource_id?: string | null; resource_name?: string | null }[];
+  expires_at: string; decided_at: string | null;
+};
 export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null; failure_code?: string | null };
 export type RunSnapshot = { run: SessionRun; events: RunStreamEvent[]; latest_sequence: number; next_after: number; has_more: boolean };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
@@ -505,6 +510,9 @@ export const listSessionRuns = (agentId: number, sessionId: string): Promise<Ses
 export const submitSessionRun = (agentId: number, sessionId: string, draft: SessionRunDraft): Promise<SessionRun> => request(`${sessionPath(agentId, sessionId)}/runs`, { method: "POST", body: JSON.stringify(draft) });
 export const getRunCalls = (runId: string, signal?: AbortSignal): Promise<RunCall[]> => request(`/runs/${encodeURIComponent(runId)}/calls`, { signal });
 export const getRun = (runId: string): Promise<SessionRun> => request(`/runs/${encodeURIComponent(runId)}`);
+export const getRunApproval = (runId: string, signal?: AbortSignal): Promise<RunApproval> => request(`/runs/${encodeURIComponent(runId)}/approval`, { signal });
+export const decideRunApproval = (runId: string, decision: "approve" | "reject", expectedApprovalId: string): Promise<RunApproval> =>
+  request(`/runs/${encodeURIComponent(runId)}/approval/decision`, { method: "POST", body: JSON.stringify({ decision, expected_approval_id: expectedApprovalId }) });
 export const cancelRun = (runId: string): Promise<SessionRun> => request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
 export const issueRunStreamTicket = (runId: string): Promise<{ expires_in: number }> => request(`/runs/${encodeURIComponent(runId)}/stream-ticket`, { method: "POST" });
 export const getRunSnapshot = (runId: string, after: number): Promise<RunSnapshot> => request(`/runs/${encodeURIComponent(runId)}/snapshot?after=${after}&limit=100`);

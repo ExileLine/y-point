@@ -64,7 +64,7 @@ async function fixture(page) {
     else { unexpected.push(path); return route.abort(); }
     return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data }) });
   });
-  return { paths, unexpected, opened, get reads() { return reads; }, eventsFail() { phase = 'finished'; fail = true; releaseStream(); }, restore() { fail = false; }, complete() { complete = true; run = { ...run, state: 'completed' }; } };
+  return { paths, unexpected, opened, get reads() { return reads; }, eventsFail() { phase = 'finished'; fail = true; releaseStream(); }, restore() { fail = false; }, complete() { complete = true; run = { ...run, state: 'completed' }; }, toolFailure() { complete = false; run = { ...run, state: 'failed', failure_code: 'tool_error' }; } };
 }
 async function verifyRequestLifecycle() {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -217,6 +217,11 @@ try {
     assert.equal(await page.locator('[data-call-run="run-failed"]').count(), 1);
     assert.equal(await page.locator('[data-call-id="old-skill"]').count(), 1);
     assert.deepEqual(f.unexpected, []); assert.deepEqual(errors, []); assertions += 6;
+    f.toolFailure();
+    await page.reload();
+    await page.getByText('工具执行失败，请展开失败的工具调用查看原因，并检查工具参数、服务状态或配置', { exact: true }).waitFor();
+    assert.equal(await page.getByText('模型请求失败，可重新发送或切换模型；如持续失败请检查供应商连接', { exact: true }).count(), 0);
+    assertions += 2;
     await context.close(); console.log(`${layout}: 历史与实时调用、逐次结果、失败轮次、错误重试、最终消息与刷新恢复通过`);
   }
   console.log(`调用状态浏览器契约回归通过：${assertions} 项断言；使用虚构接口响应，不调用真实模型和工具。`);

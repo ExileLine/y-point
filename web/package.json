@@ -11,6 +11,8 @@
     "verify:agents": "node scripts/verify-agents.mjs",
     "verify:models": "node scripts/verify-models.mjs",
     "verify:sessions": "node scripts/verify-sessions.mjs",
+    "verify:approvals": "node scripts/verify-approvals.mjs",
+    "verify:tool-approvals": "node scripts/verify-tool-approvals.mjs",
     "verify:knowledge": "node scripts/verify-knowledge.mjs",
     "verify:resources": "node scripts/verify-resources.mjs",
     "verify:chat": "node scripts/verify-chat.mjs",

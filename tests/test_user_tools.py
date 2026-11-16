@@ -415,7 +415,8 @@ def test_terminal_run_marks_unfinished_tool_call_unknown(tmp_path: Path) -> None
     asyncio.run(exercise())
 
 
-def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("requires_approval", [False, True])
+def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requires_approval: bool) -> None:
     """公开且无凭据的 MCP Tool 可供其他用户直接关联和调用。"""
 
     async def fake_invoke(url, name, arguments, token, timeout, schema, **kwargs):
@@ -466,7 +467,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
                                 "required": ["repoName"],
                             },
                             effect="read",
-                            requires_approval=True,
+                            requires_approval=requires_approval,
                             verified=True,
                             mcp_url="https://mcp.deepwiki.com/mcp",
                             mcp_tool_name="read_wiki_structure",
@@ -491,7 +492,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
             async with sessions.begin() as db:
                 claimed = await claim_run(db, run.id)
                 tools, approvals = await make_worker_tool_resolver(sessions)(db, claimed)
-                assert approvals["user_tool_3_wiki_structure"] is True
+                assert approvals.get("user_tool_3_wiki_structure", False) is requires_approval
             tool = next(item for item in tools if item.name == "user_tool_3_wiki_structure")
             result = await tool.ainvoke(
                 {

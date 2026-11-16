@@ -16,6 +16,10 @@ from app.core.enums import ToolFeedbackFailure
 MAX_ARGUMENT_ISSUES = 8
 
 
+class MCPReadToolError(ToolException):
+    """只读 MCP 已返回错误结果，允许模型读取有界反馈并决定是否修正参数。"""
+
+
 class ScriptInputToolError(ToolException):
     """只读脚本主动拒绝输入后的有界反馈，脚本已经执行。"""
 
@@ -53,8 +57,8 @@ def validate_tool_arguments(schema: dict, arguments: dict) -> None:
 
 
 def tool_argument_error_content(error: ToolException) -> str:
-    """仅将受控参数或只读脚本拒绝反馈给模型，其余工具异常沿用原失败处理。"""
-    if not isinstance(error, (ToolArgumentsError, ScriptInputToolError)):
+    """仅将参数、只读脚本拒绝及只读 MCP 错误反馈给模型，其余异常沿用原失败处理。"""
+    if not isinstance(error, (ToolArgumentsError, ScriptInputToolError, MCPReadToolError)):
         raise error
     return str(error)
 
