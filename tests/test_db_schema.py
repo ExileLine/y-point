@@ -5,6 +5,8 @@
 
 """验证数据库迁移结构与启动时的缺失迁移检查。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 import os
 import subprocess
@@ -360,8 +362,14 @@ async def _exercise_isolated_migrations(
                         assert (await client.get(f"/api/v1/artifacts/{file_id}", headers=outsider)).status_code == 404
                         downloaded = await client.get(f"/api/v1/artifacts/{file_id}/download", headers=owned)
                         assert downloaded.status_code == 200 and downloaded.content == b"isolated database"
-                        created = await client.post(
-                            "/api/v1/runs",
+                        agent_response = await client.post("/api/v1/agents", headers=owned, json={"name": "数据库协议验证", "default_model_id": model.id, "system_prompt": ""})
+                        assert agent_response.status_code == 201, agent_response.text
+                        agent_id = agent_response.json()["data"]["id"]
+                        session_response = await client.post(f"/api/v1/agents/{agent_id}/sessions", headers=owned, json={"title": "数据库协议验证"})
+                        session_id = session_response.json()["data"]["id"]
+                        submit_path = f"/api/v1/agents/{agent_id}/sessions/{session_id}/runs"
+                        created = await submit_agent_run(client,
+                            submit_path,
                             headers=owned,
                             json={
                                 "model_id": model.id,
@@ -371,8 +379,8 @@ async def _exercise_isolated_migrations(
                         )
                         assert created.status_code == 201, created.text
                         run_id = created.json()["data"]["id"]
-                        duplicate = await client.post(
-                            "/api/v1/runs",
+                        duplicate = await submit_agent_run(client,
+                            submit_path,
                             headers=owned,
                             json={
                                 "model_id": model.id,
@@ -390,14 +398,12 @@ async def _exercise_isolated_migrations(
                         messages = await client.get(f"/api/v1/runs/{run_id}/messages", headers=owned)
                         assert messages.status_code == 200, messages.text
                         assert [item["content"] for item in messages.json()["data"]] == ["database question", "database reply"]
-                        events = await client.get(f"/api/v1/runs/{run_id}/events?after=0", headers=owned)
+                        events = await client.get(f"/api/v1/runs/{run_id}/ag-ui/snapshot", headers=owned)
                         assert events.status_code == 200, events.text
-                        assert [item["state"] for item in events.json()["data"] if item["event_type"] == "state"] == [
-                            "queued",
-                            "running",
-                            "completed",
-                        ]
-                        assert (await client.get(f"/api/v1/runs/{run_id}/events?after=0", headers=outsider)).status_code == 404
+                        protocol = [frame["event"] for frame in events.json()["data"]["events"]]
+                        assert protocol[0]["type"] == "RUN_STARTED"
+                        assert protocol[-1]["type"] == "RUN_FINISHED"
+                        assert (await client.get(f"/api/v1/runs/{run_id}/ag-ui/snapshot", headers=outsider)).status_code == 404
                         from tests.test_knowledge_integration import exercise_native_knowledge
 
                         await exercise_native_knowledge(client, sessions, owned, outsider)

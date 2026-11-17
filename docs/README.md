@@ -20,6 +20,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [Run、会话与实时恢复](runs-and-sessions.md) | 运行与检查点、会话模型、SSE、历史消息、产物、失败续聊与操作分支。 |
+| [AG-UI 1.0 与处理过程](ag-ui.md) | 标准提交/审批恢复、持久化观察扩展、消息身份、工具与 Skill 过程和公开边界。 |
 | [文件存储与附件](artifacts.md) | 上传与下载、存储后端、授权、保留期限和开发环境清理。 |
 | [Skill 文件包与报告模板](skills.md) | 草稿与发布、文件包、脚本、固定版本、DOCX 模板及字段契约。 |
 | [Tool、脚本沙箱与 MCP](tools.md) | Tool 生命周期、依赖准备、执行链、离线 wheel、授权和治理。 |
@@ -47,13 +48,15 @@
 - [Agent 页面](web-agent-page.md)、[供应商与模型管理](web-model-catalog-page.md)、[会话工作台](web-sessions-page.md)、[知识库页面](web-knowledge-page.md)。
 - [设计简报](web-design-brief.md)、[布局规范](web-layout-spec.md)、[组件约定](web-component-guidelines.md)。
 
-## 历史验证与研究
+## 设计与调研
 
-以下文档记录特定日期、环境和测试边界。当前操作以部署手册和专题文档为准；历史通过结果不自动代表其他平台或正式环境已验收。
+以下资料记录方案选择与资料核查，当前操作和接口以各专题为准。
 
-- 部署：[方案资料核实](deployment-research.md)、[2026-11-13 本机部署验证](deployment-validation-20261113.md)、[2026-11-14 HTTP / HTTPS 验证](deployment-http-20261114.md)、[2026-11-15 Redis 部署验证](deployment-redis-20261115.md)。
-- 知识库：[PDF 第二阶段验证](m64-phase2-acceptance-20261113.md)、[多格式第三阶段记录](m64-phase3-implementation-20261113.md)、[文档删除与重建分离](m64-deletion-fix-20261113.md)。
+- [Docker 部署调研](deployment-research.md)。
+- [AG-UI 改造方案（设计参考）](ag-ui-migration-plan-20261117.md)、[协议与 SDK 研究](ag-ui-protocol-research-20261117.md)；当前实现见 [AG-UI 接口与处理过程](ag-ui.md)。
+
+<a id="历史验证与研究"></a>
 
 ## 维护约定
 
-README 保留项目定位、主要能力、最短启动路径与文档入口；接口、配置和排查细节在对应专题维护。行为发生变化时，同步更新受影响的主题和入口；历史验证记录保留形成时的范围，不把历史状态直接写成当前保证。
+README 保留项目定位、主要能力、最短启动路径与文档入口；接口、配置和排查细节在对应专题维护。行为发生变化时，同步更新受影响的主题和入口；本地真实模型结论、现场复验脚本与结果、迁移历史和重构经过归档到工作区的 `y-point-server-todo.md`；页面验证记录归档到 `y-point-web-todo.md`。专题保留当前契约、通用操作与限制，设计和调研资料保留来源及范围。

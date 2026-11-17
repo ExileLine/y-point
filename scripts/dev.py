@@ -104,7 +104,10 @@ def check_prerequisites() -> int:
         raise RuntimeError("Missing web dependencies; run npm install in web/")
 
     if not port_available(API_PORT):
-        raise RuntimeError(f"API port {API_PORT} is already in use; stop the existing service first")
+        raise RuntimeError(
+            f"API port {API_PORT} is already in use by a service outside this launcher's management; "
+            f"stop it and retry (inspect with: lsof -nP -iTCP:{API_PORT} -sTCP:LISTEN)"
+        )
 
     for port in range(WEB_PORT, WEB_PORT + 20):
         if port_available(port):

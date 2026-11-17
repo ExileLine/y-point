@@ -165,14 +165,18 @@ def test_script_business_validation_can_be_repaired(tmp_path: Path, effect: Tool
             async with sessions() as db:
                 invocations = list(await db.scalars(select(ToolInvocation).where(ToolInvocation.run_id == run.id).order_by(ToolInvocation.id)))
                 expected = (
-                    [(ToolInvocationState.FAILED, "execution_error"), (ToolInvocationState.COMPLETED, None)]
+                    [(ToolInvocationState.FAILED, "script_input_rejected"), (ToolInvocationState.COMPLETED, None)]
                     if effect == ToolEffect.READ
-                    else [(ToolInvocationState.UNKNOWN, "execution_interrupted")]
+                    else [(ToolInvocationState.UNKNOWN, "execution_error")]
                 )
                 assert [(item.state, item.failure_code) for item in invocations] == expected
                 events = list(await db.scalars(select(AgentRunEvent.event_type).where(AgentRunEvent.run_id == run.id)))
                 assert events.count(RunEventType.TOOL_FAILED) == 1
                 assert events.count(RunEventType.TOOL_COMPLETED) == (1 if effect == ToolEffect.READ else 0)
+                failed_event = await db.scalar(
+                    select(AgentRunEvent).where(AgentRunEvent.run_id == run.id, AgentRunEvent.event_type == RunEventType.TOOL_FAILED),
+                )
+                assert failed_event.failure_code == ("script_input_rejected" if effect == ToolEffect.READ else "external_result_unknown")
         finally:
             await engine.dispose()
 

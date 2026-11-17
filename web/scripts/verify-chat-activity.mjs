@@ -1,3 +1,4 @@
+import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -29,7 +30,6 @@ const server = createServer((req, res) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const streamUrl = `http://127.0.0.1:${server.address().port}/stream`;
-function event(row) { return `id: run-live:${row.sequence}\nevent: ${row.event_type}\ndata: ${JSON.stringify(row)}\n\n`; }
 
 try {
   for (const width of [1280, 390]) {
@@ -43,6 +43,7 @@ try {
     let finished = false;
     let run = { id: 'run-live', session_id: session.id, agent_id: 11, model_id: 4, state: 'running', failure_code: null, reported_total_tokens: 0, create_time: origin, update_time: origin };
     const rows = [];
+    const event = row => agUiSse(run.id, agUiFrames(run, rows.filter(item => item.sequence <= row.sequence), { calls }));
     await page.route('**/api/v1/**', async route => {
       const path = new URL(route.request().url()).pathname;
       let data;
@@ -56,21 +57,21 @@ try {
         total_tokens: finished ? 107500 : 89266, missing_duration_runs: 1, calculated_at: new Date().toISOString(),
       };
       else if (path.endsWith('/sessions/activity')) data = session;
-      else if (path.endsWith('/activity/messages')) data = [
+      else if (path.endsWith('/ag-ui/threads/activity')) data = [
         { id: 1, run_id: 'run-live', role: 'user', content: '请检查施工方案并生成报告。', create_time: origin, attachments: [], artifacts: [] },
         ...(finished ? [{ id: 2, run_id: 'run-live', role: 'assistant', content: answer, reasoning_content: reasoning, metrics, calls, create_time: origin, attachments: [], artifacts: [artifact] }] : []),
       ].filter(row => row.id > Number(new URL(route.request().url()).searchParams.get('after') || 0));
       else if (path.endsWith('/activity/runs')) data = { items: [run], total: 1, page: 1, page_size: 20 };
       else if (path.endsWith('/run-live/calls')) data = calls;
-      else if (path.endsWith('/run-live/snapshot')) {
+      else if (path.endsWith('/run-live/ag-ui/snapshot')) {
         const after = Number(new URL(route.request().url()).searchParams.get('after') || 0);
-        data = { run, events: rows.filter(row => row.sequence > after), next_after: rows.at(-1)?.sequence || after, latest_sequence: rows.at(-1)?.sequence || 0, has_more: false };
+        data = agUiSnapshot(run, agUiFrames(run, rows, { calls }), after);
       } else if (path.endsWith('/run-live/stream-ticket')) data = { expires_in: 300 };
       else if (path.endsWith('/run-live/stream')) return route.fulfill({ status: 307, headers: { location: streamUrl, 'Access-Control-Allow-Origin': '*' } });
       else if (path.endsWith('/run-live')) data = run;
       else if (path.endsWith('/knowledge-retrievals')) data = [];
       else { unexpected.push(path); return route.abort(); }
-      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data }) });
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data: agUiData(path, data) }) });
     });
     await page.goto(`${base}/agents/11/sessions/activity`);
     await page.locator('[data-stream-run="run-live"]').waitFor();
@@ -78,7 +79,9 @@ try {
     const deadline = Date.now() + 10000;
     while (!sockets.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
     check(sockets.size > 0, '实际 SSE 连接建立');
-    const send = row => { rows.push(row); for (const socket of sockets) socket.write(event(row)); };
+    let sent = agUiFrames(run, rows, { calls }).length;
+    const send = row => { rows.push(row); const frames = agUiFrames(run, rows, { calls });
+      for (const socket of sockets) socket.write(agUiSse(run.id, frames, sent)); sent = frames.length; };
     send({ sequence: 1, event_type: 'reasoning_delta', state: 'running', content: reasoning });
     await page.getByRole('button', { name: /正在思考/ }).waitFor();
     const reasoningButton = page.getByRole('button', { name: /正在思考/ });
@@ -108,7 +111,7 @@ try {
     check((await final.locator('.message-markdown').innerText()).includes('👨‍👩‍👧‍👦 完成'), '终态接续完整正文与组合字符');
     check(await final.locator('.run-metrics').innerText().then(text => text.includes('1 分 13 秒') && text.includes('18,234 Token')), '本轮耗时和累计 Token');
     check((await final.locator('.session-file').innerText()).includes('33.5 KB'), '产物显示字节换算大小');
-    check((await final.locator('.run-calls').innerText()).includes('MCP'), 'MCP 独立类型');
+    check((await final.locator('.run-activity').innerText()).includes('MCP'), 'MCP 独立类型');
     const failedCall = final.locator('[data-call-id="tool"]');
     check(await failedCall.locator('.run-call-explanation').isHidden(), '失败详情默认收起');
     await failedCall.locator('summary').focus();
@@ -125,8 +128,8 @@ try {
     check((await totals.innerText()).includes('109 轮'), '总统计覆盖全会话而非当前消息数');
     check((await totals.innerText()).includes('至少 3 分 47 秒'), '总耗时明确历史缺失范围');
     check((await totals.innerText()).includes('1 轮历史耗时未知'), '提示历史未知时长');
-    check((await final.locator('.run-calls').innerText()).includes('2.3 秒'), '单次调用耗时');
-    check((await final.locator('.run-calls').innerText()).includes('耗时未知'), '历史缺少时间不伪造');
+    check((await final.locator('.run-activity').innerText()).includes('2.3 秒'), '单次调用耗时');
+    check((await final.locator('.run-activity').innerText()).includes('耗时未知'), '历史缺少时间不伪造');
     check(await final.getByRole('button', { name: /思考过程/ }).getAttribute('aria-expanded') === 'false', '完成后思考默认折叠');
     await final.getByRole('button', { name: /思考过程/ }).click();
     check((await final.locator('.reasoning-content').innerText()) === reasoning, '历史思考没有重复事件');

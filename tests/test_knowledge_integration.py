@@ -5,6 +5,8 @@
 
 """知识检索跨数据库、真实嵌入模型与实际运行图验收。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 import json
 import os
@@ -156,7 +158,8 @@ def test_real_embedding_fixed_set_and_agent_evidence(tmp_path, monkeypatch):
                     },
                 )
                 base = f"/api/v1/agents/{agent_id}/sessions/{session.json()['data']['id']}"
-                submitted = await client.post(
+                submitted = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     headers=alice,
                     json={

@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotDirectory } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
@@ -38,7 +39,7 @@ async function fixture(page, opts = {}) {
     const raw = req.postData() || "";
     const body = req.headers()["content-type"]?.startsWith("application/json") && raw ? JSON.parse(raw) : null;
     calls.push({ path, method, body, raw, search: url.search, headers: req.headers() });
-    const send = (data, status = 200, text = "操作成功") => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(envelope(data, status, text)) });
+    const send = (data, status = 200, text = "操作成功") => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(envelope(agUiData(path, data), status, text)) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
     if (path === "/agents/runtime-limits") return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5, recursion_limit: 9999,
       mcp_connect_timeout_seconds: 10, mcp_discovery_timeout_seconds: 15, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 60,
@@ -104,7 +105,8 @@ async function fixture(page, opts = {}) {
     if (path === "/agents/11/sessions") return send({ items: [session], total: 1, page: 1, page_size: 20 });
     if (/\/sessions\/[^/]+\/models$/.test(path)) return send([]);
     if (path === "/agents/11/sessions/session-a") return send(session);
-    if (path === "/agents/11/sessions/session-a/messages") return send([{ id: 1, role: "assistant", run_id: "run-kb", content: opts.answer || "请在 15 个工作日内提交，参考 kb:1:i:2:c:16。", create_time: now, attachments: [], artifacts: [] }]);
+    if (path.endsWith("/ag-ui/snapshot")) return send({ run: { id: "run-kb", state: "completed" }, events: [], latest_sequence: 0, next_after: 0, has_more: false });
+    if (path === "/agents/11/ag-ui/threads/session-a") return send([{ id: 1, role: "assistant", run_id: "run-kb", content: opts.answer || "请在 15 个工作日内提交，参考 kb:1:i:2:c:16。", create_time: now, attachments: [], artifacts: [] }]);
     if (path === "/agents/11/sessions/session-a/runs") return send({ items: [], total: 0, page: 1, page_size: 20 });
     if (path === "/runs/run-kb/knowledge-retrievals") return send(opts.noRetrieval ? [] : [{ id: 1, run_id: "run-kb", references: opts.noHits ? [] : [citation], hit_count: opts.noHits ? 0 : 1, byte_count: opts.noHits ? 0 : 150, latency_ms: 20, embedding_usage: [{ model_id: 2, dimensions: 768, tokens: 12, cost: null }] }]);
     const agent = { id: 11, name: "员工助手", description: "制度问答", system_prompt: "引用资料回答", welcome_message: "欢迎", default_model_id: 1, temperature: "1", max_output_tokens: 4096, thinking_mode: "auto", model_timeout_seconds: 120, tool_timeout_seconds: 120, max_model_calls: null, max_tool_calls: null, max_total_tokens: null, max_estimated_cost: null, enabled: true, version: 2, skill_ids: [], tool_ids: [], knowledge_base_ids: [1], update_time: now };

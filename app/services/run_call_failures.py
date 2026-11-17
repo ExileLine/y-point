@@ -16,6 +16,7 @@ from app.services.script_sandbox import SandboxConfigurationError
 from app.services.tool_arguments import ScriptInputToolError, ToolArgumentsError
 
 FAILURE_MESSAGES = {
+    RunCallFailure.RESULT_UNKNOWN: "外部写入的结果尚未确认，请先核实实际结果，再决定后续操作。",
     RunCallFailure.TIMEOUT: "调用超过单次执行时限，请检查工具或 MCP 的响应时间与超时设置。",
     RunCallFailure.INVALID_ARGUMENTS: "调用参数不符合工具输入规范，工具未执行；模型可修正参数后再次调用。",
     RunCallFailure.INPUT_REJECTED: "脚本已运行，但主动拒绝了本次输入，请检查输入资料是否完整且符合要求。",

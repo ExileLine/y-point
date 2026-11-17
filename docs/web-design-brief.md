@@ -1,6 +1,6 @@
 # Y-Point 前端设计简报（开发准备）
 
-参考来源：TencentCloud/Octop `dashboard/`，检视提交 `890111b7879665840414ca28ab168b05b0db0921`（2026-10-29）。只分析布局、交互和组件组合，不复用源码、文案、图标或品牌素材。Y-Point 的功能范围以本仓库 `README.md`、`y-point-server-todo.md` 和实际 OpenAPI 为准。
+参考来源：TencentCloud/Octop `dashboard/`，检视提交 `890111b7879665840414ca28ab168b05b0db0921`（2026-10-29）。只分析布局、交互和组件组合，不复用源码、文案、图标或品牌素材。Y-Point 的功能范围以本仓库 `README.md`、专题文档和实际 OpenAPI 为准。
 
 ## 布局骨架
 
@@ -47,8 +47,8 @@
 
 ## 开发前待确认
 
-1. 用户已于 2026-11-03 指定 `docs/logos.png` 第三排第一个标识，已替换导航、登录、右上角账户图标与 favicon；正式发布前取得透明背景原始资源。
+1. 品牌使用深蓝 / 亮蓝 Y、橙色圆点和 Y-POINT 字标；正式发布前取得透明背景原始资源。
 2. 确认桌面/手机的对话页结构和首期是否需要暗色模式；确认独立文本 Run 是否需要独立入口。
-3. 确认普通用户创建 Agent 的模型选择方式。当前 Agent 创建/编辑和独立 Run 对所有登录用户开放，但 `GET /models` 仅管理员可访问；若保留普通用户创建入口，服务端需提供受限模型目录或等效可选择的模型信息。
+3. 普通用户创建 Agent 使用受限的 `GET /models/available` 目录；管理员供应商连接和完整模型目录不向普通用户开放。
 
-设计文件与组件约定分别见 `web-design-tokens.css`、`web-component-guidelines.md`；开发顺序和验收门槛见 `../y-point-web-todo.md`。
+设计文件与组件约定分别见 `web-design-tokens.css`、`web-component-guidelines.md`；页面开发须保留空、加载、错误、权限失效和版本冲突状态，验证方法见[数据库与测试](testing.md)。

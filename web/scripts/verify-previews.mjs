@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -35,8 +36,10 @@ try {
     await page.route('**/api/v1/**', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
       requests.push({ path, auth: request.headers().authorization });
-      const send = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(status === 200 ? envelope(data) : { code: status, message: data }) });
+      const send = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(status === 200 ? envelope(agUiData(path, data)) : { code: status, message: data }) });
       if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
+      if (path.endsWith('/runtime-limits')) return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 });
+      if (path.endsWith('/ag-ui/snapshot')) return send({ run: { id: path.split('/')[4], state: 'completed' }, events: [], latest_sequence: 0, next_after: 0, has_more: false });
       if (path === '/api/v1/auth/me') return send({ id: 1, username: 'preview-tester', role: 'user' });
       if (path === '/api/v1/auth/refresh') return send({ access_token: 'renewed', refresh_token: 'fixture-refresh', expires_in: 3600 });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '预览验证', enabled: true, default_model_id: 1 });
@@ -44,7 +47,7 @@ try {
       if (/\/sessions\/[^/]+\/models$/.test(path)) return send([]);
       if (path.endsWith('/sessions/preview')) return send(session);
       if (path.endsWith('/preview/runs')) return send({ items: [], total: 0, page: 1, page_size: 20 });
-      if (path.endsWith('/preview/messages')) return send([
+      if (path.endsWith('/ag-ui/threads/preview')) return send([
         { id: 1, run_id: 'run-preview', role: 'user', content: '请生成文档', create_time: now, attachments: [], artifacts: [] },
         { id: 2, run_id: 'run-preview', role: 'assistant', content: '文档已生成。', create_time: now, attachments: [], artifacts: entries.map(([id, filename]) => ({ artifact_id: id, filename, available: id !== 'deleted' })) },
       ]);

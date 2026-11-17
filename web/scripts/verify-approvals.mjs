@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { screenshotPath } from "./screenshot-paths.mjs";
@@ -38,28 +39,33 @@ async function fixture(page, options = {}) {
     else if (path.endsWith("/models")) data = [{ id: 1, display_name: "测试模型", provider_name: "模拟连接", verified_capabilities: ["text", "tools"], context_window: 65536, selectable: true, reason: null, notice: null }];
     else if (path.endsWith("/calls") || path.endsWith("/knowledge-retrievals")) data = [];
     else if (path.endsWith("/metrics")) data = { run_count: 1, active_run_count: 1, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: now };
-    else if (path.endsWith("/messages")) data = [{ id: 1, run_id: run.id, role: "user", content: "请查阅 FastAPI 文档", attachments: [], artifacts: [], create_time: now }];
+    else if (path.includes("/ag-ui/threads/")) data = [{ id: 1, run_id: run.id, role: "user", content: "请查阅 FastAPI 文档", attachments: [], artifacts: [], create_time: now }];
     else if (path.endsWith("/runs")) data = { items: [run], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith("/snapshot")) data = { run, events: [], next_after: 0, latest_sequence: 0, has_more: false };
     else if (path.endsWith("/stream-ticket")) data = { expires_in: 300 };
     else if (path.endsWith("/approval") && method === "GET") {
       if (loadFailures > 0) { loadFailures--; status = 503; }
       else data = approval;
-    } else if (path.endsWith("/approval/decision") && method === "POST") {
+    } else if (path.endsWith("/ag-ui") && method === "POST") {
       await decisionGate;
       if (options.conflict) {
         status = 409;
         approval = { ...approval, state: "cancelled" };
         run = { ...run, state: "cancelled" };
       } else {
-        assert.equal(body.expected_approval_id, approval.id);
-        approval = { ...approval, state: body.decision === "approve" ? "approved" : "rejected", decided_at: now };
-        if (body.decision === "reject") run = { ...run, state: "cancelled", failure_code: "approval_rejected" };
-        data = approval;
+        assert.equal(body.resume[0].interruptId, approval.id);
+        const decision = body.resume[0].payload.decision;
+        approval = { ...approval, state: decision === "approve" ? "approved" : "rejected", decided_at: now };
+        if (decision === "reject") run = { ...run, state: "cancelled", failure_code: "approval_rejected" };
+        return agUiPost(route, run);
       }
+    } else if (path.endsWith("/cancel") && method === "POST") {
+      approval = { ...approval, state: "cancelled" };
+      run = { ...run, state: "cancelled" };
+      data = run;
     } else if (path === "/api/v1/runs/run-approval") data = run;
     else { status = 404; }
-    await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(status === 200 ? { code: 200, message: "操作成功", data } : { code: status, message: status === 409 ? "审批请求已变化，请刷新" : "审批加载失败" }) });
+    await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(status === 200 ? { code: 200, message: "操作成功", data: agUiData(path, data) } : { code: status, message: status === 409 ? "审批请求已变化，请刷新" : "审批加载失败" }) });
   });
   await page.goto(`${baseURL}/agents/11/sessions/session-a`);
   return {
@@ -73,7 +79,10 @@ async function fixture(page, options = {}) {
       await page.evaluate(state => {
         window.approvalSequence = (window.approvalSequence || 0) + 1;
         for (const stream of window.approvalStreams.filter(item => !item.closed)) {
-          stream.dispatchEvent(new MessageEvent("state", { data: JSON.stringify({ sequence: window.approvalSequence, event_type: "state", state, content: null }) }));
+          const event = state === "running"
+            ? { type: "RUN_STARTED", runId: "next-attempt", threadId: "session-a", protocolVersion: "1.0" }
+            : { type: "ACTIVITY_SNAPSHOT", messageId: "run-state", activityType: "y-point.run", content: { version: 1, state } };
+          stream.onmessage?.(new MessageEvent("message", { lastEventId: `run-approval:${window.approvalSequence}`, data: JSON.stringify(event) }));
         }
       }, state);
     },
@@ -94,15 +103,15 @@ try {
     assert.equal(await page.getByRole("button", { name: "拒绝执行", exact: true }).isDisabled(), true);
     state.releaseDecision();
     await page.getByText("已同意，等待执行器继续运行", { exact: true }).waitFor();
-    assert.equal(state.calls.filter(call => call.path.endsWith("/approval/decision")).length, 1);
-    assert.deepEqual(state.calls.find(call => call.path.endsWith("/approval/decision")).body, { decision: "approve", expected_approval_id: "approval-1" });
+    assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).length, 1);
+    assert.deepEqual(state.calls.find(call => call.path.endsWith("/ag-ui")).body.resume[0], { interruptId: "approval-1", status: "resolved", payload: { decision: "approve" } });
     await state.transition("running");
     await page.getByRole("region", { name: "工具审批" }).waitFor({ state: "hidden" });
     await state.transition("waiting_for_approval", true);
     await approve.waitFor();
     await page.getByRole("button", { name: "拒绝执行", exact: true }).click();
     await page.getByText("已取消", { exact: true }).first().waitFor();
-    assert.deepEqual(state.calls.filter(call => call.path.endsWith("/approval/decision")).at(-1).body, { decision: "reject", expected_approval_id: "approval-2" });
+    assert.deepEqual(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0], { interruptId: "approval-2", status: "resolved", payload: { decision: "reject" } });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: screenshotPath(`web-approval-${width}.png`), animations: "disabled" });
     await page.close();
@@ -114,7 +123,7 @@ try {
     assert.equal(await page.getByRole("button", { name: "同意执行", exact: true }).count(), 0);
     await state.transition("waiting_for_approval");
     await page.getByRole("button", { name: "同意执行", exact: true }).waitFor();
-    assert.equal(state.calls.filter(call => call.path.endsWith("/approval/decision")).length, 0);
+    assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).length, 0);
     await page.close();
     console.log("live state: SSE reveals approval controls without reload or automatic approval");
   }
@@ -127,7 +136,7 @@ try {
     } else if (options.conflict) {
       await page.getByRole("button", { name: "同意执行", exact: true }).click();
       await page.getByText("已取消", { exact: true }).first().waitFor();
-      assert.equal(state.calls.filter(call => call.path.endsWith("/approval/decision")).length, 1);
+      assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).length, 1);
     } else {
       await page.getByText("审批加载失败", { exact: true }).waitFor();
       assert.equal(await page.getByRole("button", { name: "同意执行", exact: true }).count(), 0);
@@ -135,6 +144,17 @@ try {
       await page.getByRole("button", { name: "重新加载审批", exact: true }).click();
       await page.getByRole("button", { name: "同意执行", exact: true }).waitFor();
     }
+    await page.close();
+  }
+  {
+    const page = await browser.newPage();
+    await fixture(page);
+    await page.getByRole("button", { name: "同意执行", exact: true }).waitFor();
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.getByText("已取消", { exact: true }).first().waitFor();
+    await page.getByRole("textbox", { name: "消息内容" }).fill("取消后可以继续发送");
+    assert.equal(await page.getByRole("button", { name: "发送", exact: true }).isEnabled(), true);
+    assert.equal(await page.getByRole("region", { name: "工具审批" }).count(), 0);
     await page.close();
   }
   console.log("expired approval, concurrent conflict and loading failure recovery passed; mocked API, no real approvals submitted");

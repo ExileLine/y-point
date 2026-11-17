@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Space, Spin } from "antd";
-import { decideRunApproval, getRun, getRunApproval, type RunApproval as Approval, type SessionRun } from "../api";
+import { getRun, getRunApproval, type RunApproval as Approval, type SessionRun } from "../api";
 import { serverTime } from "./chat-format";
 
 const stateLabels: Record<Approval["state"], string> = {
@@ -11,7 +11,10 @@ const stateLabels: Record<Approval["state"], string> = {
   cancelled: "审批已取消",
 };
 
-export default function RunApproval({ runId, onRunChanged }: { runId: string; onRunChanged: (run: SessionRun) => void }) {
+export default function RunApproval({ runId, onResume, onRunChanged }: {
+  runId: string; onResume: (approvalId: string, decision: "approve" | "reject") => Promise<void>;
+  onRunChanged: (run: SessionRun) => void;
+}) {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -54,8 +57,7 @@ export default function RunApproval({ runId, onRunChanged }: { runId: string; on
     setSubmitting(true);
     setDecisionError("");
     try {
-      const result = await decideRunApproval(runId, decision, approval.id);
-      if (mounted.current) setApproval(result);
+      await onResume(approval.id, decision);
     } catch (failure) {
       if (mounted.current) setDecisionError(failure instanceof Error ? failure.message : "审批提交失败，请核对最新状态后重试");
     }

@@ -24,6 +24,8 @@ from app.core.enums import (
     KnowledgeAnswerMode,
     RunEventType,
     RunCallFailure,
+    RunCallKind,
+    SkillActivityPhase,
     RunModelFailureReason,
     RunRuntimeFailureReason,
     RunState,
@@ -548,6 +550,9 @@ async def append_tool_event(
     tool_name: str,
     *,
     failure_code: RunCallFailure | None = None,
+    skill_phase: SkillActivityPhase | None = None,
+    call_kind: RunCallKind | None = None,
+    display_name: str | None = None,
 ) -> AgentRunEvent:
     """持久化授权工具名称、关联 ID 和受控失败原因码，不保存参数、结果或异常原文。"""
     if event_type not in {RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED}:
@@ -556,6 +561,10 @@ async def append_tool_event(
         raise ValueError("无效的工具调用关联 ID 或工具名称")
     if failure_code is not None and (event_type != RunEventType.TOOL_FAILED or failure_code not in set(RunCallFailure)):
         raise ValueError("不允许的工具失败原因")
+    if skill_phase is not None and skill_phase not in set(SkillActivityPhase):
+        raise ValueError("无效的技能公开阶段")
+    if call_kind is not None and call_kind not in set(RunCallKind) or display_name is not None and not 1 <= len(display_name) <= 512:
+        raise ValueError("无效的工具公开类型或名称")
     return await _append_running_event(
         db,
         run_id,
@@ -564,6 +573,28 @@ async def append_tool_event(
         tool_call_id=tool_call_id,
         tool_name=tool_name,
         failure_code=failure_code,
+        details={
+            "version": 1,
+            "skill_phase": skill_phase,
+            "call_kind": call_kind,
+            "display_name": display_name,
+        }
+        if skill_phase or call_kind or display_name
+        else None,
+    )
+
+
+async def append_model_boundary(db: AsyncSession, run_id: str, lease_token: str, segment_id: str, *, finished: bool = False) -> AgentRunEvent:
+    """持久化模型消息边界，使公开思考与正文按真实模型调用分段。"""
+    return await _append_running_event(
+        db,
+        run_id,
+        lease_token,
+        RunEventType.MODEL_FINISHED if finished else RunEventType.MODEL_STARTED,
+        details={
+            "version": 1,
+            "segment_id": segment_id,
+        },
     )
 
 
@@ -577,6 +608,7 @@ async def _append_running_event(
     tool_call_id: str | None = None,
     tool_name: str | None = None,
     failure_code: str | None = None,
+    details: dict | None = None,
 ) -> AgentRunEvent:
     """原子推进有效运行的事件序号并在同一事务写入公开事件。"""
     now = shanghai_now(naive=True)
@@ -590,6 +622,15 @@ async def _append_running_event(
         raise RunConflictError("执行器租约已失效")
     run = await db.get(AgentRun, run_id)
     await db.refresh(run)
+    if event_type in {RunEventType.MODEL_FINISHED, RunEventType.TOOL_STARTED, RunEventType.TOOL_COMPLETED, RunEventType.TOOL_FAILED}:
+        details = {
+            **(details or {}),
+            "metrics": {
+                "reportedTotalTokens": run.reported_total_tokens,
+                "modelCalls": run.model_call_count,
+                "toolCalls": run.tool_call_count,
+            },
+        }
     event = AgentRunEvent(
         run_id=run_id,
         sequence=run.event_seq,
@@ -597,6 +638,7 @@ async def _append_running_event(
         event_type=event_type,
         state=RunState.RUNNING,
         content=content,
+        details=details,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
         failure_code=failure_code,
@@ -604,6 +646,32 @@ async def _append_running_event(
     db.add(event)
     await db.flush()
     return event
+
+
+async def _append_delivery(db: AsyncSession, run: AgentRun, final_text: str | None) -> None:
+    """在最终消息与模型产物就绪后写入交付屏障，协议仅在此处成功结束。"""
+    from app.services.ag_ui_projection import load_projection
+
+    projection, _ = await load_projection(db, run)
+    final_message = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.ASSISTANT))
+    if final_message is not None:
+        final_message.ag_ui_message_id = projection.last_text_id if final_text == projection.last_text else projection.identity("final-answer")
+    run.event_seq += 1
+    run.version += 1
+    db.add(
+        AgentRunEvent(
+            run_id=run.id,
+            sequence=run.event_seq,
+            protocol_version=1,
+            event_type=RunEventType.DELIVERY_COMPLETED,
+            state=RunState.COMPLETED,
+            details={
+                "version": 1,
+                "final_text": final_text,
+            },
+        ),
+    )
+    await db.flush()
 
 
 async def complete_run(db: AsyncSession, run_id: str, lease_token: str, *, checkpoint_id: str | None = None, final_text: str | None = None) -> AgentRun:
@@ -658,6 +726,7 @@ async def complete_run(db: AsyncSession, run_id: str, lease_token: str, *, check
         )
         await db.flush()
         await db.refresh(completed)
+    await _append_delivery(db, completed, final_text)
     return completed
 
 
@@ -671,6 +740,7 @@ async def complete_expired_run(db: AsyncSession, run_id: str, *, checkpoint_id: 
     completed = await _change_state(db, run, RunState.COMPLETED, now=shanghai_now(naive=True), checkpoint_id=checkpoint_id, require_expired_lease=True)
     db.add(AgentRunMessage(run_id=run_id, owner_id=run.owner_id, role=MessageRole.ASSISTANT, content=final_text))
     await db.flush()
+    await _append_delivery(db, completed, final_text)
     return completed
 
 
@@ -788,6 +858,14 @@ async def create_approval_request(
     )
     db.add(approval)
     await db.flush()
+    state_event = await db.scalar(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id, AgentRunEvent.sequence == run.event_seq))
+    state_event.details = {
+        "version": 1,
+        "interrupt_id": approval.id,
+        "expires_at": approval.expires_at.isoformat(),
+        "actions": actions,
+    }
+    await db.flush()
     return approval
 
 
@@ -865,7 +943,14 @@ async def resume_approved_run(db: AsyncSession, run_id: str, *, lease_seconds: i
     approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id))
     if approval is None or approval.state != ApprovalState.APPROVED:
         raise RunConflictError("审批尚未同意")
-    return await _change_state(db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
+    resumed = await _change_state(db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
+    if approval.ag_ui_run_id:
+        state_event = await db.scalar(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id, AgentRunEvent.sequence == resumed.event_seq))
+        state_event.details = {
+            "protocol_run_id": approval.ag_ui_run_id,
+        }
+        await db.flush()
+    return resumed
 
 
 async def request_cancel(db: AsyncSession, run_id: str, owner_id: int) -> AgentRun:

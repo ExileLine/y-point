@@ -5,6 +5,8 @@
 
 """验证输出额度可空、运行快照和 SDK 实际请求的一致性。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 import json
 import os
@@ -147,10 +149,10 @@ def test_optional_output_agent_http_and_snapshot(tmp_path: Path) -> None:
                     "request_key": str(uuid4()),
                     "expected_session_version": 1,
                 }
-                submitted = await client.post(f"{agent_url}/sessions/{session_id}/runs", json=payload)
+                submitted = await submit_agent_run(client, f"{agent_url}/sessions/{session_id}/runs", json=payload)
                 assert submitted.status_code == 201, submitted.text
                 run_id = submitted.json()["data"]["id"]
-                retry = await client.post(f"{agent_url}/sessions/{session_id}/runs", json=payload)
+                retry = await submit_agent_run(client, f"{agent_url}/sessions/{session_id}/runs", json=payload)
                 assert retry.status_code == 201 and retry.json()["data"]["id"] == run_id
                 async with sessions() as db:
                     saved = await db.get(AgentConfig, agent["id"])

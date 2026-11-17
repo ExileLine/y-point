@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -17,7 +18,7 @@ try {
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/v1/**', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
-      const send = (data, status = 200, message = '操作成功') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status < 400 ? status : 10006, message, data }) });
+      const send = (data, status = 200, message = '操作成功') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status < 400 ? status : 10006, message, data: agUiData(path, data) }) });
       if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
       if (path === '/api/v1/agents/runtime-limits') return send({ upload_max_bytes: 33554432, context_max_bytes: 16384, max_files: 5, recursion_limit: 50, default_model_timeout_seconds: 120, max_model_timeout_seconds: 600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 600, default_max_output_tokens: 4096, max_output_tokens: 65536 });
       if (path.endsWith('/auth/me')) return send({ id: 1, username: 'reviewer', role: 'user' });
@@ -25,7 +26,7 @@ try {
       if (path.endsWith('/sessions')) return send({ items: [session], total: 1, page: 1, page_size: 20 });
       if (path.endsWith('/sessions/review')) return send(session);
       if (path.endsWith('/models')) return send([{ id: 1, display_name: '审核模型', provider_name: '测试', verified_capabilities: ['text', 'tools'], selectable: true }]);
-      if (path.endsWith('/messages')) return send([]);
+      if (path.includes('/ag-ui/threads/')) return send([]);
       if (path.endsWith('/runs') && request.method() === 'GET') return send({ items: [], total: 0, page: 1, page_size: 20 });
       if (path.endsWith('/artifacts/uploads')) {
         uploads.push(request.postDataBuffer());
@@ -36,10 +37,10 @@ try {
         preflights.push(request.postDataJSON());
         return checkFail ? send(null, 400, '附件正文超过 16 KiB，请拆分') : send({ valid: true, context_bytes: 100 });
       }
-      if (path.endsWith('/runs') && request.method() === 'POST') {
+      if (path.endsWith('/ag-ui') && request.method() === 'POST') {
         submissions.push(request.postDataJSON());
         if (submitFail) return route.abort();
-        return send({ id: 'review-run', state: 'queued', session_id: session.id, agent_id: 11, model_id: 1, create_time: now, update_time: now }, 201);
+        return agUiPost(route, { id: 'review-run', state: 'queued', session_id: session.id, agent_id: 11, model_id: 1, create_time: now, update_time: now });
       }
       if (path.endsWith('/stream-ticket')) return send({ expires_in: 300 });
       if (path.endsWith('/stream')) return route.fulfill({ contentType: 'text/event-stream', body: ': waiting\n\n' });
@@ -88,14 +89,14 @@ try {
     await page.getByRole('button', { name: '重试提交' }).waitFor();
     const first = submissions[0];
     assert.deepEqual(preflights[1], preflights[0]); checks++;
-    assert.equal(first.input_text, '请审查附件并按模板生成报告'); checks++;
-    assert.ok(first.request_key); checks++;
-    assert.equal(first.model_id, 1); checks++;
-    assert.equal(first.expected_session_version, 1); checks++;
-    assert.equal(first.publish_answer_artifact, false); checks++;
+    assert.equal(first.messages.at(-1).content, '请审查附件并按模板生成报告'); checks++;
+    assert.ok(first.runId); checks++;
+    assert.equal(first.forwardedProps.model_id, 1); checks++;
+    assert.equal(first.forwardedProps.expected_session_version, 1); checks++;
+    assert.equal(first.forwardedProps.publish_answer_artifact, false); checks++;
     assert.equal(Object.hasOwn(first, 'required_skill_id'), false); checks++;
-    assert.deepEqual(first.artifact_ids, ['uploaded-file']); checks++;
-    assert.deepEqual(first.context_artifact_ids, ['uploaded-file']); checks++;
+    assert.deepEqual(first.forwardedProps.artifact_ids, ['uploaded-file']); checks++;
+    assert.deepEqual(first.forwardedProps.context_artifact_ids, ['uploaded-file']); checks++;
     submitFail = false;
     await page.getByRole('button', { name: '重试提交' }).click();
     await page.getByText('待审合同.txt', { exact: true }).waitFor({ state: 'hidden' });

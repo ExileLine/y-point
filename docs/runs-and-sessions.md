@@ -1,12 +1,12 @@
 # Run、会话与实时恢复
 
-了解运行提交、会话模型、消息与产物、SSE 恢复和失败后的继续对话。
+了解运行提交、会话模型、消息与产物、SSE 恢复和失败后的继续对话。当前公开流使用 AG-UI 1.0，标准提交与恢复契约见 [AG-UI 与处理过程](ag-ui.md)。
 
 [文档总览](README.md) · [项目首页](../README.md)
 
 ## Run 与 Checkpoint
 
-直接文本运行入口为 `POST /api/v1/runs`；私有 Agent 对话使用下文的会话 Run 入口。一个 Run 有自己的 `run_id`、状态和从 1 开始的事件序号。同一检查点线程不能同时有两个未结束的 Run；重复提交由同一用户的 `request_key` 保护。正常状态为 `queued → running → completed`，取消、超时或故障分别进入 `cancelled`、`timed_out`、`failed`。队列等待、模型执行、工具执行、模型/工具调用次数及 Token/估算成本均可设置上限；Run 创建时固定有效配置，超限写入脱敏 `failure_code`。Token 和成本上限依赖上游用量，不能阻止单次调用在返回用量前超额。
+对话统一通过 `POST /api/v1/agents/{agent_id}/ag-ui` 提交和审批恢复，公开历史从对应的 `/ag-ui/threads/{session_id}` 读取。一个 Run 有自己的 `run_id`、状态和从 1 开始的事件序号。同一检查点线程不能同时有两个未结束的 Run；重复提交由同一用户的 `request_key` 保护。正常状态为 `queued → running → completed`，取消、超时或故障分别进入 `cancelled`、`timed_out`、`failed`。队列等待、模型执行、工具执行、模型/工具调用次数及 Token/估算成本均可设置上限；Run 创建时固定有效配置，超限写入脱敏 `failure_code`。Token 和成本上限依赖上游用量，不能阻止单次调用在返回用量前超额。
 
 Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。输入和 `queued` 事件与 Run 同事务提交；模型可见文本先写入 `yp_agent_run_event.text_delta`，然后才能经 SSE 发送。LangGraph 在独立 Checkpointer 写状态；完成时最终 `assistant` 消息、Run 的 `completed` 状态、`checkpoint_id` 和终态事件在一个业务事务中提交。前端不能把 `text_delta` 当作最终回答。模型/工具调用失败、取消或租约过期时不自动重做可能有外部副作用的工作；只有检查点能证明无业务工具的 Run 已完成时，worker 才会补写遗漏的最终结果。
 
@@ -24,9 +24,9 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 模板渲染的 `report_data` 必须符合固定版本字段契约。字段不符时工具以错误状态返回 `invalid_tool_arguments`、字段路径、校验规则及可用/必填字段，最多反馈前 20 个字段校验问题，不包含报告字段值；模型可在本轮预算内修正后重新调用，验证失败不会生成文件。权限、模板完整性及存储故障继续中止执行，不将这类故障作为字段修正处理。
 
-摘要或普通模型调用失败时，公开消息不追加成功的助手回答，已发生的模型调用仍计入预算。失败、超时或取消前已发布的 `text_delta` 会由会话历史接口汇总为 `partial_content`，连同 `run_state/failure_code` 在原用户消息上返回；页面单独显示未完成内容、可折叠失败原因和复制操作，流式转终态、刷新及后续新轮次均保留。它不进入后续模型上下文，不把工具参数、内部摘要、未公开片段或私有检查点转成正文。没有已公开正文的历史不能补造。下一轮只在能证明检查点归属和工具副作用安全时继续：无工具调用、已授权 Skill 文件读取、`list_session_artifacts` 只读附件列表、具有明确结束事件的历史文件 `read_file` 与生成产物 `read_generated_artifact` 回读，以及固定版本声明为只读且调用结束事件与审计完整一致的用户 Tool 适用受控恢复。报告工具失败且该轮没有生成任何产物时，可一并放弃该失败调用；无法证明时返回 `checkpoint_mismatch`。首轮空起点与历史检查点的分支规则见“失败轮次后的继续对话”，会话 ID、历史消息和原失败状态保留，失败输入不自动带入新轮。
+摘要或普通模型调用失败时，公开消息不追加成功的助手回答，已发生的模型调用仍计入预算。失败、超时或取消前最后一次模型片段中已发布的 `text_delta` 会由会话历史接口汇总为 `partial_content`，较早的中间说明保留在处理过程内，连同 `run_state/failure_code` 在原用户消息上返回；页面单独显示未完成内容、可折叠失败原因和复制操作，流式转终态、刷新及后续新轮次均保留。它不进入后续模型上下文，不把工具参数、内部摘要、未公开片段或私有检查点转成正文。没有已公开正文的历史不能补造。下一轮只在能证明检查点归属和工具副作用安全时继续：无工具调用、已授权 Skill 文件读取、`list_session_artifacts` 只读附件列表、具有明确结束事件的历史文件 `read_file` 与生成产物 `read_generated_artifact` 回读，以及固定版本声明为只读且调用结束事件与审计完整一致的用户 Tool 适用受控恢复。报告工具失败且该轮没有生成任何产物时，可一并放弃该失败调用；无法证明时返回 `checkpoint_mismatch`。首轮空起点与历史检查点的分支规则见“失败轮次后的继续对话”，会话 ID、历史消息和原失败状态保留，失败输入不自动带入新轮。
 
-工具事件 `tool_started`、`tool_completed`、`tool_failed` 只公开工具名和关联 ID，不把参数、结果、异常正文或文件内容塞进 SSE。文本文件读取工具只有在 Run 开启且模型工具能力已验证时才可用；`list_text_artifacts` 返回授权文件摘要，`read_text_artifact` 需要所有者审批，执行时再次检查文件和权限。具备工具能力的模型可自行调用生成工具，无需前端传 `publish_answer_artifact`；生成文件先暂存，Run 完成时与助手消息一同发布并写入 `artifact_published`。审批入口为 `GET /api/v1/runs/{run_id}/approval` 与 `POST /api/v1/runs/{run_id}/approval/decision`；拒绝会取消 Run，同意只保存决定，worker 才会根据检查点恢复执行。产物也可用 `GET /api/v1/artifacts?run_id={run_id}` 查询，下载仍走授权文件接口。
+内部领域事件 `tool_started`、`tool_completed`、`tool_failed` 保存关联 ID、授权名称、固定技能阶段及受控公开摘要，经 AG-UI 适配器投影为工具跨度、脱敏结果与执行活动，不把原始参数、结果、异常正文或文件内容塞进 SSE。文本文件读取工具只有在 Run 开启且模型工具能力已验证时才可用；`list_text_artifacts` 返回授权文件摘要，`read_text_artifact` 需要所有者审批，执行时再次检查文件和权限。具备工具能力的模型可自行调用生成工具，无需前端传 `publish_answer_artifact`；生成文件先暂存，Run 完成时与助手消息一同发布并写入 `artifact_published`。审批展示使用 `GET /api/v1/runs/{run_id}/approval`，决定通过 `POST /api/v1/agents/{agent_id}/ag-ui` 的 `resume` 提交；拒绝会取消 Run，同意只保存决定，worker 才会根据检查点恢复执行。产物也可用 `GET /api/v1/artifacts?run_id={run_id}` 查询，下载仍走授权文件接口。
 
 具备已验证工具能力的模型还可调用 `list_session_artifacts` 查看本会话最近已发布产物的 ID、名称和类型，再用 `read_generated_artifact` 按指定 ID 读取文本。本轮选入上下文的用户上传附件已在消息的“参考文件内容”中提供，直接使用该正文；上传附件 ID 不适用于此工具。读取 ID 不属于当前可读生成产物（包括跨会话、已删除或过期）时，返回 `status=error`、`error=generated_artifact_unavailable` 的可修正提示，模型可继续使用已有附件正文或重新列出可用产物；拒绝读取不登记产物来源，不泄漏目标文件是否存在或其正文。授权失效和文件损坏等实际读取故障仍按原流程处理。读取时再次核对当前 Run 租约、用户、会话、产物状态、期限、大小和 SHA-256；TXT、Markdown、HTML、JSON、CSV、PDF、DOCX、XLSX 的可提取文本单次最多 20 MiB。HTML 只提取可见文本；扫描 PDF、复杂嵌入对象及超限文件不能据此完整续编辑。工具结果属于模型内部上下文，不写入公开消息或 SSE，但可能保留在检查点中；删除源文件不会自动清除已有检查点内容。模型仅在判断需要时调用工具，多个候选文件时应先确认目标；服务端不会在每轮自动读取所有产物。依次列出、读取、回答通常至少需要 3 次模型调用和 2 次工具调用；再生成新版文件还需预留额外预算。
 
@@ -50,8 +50,8 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 | `GET /api/v1/agents/{agent_id}/sessions/{session_id}` | 返回会话当前 `model_id` 与 `version`。 |
 | `GET /api/v1/agents/{agent_id}/sessions/{session_id}/models` | 返回已验证文本模型的名称、供应商、已验证能力、窗口，以及 `selectable/reason/notice`；不返回凭据或连接配置。 |
 | `PUT /api/v1/agents/{agent_id}/sessions/{session_id}` | 提交 `expected_version` 和 `model_id`；只修改本人的当前会话，不修改 Agent 或历史 Run。 |
-| `POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs` | 使用会话当前模型；可携带 `model_id`、`expected_session_version` 防止过期页面误用模型。这两个参数用于校验，不执行切换。 |
-| `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` | 每条消息附带所属 Run 的 `model_id` 及当前目录的 `model_name/provider_name`；目录缺失时保留 Run 模型 ID。 |
+| `POST /api/v1/agents/{agent_id}/ag-ui` | 使用完整公开历史和一条新用户消息提交；`forwardedProps.model_id/expected_session_version` 只校验当前选择，不执行模型切换。审批通过同一接口的 `resume` 恢复。 |
+| `GET /api/v1/agents/{agent_id}/ag-ui/threads/{session_id}` | 返回标准公开历史、会话版本和按协议消息 ID 关联的文件、模型及交付元数据；正文只取自标准消息。 |
 
 切换请求示例：
 
@@ -70,7 +70,7 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 历史附件正文、图片、工具原始结果、供应商专用状态和旧审批不自动迁移；失败或取消轮次的输入也不导入。需要文件时重新附加，或让具备工具能力的模型通过现有会话文件工具重新授权读取旧产物。知识库使用本轮快照与当前授权重新检索，历史工具动作不会因切换重放。跨供应商切换会把保留的文字历史发送给目标供应商，界面确认框会事先说明。
 
-会话更新与提交均使用版本比较，所有线程中的活动 Run 都阻止切换；当前及历史会话线程不能通过独立 `POST /runs` 复用。相同提交键和相同请求重试优先返回原 Run，即使之后会话已切换模型；若显式携带的模型与原 Run 不一致，则返回 409。原有客户端不传新增校验字段时仍可提交，但会话仍使用自身保存的模型。
+会话更新与 AG-UI 提交均使用版本比较，所有线程中的活动 Run 都阻止切换。相同协议 `runId` 和相同完整输入重试优先返回原 Run，即使之后会话已切换模型；若 `forwardedProps.model_id` 与原 Run 不一致，则返回 409。未提供预期模型或版本字段时，会话仍使用自身保存的模型。
 
 冲突保留 HTTP 409 和业务码 `10005`，并以 `data.reason` 区分 `session_busy`、`session_archived`、`session_version_changed`、`session_model_changed`、`model_unavailable`、`model_capability_mismatch`、`model_context_insufficient`、`model_pricing_missing` 和 `model_thinking_mode_unsupported`。收到版本或选择冲突后应刷新会话与运行状态，保留输入草稿后再提交。
 
@@ -103,13 +103,13 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 
 会话累计 Token 来自各轮累计已报告计数器，包含已有摘要用量，仍可能缺少上游未报告或失败请求的消耗。页面在提交、结束、刷新和会话切换后重新读取，进行中每 2.5 秒同步并本地持续计时；临时同步失败会标明显示上次统计并提供重试，权限失效则清空统计。切换会话时中止旧请求，迟到结果不能覆盖新会话。
 
-流式展示使用缓冲分帧、组合字符边界和随积压量调整的速度，独立于原始事件和去重游标；缓冲清空后停止动画。终态正文以消息接口为准，若内容延续当前预览则接续剩余字符，内容不同则立即使用最终文本；失败或取消的正文增量不作为最终回答。系统选择减少动态效果时直接显示文本。SSE 有积压时连续补发，空闲查询间隔为 200 毫秒；心跳与空闲关闭分别按实际 10 秒、60 秒计时，等待间隔释放数据库事务。该轮询频率需结合部署并发规模评估。 浏览器专项可运行 `npm --prefix web run verify:chat-activity`，默认连接 5173，可用 `WEB_BASE_URL` 指定开发地址；脚本以受控 API 和本地 SSE 验证交互，不调用真实模型。
+流式展示使用缓冲分帧、组合字符边界和随积压量调整的速度，独立于原始事件和去重游标；缓冲清空后停止动画。终态正文以消息接口为准，若内容延续当前预览则接续剩余字符，内容不同则立即使用最终文本；失败或取消的正文增量不作为最终回答。系统选择减少动态效果时直接显示文本。SSE 有积压时连续补发，空闲查询间隔为 200 毫秒；心跳与空闲关闭分别按实际 10 秒、60 秒计时，等待间隔释放数据库事务。该轮询频率需结合部署并发规模评估。
 
 ### 对话中的 Skill、Tool 与知识库调用状态
 
 会话助手回复在正文上方展示本轮实际调用的类型、名称与状态。名称和结果来自已持久化的 `tool_started/tool_completed/tool_failed` 事件，不依据回答文字或 Agent 关联配置推断。Skill 展示事件中的名称及版本，用户 Tool 展示调用时名称；知识库检索展示本轮固定且有索引的检索目标名称，按当前权限过滤，已删除或撤权的名称替换为不可用提示。知识库名称使用当前可访问名称，不是调用时名称的历史快照。
 
-`GET /api/v1/runs/{run_id}/calls` 返回按首次事件顺序排列的 `call_id/kind/name/status/sequence/started_at/finished_at/elapsed_ms/failure_code/failure_reason`，每次复核运行所有权与 Agent 当前访问权。会话 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` 的每条消息同时携带所属运行的 `calls` 数组，按页批量查询，不逐条回放完整文本事件；用户消息也携带该摘要，以便没有最终助手回答的失败轮次恢复调用记录。前端仅在助手一侧展示，运行时由工具事件触发重读并定时补齐，完成后以消息内摘要恢复历史。同名工具的多次调用按关联 ID 分别保留，不混并成功和失败。
+`GET /api/v1/runs/{run_id}/calls` 返回按首次事件顺序排列的 `call_id/kind/name/status/sequence/started_at/finished_at/elapsed_ms/failure_code/failure_reason`，每次复核运行所有权与 Agent 当前访问权。协议历史 `/agents/{agent_id}/ag-ui/threads/{session_id}` 的 `messageDetails` 携带所属运行的 `calls` 摘要，不另行提供正文历史；用户消息也携带该摘要，以便没有最终助手回答的失败轮次恢复调用记录。当前工作台在助手一侧使用 AG-UI 活动展示实时和历史过程，按快照与协议线游标恢复，不随每个工具事件重新请求 `/calls`。原有 `calls` 摘要保留为查询接口。同名工具的多次调用按关联 ID 分别保留，不混并成功和失败。
 
 调用类型包括 `skill/tool/mcp/knowledge`，MCP 通过本轮固定 Tool 关联识别，不根据名称猜测。每次调用分别展示开始至完成或失败的耗时；正在执行的调用可按开始时间持续计时。缺少开始或结束事件时返回空耗时并显示未知，结果未确认的调用不会用整轮结束时间伪造执行耗时。
 
@@ -134,10 +134,9 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 | 登录 | `POST /api/v1/auth/login`；取 `data.access_token`。 | 更新用户最近登录时间，创建登录会话和审计记录；后续请求核对用户与会话。 |
 | 创建 Agent | `POST /api/v1/agents`，例如 `{"name":"需求助手","default_model_id":1,"system_prompt":"请简洁回答"}`；取 `agent_id`。 | 校验默认模型，创建 `yp_agent_config`，记录所有者、配置、`enabled` 和从 1 开始的版本；写审计。 |
 | 创建会话 | `POST /api/v1/agents/{agent_id}/sessions`，例如 `{"title":"需求讨论"}`；取 `session_id`。 | 创建 `yp_agent_session`，保存所有者、Agent 与唯一的当前 `thread_id`，初始未归档、版本 1。不同会话使用不同检查点线程。 |
-| 提交本轮 | `POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs`，传 `{"request_key":"turn-1-uuid","input_text":"请记住代号 ALPHA-42"}`；取新 `run_id`。要让模型按需生成文件，只需在 `input_text` 提出格式要求；`publish_answer_artifact:true` 专用于把最终回答额外导出为 `answer.txt`。 | 同一事务内使会话版本递增，并创建 `yp_agent_run`（初始 `queued`、事件序号 1、会话线程及 Agent 配置快照）、`yp_agent_run_message` 的用户消息和 `yp_agent_run_event` 的 `queued` 事件。提交键在同一用户下唯一；每轮使用新键，网络重试沿用原键。 |
+| 提交本轮 | `POST /api/v1/agents/{agent_id}/ag-ui`，传完整公开历史、新消息 ID、`threadId/runId` 及附件等 `forwardedProps`；直接消费返回的 SSE。格式详见 [AG-UI 契约](ag-ui.md)。 | 同一事务递增会话版本、创建业务 Run、用户消息和调度事件；网络重试固定完整输入与协议身份。`publish_answer_artifact` 只控制额外的 `answer.txt` 导出，文件生成仍由任务和授权工具决定。 |
 | 执行与完成 | `GET /api/v1/runs/{run_id}` 可查询状态；收到 `completed` 后用 `GET /api/v1/runs/{run_id}/messages` 取完整回答。 | Worker 领取后写 `running` 事件，按会话线程读取历史检查点，模型增量写事件表；完成时在一个业务事务中写 `assistant` 消息、`completed` 事件和 `checkpoint_id`。 |
 | 继续对话 | 向同一会话提交新 `request_key`，例如 `{"request_key":"turn-2-uuid","input_text":"代号是什么？"}`。 | 新 Run 的事件序号重新从 1 开始，通常沿用会话当前的 `thread_id` 从 Checkpointer 恢复历史；无成功回答且无工具副作用的失败历史可切换新线程。上一轮未终结时拒绝再提交。 |
-| 独立文本运行（另一入口） | 无需创建 Agent 或会话，使用 Bearer 调用 `POST /api/v1/runs`，例如 `{"model_id":1,"input_text":"请介绍一下你自己","request_key":"direct-1"}`；取响应 `data.id` 作为 `run_id`。可选传 `thread_id` 续接独立运行的检查点线程。 | 服务端校验模型和供应商，调用与会话入口相同的 Run 创建逻辑，保存排队 Run、用户消息和 `queued` 事件；不保存 Agent 配置快照或会话附件，也不关联 Agent/会话。之后共用 `/api/v1/runs/{run_id}` 的状态、消息、快照和 SSE 接口。会话入口不会通过 HTTP 调用此入口。 |
 
 ### 失败轮次后的继续对话
 
@@ -163,12 +162,12 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 | 场景 | 接口与前端处理 | 数据来源及边界 |
 | --- | --- | --- |
-| 浏览器订阅 | 用 Bearer 调用 `POST /api/v1/runs/{run_id}/stream-ticket`，再用同源 `EventSource('/api/v1/runs/{run_id}/stream?after=0')`；通过 `addEventListener('state', ...)` 和 `addEventListener('text_delta', ...)` 处理命名事件。 | 5 分钟 HttpOnly Cookie 只用于该 Run 的 SSE，不新增 Run 或事件；流从已提交的事件表补发，事件 ID 为 `<run_id>:<sequence>`。票据到期后重新签发并按游标续传。 |
-| 刷新、切换会话 | `GET /api/v1/agents/{agent_id}/sessions`、`GET /api/v1/agents/{agent_id}/sessions/{session_id}/runs?page=1&page_size=20` 和 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages?after=<message_id>&limit=100`。 | 这些查询不创建新 Run。消息使用全局消息 ID 游标，事件使用各 Run 内序号，不能混用；每次提交 Run 也会使会话版本递增。每条助手消息的 `artifacts` 按产物创建顺序返回，前端无需逐个 Run 查询产物。 |
-| 追平事件 | `GET /api/v1/runs/{run_id}/snapshot?after=<sequence>&limit=100` 返回 `run`、`events`、`latest_sequence`、`next_after`、`has_more`。逐页追平后订阅 `/stream?after=<next_after>`。 | 每页最多 200 条，快照上界只固定本次读取；按 `<run_id>:<sequence>` 去重。其他 Run 的 `Last-Event-ID` 或超前游标返回 400。 |
-| 终态展示 | 收到 `completed`、`failed`、`cancelled`、`timed_out` 后停止加载；完成时读取最终消息，失败时展示 `failure_code`。未启用回答导出时可关闭 `EventSource`。 | 文本增量只是预览，失败时可能没有最终助手消息。模型调用生成工具时，文件与 `completed` 同事务发布，完成后的助手消息直接携带 `artifacts`；前端按其中 `artifact_id` 下载。若 `publish_answer_artifact=true`，worker 还会异步发布 `answer.txt`，可继续等待其 `artifact_published` 后重读消息。文件删除后历史引用保留且 `available=false`，下载返回 404。 |
+| 发送与审批 | 统一使用 AG-UI POST，并直接消费该响应的标准 SSE；新消息输入追加一条 user 消息，审批使用新 runId 和 resume。 | 业务事务与 Worker 不依赖连接存活；断流不取消运行，重新观察不创建新 Run。 |
+| 刷新、切换会话 | 读取会话列表、会话运行列表与 `GET /api/v1/agents/{agent_id}/ag-ui/threads/{session_id}`；有未结束运行时恢复观察。 | 标准历史不使用旧消息 ID 分页；`messageDetails` 按协议消息 ID 关联文件、模型和交付信息，不作为另一套正文历史。 |
+| 追平事件 | `GET /api/v1/runs/{run_id}/ag-ui/snapshot?after=<wire_sequence>&limit=200` 返回 `run`、标准事件封套、`through`、`latest_sequence`、`next_after`、`has_more`。后续页携带同一 `through`，追平后订阅 `/stream?after=<next_after>`。 | 单页最多 500 条；`through` 固定源事件上界，游标是协议线序号，不能与内部源事件序号混用。其他 Run 的 `Last-Event-ID` 或超前游标返回 400。 |
+| 终态展示 | 收到 `completed`、`failed`、`cancelled`、`timed_out` 后停止加载；完成时读取公开协议历史与交付元数据，失败时展示 `failure_code`。未启用回答导出时可关闭 `EventSource`。 | 文本增量只是预览，失败时可能没有最终助手消息。模型调用生成工具时，文件与 `completed` 同事务发布，完成后的助手消息直接携带 `artifacts`；前端按其中 `artifact_id` 下载。若 `publish_answer_artifact=true`，worker 还会异步发布 `answer.txt`，可继续等待其 `y-point.resource` 后重读消息。文件删除后历史引用保留且 `available=false`，下载返回 404。 |
 
-会话页在提交后立即订阅 SSE，运行中显示已持久化的 `text_delta`，断线后按事件序号去重续接；仅在流连接异常或超时时轮询 Run 状态，避免状态查询先报告完成而中断增量预览。启用 Token/成本预算或明确要求交付文件的 Run 会暂缓公开文本，直到用量或产物验证通过，因此这些运行可能只先显示状态和工具进度，最终内容仍以消息接口为准。
+会话页在提交后直接消费 AG-UI POST 流；只有刷新、断线或查看历史过程时读取快照并恢复观察，运行中显示分段公开思考、工具/Skill 活动和正文，断线后按协议线序号去重续接；仅在流连接异常或超时时轮询 Run 状态，避免状态查询先报告完成而中断增量预览。启用 Token/成本预算或明确要求交付文件的 Run 会暂缓公开文本，直到用量或产物验证通过，因此这些运行可能只先显示状态和工具进度，最终内容仍以公开协议历史为准。
 
 ### 附件与操作分支
 

@@ -35,7 +35,10 @@ async def load_run_presentation(db: AsyncSession, owner_id: int, run_ids: list[s
                 AgentRunEvent.run_id.in_(parts),
                 or_(
                     AgentRunEvent.event_type.in_([RunEventType.STATE, RunEventType.REASONING_DELTA]),
-                    and_(AgentRunEvent.run_id.in_(text_parts), AgentRunEvent.event_type == RunEventType.TEXT_DELTA),
+                    and_(
+                        AgentRunEvent.run_id.in_(text_parts),
+                        AgentRunEvent.event_type.in_([RunEventType.TEXT_DELTA, RunEventType.MODEL_STARTED, RunEventType.TOOL_STARTED]),
+                    ),
                 ),
             )
             .order_by(AgentRunEvent.run_id, AgentRunEvent.sequence),
@@ -44,6 +47,9 @@ async def load_run_presentation(db: AsyncSession, owner_id: int, run_ids: list[s
     for event in events:
         if event.event_type == RunEventType.REASONING_DELTA:
             parts[event.run_id].append(event.content or "")
+        elif event.event_type in (RunEventType.MODEL_STARTED, RunEventType.TOOL_STARTED):
+            if event.run_id in text_parts:
+                text_parts[event.run_id].clear()
         elif event.event_type == RunEventType.TEXT_DELTA:
             if event.run_id in text_parts:
                 text_parts[event.run_id].append(event.content or "")

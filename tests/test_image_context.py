@@ -5,6 +5,8 @@
 
 """验证受限图片上传与会话视觉上下文的授权和恢复边界。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 import os
 from io import BytesIO
@@ -188,12 +190,12 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                     "artifact_ids": [image_id],
                     "context_artifact_ids": [image_id],
                 }
-                rejected = await client.post(f"{base}/runs", headers=headers, json=body)
+                rejected = await submit_agent_run(client, f"{base}/runs", headers=headers, json=body)
                 assert rejected.status_code == 409
                 async with sessions.begin() as db:
                     model = await db.get(ModelCatalog, 1)
                     model.verified_capabilities = ["text", "vision"]
-                created = await client.post(f"{base}/runs", headers=headers, json=body)
+                created = await submit_agent_run(client, f"{base}/runs", headers=headers, json=body)
                 assert created.status_code == 201, created.text
                 run_id = created.json()["data"]["id"]
 
@@ -231,7 +233,7 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                 ]
                 assert len(image_urls) == 1
                 assert image_urls[0].startswith("data:image/png;base64,")
-                messages = (await client.get(f"{base}/messages", headers=headers)).json()["data"]
+                messages = (await read_thread_messages(client, f"{base}/messages", headers=headers)).json()["data"]
                 assert messages[0]["attachments"][0]["artifact_id"] == image_id
                 assert messages[0]["attachments"][0]["included_in_context"] is True
                 assert "base64" not in str(messages)
@@ -241,7 +243,8 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
 
                 deleted = await client.delete(f"/api/v1/artifacts/{image_id}", headers=headers)
                 assert deleted.status_code == 200
-                next_run = await client.post(
+                next_run = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     headers=headers,
                     json={
@@ -252,10 +255,11 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                 assert next_run.status_code == 201
                 next_result = await dispatch_next_run(sessions, tmp_path / "checkpoints.db", resolve_model=resolve_model)
                 assert next_result is not None and next_result.state == "completed"
-                history = (await client.get(f"{base}/messages", headers=headers)).json()["data"]
+                history = (await read_thread_messages(client, f"{base}/messages", headers=headers)).json()["data"]
                 assert history[0]["attachments"][0]["available"] is False
                 assert (
-                    await client.post(
+                    await submit_agent_run(
+                        client,
                         f"{base}/runs",
                         headers=headers,
                         json={
@@ -275,7 +279,8 @@ def test_image_context_requires_vision_and_rechecks_file(tmp_path: Path, monkeyp
                 )
                 assert another.status_code == 201
                 another_id = another.json()["data"][0]["id"]
-                queued = await client.post(
+                queued = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     headers=headers,
                     json={

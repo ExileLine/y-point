@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from decimal import Decimal
 from pathlib import Path
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from anthropic import APITimeoutError as AnthropicTimeoutError
 from httpx import TimeoutException as HttpTimeoutError
@@ -43,6 +43,10 @@ from app.core.enums import (
     ModelThinkingMode,
     ModelOutputLimitReason,
     RunEventType,
+    RunCallKind,
+    RunCallFailure,
+    SkillActivityPhase,
+    ToolKind,
     RunModelFailureReason,
     RunRuntimeFailureReason,
     RunState,
@@ -70,6 +74,7 @@ from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
 from app.models.skill import RunSkill, Skill
+from app.models.skill_package import SkillScript
 from app.services.agent_access import can_access_run_agent
 from app.services.artifact_intent import requested_artifact_suffixes
 from app.services.message_attachments import AttachmentContextUnavailable, load_model_attachment_context, load_model_image_context
@@ -82,6 +87,7 @@ from app.services.run_manager import (
     ToolCallBudgetExceeded,
     acknowledge_cancel,
     append_tool_event,
+    append_model_boundary,
     append_text_delta,
     append_reasoning_delta,
     claim_run,
@@ -417,12 +423,15 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     name="read_file",
                     status="error",
                 )
-        tool_call_id = str(uuid4())
+        tool_call_id = CURRENT_TOOL_CALL_ID.get() or str(uuid5(NAMESPACE_URL, f"{self.run_id}:{request.tool_call['id']}"))
         event_name = tool_name
         invocation_id = None
         invocation_effect = ToolEffect.READ
         call_timeout = effective_tool_timeout(self.tool_timeout_seconds, tool_name=tool_name)
         activated_skill_id = None
+        skill_phase = None
+        call_kind = RunCallKind.KNOWLEDGE if tool_name == "search_knowledge_base" else RunCallKind.TOOL
+        display_name = "知识库检索" if call_kind == RunCallKind.KNOWLEDGE else tool_name
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
@@ -439,6 +448,9 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     select(RunSkill).join(Skill, Skill.id == RunSkill.skill_id).where(RunSkill.run_id == self.run_id, Skill.name == skill_name),
                 )
                 event_name = f"skill:{skill_name}@v{fixed_skill.skill_version}"
+                skill_phase = SkillActivityPhase.INSTRUCTIONS if path.endswith("/SKILL.md") else SkillActivityPhase.RESOURCE
+                call_kind = RunCallKind.SKILL
+                display_name = f"{skill_name}@v{fixed_skill.skill_version}"
                 if path.endswith("/SKILL.md"):
                     activated_skill_id = fixed_skill.skill_id
             elif tool_name.startswith("user_tool_"):
@@ -450,6 +462,25 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if matched is None:
                     raise PermissionError("Tool 未在本轮授权")
                 item, version = matched
+                display_name = item.name
+                call_kind = RunCallKind.MCP if item.kind == ToolKind.MCP else RunCallKind.TOOL
+                if item.skill_id is not None:
+                    binding = await db.execute(
+                        select(SkillScript, Skill, RunSkill)
+                        .join(Skill, Skill.id == SkillScript.skill_id)
+                        .join(RunSkill, RunSkill.skill_id == Skill.id)
+                        .where(
+                            SkillScript.tool_id == item.id,
+                            SkillScript.package_hash == version.content_hash,
+                            RunSkill.run_id == self.run_id,
+                        ),
+                    )
+                    fixed_script = binding.first()
+                    if fixed_script is not None:
+                        script, skill, fixed = fixed_script
+                        call_kind = RunCallKind.SKILL
+                        skill_phase = SkillActivityPhase.SCRIPT
+                        display_name = f"{skill.name}@v{fixed.skill_version} / {script.path}"
                 call_timeout = effective_tool_timeout(self.tool_timeout_seconds, kind=item.kind)
                 invocation_id = CURRENT_TOOL_CALL_ID.get()
                 invocation_effect = version.effect
@@ -472,7 +503,17 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                     ),
                 )
             await reserve_tool_call(db, self.run_id, self.lease_token)
-            await append_tool_event(db, self.run_id, self.lease_token, RunEventType.TOOL_STARTED, tool_call_id, event_name)
+            await append_tool_event(
+                db,
+                self.run_id,
+                self.lease_token,
+                RunEventType.TOOL_STARTED,
+                tool_call_id,
+                event_name,
+                skill_phase=skill_phase,
+                call_kind=call_kind,
+                display_name=display_name,
+            )
 
         async def invoke_tool() -> ToolMessage | Command:
             """历史原文采用有界分页，其余工具保持原始处理链路。"""
@@ -498,7 +539,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                         RunEventType.TOOL_FAILED,
                         tool_call_id,
                         event_name,
-                        failure_code=tool_exception_failure(exc),
+                        failure_code=RunCallFailure.RESULT_UNKNOWN
+                        if invocation_id is not None and invocation_effect == ToolEffect.WRITE
+                        else tool_exception_failure(exc),
+                        skill_phase=skill_phase,
                     )
             if isinstance(exc, TimeoutError):
                 raise ToolExecutionTimeoutError("单次工具执行超时") from None
@@ -506,6 +550,8 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 raise ToolExecutionError("工具执行失败") from None
             raise
         event_type = RunEventType.TOOL_FAILED if isinstance(result, ToolMessage) and result.status == "error" else RunEventType.TOOL_COMPLETED
+        argument_error = event_type == RunEventType.TOOL_FAILED and is_tool_argument_error(result.content)
+        result_unknown = invocation_id is not None and invocation_effect == ToolEffect.WRITE and event_type == RunEventType.TOOL_FAILED and not argument_error
         async with self.sessions.begin() as db:
             await append_tool_event(
                 db,
@@ -514,7 +560,12 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 event_type,
                 tool_call_id,
                 event_name,
-                failure_code=tool_result_failure(result.content) if event_type == RunEventType.TOOL_FAILED else None,
+                skill_phase=skill_phase,
+                failure_code=RunCallFailure.RESULT_UNKNOWN
+                if result_unknown
+                else tool_result_failure(result.content)
+                if event_type == RunEventType.TOOL_FAILED
+                else None,
             )
             if activated_skill_id is not None and event_type == RunEventType.TOOL_COMPLETED:
                 from app.services.skill_reports import activate_skill_report
@@ -522,15 +573,12 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 await activate_skill_report(db, self.run_id, activated_skill_id)
             if invocation_id is not None:
                 invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
-                argument_error = event_type == RunEventType.TOOL_FAILED and is_tool_argument_error(result.content)
                 invocation.state = (
                     (ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE and not argument_error else ToolInvocationState.FAILED)
                     if event_type == RunEventType.TOOL_FAILED
                     else ToolInvocationState.COMPLETED
                 )
-                invocation.failure_code = (
-                    tool_result_failure(result.content) if event_type == RunEventType.TOOL_FAILED else None
-                )
+                invocation.failure_code = tool_result_failure(result.content) if event_type == RunEventType.TOOL_FAILED else None
         return result
 
 
@@ -638,7 +686,12 @@ async def _stream_model_text(
     """分开发布正文与公开思考；正文仍遵守预算和模板交付保护。"""
     from app.services.skill_reports import required_report_skill_ids
 
+    segment_id = None
     async for mode, payload in runtime.events(invocation):
+        if mode == "updates" and isinstance(payload, dict) and "model" in payload and segment_id is not None:
+            async with sessions.begin() as db:
+                await append_model_boundary(db, run_id, lease_token, segment_id, finished=True)
+            segment_id = None
         if mode != "messages":
             continue
         message, metadata = payload
@@ -646,6 +699,11 @@ async def _stream_model_text(
             continue
         reasoning = public_reasoning_text(message) if publish_reasoning else ""
         content = str(message.text) if publish_text else ""
+        identity = str(message.id or f"step:{metadata.get('langgraph_step', 0)}")
+        if segment_id != identity:
+            async with sessions.begin() as db:
+                await append_model_boundary(db, run_id, lease_token, identity)
+            segment_id = identity
         if not reasoning and not content:
             continue
         async with sessions.begin() as db:
@@ -1251,7 +1309,12 @@ async def execute_text_run(
         )
     except ToolExecutionError:
         return await _finish_interrupted(
-            sessions, run_id, lease_token, RunRuntimeFailureReason.TOOL, catalog_model=catalog_model, started=started,
+            sessions,
+            run_id,
+            lease_token,
+            RunRuntimeFailureReason.TOOL,
+            catalog_model=catalog_model,
+            started=started,
         )
     except ToolExecutionTimeoutError:
         return await _finish_interrupted(

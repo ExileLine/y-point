@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -35,6 +36,8 @@ async function fixture(page, refreshAllowed = true) {
     let data;
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() };
     else if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
+    else if (path.endsWith('/runtime-limits')) data = { upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 };
+    else if (path.endsWith('/ag-ui/snapshot')) data = { run: { id: path.split('/')[4], state: 'completed' }, events: [], latest_sequence: 0, next_after: 0, has_more: false };
     else if (path === '/api/v1/auth/me') data = { id: 1, username: 'tester', role: 'user' };
     else if (path === '/api/v1/auth/refresh') {
       assert.equal(req.postDataJSON().refresh_token, 'refresh-fixture'); assertions++;
@@ -44,7 +47,7 @@ async function fixture(page, refreshAllowed = true) {
     else if (path === '/api/v1/agents/11/sessions') data = { items: [session], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/sessions/downloads')) data = session;
     else if (path.endsWith('/downloads/runs')) data = { items: [], total: 0, page: 1, page_size: 20 };
-    else if (path.endsWith('/downloads/messages')) data = [
+    else if (path.endsWith('/ag-ui/threads/downloads')) data = [
       { id: 1, run_id: 'run-file', role: 'user', content: '请生成文件', create_time: now, attachments: [{ artifact_id: 'input', filename: '参考.md', available: true, included_in_context: true }], artifacts: [] },
       { id: 2, run_id: 'run-file', role: 'assistant', content: '文件已生成。', create_time: now, attachments: [], artifacts: files },
       ...(late ? [{ id: 3, run_id: 'late-run', role: 'assistant', content: '回答导出', create_time: now, attachments: [], artifacts: [{ artifact_id: 'late', filename: 'answer.txt', available: true }] }] : []),
@@ -64,7 +67,7 @@ async function fixture(page, refreshAllowed = true) {
       if (['expired', 'retry', 'input', 'late'].includes(id)) return route.fulfill({ contentType: 'text/plain', body: `file:${id}` });
       unexpected.push(path); return route.abort();
     } else { unexpected.push(path); return route.abort(); }
-    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data }) });
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data: agUiData(path, data) }) });
   });
   return { calls, unexpected, reportReady, releaseReport, publish() { late = true; } };
 }

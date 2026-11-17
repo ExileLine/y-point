@@ -1,3 +1,4 @@
+import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -18,6 +19,7 @@ async function fixture(page) {
   messages[25]=message(26,'assistant','```custom-format\nunknown syntax stays readable\n```');
   messages.push(message(31,'assistant',content));
   let run=null, hold=false;
+  let streamRows = [];
   const historySeen=deferred(), releaseHistory=deferred();
   const calls=[];
   const streamText = "正在流式生成。".repeat(50);
@@ -31,20 +33,28 @@ async function fixture(page) {
     else if(path==='/api/v1/agents/11')data={id:11,name:'体验验证助手',description:'测试',enabled:true,default_model_id:1,welcome_message:'欢迎'};
     else if(path==='/api/v1/agents/11/sessions')data={items:[session],total:1,page:1,page_size:20};
     else if(path==='/api/v1/agents/11/sessions/session-a')data=session;
-    else if(path.endsWith('/session-a/messages')) {
+    else if(path.endsWith('/ag-ui/threads/session-a')) {
       if(hold){historySeen.resolve();await releaseHistory.promise;}
       data=messages.filter(m=>m.id>Number(url.searchParams.get('after')||0)).slice(0,100);
     } else if(path.endsWith('/session-a/runs')&&method==='GET')data={items:run?[run]:[],total:run?1:0,page:1,page_size:20};
-    else if(path.endsWith('/session-a/runs')&&method==='POST'){
+    else if(path.endsWith('/ag-ui')&&method==='POST'){
       run={id:'run-chat',agent_id:11,session_id:'session-a',state:'running',failure_code:null,create_time:now,update_time:now};
-      messages.push(message(32,'user',req.postDataJSON().input_text,'run-chat'));hold=true;data=run;
+      messages.push(message(32,'user',req.postDataJSON().messages.at(-1).content,'run-chat'));hold=true;streamRows = [{ event_type: 'text_delta', state: 'running', content: streamText }];return agUiPost(route,run,agUiFrames(run,streamRows));
     }else if(path==='/api/v1/runs/run-chat/stream-ticket')data={expires_in:300};
-    else if(path==='/api/v1/runs/run-chat/snapshot')data={run,events:[],latest_sequence:0,next_after:0,has_more:false};
-    else if(path==='/api/v1/runs/run-chat/stream')return route.fulfill({contentType:'text/event-stream',body:`id: run-chat:1\nevent: text_delta\ndata: ${JSON.stringify({sequence:1,event_type:'text_delta',state:'running',content:streamText})}\n\n`});
+    else if(path==='/api/v1/runs/run-chat/ag-ui/snapshot')data=agUiSnapshot(run, agUiFrames(run,streamRows), Number(url.searchParams.get('after') || 0));
+    else if(path==='/api/v1/runs/run-chat/stream') {
+      streamRows = [{ event_type: 'text_delta', state: 'running', content: streamText }];
+      return route.fulfill({contentType:'text/event-stream', body: agUiSse(run.id, agUiFrames(run, streamRows), Number(url.searchParams.get('after') || 0))});
+    }
+    else if(path.endsWith('/ag-ui/snapshot')) {
+      const runId = path.split('/')[4], saved = messages.find(item => item.run_id === runId && item.role === 'assistant');
+      const historyRun = { id: runId, session_id: session.id, state: 'completed', create_time: now };
+      data = agUiSnapshot(historyRun, agUiFrames(historyRun, [], { answer: saved?.content || '' }));
+    }
     else if(path.endsWith('/calls'))data=[];
     else if(path==='/api/v1/runs/run-chat')data=run;
     else {throw new Error(`未定义 fixture: ${method} ${path}`);}
-    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({code:200,message:'操作成功',data})});
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({code:200,message:'操作成功',data: agUiData(path, data)})});
   });
   return {historySeen:historySeen.promise, release(){hold=false;releaseHistory.resolve();}, complete(){run={...run,state:'completed'};messages.push(message(33,'assistant',streamText,'run-chat'));},calls,streamText};
 }
@@ -105,7 +115,7 @@ try {
     assert.equal(await page.locator('[data-stream-run="run-chat"]').count(),0);assert.equal(await page.locator('[data-message-id="33"]').count(),1); assertions+=3;
     await history.evaluate(el=>el.scrollTop=250);
     await page.getByRole('button',{name:'回到最新消息',exact:true}).waitFor();
-    const read=page.waitForResponse(response=>response.url().includes('/session-a/messages'));
+    const read=page.waitForResponse(response=>response.url().includes('/ag-ui/threads/session-a'));
     await page.getByRole('button',{name:'刷新会话',exact:true}).click();await read;
     assert.ok(Math.abs(await history.evaluate(el=>el.scrollTop)-250)<2,'刷新会话应保留阅读位置'); assertions++;
     await page.getByRole('button',{name:'回到最新消息',exact:true}).click();

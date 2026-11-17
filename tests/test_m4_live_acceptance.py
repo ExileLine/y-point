@@ -5,6 +5,8 @@
 
 """通过 Ollama 真实模型执行可选的 M4 端到端验收。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 from io import BytesIO
 import os
@@ -136,7 +138,8 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                     ("pdf", "Create a PDF document listing the project code, budget and delivery deadline exactly as attached."),
                     ("xlsx", "Create an XLSX spreadsheet listing the project code, budget and delivery deadline as rows."),
                 ):
-                    submitted = await client.post(
+                    submitted = await submit_agent_run(
+                        client,
                         f"{session_base}/runs",
                         headers=headers,
                         json={
@@ -158,7 +161,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                     )
                     assert result is not None and result.id == run_id
                     assert result.state == "completed", (suffix, result.state, result.failure_code)
-                    messages = await client.get(f"{session_base}/messages", headers=headers)
+                    messages = await read_thread_messages(client, f"{session_base}/messages", headers=headers)
                     assert messages.status_code == 200, messages.text
                     assistant = next((item for item in messages.json()["data"] if item["run_id"] == run_id and item["role"] == "assistant"))
                     matches = [item for item in assistant["artifacts"] if item["filename"].endswith(f".{suffix}")]
@@ -188,7 +191,8 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                             workbook.close()
 
                 assert first_document_id is not None
-                revised = await client.post(
+                revised = await submit_agent_run(
+                    client,
                     f"{session_base}/runs",
                     headers=headers,
                     json={
@@ -209,7 +213,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
                 assert result is not None and result.id == revision_id
                 assert result.state == "completed", (result.state, result.failure_code)
-                messages = (await client.get(f"{session_base}/messages", headers=headers)).json()["data"]
+                messages = (await read_thread_messages(client, f"{session_base}/messages", headers=headers)).json()["data"]
                 assistant = next(item for item in messages if item["run_id"] == revision_id and item["role"] == "assistant")
                 revised_files = [item for item in assistant["artifacts"] if item["filename"].endswith(".docx")]
                 assert len(revised_files) == 1
@@ -221,7 +225,8 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 assert "XINGHE-27" in content and "Approved on Tuesday" in content
 
                 assert first_pdf_id is not None
-                revised_pdf = await client.post(
+                revised_pdf = await submit_agent_run(
+                    client,
                     f"{session_base}/runs",
                     headers=headers,
                     json={
@@ -242,7 +247,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
                 assert result is not None and result.id == pdf_run_id
                 assert result.state == "completed", (result.state, result.failure_code)
-                messages = (await client.get(f"{session_base}/messages", headers=headers)).json()["data"]
+                messages = (await read_thread_messages(client, f"{session_base}/messages", headers=headers)).json()["data"]
                 assistant = next(item for item in messages if item["run_id"] == pdf_run_id and item["role"] == "assistant")
                 pdf_files = [item for item in assistant["artifacts"] if item["filename"].endswith(".pdf")]
                 assert len(pdf_files) == 1
@@ -265,7 +270,8 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
                 assert second_upload.status_code == 201, second_upload.text
                 second_id = second_upload.json()["data"][0]["id"]
-                combined = await client.post(
+                combined = await submit_agent_run(
+                    client,
                     f"{session_base}/runs",
                     headers=headers,
                     json={
@@ -287,7 +293,7 @@ def test_live_m4_document_generation(tmp_path: Path, monkeypatch: pytest.MonkeyP
                 )
                 assert result is not None and result.id == combined_id
                 assert result.state == "completed", (result.state, result.failure_code)
-                messages = (await client.get(f"{session_base}/messages", headers=headers)).json()["data"]
+                messages = (await read_thread_messages(client, f"{session_base}/messages", headers=headers)).json()["data"]
                 assistant = next(item for item in messages if item["run_id"] == combined_id and item["role"] == "assistant")
                 text_files = [item for item in assistant["artifacts"] if item["filename"].endswith(".txt")]
                 assert len(text_files) == 1

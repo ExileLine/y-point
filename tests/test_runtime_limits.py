@@ -24,7 +24,6 @@ from app.models.agent_config import AgentConfig
 from app.models.base import Base
 from app.schemas.agent import AgentCreateIn, AgentUpdateIn
 from app.schemas.provider import ProviderUpdateIn
-from app.schemas.run import RunCreateIn
 from app.services import message_attachments
 from app.services.artifact_store import ArtifactValidationError, save_upload
 from app.services.attachment_text import extract_context_text
@@ -80,7 +79,7 @@ def test_environment_limits_and_default_consistency(monkeypatch: pytest.MonkeyPa
 
 
 def test_dynamic_agent_run_and_provider_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """创建、更新与独立运行采用同一默认值和动态上限。"""
+    """Agent 创建、更新与供应商参数采用配置默认值和动态上限。"""
     config = get_config()
     monkeypatch.setattr(config, "AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS", 300)
     monkeypatch.setattr(config, "AGENT_MAX_MODEL_TIMEOUT_SECONDS", 900)
@@ -90,8 +89,6 @@ def test_dynamic_agent_run_and_provider_validation(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(config, "AGENT_MAX_OUTPUT_TOKENS", 32768)
     agent = AgentCreateIn(name="配置验证助手", default_model_id=1)
     assert (agent.model_timeout_seconds, agent.tool_timeout_seconds, agent.max_output_tokens) == (300, 240, 8192)
-    standalone = RunCreateIn(model_id=1, input_text="测试默认值")
-    assert (standalone.model_timeout_seconds, standalone.tool_timeout_seconds) == (300, 240)
     explicit = AgentCreateIn(name="明确指定", default_model_id=1, model_timeout_seconds=800, max_output_tokens=16384)
     assert explicit.model_timeout_seconds == 800 and explicit.max_output_tokens == 16384
     assert ProviderUpdateIn(timeout_seconds=900).timeout_seconds == 900
@@ -114,8 +111,6 @@ def test_dynamic_agent_run_and_provider_validation(monkeypatch: pytest.MonkeyPat
                     field: value,
                 },
             )
-    with pytest.raises(ValidationError):
-        RunCreateIn(model_id=1, input_text="越界值", model_timeout_seconds=901)
     with pytest.raises(ValidationError):
         ProviderUpdateIn(timeout_seconds=901)
 

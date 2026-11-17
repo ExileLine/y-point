@@ -23,4 +23,5 @@ class AgentRunMessage(CustomBaseModel):
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="所属运行 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="消息所属用户 ID")
     role: Mapped[str] = mapped_column(String(16), nullable=False, comment="消息角色：user 或 assistant")
+    ag_ui_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="公开 AG-UI 消息 ID，用于完整历史一致性校验")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="用户输入或最终可见回答")

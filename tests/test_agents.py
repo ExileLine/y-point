@@ -5,6 +5,8 @@
 
 """验证私有 Agent 配置接口、所有权和迁移。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 import os
 import sqlite3
@@ -601,8 +603,8 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 assert recipient_session.status_code == 201, recipient_session.text
                 recipient_session_id = recipient_session.json()["data"]["id"]
                 assert (await client.get(f"{base}/sessions", headers=recipient)).json()["data"]["total"] == 1
-                assert (await client.get(f"{base}/sessions/{owner_session_id}/messages", headers=recipient)).status_code == 404
-                assert (await client.get(f"{base}/sessions/{recipient_session_id}/messages", headers=owner)).status_code == 404
+                assert (await read_thread_messages(client, f"{base}/sessions/{owner_session_id}/messages", headers=recipient)).status_code == 404
+                assert (await read_thread_messages(client, f"{base}/sessions/{recipient_session_id}/messages", headers=owner)).status_code == 404
                 assert (await client.get(f"{base}/sessions/{recipient_session_id}", headers=stranger)).status_code == 404
                 foreign_artifact_id = str(uuid4())
                 recipient_artifact_id = str(uuid4())
@@ -630,7 +632,8 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                         ],
                     )
                 assert (
-                    await client.post(
+                    await submit_agent_run(
+                        client,
                         f"{base}/sessions/{recipient_session_id}/runs",
                         headers=recipient,
                         json={
@@ -641,7 +644,8 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                         },
                     )
                 ).status_code == 404
-                submitted = await client.post(
+                submitted = await submit_agent_run(
+                    client,
                     f"{base}/sessions/{recipient_session_id}/runs",
                     headers=recipient,
                     json={
@@ -657,11 +661,12 @@ def test_named_user_agent_share(tmp_path: Path) -> None:
                 revoked = await client.delete(f"{base}/shares/2", headers=owner)
                 assert revoked.status_code == 200, revoked.text
                 assert (await client.get("/api/v1/agents/shared", headers=recipient)).json()["data"] == []
-                assert (await client.get(f"{base}/sessions/{recipient_session_id}/messages", headers=recipient)).status_code == 404
+                assert (await read_thread_messages(client, f"{base}/sessions/{recipient_session_id}/messages", headers=recipient)).status_code == 404
                 assert (await client.get(f"/api/v1/runs/{run_id}", headers=recipient)).status_code == 404
                 assert (await client.get(f"/api/v1/artifacts/{recipient_artifact_id}", headers=recipient)).status_code == 200
                 assert (
-                    await client.post(
+                    await submit_agent_run(
+                        client,
                         f"{base}/sessions/{recipient_session_id}/runs",
                         headers=recipient,
                         json={

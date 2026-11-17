@@ -5,6 +5,8 @@
 
 """通过真实索引与运行图验证回答策略、权限目录、运行快照及模式迁移。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 import json
 import os
@@ -124,7 +126,8 @@ def test_knowledge_answer_policy_through_run(tmp_path, monkeypatch, mode, questi
 
             async def submit(text: str, key: str):
                 """提交带独立幂等键的新轮次并返回公开快照。"""
-                response = await client.post(
+                response = await submit_agent_run(
+                    client,
                     base,
                     headers=owner,
                     json={

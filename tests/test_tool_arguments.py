@@ -195,7 +195,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                 poll_seconds=1,
             )
             if execution_fails:
-                assert result.state == "failed" and result.failure_code == "model_error"
+                assert result.state == "failed" and result.failure_code == "tool_error"
             else:
                 assert result.state == "completed", result.failure_code
             assert result.tool_call_count == 2 and result.model_call_count == (2 if execution_fails else 3)
@@ -206,12 +206,19 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                     ("failed", "invalid_tool_arguments"),
                     (
                         ("unknown" if kind == "mcp" else "failed") if execution_fails else "completed",
-                        "execution_interrupted" if execution_fails else None,
+                        "execution_error" if execution_fails else None,
                     ),
                 ]
                 events = list(await db.scalars(select(AgentRunEvent.event_type).where(AgentRunEvent.run_id == run.id)))
                 assert events.count("tool_failed") == (2 if execution_fails else 1)
                 assert events.count("tool_completed") == (0 if execution_fails else 1)
+                if execution_fails and kind == "mcp":
+                    failed_event = await db.scalar(
+                        select(AgentRunEvent)
+                        .where(AgentRunEvent.run_id == run.id, AgentRunEvent.event_type == "tool_failed")
+                        .order_by(AgentRunEvent.sequence.desc()),
+                    )
+                    assert failed_event.failure_code == "external_result_unknown"
         finally:
             await engine.dispose()
 

@@ -1,3 +1,4 @@
+import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
@@ -60,33 +61,38 @@ function fixture(page, shared = false, options = {}) {
         sessions = sessions.filter((entry) => entry.id !== id);
         data = {};
       }
-    } else if (path.endsWith("/messages")) {
+    } else if (path.includes("/ag-ui/threads/")) {
       data = messages.filter((item) => item.id > Number(url.searchParams.get("after") || 0)).slice(0, Number(url.searchParams.get("limit") || 100));
     } else if (path.endsWith("/runs") && method === "GET") data = { items: run ? [run] : [], total: run ? 1 : 0, page: 1, page_size: 20 };
-    else if (path.endsWith("/runs") && method === "POST") {
+    else if (path.endsWith("/ag-ui") && method === "POST") {
       submitAttempts += 1;
       if (options.failFirstSubmit && submitAttempts === 1) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: 503, message: "暂时不可用" }) });
       if (options.modelSwitchConflict) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: 10005, message: "会话模型已变化，请刷新后重试", data: { reason: "session_model_changed" } }) });
-      run = { id: "run-new", agent_id: 11, session_id: path.split("/").at(-2), state: "queued", failure_code: null, create_time: now, update_time: now };
+      run = { id: "run-new", agent_id: 11, session_id: body.threadId, state: "queued", failure_code: null, create_time: now, update_time: now };
       const item = sessions.find((entry) => entry.id === run.session_id);
       if (item) item.version += 1;
-      messages = [...messages, { id: 3, run_id: run.id, role: "user", content: body.input_text, create_time: now, attachments: [], artifacts: [] }];
-      data = run;
-      status = 201;
+      messages = [...messages, { id: 3, run_id: run.id, role: "user", content: body.messages.at(-1).content, create_time: now, attachments: [], artifacts: [] }];
+      return agUiPost(route, run, agUiFrames(run, [
+        { event_type: 'state', state: 'queued' },
+        { event_type: 'text_delta', content: '正在生成的内容' },
+      ]));
     } else if (path === "/api/v1/runs/run-new/stream-ticket" && method === "POST") {
       data = { expires_in: 300 };
-    } else if (path === "/api/v1/runs/run-new/snapshot" && method === "GET") {
+    } else if (path === "/api/v1/runs/run-new/ag-ui/snapshot" && method === "GET") {
       const after = Number(url.searchParams.get("after") || 0);
       const events = [
         { sequence: 1, event_type: "state", state: "queued", content: null },
         ...(options.reconnect && streamReads > 0 ? [{ sequence: 2, event_type: "text_delta", state: "running", content: "正在生成的内容" }, { sequence: 3, event_type: "text_delta", state: "running", content: "，续接成功" }] : []),
-      ].filter((event) => event.sequence > after);
-      data = { run, events, latest_sequence: options.reconnect && streamReads > 0 ? 3 : 1, next_after: events.at(-1)?.sequence || after, has_more: false };
+      ];
+      data = agUiSnapshot(run, agUiFrames(run, events), after);
     } else if (path === "/api/v1/runs/run-new/stream" && method === "GET") {
       streamReads += 1;
       if (options.reconnect && streamReads > 1) return route.fulfill({ status: 200, contentType: "text/event-stream", body: "" });
       if (options.pollCompletesBeforeStream) await new Promise((resolve) => setTimeout(resolve, 1400));
-      return route.fulfill({ status: 200, contentType: "text/event-stream", body: `id: run-new:2\nevent: text_delta\ndata: ${JSON.stringify({ sequence: 2, event_type: "text_delta", state: "running", content: "正在生成的内容" })}\n\n` });
+      return route.fulfill({ status: 200, contentType: "text/event-stream", body: agUiSse(run.id, agUiFrames(run, [
+        { event_type: 'state', state: 'queued' },
+        { event_type: 'text_delta', content: '正在生成的内容' },
+      ]), Number(url.searchParams.get('after') || 0)) });
     } else if (path === "/api/v1/runs/run-new" && method === "GET") {
       runReads += 1;
       if ((runReads >= 2 || options.pollCompletesBeforeStream) && !options.holdCompletion) {
@@ -94,11 +100,15 @@ function fixture(page, shared = false, options = {}) {
         if (!options.pollCompletesBeforeStream && !messages.some((item) => item.id === 4)) messages = [...messages, { id: 4, run_id: run.id, role: "assistant", content: "这是最终回答", create_time: now, attachments: [], artifacts: [] }];
       }
       data = run;
+    } else if (path.endsWith('/ag-ui/snapshot')) {
+      const runId = path.split('/')[4], saved = messages.find(item => item.run_id === runId && item.role === 'assistant');
+      const historical = { id: runId, session_id: 'session-a', state: 'completed', create_time: now };
+      data = agUiSnapshot(historical, agUiFrames(historical, [], { answer: saved?.content || '' }));
     } else if (path === "/api/v1/runs/run-new/cancel") {
       run = { ...run, state: "cancel_requested" };
       data = run;
     }
-    await route.fulfill({ status: data === null ? status === 200 ? 404 : status : status, contentType: "application/json", body: JSON.stringify(data === null ? { code: status, message: "不存在" } : status === 201 ? { code: 201, message: "创建成功", data } : envelope(data)) });
+    await route.fulfill({ status: data === null ? status === 200 ? 404 : status : status, contentType: "application/json", body: JSON.stringify(data === null ? { code: status, message: "不存在" } : status === 201 ? { code: 201, message: "创建成功", data: agUiData(path, data) } : envelope(agUiData(path, data))) });
   });
   return { calls, getSessions: () => sessions };
 }
@@ -109,7 +119,7 @@ try {
     const { calls } = fixture(page, false, { holdCompletion: true });
     await page.goto(`${baseURL}/agents/11/sessions/session-a`, { waitUntil: "networkidle" });
     const input = page.getByRole("textbox", { name: "消息内容" });
-    const submissions = () => calls.filter(call => call.method === "POST" && call.path.endsWith("/session-a/runs"));
+    const submissions = () => calls.filter(call => call.method === "POST" && call.path.endsWith("/ag-ui"));
     await input.fill("   ");
     await input.press("Enter");
     assert.equal(submissions().length, 0);
@@ -132,7 +142,7 @@ try {
     });
     await page.getByText("正在生成的内容", { exact: false }).waitFor();
     assert.equal(submissions().length, 1);
-    assert.equal(submissions()[0].body.input_text, "第一行\n第二行");
+    assert.equal(submissions()[0].body.messages.at(-1).content, "第一行\n第二行");
     console.log(`${width}: Enter sends once, Shift+Enter newline, IME/empty/repeat guards passed`);
     await page.close();
   }
@@ -142,8 +152,8 @@ try {
   await racePage.getByRole("textbox", { name: "消息内容" }).fill("流式竞态");
   await racePage.getByRole("button", { name: "发送" }).click();
   await racePage.getByText("正在生成的内容").waitFor({ timeout: 5000 });
-  assert.ok(raceFixture.calls.some((call) => call.path === "/api/v1/runs/run-new/stream"));
-  assert.equal(raceFixture.calls.filter((call) => call.path === "/api/v1/runs/run-new" && call.method === "GET").length, 0);
+  assert.ok(raceFixture.calls.some((call) => call.path === "/api/v1/agents/11/ag-ui" && call.method === "POST"));
+  assert.equal(raceFixture.calls.filter((call) => call.path === "/api/v1/runs/run-new" && call.method === "GET").length, 1);
   console.log("race: SSE preview survives early status completion");
   await racePage.close();
 
@@ -154,7 +164,7 @@ try {
     await streamingPage.getByRole("textbox", { name: "消息内容" }).fill("请逐步回答");
     await streamingPage.getByRole("button", { name: "发送" }).click();
     await streamingPage.getByText("正在生成的内容").waitFor({ timeout: 5000 });
-    assert.ok(streamingFixture.calls.some((call) => call.path === "/api/v1/runs/run-new/stream"));
+    assert.ok(streamingFixture.calls.some((call) => call.path === "/api/v1/agents/11/ag-ui" && call.method === "POST"));
     assert.equal(await streamingPage.evaluate(() => document.documentElement.scrollWidth), width);
     await streamingPage.screenshot({ path: screenshotPath(`y-point-streaming-${name}.png`), fullPage: true });
     console.log(`${name}: partial answer visible before run completion`);
@@ -168,7 +178,7 @@ try {
   await reconnectPage.getByRole("button", { name: "发送" }).click();
   await reconnectPage.getByText("正在生成的内容，续接成功").waitFor({ timeout: 7000 });
   assert.equal(await reconnectPage.locator(".sessions-messages").last().getByText("正在生成的内容，续接成功").count(), 1);
-  assert.ok(reconnectFixture.calls.some((call) => call.path === "/api/v1/runs/run-new/snapshot" && call.search.includes("after=2")));
+  assert.ok(reconnectFixture.calls.some((call) => call.path === "/api/v1/runs/run-new/ag-ui/snapshot" && call.search.includes("after=4")));
   console.log("stream: snapshot reconnect resumes without duplicate text");
   await reconnectPage.close();
 
@@ -188,25 +198,28 @@ try {
     await page.getByRole("textbox", { name: "消息内容" }).fill("新的问题");
     await page.getByRole("button", { name: "发送" }).click();
     await page.getByText("这是最终回答").waitFor({ timeout: 10000 });
-    const submitted = calls.find((call) => call.method === "POST" && call.path.endsWith("/session-a/runs"));
-    assert.equal(submitted.body.input_text, "新的问题");
-    assert.equal(submitted.body.artifact_ids.length, 0);
-    assert.ok(submitted.body.request_key);
-    assert.equal(calls.filter((call) => call.method === "POST" && call.path.endsWith("/session-a/runs")).length, 1);
+    const submitted = calls.find((call) => call.method === "POST" && call.path.endsWith("/ag-ui"));
+    assert.equal(submitted.body.messages.at(-1).content, "新的问题");
+    assert.equal(submitted.body.forwardedProps.artifact_ids.length, 0);
+    assert.ok(submitted.body.runId);
+    assert.equal(calls.filter((call) => call.method === "POST" && call.path.endsWith("/ag-ui")).length, 1);
     if (name === "desktop") {
       await page.getByRole("button", { name: "当前会话操作" }).click();
       await page.getByText("重命名", { exact: true }).click();
       await page.getByRole("textbox", { name: "新标题" }).fill("需求评审");
       await page.locator(".ant-modal:visible .ant-modal-footer .ant-btn-primary").click();
       await page.getByText("需求评审").first().waitFor();
+      await page.locator(".ant-modal:visible").waitFor({ state: "hidden" });
       assert.equal(calls.find((call) => call.method === "PUT" && call.body?.title === "需求评审")?.body.expected_version, 2);
       await page.getByRole("button", { name: "当前会话操作" }).click();
       await page.getByText("归档", { exact: true }).click();
       await page.locator(".sessions-current-title .ant-tag").getByText("已归档").waitFor();
+      await page.getByRole("menuitem", { name: "归档", exact: true }).waitFor({ state: "hidden" });
       assert.equal(await page.getByRole("textbox", { name: "消息内容" }).isDisabled(), true);
       await page.getByRole("button", { name: "当前会话操作" }).click();
       await page.getByText("恢复", { exact: true }).click();
-      await page.getByRole("textbox", { name: "消息内容" }).waitFor();
+      await page.locator(".sessions-current-title .ant-tag").getByText("已归档").waitFor({ state: "hidden" });
+      await page.getByRole("menuitem", { name: "恢复", exact: true }).waitFor({ state: "hidden" });
       await page.getByRole("button", { name: "当前会话操作" }).click();
       await page.getByText("删除", { exact: true }).click();
       await page.locator(".ant-modal:visible .ant-modal-footer .ant-btn-primary").click();
@@ -239,7 +252,7 @@ try {
   await retryPage.getByRole("button", { name: "发送" }).click();
   await retryPage.getByRole("button", { name: "重试提交" }).click();
   await retryPage.getByText("这是最终回答").waitFor({ timeout: 10000 });
-  const attempts = retryFixture.calls.filter((call) => call.method === "POST" && call.path.endsWith("/session-a/runs"));
+  const attempts = retryFixture.calls.filter((call) => call.method === "POST" && call.path.endsWith("/ag-ui"));
   assert.equal(attempts.length, 2);
   assert.deepEqual(attempts[0].body, attempts[1].body);
   console.log("retry: identical request key and payload passed");

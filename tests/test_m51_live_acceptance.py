@@ -5,6 +5,8 @@
 
 """在隔离业务库通过真实模型、独立 worker 与 Docker 验证 M5.1 组合业务。"""
 
+from tests.ag_ui_helpers import submit_agent_run, resume_agent_run
+
 import asyncio
 import os
 import subprocess
@@ -189,7 +191,8 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
 
             async def run_round(base, instruction, *, mcp=False):
                 """经独立进程执行；MCP 必须先审批，再由新进程恢复。"""
-                submitted = await client.post(
+                submitted = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     headers=other,
                     json={
@@ -204,13 +207,7 @@ def test_live_skill_dependency_tool_versions_and_mcp_approval(tmp_path: Path, mo
                 if mcp:
                     assert state["state"] == "waiting_for_approval", state.get("failure_code")
                     assert (await client.get(f"/api/v1/runs/{run_id}/approval", headers=owner)).status_code == 404
-                    decision = await client.post(
-                        f"/api/v1/runs/{run_id}/approval/decision",
-                        headers=other,
-                        json={
-                            "decision": "approve",
-                        },
-                    )
+                    decision = await resume_agent_run(client, run_id, headers=other)
                     assert decision.status_code == 200, decision.text
                     await worker_once()
                     state = (await client.get(f"/api/v1/runs/{run_id}", headers=other)).json()["data"]

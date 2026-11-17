@@ -5,7 +5,7 @@
 
 """保存可按游标回放的运行状态事件。"""
 
-from sqlalchemy import Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel
@@ -29,4 +29,5 @@ class AgentRunEvent(CustomBaseModel):
     content: Mapped[str | None] = mapped_column(Text, nullable=True, comment="可公开的模型文本增量")
     tool_call_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="服务端生成的工具调用关联 ID")
     tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="已授权工具名称")
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="公开事件的版本化结构数据，不含原始工具参数或私有思考")
     artifact_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="已发布生成产物 ID")

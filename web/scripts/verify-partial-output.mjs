@@ -1,9 +1,10 @@
+import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
 
-const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5174';
+const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
 const sockets = new Set();
 const server = createServer((req, res) => {
@@ -42,30 +43,36 @@ try {
         else if (path === '/api/v1/agents/11/sessions') data = { items: [session], total: 1, page: 1, page_size: 20 };
         else if (path.endsWith('/partial/models')) data = [];
         else if (path.endsWith('/partial/metrics')) data = { run_count: nextRound ? 2 : 1, active_run_count: finished ? 0 : 1, elapsed_ms: 73450, total_tokens: 225991, missing_duration_runs: 0, calculated_at: origin };
-        else if (path.endsWith('/partial/messages')) {
+        else if (path.endsWith('/ag-ui/threads/partial')) {
           if (finished && !releaseMessages) await waiting;
           data = [{ id: 1, run_id: run.id, role: 'user', content: '请审核材料', run_state: run.state, failure_code: run.failure_code, partial_content: finished ? partial : '', reasoning_content: finished ? '先核对材料范围。' : '', calls: [], metrics, attachments: [], artifacts: [], create_time: origin },
             ...(nextRound ? [{ id: 3, run_id: next.id, role: 'user', content: '你好', attachments: [], artifacts: [], create_time: origin }, { id: 4, run_id: next.id, role: 'assistant', content: '你好，可以继续提问。', attachments: [], artifacts: [], metrics: { elapsed_ms: 100, total_tokens: 20 }, create_time: origin }] : [])]
             .filter(row => row.id > Number(url.searchParams.get('after') || 0));
         } else if (path.endsWith('/partial/runs')) data = { items: nextRound ? [next, run] : [run], total: nextRound ? 2 : 1, page: 1, page_size: 20 };
         else if (path.endsWith('/calls') || path.endsWith('/knowledge-retrievals')) data = [];
-        else if (path.endsWith('/run-partial/snapshot')) {
+        else if (path.endsWith('/run-partial/ag-ui/snapshot')) {
           const after = Number(url.searchParams.get('after') || 0);
-          data = { run, events: rows.filter(row => row.sequence > after), next_after: rows.at(-1)?.sequence || after, latest_sequence: rows.at(-1)?.sequence || 0, has_more: false };
-        } else if (path.endsWith('/run-partial/stream-ticket')) data = { expires_in: 300 };
+          data = agUiSnapshot(run, agUiFrames(run, rows), after);
+        } else if (path.endsWith('/run-next/ag-ui/snapshot')) data = agUiSnapshot(next, agUiFrames(next, [], { answer: '你好，可以继续提问。' }));
+        else if (path.endsWith('/run-partial/stream-ticket')) data = { expires_in: 300 };
         else if (path.endsWith('/run-partial/stream')) return route.fulfill({ status: 307, headers: { location: streamUrl, 'Access-Control-Allow-Origin': '*' } });
         else if (path.endsWith('/run-partial')) data = run;
         else if (path.endsWith('/run-next')) data = next;
         else if (path.endsWith('/partial')) data = session;
         else { unexpected.push(path); return route.abort(); }
-        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data }) });
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data: agUiData(path, data) }) });
       });
       await page.goto(`${base}/agents/11/sessions/partial`);
       await page.locator('[data-stream-run="run-partial"]').waitFor();
       const deadline = Date.now() + 10000;
       while (!sockets.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
       check(sockets.size > 0, `${width}/${state} 建立真实 SSE`);
-      const send = row => { rows.push(row); for (const socket of sockets) socket.write(`id: run-partial:${row.sequence}\nevent: ${row.event_type}\ndata: ${JSON.stringify(row)}\n\n`); };
+      let sent = 0;
+      const send = row => {
+        rows.push(row); const frames = agUiFrames(run, rows);
+        for (const socket of sockets) socket.write(agUiSse(run.id, frames, sent));
+        sent = frames.length;
+      };
       send({ sequence: 1, event_type: 'text_delta', state: 'running', content: partial });
       await page.getByText('第二节仍在分析，报告尚未生成。', { exact: true }).waitFor();
       finished = true;

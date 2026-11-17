@@ -5,6 +5,8 @@
 
 """验证调用摘要的真实事件、状态边界和授权过滤。"""
 
+from tests.ag_ui_helpers import read_thread_messages
+
 import asyncio
 from pathlib import Path
 from uuid import uuid4
@@ -19,13 +21,12 @@ from app.main import app
 from app.models.admin import Admin
 from app.models.agent_config import AgentConfig
 from app.models.agent_run_event import AgentRunEvent
-from app.models.agent_run_message import AgentRunMessage
 from app.models.agent_session import AgentSession
 from app.models.agent_share import AgentShare
 from app.models.base import Base
 from app.models.knowledge import KnowledgeBase, KnowledgeShare, RunKnowledgeBase
 from app.services.run_calls import load_run_calls
-from app.services.run_manager import create_run
+from app.services.run_manager import create_run, claim_run, complete_run
 
 
 def add_event(db, run, call_id: str, name: str, event_type: RunEventType) -> None:
@@ -158,11 +159,10 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                 run = await create_run(db, 1, input_text="请检索")
                 run.agent_id = 1
                 run.session_id = session.id
-                run.state = RunState.COMPLETED
+                claimed = await claim_run(db, run.id)
                 call_id = str(uuid4())
                 add_event(db, run, call_id, "skill:policy@v1", RunEventType.TOOL_STARTED)
                 add_event(db, run, call_id, "skill:policy@v1", RunEventType.TOOL_COMPLETED)
-                db.add(AgentRunMessage(run_id=run.id, owner_id=1, role="assistant", content="完成"))
                 run.reported_total_tokens = 1250
                 run.event_seq += 1
                 db.add(
@@ -174,8 +174,7 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                         content="模型公开返回的思考",
                     ),
                 )
-                run.event_seq += 1
-                db.add(AgentRunEvent(run_id=run.id, sequence=run.event_seq, event_type=RunEventType.STATE, state=RunState.COMPLETED))
+                await complete_run(db, run.id, claimed.lease_token, final_text="完成")
                 failed = await create_run(db, 1, input_text="失败轮次")
                 failed.agent_id = 1
                 failed.session_id = session.id
@@ -211,7 +210,7 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                     "failure_code",
                     "failure_reason",
                 }
-                history = await client.get(f"/api/v1/agents/1/sessions/{session.id}/messages")
+                history = await read_thread_messages(client, f"/api/v1/agents/1/sessions/{session.id}/messages")
                 assert history.status_code == 200, history.text
                 messages = history.json()["data"]
                 assert len(messages) == 3
@@ -237,7 +236,7 @@ def test_call_api_and_session_history_authorization(tmp_path: Path, monkeypatch)
                 async with sessions.begin() as db:
                     await db.delete(await db.get(AgentShare, share.id))
                 assert (await client.get(f"/api/v1/runs/{run.id}/calls")).status_code == 404
-                assert (await client.get(f"/api/v1/agents/1/sessions/{session.id}/messages")).status_code == 404
+                assert (await read_thread_messages(client, f"/api/v1/agents/1/sessions/{session.id}/messages")).status_code == 404
                 assert (await client.get(totals_url)).status_code == 404
         finally:
             await engine.dispose()

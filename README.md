@@ -6,7 +6,7 @@
 
 **可自行部署的智能助手平台，让 Agent、知识库、工具和文件交付在同一个工作台中协作。**
 
-Y-Point 提供 React 工作台和 FastAPI 服务端。你可以接入模型供应商，创建和共享 Agent，通过多轮对话检索私有资料、调用授权工具，并生成可下载的文件。独立 worker 负责后台执行，消息、运行事件和检查点支持进度追踪与会话恢复。
+Y-Point 提供 React 工作台和 FastAPI 服务端。你可以接入模型供应商，创建和共享 Agent，通过多轮对话检索私有资料、调用授权工具，并生成可下载的文件。独立 worker 负责后台执行，消息、运行事件和检查点支持进度追踪与会话恢复；AG-UI 1.0 统一对话提交、公开历史、审批恢复及公开思考、工具、Skill 与交付过程。
 
 [快速开始](#快速开始) · [文档](docs/README.md) · [部署手册](docs/deployment-guide.md) · [参与贡献](CONTRIBUTING.md) · [MIT 许可证](LICENSE)
 
@@ -19,9 +19,9 @@ Y-Point 提供 React 工作台和 FastAPI 服务端。你可以接入模型供�
 | 知识库与可追溯检索 | 处理文本、Office、PDF、HTML 和配置文件，支持本地 OCR、关键词与向量混合检索，区分原文证据与模型解释。 |
 | Skill 与报告模板 | 管理可版本固定的 Skill 文件包、参考资料和脚本；通过 DOCX 模板与字段契约交付报告。 |
 | Tool 与 MCP | 接入 Python/Bash 脚本及 MCP 工具，提供授权、依赖准备、执行限制和调用记录。 |
-| 文件与运行追踪 | 上传对话附件、按需读取历史产物并生成文件；通过 SSE 查看输出、工具调用、耗时及已报告 Token，支持进度恢复与取消。 |
+| 文件与运行追踪 | 上传对话附件、按需读取历史产物并生成文件；通过 AG-UI 1.0 + SSE 查看分段公开思考、工具和 Skill 过程、耗时及已报告 Token，支持持久化恢复、审批与取消。 |
 
-功能与限制详见 [架构与业务概览](docs/architecture.md)、[会话与运行](docs/runs-and-sessions.md) 和 [知识库指南](docs/knowledge-base.md)。
+功能与限制详见 [架构与业务概览](docs/architecture.md)、[会话与运行](docs/runs-and-sessions.md)、[AG-UI 接口与过程展示](docs/ag-ui.md) 和 [知识库指南](docs/knowledge-base.md)。
 
 ## 快速开始
 
@@ -82,7 +82,7 @@ flowchart LR
 | --- | --- |
 | 安装、开发与部署 | [本地开发](docs/local-development.md) · [部署手册](docs/deployment-guide.md) · [部署配置参考](docs/deployment.md) |
 | 配置与模型 | [运行限额与参数](docs/configuration.md) · [认证、授权与模型](docs/authentication-and-models.md) |
-| 对话与文件 | [Run、会话与恢复](docs/runs-and-sessions.md) · [文件存储与附件](docs/artifacts.md) |
+| 对话与文件 | [Run、会话与恢复](docs/runs-and-sessions.md) · [AG-UI 与处理过程](docs/ag-ui.md) · [文件存储与附件](docs/artifacts.md) |
 | 扩展助手能力 | [Skill 与报告模板](docs/skills.md) · [Tool、沙箱与 MCP](docs/tools.md) · [知识库与检索](docs/knowledge-base.md) |
 | 开发与验证 | [架构与模块](docs/architecture.md) · [数据库与测试](docs/testing.md) · [贡献指南](CONTRIBUTING.md) |
 
@@ -92,7 +92,7 @@ flowchart LR
 
 - 自行部署不等于离线运行。模型请求按供应商配置发送，调用可能产生费用；OCR 使用本地引擎，模型能力与实际效果需按任务验证。
 - 脚本 Tool 需要显式启用 Docker 沙箱。本机方案让受信任的 API/worker 接入宿主 Docker，正式多租户执行需要单独设计执行引擎与隔离，详见 [权限边界](docs/deployment.md#启用本机真实脚本沙箱)。
-- 项目持续迭代。服务健康检查和本机回归有各自的验证范围；正式使用前，需验证实际模型、业务文件、目标容量以及数据库与文件备份恢复。数据、日志和升级要求见 [部署手册](docs/deployment-guide.md)。
+- 正式使用前，请验证实际模型、业务文件、目标容量以及数据库与文件备份恢复。数据、日志和升级要求见 [部署手册](docs/deployment-guide.md)。
 
 ## 参与贡献
 

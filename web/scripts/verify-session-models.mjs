@@ -1,3 +1,4 @@
+import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -25,8 +26,9 @@ async function fixture(page) {
     const req = route.request(), url = new URL(req.url()), path = url.pathname, method = req.method();
     const body = req.postData() ? req.postDataJSON() : null;
     calls.push({ path, method, body });
-    const send = (data, status = 200, detail = '') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status === 409 ? 10005 : status, message: detail || '操作成功', data }) });
+    const send = (data, status = 200, detail = '') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status === 409 ? 10005 : status, message: detail || '操作成功', data: agUiData(path, data) }) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
+    if (path === '/api/v1/agents/runtime-limits') return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 });
     if (path === '/api/v1/auth/me') return send({ id: 1, username: 'tester', role: 'user' });
     if (path === '/api/v1/agents/11') return send({ id: 11, name: '模型切换助手', enabled: true, default_model_id: 1 });
     if (path === '/api/v1/agents/11/sessions') return send({ items: [session], total: 1, page: 1, page_size: 20 });
@@ -41,16 +43,17 @@ async function fixture(page) {
       session = { ...session, model_id: body.model_id, thread_id: `thread-${body.model_id}`, version: session.version + 1 };
       return send(session);
     }
-    if (path.endsWith('/models/messages')) return send(messages.filter(item => item.id > Number(url.searchParams.get('after') || 0)));
+    if (path.endsWith('/ag-ui/threads/models')) return send(messages.filter(item => item.id > Number(url.searchParams.get('after') || 0)));
     if (path.endsWith('/models/runs') && method === 'GET') return send({ items: run ? [run] : [], total: run ? 1 : 0, page: 1, page_size: 20 });
-    if (path.endsWith('/models/runs') && method === 'POST') {
+    if (path.endsWith('/ag-ui') && method === 'POST') {
       run = { id: 'new-run', session_id: 'models', agent_id: 11, model_id: session.model_id, state: 'queued', failure_code: null, create_time: now, update_time: now };
-      messages.push({ id: 29, run_id: run.id, role: 'user', content: body.input_text, create_time: now, attachments: [], artifacts: [] });
+      messages.push({ id: 29, run_id: run.id, role: 'user', content: body.messages.at(-1).content, create_time: now, attachments: [], artifacts: [] });
       session = { ...session, version: session.version + 1 };
-      return send(run, 201);
+      return agUiPost(route, run);
     }
+    if (path.endsWith('/approval')) return send({ id: 'busy-approval', run_id: 'busy-run', state: 'pending', actions: [], expires_at: new Date(Date.now() + 3600000).toISOString(), decided_at: null });
     if (path.endsWith('/calls')) return send([]);
-    if (path.endsWith('/snapshot')) return send({ run, events: [], latest_sequence: 0, next_after: 0, has_more: false });
+    if (path.endsWith('/snapshot')) return send({ run: run || { id: path.split('/')[4], state: 'completed' }, events: [], latest_sequence: 0, next_after: 0, has_more: false });
     if (path.endsWith('/stream-ticket')) return send({ expires_in: 300 });
     if (path.endsWith('/stream')) return route.fulfill({ contentType: 'text/event-stream', body: ': waiting\n\n' });
     if (/^\/api\/v1\/runs\/[^/]+$/.test(path)) return send(run);
@@ -102,8 +105,8 @@ try {
     await page.getByRole('textbox', { name: '消息内容' }).fill('使用模型 B 继续');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.locator('[data-message-id="29"]').waitFor();
-    const submitted = f.calls.findLast(call => call.method === 'POST' && call.path.endsWith('/models/runs'));
-    assert.equal(submitted.body.model_id, 2); assert.equal(submitted.body.expected_session_version, 2); assertions += 2;
+    const submitted = f.calls.findLast(call => call.method === 'POST' && call.path.endsWith('/ag-ui'));
+    assert.equal(submitted.body.forwardedProps.model_id, 2); assert.equal(submitted.body.forwardedProps.expected_session_version, 2); assertions += 2;
     assert.equal(await picker.isDisabled(), true); assertions++;
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); assertions++;
     assert.deepEqual(f.unexpected, []); assert.deepEqual(errors, []); assertions += 2;
@@ -139,7 +142,7 @@ try {
     await page.close();
   }
   for (const [code, label] of [
-    ['provider_timeout', '模型供应商响应超时'], ['execution_timeout', '本轮已达到执行时限'], ['model_error', '模型请求失败'],
+    ['provider_timeout', '模型供应商响应超时'], ['execution_timeout', '运行被执行调用方的时限保护中断'], ['model_error', '模型请求失败'],
   ]) {
     const page = await browser.newPage();
     const f = await fixture(page); f.failure(code);
@@ -150,9 +153,9 @@ try {
     await page.getByRole('textbox', { name: '消息内容' }).fill('失败后继续对话');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.locator('[data-message-id="29"]').waitFor();
-    const submitted = f.calls.findLast(call => call.method === 'POST' && call.path.endsWith('/models/runs'));
-    assert.equal(submitted.body.input_text, '失败后继续对话'); assertions++;
-    assert.equal(submitted.body.model_id, 1); assertions++;
+    const submitted = f.calls.findLast(call => call.method === 'POST' && call.path.endsWith('/ag-ui'));
+    assert.equal(submitted.body.messages.at(-1).content, '失败后继续对话'); assertions++;
+    assert.equal(submitted.body.forwardedProps.model_id, 1); assertions++;
     assert.deepEqual(f.unexpected, []); assertions++;
     await page.close();
   }

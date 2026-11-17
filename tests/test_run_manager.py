@@ -103,11 +103,12 @@ async def exercise_run_manager(database_path: Path) -> None:
             assert completed.active_thread_id is None
         async with sessions.begin() as db:
             events = await replay_events(db, run_id, 1, after=2, limit=20)
-            assert [event.state for event in events] == ["waiting_for_approval", "running", "completed"]
-            assert [event.sequence for event in events] == [3, 4, 5]
-            assert await replay_events(db, run_id, 1, after=5) == []
+            assert [event.state for event in events] == ["waiting_for_approval", "running", "completed", "completed"]
+            assert [event.sequence for event in events] == [3, 4, 5, 6]
+            assert events[-1].event_type == "delivery_completed"
+            assert await replay_events(db, run_id, 1, after=6) == []
             assert (await request_cancel(db, run_id, 1)).state == "completed"
-            assert len((await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()) == 5
+            assert len((await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()) == 6
             next_run = await create_run(db, 1, thread_id=first.thread_id, model_id=7)
             assert next_run.id != first.id and next_run.thread_id == first.thread_id
             assert next_run.active_thread_id == first.thread_id
@@ -244,7 +245,7 @@ async def exercise_concurrent_tool_events(database_path: Path) -> None:
             await complete_run(db, run.id, token)
         async with sessions() as db:
             events = await replay_events(db, run.id, 1)
-            assert [event.sequence for event in events] == list(range(1, 9))
+            assert [event.sequence for event in events] == list(range(1, 10))
             assert [event.event_type for event in events[2:7]] == ["tool_started"] * 5
             assert len({event.tool_call_id for event in events[2:7]}) == 5
     finally:

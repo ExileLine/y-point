@@ -5,6 +5,8 @@
 
 """验证思考偏好的 API 契约、模型兼容、幂等快照及只读失败恢复边界。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 from pathlib import Path
 
@@ -134,7 +136,8 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                 async with sessions() as db:
                     issue = model_issue(await db.get(ModelCatalog, 2), await db.get(ProviderConnection, 2), await db.get(AgentConfig, agent_id), False)
                     assert issue is not None and issue[0] == SessionModelReason.THINKING
-                submitted = await client.post(
+                submitted = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     json={
                         "input_text": "请开始审核",
@@ -152,7 +155,8 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                     },
                 )
                 assert changed.status_code == 200, changed.text
-                replay = await client.post(
+                replay = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     json={
                         "input_text": "请开始审核",
@@ -162,27 +166,16 @@ def test_thinking_mode_api_snapshot_and_compatibility(tmp_path: Path) -> None:
                 assert replay.status_code == 201, replay.text
                 assert replay.json()["data"]["id"] == run["id"]
                 assert replay.json()["data"]["agent_thinking_mode"] == "disabled"
-                independent = await client.post(
-                    "/api/v1/runs",
-                    json={
-                        "model_id": 1,
-                        "input_text": "测试独立运行",
-                        "request_key": "independent-thinking",
-                        "thinking_mode": "disabled",
-                    },
-                )
-                assert independent.status_code == 201, independent.text
-                assert independent.json()["data"]["agent_thinking_mode"] == "disabled"
-                conflict = await client.post(
-                    "/api/v1/runs",
-                    json={
-                        "model_id": 1,
-                        "input_text": "测试独立运行",
-                        "request_key": "independent-thinking",
-                        "thinking_mode": "auto",
-                    },
-                )
-                assert conflict.status_code == 409, conflict.text
+                # Standalone model submission is gone; thinking is fixed by the authorized Agent snapshot.
+                assert (
+                    await client.post(
+                        "/api/v1/runs",
+                        json={
+                            "model_id": 1,
+                            "input_text": "不能绕过 Agent",
+                        },
+                    )
+                ).status_code == 404
         finally:
             app.dependency_overrides.pop(get_db_session, None)
             app.dependency_overrides.pop(get_current_admin, None)

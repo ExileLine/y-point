@@ -1,20 +1,21 @@
+import type { RunAgentInput } from "@ag-ui/core";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import { Archive, ArrowDown, ArrowLeft, Bot, MessageSquareText, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, SendHorizontal, Square, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  checkSessionAttachments, ApiError, cancelRun, createAgentSession, deleteAgentSession, getAgent, getAgentSession, getRun, getRunSnapshot, getSharedAgent,
-  issueRunStreamTicket, listAgentSessions, listSessionMessages, listSessionModels, listSessionRuns, runStreamUrl, submitSessionRun, updateAgentSession,
+  checkSessionAttachments, ApiError, cancelRun, createAgentSession, deleteAgentSession, getAgent, getAgentSession, getRun, getSharedAgent,
+  listAgentSessions, getAgUiThread, listSessionModels, listSessionRuns, openAgUiRun, updateAgentSession,
   type Agent, type AgentSession, type AgentSessionPage, type SessionMessage, type SessionRun,
-  type RunStreamEvent, type SessionRunDraft, type SharedAgent, type SessionModelOption,
+  type AgUiStream, type SharedAgent, type SessionModelOption,
 } from "./api";
 import { MessageContent } from "./components/MessageContent";
 import MessageActions from "./components/MessageActions";
 import MessageFiles from "./components/MessageFiles";
 import ChatAttachments, { type ChatFile } from "./components/ChatAttachments";
-import RunCalls, { ActiveRunCalls } from "./components/RunCalls";
+import RunActivity, { HistoricalRunActivity } from "./components/RunActivity";
+import { emptyProcess, observeProcess, processAnswer, reduceProcess, type ProcessState } from "./ag-ui";
 import StreamingMessage from "./components/StreamingMessage";
-import ReasoningPanel from "./components/ReasoningPanel";
 import RunMetrics from "./components/RunMetrics";
 import RunApproval from "./components/RunApproval";
 import SessionMetrics from "./components/SessionMetrics";
@@ -76,7 +77,7 @@ const MessageHistory = memo(function MessageHistory({ items, pendingRunId, strea
       <div className="session-message-avatar">{item.role === "assistant" ? <Bot size={18} /> : "我"}</div>
       <div className="session-message-main">
         <div className="session-message-meta"><strong>{item.role === "assistant" ? "Agent" : "我"}</strong>{item.role === "assistant" && item.model_id && <Tooltip title={[item.provider_name, item.model_name || `模型 #${item.model_id}`].filter(Boolean).join(" · ")}><span className="session-message-model">{item.model_name || `模型 #${item.model_id}`}</span></Tooltip>}<time dateTime={item.create_time}>{displayTime(item.create_time)}</time></div>
-        {item.role === "assistant" && <><ReasoningPanel key={item.run_id} text={item.reasoning_content || ""} /><RunCalls calls={item.calls || []} /></>}
+        {item.role === "assistant" && <><HistoricalRunActivity runId={item.run_id} /></>}
         <div className="session-message-content">{item.role === "assistant" ? streamCache.current?.runId === item.run_id ? <StreamingMessage key={item.run_id} runId={item.run_id} text={item.content} initialText={streamCache.current.text} active={false} /> : <MessageContent text={item.content} runId={item.run_id} /> : item.content}</div>
         <MessageActions text={item.content} assistant={item.role === "assistant"} />
         {item.role === "assistant" && item.run_id && <RunKnowledgeEvidence runId={item.run_id} />}
@@ -89,7 +90,7 @@ const MessageHistory = memo(function MessageHistory({ items, pendingRunId, strea
       <div className="session-message-avatar"><Bot size={18} /></div>
       <div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong></div>
         <PartialRunNotice state={item.run_state} failureCode={item.failure_code} />
-        <ReasoningPanel text={item.reasoning_content || ""} /><RunCalls calls={item.calls || []} />
+        <HistoricalRunActivity runId={item.run_id} />
         {item.partial_content && <><div className="session-message-content"><MessageContent text={item.partial_content} runId={item.run_id} /></div><MessageActions text={item.partial_content} assistant copyLabel="复制未完成内容" /></>}
         <RunMetrics metrics={item.metrics} />
       </div>
@@ -123,20 +124,30 @@ export default function Sessions() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState("");
   const [messageRevision, setMessageRevision] = useState(0);
-  const [callsRevision, setCallsRevision] = useState(0);
   const [activeRun, setActiveRun] = useState<SessionRun | null>(null);
   const [lastRun, setLastRun] = useState<SessionRun | null>(null);
   const [runError, setRunError] = useState("");
   const [streamText, setStreamText] = useState<{ runId: string; text: string } | null>(null);
   const [streamFallback, setStreamFallback] = useState(false);
-  const [streamReasoning, setStreamReasoning] = useState<{ runId: string; text: string; thinking: boolean } | null>(null);
+  const [process, setProcess] = useState<{ runId: string; state: ProcessState } | null>(null);
   const streamCache = useRef<{ runId: string; text: string } | null>(null);
   const [composer, setComposer] = useState("");
   const [chatFiles, setChatFiles] = useState<Record<string, ChatFile[]>>({});
   const files = selected ? chatFiles[selected.id] || [] : [];
   const attachmentPending = files.some(item => item.state !== "ready");
-  const [pendingDraft, setPendingDraft] = useState<SessionRunDraft | null>(null);
+  const [pendingDraft, setPendingDraft] = useState<RunAgentInput | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const pendingStream = useRef<AgUiStream | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const pendingResume = useRef<RunAgentInput | null>(null);
+  const [streamRevision, setStreamRevision] = useState(0);
+  useEffect(() => () => {
+    const connection = pendingStream.current;
+    pendingStream.current = null;
+    pendingResume.current = null;
+    if (connection && !connection.response.body?.locked) void connection.response.body?.cancel().catch(() => undefined);
+  }, [sessionId]);
   const inFlightSubmissions = useRef(new Set<string>());
   const [busy, setBusy] = useState(false);
   const [models, setModels] = useState<SessionModelOption[]>([]);
@@ -229,7 +240,7 @@ export default function Sessions() {
     setActiveRun(null);
     setLastRun(null);
     setStreamText(null);
-    setStreamReasoning(null);
+    setProcess(null);
     streamCache.current = null;
     setStreamFallback(false);
     setPendingDraft(null);
@@ -250,16 +261,13 @@ export default function Sessions() {
     setMessagesLoading(true);
     setMessagesError("");
     async function loadHistory() {
-      let after = 0;
-      const all: SessionMessage[] = [];
-      for (;;) {
-        const batch = await listSessionMessages(agentId, sessionId!, after);
-        all.push(...batch);
-        if (batch.length < 100) break;
-        const next = batch.at(-1)!.id;
-        if (next <= after) throw new Error("消息游标未前进");
-        after = next;
-      }
+      const thread = await getAgUiThread(agentId, sessionId!);
+      const all: SessionMessage[] = thread.messages.flatMap(item => {
+        const details = thread.messageDetails[item.id];
+        if (!details || (item.role !== "user" && item.role !== "assistant")) return [];
+        if (typeof item.content !== "string") throw new Error("会话消息正文格式无效");
+        return [{ ...details, content: item.content, role: item.role }];
+      });
       if (active) setMessages(all);
     }
     void loadHistory().catch((failure) => { if (active) {
@@ -352,101 +360,70 @@ export default function Sessions() {
     if (!activeRun || !sessionId) return;
     const subscribedRun = activeRun;
     const runId = subscribedRun.id;
-    let active = true;
-    let cursor = 0;
-    let stream: EventSource | null = null;
-    let retry: number | undefined;
-    const fallbackTimer = window.setTimeout(() => { if (active) setStreamFallback(true); }, 5000);
+    let state = emptyProcess();
+    let terminalNotified = false;
+    let fallbackTimer: number | undefined;
     setStreamText(null);
-    setStreamReasoning(null);
+    setProcess({ runId, state });
     setStreamFallback(false);
-
-    function applyEvent(payload: RunStreamEvent) {
-      if (payload.sequence <= cursor) return;
-      cursor = payload.sequence;
-      if (payload.event_type === "reasoning_delta" && payload.content) {
-        setStreamReasoning(current => ({ runId, text: (current?.runId === runId ? current.text : "") + payload.content, thinking: true }));
-      }
-      if (["text_delta", "tool_started"].includes(payload.event_type)) {
-        setStreamReasoning(current => current?.runId === runId ? { ...current, thinking: false } : current);
-      }
-      if (payload.event_type === "text_delta" && payload.content) {
-        setStreamText((current) => ({ runId, text: (current?.runId === runId ? current.text : "") + payload.content }));
-      }
-      if (["tool_started", "tool_completed", "tool_failed"].includes(payload.event_type)) setCallsRevision(value => value + 1);
-      if (payload.event_type === "artifact_published") setMessageRevision((value) => value + 1);
-      if (payload.event_type === "state" && payload.state && !terminalStates.has(payload.state)) {
-        setActiveRun(current => current?.id === runId ? { ...current, state: payload.state!, failure_code: payload.failure_code ?? null } : current);
-      }
-      if (payload.event_type === "state" && payload.state && terminalStates.has(payload.state)) {
-        setLastRun((current) => ({ ...(current?.id === runId ? current : subscribedRun), state: payload.state!, failure_code: payload.failure_code ?? null }));
-        setActiveRun(null);
-        setMessageRevision((value) => value + 1);
-        setRevision((value) => value + 1);
-        stream?.close();
-        stream = null;
-      }
-    }
-
-    async function connect() {
-      try {
-        let snapshot;
-        do {
-          snapshot = await getRunSnapshot(runId, cursor);
-          if (!active) return;
-          snapshot.events.forEach(applyEvent);
-          cursor = Math.max(cursor, snapshot.next_after);
-        } while (snapshot.has_more);
-        if (terminalStates.has(snapshot.run.state)) {
-          setLastRun(snapshot.run);
+    function updateRun(current: SessionRun) {
+      setLastRun(current);
+      if (terminalStates.has(current.state)) {
+        if (!terminalNotified) {
+          terminalNotified = true;
           setActiveRun(null);
-          setMessageRevision((value) => value + 1);
-          setRevision((value) => value + 1);
-          return;
+          setMessageRevision(value => value + 1);
+          setRevision(value => value + 1);
         }
-        setActiveRun(snapshot.run);
-        setLastRun(snapshot.run);
-        await issueRunStreamTicket(runId);
-        if (!active) return;
-        stream = new EventSource(runStreamUrl(runId, cursor));
-        stream.onopen = () => { window.clearTimeout(fallbackTimer); if (active) setStreamFallback(false); };
-        stream.addEventListener("reasoning_delta", (event) => {
-          if (active) applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
-        });
-        stream.addEventListener("text_delta", (event) => {
-          if (!active) return;
-          applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
-        });
-        stream.addEventListener("state", (event) => {
-          if (!active) return;
-          applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
-        });
-        for (const type of ["tool_started", "tool_completed", "tool_failed"]) {
-          stream.addEventListener(type, (event) => {
-            if (active) applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
-          });
-        }
-        stream.addEventListener("artifact_published", (event) => {
-          if (active) applyEvent(JSON.parse((event as MessageEvent).data) as RunStreamEvent);
-        });
-        stream.onerror = () => {
-          stream?.close();
-          stream = null;
-          if (active) {
-            setStreamFallback(true);
-            retry = window.setTimeout(() => void connect(), 1500);
-          }
-        };
-      } catch (failure) {
-        if (active && !(failure instanceof ApiError && failure.status === 404)) {
-          setStreamFallback(true);
-          retry = window.setTimeout(() => void connect(), 2500);
-        }
-      }
+      } else setActiveRun(current);
     }
-    void connect();
-    return () => { active = false; stream?.close(); window.clearTimeout(retry); window.clearTimeout(fallbackTimer); };
-  }, [activeRun?.id, sessionId]);
+    const initial = pendingStream.current?.runId === runId ? pendingStream.current : undefined;
+    if (initial) pendingStream.current = null;
+    const stop = observeProcess(runId, {
+      onFrame: frame => {
+        state = reduceProcess(state, frame);
+        setProcess({ runId, state });
+        setStreamText({ runId, text: processAnswer(state) });
+        const event = frame.event;
+        if (event.type === "ACTIVITY_SNAPSHOT" && event.activityType === "y-point.run") {
+          const content = event.content as { state?: string; failureCode?: string };
+          if (content.state && !terminalStates.has(content.state)) setActiveRun(current => current?.id === runId
+            ? { ...current, state: content.state!, failure_code: content.failureCode || null } : current);
+        }
+        if (event.type === "CUSTOM" && event.name === "y-point.run.metrics") {
+          const metrics = event.value as { version?: number; reportedTotalTokens?: number };
+          if (metrics.version === 1 && typeof metrics.reportedTotalTokens === "number") setActiveRun(current => current?.id === runId
+            ? { ...current, reported_total_tokens: metrics.reportedTotalTokens } : current);
+        }
+        if (event.type === "RUN_FINISHED") {
+          const outcome = event.outcome?.type;
+          if (outcome === "interrupt") setActiveRun(current => current?.id === runId ? { ...current, state: "waiting_for_approval" } : current);
+          else updateRun({ ...subscribedRun, state: outcome === "cancelled" ? "cancelled" : "completed" });
+        }
+        if (event.type === "RUN_ERROR") updateRun({ ...subscribedRun, state: "failed", failure_code: event.code || "runtime_error" });
+        if (event.type === "CUSTOM" && event.name === "y-point.artifact.available") setMessageRevision(value => value + 1);
+      },
+      onRun: updateRun,
+      onConnection: fallback => { window.clearTimeout(fallbackTimer); setStreamFallback(fallback); },
+      onResource: () => setMessageRevision(value => value + 1),
+      onDenied: () => {
+        setProcess(null); setStreamText(null); setMessages([]); setSelected(null); setActiveRun(null);
+        setSelectedError("会话不可访问，请返回列表刷新");
+      },
+    }, true, false, initial);
+    fallbackTimer = window.setTimeout(() => setStreamFallback(true), 5000);
+    return () => { stop(); window.clearTimeout(fallbackTimer); };
+  }, [activeRun?.id, sessionId, streamRevision]);
+
+  useEffect(() => {
+    if (!lastRun || lastRun.state !== "completed" || !lastRun.publish_answer_artifact) return;
+    return observeProcess(lastRun.id, {
+      onFrame: () => undefined,
+      onRun: () => setMessageRevision(value => value + 1),
+      onResource: () => setMessageRevision(value => value + 1),
+      onDenied: () => { setMessages([]); setProcess(null); setSelected(null); setSelectedError("会话不可访问，请返回列表刷新"); },
+    }, true, true);
+  }, [lastRun?.id, lastRun?.state, lastRun?.publish_answer_artifact]);
 
   const currentRun = activeRun || lastRun;
   const preview = streamText && (activeRun?.id === streamText.runId || (lastRun?.id === streamText.runId && terminalStates.has(lastRun.state))) && !messages.some((item) => item.role === "assistant" && item.run_id === streamText.runId) ? streamText : null;
@@ -538,40 +515,75 @@ export default function Sessions() {
     } finally { setSwitchingModel(false); }
   }
 
-  async function send(draft?: SessionRunDraft) {
+  async function attachStream(connection: AgUiStream, targetSessionId: string) {
+    try {
+      const run = await getRun(connection.runId);
+      if (!mounted.current || currentSessionId.current !== targetSessionId) {
+        await connection.response.body?.cancel();
+        return;
+      }
+      if (pendingStream.current) void pendingStream.current.response.body?.cancel().catch(() => undefined);
+      pendingStream.current = connection;
+      setStreamRevision(value => value + 1);
+      setActiveRun(run);
+      setLastRun(run);
+    } catch (failure) {
+      await connection.response.body?.cancel().catch(() => undefined);
+      throw failure;
+    }
+  }
+
+  async function send(draft?: RunAgentInput) {
     if (!selected || inFlightSubmissions.current.has(selected.id) || (!draft && !canSend)) return;
     const targetSessionId = selected.id;
-    const next = draft || { input_text: composer.trim(), request_key: createClientId(), publish_answer_artifact: false, artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []), context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []), model_id: selected.model_id ?? undefined, expected_session_version: selected.version };
-    if (!next.input_text || (!draft && attachmentPending)) return;
+    const text = composer.trim();
+    if (!draft && (!text || attachmentPending)) return;
     inFlightSubmissions.current.add(targetSessionId);
     followLatest();
     setSubmitting(true);
     setRunError("");
     try {
-      if (!draft && next.artifact_ids.length) await checkSessionAttachments(agentId, targetSessionId, next);
+      let next = draft;
+      if (!next) {
+        const props = {
+          model_id: selected.model_id ?? undefined,
+          expected_session_version: selected.version, publish_answer_artifact: false,
+          artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []),
+          context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []),
+        };
+        if (props.artifact_ids.length) await checkSessionAttachments(agentId, targetSessionId, props);
+        const thread = await getAgUiThread(agentId, targetSessionId);
+        next = {
+          threadId: targetSessionId, runId: createClientId(), protocolVersion: "1.0", tools: [], context: [],
+          messages: [...thread.messages, { id: createClientId(), role: "user", content: text }], forwardedProps: props,
+        };
+      }
       if (currentSessionId.current !== targetSessionId) return;
       setPendingDraft(next);
-      const run = await submitSessionRun(agentId, targetSessionId, next);
+      const connection = await openAgUiRun(agentId, next);
+      await attachStream(connection, targetSessionId);
       if (currentSessionId.current !== targetSessionId) return;
       setPendingDraft(null);
       setComposer("");
       setChatFiles(current => ({ ...current, [targetSessionId]: [] }));
-      setActiveRun(run);
-      setLastRun(run);
-      setMessageRevision((value) => value + 1);
+      setMessageRevision(value => value + 1);
       refresh();
-      void getAgentSession(agentId, targetSessionId).then((current) => { if (currentSessionId.current === targetSessionId) setSelected(current); }).catch((failure) => { if (currentSessionId.current === targetSessionId) setRunError(`会话状态刷新失败：${errorText(failure)}`); });
+      void getAgentSession(agentId, targetSessionId).then(current => {
+        if (currentSessionId.current === targetSessionId) setSelected(current);
+      }).catch(failure => { if (currentSessionId.current === targetSessionId) setRunError(`会话状态刷新失败：${errorText(failure)}`); });
     } catch (failure) {
       if (currentSessionId.current !== targetSessionId) return;
       setRunError(errorText(failure));
       if (failure instanceof ApiError && failure.status === 409) {
         setPendingDraft(null);
-        listSessionRuns(agentId, targetSessionId).then((result) => {
+        listSessionRuns(agentId, targetSessionId).then(result => {
           if (currentSessionId.current !== targetSessionId) return;
-          setActiveRun(result.items.find((item) => !terminalStates.has(item.state)) || null);
+          setActiveRun(result.items.find(item => !terminalStates.has(item.state)) || null);
           setLastRun(result.items[0] || null);
         }).catch(() => undefined);
-        getAgentSession(agentId, targetSessionId).then((current) => { if (currentSessionId.current === targetSessionId) setSelected(current); }).catch(() => undefined);
+        getAgentSession(agentId, targetSessionId).then(current => {
+          if (currentSessionId.current === targetSessionId) setSelected(current);
+        }).catch(() => undefined);
       }
     } finally {
       inFlightSubmissions.current.delete(targetSessionId);
@@ -579,12 +591,43 @@ export default function Sessions() {
     }
   }
 
+  async function resumeRun(approvalId: string, decision: "approve" | "reject") {
+    if (!selected || !activeRun) return;
+    const targetSessionId = selected.id;
+    const existing = pendingResume.current;
+    let input: RunAgentInput;
+    if (existing?.threadId === targetSessionId && existing.resume?.[0]?.interruptId === approvalId
+      && existing.resume[0].payload?.decision === decision) input = existing;
+    else {
+      const thread = await getAgUiThread(agentId, targetSessionId);
+      input = {
+        threadId: targetSessionId, runId: createClientId(), protocolVersion: "1.0", tools: [], context: [],
+        messages: thread.messages, resume: [{ interruptId: approvalId, status: "resolved", payload: { decision } }],
+      };
+    }
+    if (currentSessionId.current !== targetSessionId) return;
+    pendingResume.current = input;
+    const connection = await openAgUiRun(agentId, input);
+    await attachStream(connection, targetSessionId);
+    pendingResume.current = null;
+  }
+
   async function stopRun() {
     if (!activeRun) return;
     const targetSessionId = sessionId;
     setBusy(true);
     setRunError("");
-    try { const updated = await cancelRun(activeRun.id); if (currentSessionId.current === targetSessionId) setActiveRun(updated); }
+    try {
+      const updated = await cancelRun(activeRun.id);
+      if (currentSessionId.current === targetSessionId) {
+        setLastRun(updated);
+        setActiveRun(terminalStates.has(updated.state) ? null : updated);
+        if (terminalStates.has(updated.state)) {
+          setMessageRevision(value => value + 1);
+          refresh();
+        }
+      }
+    }
     catch (failure) { if (currentSessionId.current === targetSessionId) setRunError(errorText(failure)); }
     finally { setBusy(false); }
   }
@@ -640,8 +683,8 @@ export default function Sessions() {
             {isMobile && directoryError && <Alert className="sessions-alert" type="error" showIcon message={directoryError} action={<Button size="small" onClick={refresh}>重试</Button>} />}
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
             {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} streamCache={streamCache} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
-            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><PartialRunNotice state={currentRun?.state} failureCode={currentRun?.failure_code} /><ReasoningPanel key={`reasoning-${pendingRunId}`} text={streamReasoning?.runId === pendingRunId ? streamReasoning.text : ""} active={activeRun?.id === pendingRunId && Boolean(streamReasoning?.thinking)} onProgress={followContent} /><ActiveRunCalls key={pendingRunId} runId={pendingRunId} refreshKey={callsRevision} active={activeRun?.id === pendingRunId} />{preview && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={visible => { streamCache.current = { runId: preview.runId, text: visible }; followContent(); }} /> : <MessageContent text={preview.text} runId={preview.runId} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}<RunMetrics run={currentRun} active={activeRun?.id === pendingRunId} /></div></div></div>}
-            {activeRun?.state === "waiting_for_approval" && <RunApproval key={activeRun.id} runId={activeRun.id} onRunChanged={updated => {
+            {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><PartialRunNotice state={currentRun?.state} failureCode={currentRun?.failure_code} /><RunActivity key={pendingRunId} state={process?.runId === pendingRunId ? process.state : emptyProcess()} active={activeRun?.id === pendingRunId} onProgress={followContent} />{preview?.text && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={visible => { streamCache.current = { runId: preview.runId, text: visible }; followContent(); }} /> : <MessageContent text={preview.text} runId={preview.runId} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}<RunMetrics run={currentRun} active={activeRun?.id === pendingRunId} /></div></div></div>}
+            {activeRun?.state === "waiting_for_approval" && <RunApproval key={activeRun.id} runId={activeRun.id} onResume={resumeRun} onRunChanged={updated => {
               if (currentSessionId.current !== updated.session_id) return;
               setLastRun(updated);
               setActiveRun(terminalStates.has(updated.state) ? null : updated);

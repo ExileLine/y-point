@@ -4,7 +4,7 @@
 
 本方案把前端 Nginx、API、worker、PostgreSQL、Redis 拆成独立服务，用同一套 Compose 在单机交付。前后端独立构建与升级，首次部署可以放在同一台机器；不把 Vite、API、worker 塞进一个容器。默认 PostgreSQL 16 同时保存业务表和独立的 LangGraph 检查点表，原始文件及工具目录单独持久化。当前向量后端为 exact，不要求安装 pgvector。默认部署启用 Redis 连接池并提供独立 Redis 服务；Run 队列、租约和 worker 心跳仍使用业务数据库，未改用 Redis/Celery，也不引入 supervisor。
 
-这是部署前置准备与本机验证基线，不代表 M8/M11、目标服务器、真实模型、容量或容灾总验收通过。Docker 官方资料和限制见 [deployment-research.md](deployment-research.md)。
+本文说明 Docker 部署拓扑、配置、升级与运维边界。使用入口见[部署手册](deployment-guide.md)，设计资料见 [Docker 部署调研](deployment-research.md)。
 
 ## 文件与进程
 
@@ -28,7 +28,7 @@
 
 完整功能的推荐命令见[项目快速开始](../README.md#快速开始)：首次使用 `python3 scripts/deploy_all.py --sandbox --create-admin admin`，后续更新使用 `python3 scripts/deploy_all.py --sandbox`。本节以下手动示例仅启动基础服务，不包含 Python/Bash Tool 与 Skill 受管脚本执行；需要脚本功能时，按[启用本机真实脚本沙箱](#启用本机真实脚本沙箱)构建镜像，并在后续 Compose 命令中始终携带 `--sandbox`。
 
-需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。本机已验证 Engine 29.8.0 / Compose 5.5.1；镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Redis 512 MiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
+需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Redis 512 MiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
 
 在项目根目录：
 
@@ -165,7 +165,7 @@ python3 scripts/deploy.py compose --environment production -- up -d --wait --wai
 python3 scripts/deploy.py compose --environment production -- exec -T redis redis-cli ping
 ```
 
-最后一条应返回 `PONG`，无需手动输入密码。已有脚本沙箱部署继续给每条 Compose 命令加 `--sandbox`。原生开发仍可通过 `REDIS_ENABLED=False` 关闭 Redis；这不改变默认 Docker 拓扑。补充验证见 [2026-11-15 Redis 部署验证](deployment-redis-20261115.md)。
+最后一条应返回 `PONG`，无需手动输入密码。已有脚本沙箱部署继续给每条 Compose 命令加 `--sandbox`。原生开发仍可通过 `REDIS_ENABLED=False` 关闭 Redis；这不改变默认 Docker 拓扑。
 
 ## 前后端一起与分开部署
 
@@ -214,7 +214,7 @@ docker system df
 
 ## 迁移、升级、备份与恢复
 
-当前业务迁移 head 为 `056`；业务结构由 Alembic 管理，四张 LangGraph 检查点自管表不参与业务自动迁移差异。`056` 为工具运行增加审批设置快照，使开关保存后在下一轮对话生效；历史运行保留原策略，不自动处理已有审批。`055` 的历史列注释对齐记录见部署验证文档。Alembic 已列入运行依赖；镜像按锁文件安装 `--no-dev`，不依赖容器启动时下载软件。首次启动等待数据库健康后，单独执行一次 migrate；迁移失败会阻止 API/worker 启动。
+业务结构由 Alembic 管理，四张 LangGraph 检查点自管表不参与业务自动迁移差异。使用 `alembic heads` 查询当前代码的迁移目标，使用 `alembic current` 查询目标库版本；不要将历史文档中的版本号当作当前 head。Alembic 已列入运行依赖；镜像按锁文件安装 `--no-dev`，不依赖容器启动时下载软件。首次启动等待数据库健康后，单独执行一次 migrate；迁移失败会阻止 API/worker 启动。
 
 每次升级先备份，并在维护窗口停止写入，再执行：
 

@@ -5,6 +5,8 @@
 
 """验证会话隔离、运行快照与可回放消息历史。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 from decimal import Decimal
 import os
@@ -128,7 +130,8 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
                     "Authorization": f"Bearer {login.json()['data']['access_token']}",
                 }
                 path = "/api/v1/agents/1/sessions/recovery-session/runs"
-                first = await client.post(
+                first = await submit_agent_run(
+                    client,
                     path,
                     headers=headers,
                     json={
@@ -147,7 +150,8 @@ def test_failed_first_turn_can_start_fresh_checkpoint_thread(tmp_path: Path) -> 
                     poll_seconds=0.1,
                 )
                 assert failed.state == "failed" and failed.failure_code == "model_error" and failed.tool_call_count == 0
-                second = await client.post(
+                second = await submit_agent_run(
+                    client,
                     path,
                     headers=headers,
                     json={
@@ -376,7 +380,12 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         ),
                         ("GET", f"{base}/{first_id}/messages", None),
                     ):
-                        response = await client.request(method, path, headers=bob, json=data)
+                        if method == "POST" and path.endswith("/runs"):
+                            response = await submit_agent_run(client, path, headers=bob, json=data)
+                        elif path.endswith("/messages"):
+                            response = await read_thread_messages(client, path, headers=bob)
+                        else:
+                            response = await client.request(method, path, headers=bob, json=data)
                         assert response.status_code == 404, response.text
                     listed = (await client.get(f"{base}?search=第一", headers=alice)).json()["data"]
                     assert listed["total"] == 1 and listed["items"][0]["id"] == first_id
@@ -420,7 +429,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert limit_upload.status_code == 201, limit_upload.text
                     limit_id = limit_upload.json()["data"][0]["id"]
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -447,7 +457,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert office_session.status_code == 201
                     office_id = office_session.json()["data"]["id"]
-                    corrupt_run = await client.post(
+                    corrupt_run = await submit_agent_run(
+                        client,
                         f"{base}/{office_id}/runs",
                         headers=alice,
                         json={
@@ -485,7 +496,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert office_upload.status_code == 201, office_upload.text
                     office_artifact_ids = [item["id"] for item in office_upload.json()["data"]]
-                    office_run = await client.post(
+                    office_run = await submit_agent_run(
+                        client,
                         f"{base}/{office_id}/runs",
                         headers=alice,
                         json={
@@ -521,10 +533,11 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert (await client.get(f"/api/v1/artifacts/{office_output_id}", headers=alice)).json()["data"][
                         "context_artifact_ids"
                     ] == office_artifact_ids
-                    office_messages = (await client.get(f"{base}/{office_id}/messages", headers=alice)).json()["data"]
+                    office_messages = (await read_thread_messages(client, f"{base}/{office_id}/messages", headers=alice)).json()["data"]
                     assert office_messages[-1]["artifacts"][0]["context_artifact_ids"] == office_artifact_ids
                     assert (await client.get(f"/api/v1/artifacts/{office_output_id}", headers=bob)).status_code == 404
-                    reuse_run = await client.post(
+                    reuse_run = await submit_agent_run(
+                        client,
                         f"{base}/{office_id}/runs",
                         headers=alice,
                         json={
@@ -581,7 +594,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         ([bob_artifact], 404),
                         (["00000000-0000-0000-0000-000000000000"], 404),
                     ):
-                        rejected = await client.post(
+                        rejected = await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -592,7 +606,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                         assert rejected.status_code == expected_status, rejected.text
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -604,7 +619,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 400
 
-                    first_run = await client.post(
+                    first_run = await submit_agent_run(
+                        client,
                         f"{base}/{first_id}/runs",
                         headers=alice,
                         json={
@@ -620,7 +636,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert first_run.json()["data"]["agent_config_version"] == 1
                     assert first_run.json()["data"]["thread_id"] == first_thread
                     assert first_run.json()["data"]["publish_answer_artifact"] is True
-                    repeated = await client.post(
+                    repeated = await submit_agent_run(
+                        client,
                         f"{base}/{first_id}/runs",
                         headers=alice,
                         json={
@@ -633,7 +650,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert repeated.status_code == 201 and repeated.json()["data"]["id"] == first_run_id
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -645,7 +663,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 409
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -657,7 +676,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 409
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -668,7 +688,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 409
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -679,7 +700,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 409
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -708,7 +730,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                                 "input_text": "绕过会话",
                             },
                         )
-                    ).status_code == 409
+                    ).status_code == 404
 
                     async def model_one(db, run):
                         """首个会话运行返回固定回答。"""
@@ -748,12 +770,12 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).status_code == 404
                     assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=bob)).status_code == 404
-                    events = (await client.get(f"/api/v1/runs/{first_run_id}/events", headers=alice)).json()["data"]
-                    assert [item["artifact_id"] for item in events if item["event_type"] == "artifact_published"] == [answer_id]
+                    snapshot = (await client.get(f"/api/v1/runs/{first_run_id}/ag-ui/snapshot", headers=alice)).json()["data"]
+                    assert snapshot["events"][-1]["event"]["type"] == "RUN_FINISHED"
                     streamed = await client.get(f"/api/v1/runs/{first_run_id}/stream", headers=alice)
                     assert streamed.status_code == 200
-                    assert "event: artifact_published" in streamed.text and answer_id in streamed.text
-                    published_messages = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
+                    assert "RUN_FINISHED" in streamed.text and "event: artifact_published" not in streamed.text
+                    published_messages = (await read_thread_messages(client, f"{base}/{first_id}/messages", headers=alice)).json()["data"]
                     assert published_messages[0]["artifacts"] == []
                     assert published_messages[1]["artifacts"][0]["artifact_id"] == answer_id
                     assert published_messages[1]["artifacts"][0]["available"] is True
@@ -768,7 +790,7 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         )
                     ).json()["data"] == []
                     assert (await client.get(f"/api/v1/artifacts/{answer_id}/download", headers=alice)).status_code == 404
-                    messages = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
+                    messages = (await read_thread_messages(client, f"{base}/{first_id}/messages", headers=alice)).json()["data"]
                     assert [(item["role"], item["content"]) for item in messages] == [("user", "第一轮"), ("assistant", "第一答复")]
                     assert [item["artifact_id"] for item in messages[0]["attachments"]] == artifact_ids
                     assert all(item["available"] for item in messages[0]["attachments"])
@@ -779,11 +801,13 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     run_messages = (await client.get(f"/api/v1/runs/{first_run_id}/messages", headers=alice)).json()["data"]
                     assert [item["artifact_id"] for item in run_messages[0]["attachments"]] == artifact_ids
                     assert run_messages[1]["artifacts"][0]["artifact_id"] == answer_id
-                    assert (await client.get(f"{base}/{first_id}/messages?after={messages[0]['id']}", headers=alice)).json()["data"][0]["content"] == "第一答复"
-                    assert (await client.get(f"{base}/{first_id}/messages", headers=bob)).status_code == 404
-                    assert (await client.get(f"{base}/{second_id}/messages", headers=alice)).json()["data"] == []
+                    assert (await read_thread_messages(client, f"{base}/{first_id}/messages?after={messages[0]['id']}", headers=alice)).json()["data"][0][
+                        "content"
+                    ] == "第一答复"
+                    assert (await read_thread_messages(client, f"{base}/{first_id}/messages", headers=bob)).status_code == 404
+                    assert (await read_thread_messages(client, f"{base}/{second_id}/messages", headers=alice)).json()["data"] == []
                     assert (await client.delete(f"/api/v1/artifacts/{artifact_ids[0]}", headers=alice)).status_code == 200
-                    stale = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"][0]["attachments"]
+                    stale = (await read_thread_messages(client, f"{base}/{first_id}/messages", headers=alice)).json()["data"][0]["attachments"]
                     assert [item["available"] for item in stale] == [False, True]
                     assert stale[0]["filename"] == "notes.txt"
 
@@ -803,7 +827,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert edited.status_code == 200, edited.text
-                    retry_after_edit = await client.post(
+                    retry_after_edit = await submit_agent_run(
+                        client,
                         f"{base}/{first_id}/runs",
                         headers=alice,
                         json={
@@ -815,7 +840,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert retry_after_edit.status_code == 201 and retry_after_edit.json()["data"]["id"] == first_run_id
-                    next_run = await client.post(
+                    next_run = await submit_agent_run(
+                        client,
                         f"{base}/{first_id}/runs",
                         headers=alice,
                         json={
@@ -843,7 +869,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         assert old.agent_max_output_tokens == 4096
                         assert new.agent_max_output_tokens == 2048
                         assert old.agent_thinking_mode == "auto" and new.agent_thinking_mode == "disabled"
-                    other_run = await client.post(
+                    other_run = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -874,7 +901,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert doomed_upload.status_code == 201
                     doomed_id = doomed_upload.json()["data"][0]["id"]
-                    doomed_run = await client.post(
+                    doomed_run = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -898,7 +926,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert tampered_upload.status_code == 201
                     tampered_id = tampered_upload.json()["data"][0]["id"]
-                    tampered_run = await client.post(
+                    tampered_run = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -916,8 +945,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     assert failed_hash is not None and failed_hash.id == tampered_run.json()["data"]["id"]
                     assert failed_hash.state == "failed" and failed_hash.failure_code == "attachment_unavailable"
                     assert len(SessionModel.seen_inputs) == model_calls
-                    first_history = (await client.get(f"{base}/{first_id}/messages", headers=alice)).json()["data"]
-                    other_history = (await client.get(f"{base}/{second_id}/messages", headers=alice)).json()["data"]
+                    first_history = (await read_thread_messages(client, f"{base}/{first_id}/messages", headers=alice)).json()["data"]
+                    other_history = (await read_thread_messages(client, f"{base}/{second_id}/messages", headers=alice)).json()["data"]
                     assert [item["content"] for item in first_history] == ["第一轮", "第一答复", "第二轮", "第二答复"]
                     assert [item["content"] for item in other_history] == ["独立会话", "独立答复", "使用失效附件", "读取文件"]
                     assert other_history[-2]["attachments"][0]["available"] is False
@@ -931,7 +960,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert budget_config.status_code == 200, budget_config.text
-                    budget_run = await client.post(
+                    budget_run = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -954,7 +984,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert cleared.status_code == 200
-                    retried_budget = await client.post(
+                    retried_budget = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -989,7 +1020,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                     )
                     assert archived.status_code == 200 and archived.json()["data"]["archived"] is True
                     assert (
-                        await client.post(
+                        await submit_agent_run(
+                            client,
                             f"{base}/{first_id}/runs",
                             headers=alice,
                             json={
@@ -1011,7 +1043,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert switched.status_code == 200
-                    incompatible = await client.post(
+                    incompatible = await submit_agent_run(
+                        client,
                         f"{base}/{second_id}/runs",
                         headers=alice,
                         json={
@@ -1029,7 +1062,8 @@ def test_session_run_and_history(tmp_path: Path, monkeypatch) -> None:
                         },
                     )
                     assert fresh.status_code == 201
-                    fresh_run = await client.post(
+                    fresh_run = await submit_agent_run(
+                        client,
                         f"{base}/{fresh.json()['data']['id']}/runs",
                         headers=alice,
                         json={

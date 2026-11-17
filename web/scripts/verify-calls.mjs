@@ -1,3 +1,4 @@
+import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -38,7 +39,7 @@ async function fixture(page) {
     else if (path === '/api/v1/agents/11') data = { id: 11, name: '差旅助手', enabled: true, default_model_id: 1 };
     else if (path === '/api/v1/agents/11/sessions') data = { items: [session], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/sessions/calls')) data = session;
-    else if (path.endsWith('/calls/messages')) data = [
+    else if (path.endsWith('/ag-ui/threads/calls')) data = [
       message(1, 'run-old', 'user', '历史问题', historical),
       message(2, 'run-old', 'assistant', '这是历史回答。', historical),
       message(3, 'run-failed', 'user', '这个轮次没有最终回复', [call('failed-old', 'tool', 'weather_lookup', 'failed', 1)]),
@@ -52,17 +53,25 @@ async function fixture(page) {
       reads++;
       if (fail) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ code: 500, message: '暂不可用' }) });
       data = phase === 'running' ? finalCalls.map(row => ({ ...row, status: 'running' })) : finalCalls;
-    } else if (path === '/api/v1/runs/run-live/snapshot') {
+    } else if (path === '/api/v1/runs/run-live/ag-ui/snapshot') {
+      reads++;
+      if (fail) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ code: 500, message: '暂不可用' }) });
       const all = phase === 'running' ? [] : [...events, textEvent];
       const after = Number(url.searchParams.get('after') || 0);
-      data = { run, events: all.filter(row => row.sequence > after), latest_sequence: all.at(-1)?.sequence || 0, next_after: all.at(-1)?.sequence || 0, has_more: false };
+      data = agUiSnapshot(run, agUiFrames(run, all, { calls: finalCalls.map(row => ({ ...row, status: "running" })) }), after);
     } else if (path === '/api/v1/runs/run-live/stream-ticket') data = { expires_in: 300 };
     else if (path === '/api/v1/runs/run-live/stream') {
       streamOpened(); await gate;
-      return route.fulfill({ contentType: 'text/event-stream', body: [...events, events[2], textEvent].map(event => `id: run-live:${event.sequence}\nevent: ${event.event_type}\ndata: ${JSON.stringify(event)}\n\n`).join('') });
+      return route.fulfill({ contentType: 'text/event-stream', body: fail ? '' : agUiSse(run.id,
+        agUiFrames(run, [...events, textEvent], { calls: finalCalls.map(row => ({ ...row, status: 'running' })) }), Number(url.searchParams.get('after') || 0)) });
+    } else if (path.endsWith('/ag-ui/snapshot')) {
+      const runId = path.split('/')[4];
+      const saved = runId === 'run-old' ? historical : runId === 'run-failed' ? [call('failed-old', 'tool', 'weather_lookup', 'failed', 1)] : [];
+      const historicalRun = { id: runId, session_id: 'calls', create_time: now, state: runId === 'run-failed' ? 'failed' : 'completed' };
+      data = agUiSnapshot(historicalRun, agUiFrames(historicalRun, [], { calls: saved }));
     } else if (path === '/api/v1/runs/run-live') data = run;
     else { unexpected.push(path); return route.abort(); }
-    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data }) });
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, message: '操作成功', data: agUiData(path, data) }) });
   });
   return { paths, unexpected, opened, get reads() { return reads; }, eventsFail() { phase = 'finished'; fail = true; releaseStream(); }, restore() { fail = false; }, complete() { complete = true; run = { ...run, state: 'completed' }; }, toolFailure() { complete = false; run = { ...run, state: 'failed', failure_code: 'tool_error' }; } };
 }
@@ -178,7 +187,7 @@ try {
     const f = await fixture(page);
     await page.goto(`${base}/agents/11/sessions/calls`);
     const history = page.locator('[data-message-id="2"]');
-    await history.getByRole('region', { name: '本轮调用' }).waitFor();
+    await history.locator('.run-activity').waitFor();
     assert.equal(await history.locator('.run-call').count(), 2);
     assert.ok((await history.locator('[data-call-id="old-skill"]').innerText()).includes('成功'));
     assert.ok((await history.locator('[data-call-id="old-unknown"]').innerText()).includes('结果未确认')); assertions += 3;
@@ -186,7 +195,7 @@ try {
     assert.equal(await page.locator('[data-message-id="5"] .run-calls').count(), 0);
     assert.ok((await page.locator('[data-call-run="run-failed"]').innerText()).includes('weather_lookup'));
     assert.ok((await page.locator('[data-call-run="run-failed"]').innerText()).includes('失败')); assertions += 4;
-    assert.ok(await history.locator('.run-calls').evaluate(el => el.compareDocumentPosition(el.parentElement.querySelector('.session-message-content')) & Node.DOCUMENT_POSITION_FOLLOWING)); assertions++;
+    assert.ok(await history.locator('.run-activity').evaluate(el => el.compareDocumentPosition(el.parentElement.querySelector('.session-message-content')) & Node.DOCUMENT_POSITION_FOLLOWING)); assertions++;
     const live = page.locator('[data-stream-run="run-live"]');
     await live.locator('.run-call-running').nth(3).waitFor();
     assert.equal(await live.locator('.run-call').count(), 4);
@@ -194,10 +203,12 @@ try {
     assert.equal(f.paths.some(path => /runs\/(run-old|run-failed|run-plain)\/calls/.test(path)), false); assertions += 3;
     await f.opened; const reads = f.reads;
     f.eventsFail();
-    await live.getByRole('status').filter({ hasText: '调用状态暂时无法同步' }).waitFor();
+    await page.waitForFunction(() => document.querySelector('[data-stream-run]') !== null);
+    const deadline = Date.now() + 8000;
+    while (f.reads <= reads && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 30));
     assert.ok(f.reads > reads);
     assert.equal(await live.locator('.run-call-failed').count(), 0); assertions += 2;
-    f.restore(); await live.getByRole('button', { name: /重\s*试/, exact: true }).click();
+    f.restore();
     await live.locator('[data-call-id="tool-1"] .run-call-failed').waitFor();
     assert.equal(await live.locator('.run-call-succeeded').count(), 3);
     assert.equal(await live.locator('.run-call-failed').count(), 1);
@@ -212,6 +223,9 @@ try {
     assert.equal(await page.locator('[data-stream-run="run-live"]').count(), 0);
     assert.equal(await final.locator('.run-call-failed').count(), 1); assertions += 3;
     await page.reload(); await final.waitFor();
+    await final.locator(".run-call").nth(3).waitFor({ state: "attached" });
+    await page.locator("[data-call-id=old-skill]").waitFor({ state: "attached" });
+    await page.locator("[data-call-run=run-failed]").waitFor();
     assert.equal(await final.locator('.run-call').count(), 4);
     assert.equal(await final.locator('.run-call-failed').count(), 1);
     assert.equal(await page.locator('[data-call-run="run-failed"]').count(), 1);

@@ -1,3 +1,5 @@
+import type { Message, RunAgentInput } from "@ag-ui/core";
+import type { AgUiFrame } from "./ag-ui";
 const API_ROOT = "/api/v1";
 const ACCESS_KEY = "yp.access_token";
 const REFRESH_KEY = "yp.refresh_token";
@@ -178,7 +180,7 @@ async function refreshSession(): Promise<boolean> {
   return refreshing;
 }
 
-export async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+async function authorizedFetch(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
   const accessToken = sessionStorage.getItem(ACCESS_KEY);
   const headers = new Headers(init.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
@@ -190,12 +192,16 @@ export async function request<T>(path: string, init: RequestInit = {}, retry = t
     throw new ApiError("无法连接服务端", 0);
   }
   if (response.status === 401 && retry && (await refreshSession())) {
-    return request<T>(path, init, false);
+    return authorizedFetch(path, init, false);
   }
   if (response.status === 401 && accessToken && path !== "/auth/login") {
     expireSession();
   }
-  return readResponse<T>(response);
+  return response;
+}
+
+export async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+  return readResponse<T>(await authorizedFetch(path, init, retry));
 }
 
 export async function login(identifier: string, password: string): Promise<User> {
@@ -477,16 +483,13 @@ export type SessionMessage = {
   failure_code?: string | null;
   metrics?: RunMetrics | null;
 };
-export type SessionRun = { agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type SessionRun = { publish_answer_artifact?: boolean; agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
 export type RunApproval = {
   id: string; run_id: string; state: "pending" | "approved" | "rejected" | "expired" | "cancelled";
   actions: { name: string; arguments_hash: string; resource_id?: string | null; resource_name?: string | null }[];
   expires_at: string; decided_at: string | null;
 };
-export type RunStreamEvent = { sequence: number; event_type: string; state: string | null; content: string | null; failure_code?: string | null };
-export type RunSnapshot = { run: SessionRun; events: RunStreamEvent[]; latest_sequence: number; next_after: number; has_more: boolean };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
-export type SessionRunDraft = { model_id?: number; expected_session_version?: number; input_text: string; request_key: string; publish_answer_artifact: boolean; artifact_ids: string[]; context_artifact_ids: string[] };
 
 function sessionPath(agentId: number, sessionId?: string): string {
   return `/agents/${agentId}/sessions${sessionId ? `/${encodeURIComponent(sessionId)}` : ""}`;
@@ -503,19 +506,42 @@ export const listSessionModels = (agentId: number, sessionId: string, signal?: A
   request(`${sessionPath(agentId, sessionId)}/models`, { signal });
 export const updateAgentSession = (agentId: number, session: AgentSession, changes: { title?: string; archived?: boolean; model_id?: number }): Promise<AgentSession> => request(sessionPath(agentId, session.id), { method: "PUT", body: JSON.stringify({ ...changes, expected_version: session.version }) });
 export const deleteAgentSession = (agentId: number, sessionId: string): Promise<void> => request(sessionPath(agentId, sessionId), { method: "DELETE" });
-export const listSessionMessages = (agentId: number, sessionId: string, after: number, limit = 100): Promise<SessionMessage[]> => request(`${sessionPath(agentId, sessionId)}/messages?after=${after}&limit=${limit}`);
 export const getSessionMetrics = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionMetrics> =>
   request(`${sessionPath(agentId, sessionId)}/metrics`, { signal });
 export const listSessionRuns = (agentId: number, sessionId: string): Promise<SessionRunPage> => request(`${sessionPath(agentId, sessionId)}/runs?page=1&page_size=20`);
-export const submitSessionRun = (agentId: number, sessionId: string, draft: SessionRunDraft): Promise<SessionRun> => request(`${sessionPath(agentId, sessionId)}/runs`, { method: "POST", body: JSON.stringify(draft) });
+export type AgUiThread = {
+  threadId: string; version: number; messages: Message[];
+  messageDetails: Record<string, Omit<SessionMessage, "content" | "role">>;
+};
+export type AgUiStream = { runId: string; after: number; response: Response };
+export const getAgUiThread = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<AgUiThread> =>
+  request(`/agents/${agentId}/ag-ui/threads/${encodeURIComponent(sessionId)}`, { signal });
+
+/** Submit exactly one protocol attempt. Network retries reuse the original input and IDs. */
+export async function openAgUiRun(agentId: number, input: RunAgentInput): Promise<AgUiStream> {
+  const response = await authorizedFetch(`/agents/${agentId}/ag-ui`, {
+    method: "POST", headers: { Accept: "text/event-stream" }, body: JSON.stringify(input),
+  });
+  if (!response.ok) await readResponse<never>(response);
+  const runId = response.headers.get("X-Y-Point-Run-ID");
+  const afterHeader = response.headers.get("X-Y-Point-After");
+  const after = Number(afterHeader);
+  if (!response.headers.get("Content-Type")?.includes("text/event-stream") || !response.body
+    || !runId || afterHeader === null || !Number.isSafeInteger(after) || after < 0) {
+    await response.body?.cancel();
+    throw new ApiError("AG-UI 响应缺少有效的运行身份或事件流", response.status);
+  }
+  return { runId, after, response };
+}
+
 export const getRunCalls = (runId: string, signal?: AbortSignal): Promise<RunCall[]> => request(`/runs/${encodeURIComponent(runId)}/calls`, { signal });
 export const getRun = (runId: string): Promise<SessionRun> => request(`/runs/${encodeURIComponent(runId)}`);
 export const getRunApproval = (runId: string, signal?: AbortSignal): Promise<RunApproval> => request(`/runs/${encodeURIComponent(runId)}/approval`, { signal });
-export const decideRunApproval = (runId: string, decision: "approve" | "reject", expectedApprovalId: string): Promise<RunApproval> =>
-  request(`/runs/${encodeURIComponent(runId)}/approval/decision`, { method: "POST", body: JSON.stringify({ decision, expected_approval_id: expectedApprovalId }) });
 export const cancelRun = (runId: string): Promise<SessionRun> => request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
 export const issueRunStreamTicket = (runId: string): Promise<{ expires_in: number }> => request(`/runs/${encodeURIComponent(runId)}/stream-ticket`, { method: "POST" });
-export const getRunSnapshot = (runId: string, after: number): Promise<RunSnapshot> => request(`/runs/${encodeURIComponent(runId)}/snapshot?after=${after}&limit=100`);
+export type AgUiSnapshot = { resources_complete?: boolean; run: SessionRun; events: AgUiFrame[]; next_after: number; latest_sequence: number; through: number; has_more: boolean };
+export const getAgUiSnapshot = (runId: string, after: number, through?: number, signal?: AbortSignal): Promise<AgUiSnapshot> =>
+  request(`/runs/${encodeURIComponent(runId)}/ag-ui/snapshot?after=${after}${through === undefined ? "" : `&through=${through}`}`, { signal });
 export const runStreamUrl = (runId: string, after: number): string => `${API_ROOT}/runs/${encodeURIComponent(runId)}/stream?after=${after}`;
 
 export function createAgent(draft: AgentDraft & { default_model_id: number }): Promise<Agent> {
@@ -536,7 +562,7 @@ export async function uploadChatFile(file: File): Promise<UploadedArtifact> {
   const items = await request<UploadedArtifact[]>("/artifacts/uploads", { method: "POST", body: form });
   return items[0];
 }
-export const checkSessionAttachments = (agentId: number, sessionId: string, draft: Pick<SessionRunDraft, "artifact_ids" | "context_artifact_ids">): Promise<{ valid: boolean; context_bytes: number }> =>
+export const checkSessionAttachments = (agentId: number, sessionId: string, draft: { artifact_ids: string[]; context_artifact_ids: string[] }): Promise<{ valid: boolean; context_bytes: number }> =>
   request(`${sessionPath(agentId, sessionId)}/attachments/check`, {
     method: "POST",
     body: JSON.stringify({ artifact_ids: draft.artifact_ids, context_artifact_ids: draft.context_artifact_ids }),

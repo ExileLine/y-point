@@ -187,8 +187,11 @@ async def exercise_completed_run(database_path: Path, checkpoint_path: Path) -> 
             assert [(event.event_type, event.state) for event in events] == [
                 ("state", "queued"),
                 ("state", "running"),
+                ("model_started", "running"),
                 ("text_delta", "running"),
+                ("model_finished", "running"),
                 ("state", "completed"),
+                ("delivery_completed", "completed"),
             ]
             assert "".join(event.content or "" for event in events) == "hello back"
             assert all("say hello" not in str(event.to_dict()) for event in events)
@@ -2479,7 +2482,7 @@ def test_failed_skill_read_turn_resumes_from_completed_checkpoint(tmp_path: Path
                                 ),
                             )
                         ).all()
-                        assert [event.event_type for event in events] == [RunEventType.TOOL_STARTED]
+                        assert [event.event_type for event in events if event.tool_call_id] == [RunEventType.TOOL_STARTED]
                     assert failed.failure_code == "lease_expired"
                 else:
                     failed = await execution

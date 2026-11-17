@@ -33,6 +33,78 @@ def request(client: httpx.Client, method: str, path: str, token: str, *, expecte
     return body.get("data") or {}
 
 
+def open_ag_ui(client: httpx.Client, agent_id: int, token: str, body: dict) -> dict:
+    """读取标准 POST 的提交回执后关闭观察；Worker 继续持久化执行。"""
+    with client.stream(
+        "POST",
+        f"/agents/{agent_id}/ag-ui",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/event-stream",
+        },
+        json=body,
+    ) as response:
+        if response.status_code != 200:
+            response.read()
+            raise AssertionError(f"AG-UI POST: HTTP {response.status_code}")
+        run_id = response.headers["X-Y-Point-Run-ID"]
+    return request(client, "GET", f"/runs/{run_id}", token)
+
+
+def submit_ag_ui(client: httpx.Client, agent_id: int, session_id: str, token: str, *, payload: dict) -> dict:
+    """从公开历史构造唯一协议入口的输入，不依赖旧提交接口。"""
+    history = request(client, "GET", f"/agents/{agent_id}/ag-ui/threads/{session_id}", token)
+    props = {key: value for key, value in payload.items() if key not in {"input_text", "request_key"}}
+    return open_ag_ui(
+        client,
+        agent_id,
+        token,
+        {
+            "threadId": session_id,
+            "runId": payload.get("request_key", str(uuid4())),
+            "protocolVersion": "1.0",
+            "messages": [
+                *history["messages"],
+                {
+                    "id": str(uuid4()),
+                    "role": "user",
+                    "content": payload["input_text"],
+                },
+            ],
+            "forwardedProps": {
+                "expected_session_version": history["version"],
+                **props,
+            },
+        },
+    )
+
+
+def resume_ag_ui(client: httpx.Client, agent_id: int, session_id: str, run_id: str, token: str) -> dict:
+    """通过新的协议运行身份明确批准当前中断。"""
+    history = request(client, "GET", f"/agents/{agent_id}/ag-ui/threads/{session_id}", token)
+    approval = request(client, "GET", f"/runs/{run_id}/approval", token)
+    return open_ag_ui(
+        client,
+        agent_id,
+        token,
+        {
+            "threadId": session_id,
+            "runId": str(uuid4()),
+            "protocolVersion": "1.0",
+            "messages": history["messages"],
+            "resume": [
+                {
+                    "interruptId": approval["id"],
+                    "status": "resolved",
+                    "payload": {
+                        "decision": "approve",
+                    },
+                }
+            ],
+        },
+    )
+
+
 def login(client: httpx.Client, username: str) -> str:
     """从终端读取密码，获取仅留在进程内存中的访问令牌。"""
     password = getpass.getpass(f"{username} 密码: ")
@@ -190,12 +262,11 @@ def accept() -> None:
                 },
             )
             session_id = session["id"]
-            run = request(
+            run = submit_ag_ui(
                 client,
-                "POST",
-                f"/agents/{agent_id}/sessions/{session_id}/runs",
+                agent_id,
+                session_id,
                 other,
-                expected=201,
                 payload={
                     "input_text": "请调用关联的工具，传入 value=21，并告诉我结果。",
                     "request_key": f"m5-{suffix}",
@@ -292,12 +363,11 @@ def accept_mcp() -> None:
                 },
             )
             session_id = session["id"]
-            run = request(
+            run = submit_ag_ui(
                 client,
-                "POST",
-                f"/agents/{agent_id}/sessions/{session_id}/runs",
+                agent_id,
+                session_id,
                 other,
-                expected=201,
                 payload={
                     "input_text": "请调用 DeepWiki 工具，读取 modelcontextprotocol/python-sdk 的文档结构，再告诉我有哪些主题。",
                     "request_key": f"m5-mcp-{suffix}",
@@ -309,15 +379,7 @@ def accept_mcp() -> None:
             request(client, "GET", f"/runs/{run_id}/approval", owner, expected=404)
             approval = request(client, "GET", f"/runs/{run_id}/approval", other)
             assert approval["state"] == "pending" and approval["actions"][0]["name"] == created["model_name"]
-            request(
-                client,
-                "POST",
-                f"/runs/{run_id}/approval/decision",
-                other,
-                payload={
-                    "decision": "approve",
-                },
-            )
+            resume_ag_ui(client, agent_id, session_id, run_id, other)
             print("MCP 审批与跨用户隔离: 通过")
 
             state = await_state(client, other, run_id, TERMINAL_STATES)
@@ -407,12 +469,11 @@ def accept_skill() -> None:
                 },
             )
             session_id = session["id"]
-            run = request(
+            run = submit_ag_ui(
                 client,
-                "POST",
-                f"/agents/{agent_id}/sessions/{session_id}/runs",
+                agent_id,
+                session_id,
                 owner,
-                expected=201,
                 payload={
                     "input_text": "请从关联的 Skill 文件读取并告诉我验收标记。",
                     "request_key": f"m5-skill-{suffix}",
@@ -423,8 +484,9 @@ def accept_skill() -> None:
             assert state["state"] == "completed", f"Skill 运行失败: {state['state']}/{state.get('failure_code')}"
             messages = request(client, "GET", f"/runs/{run_id}/messages", owner)
             assert any(marker in item["content"] for item in messages if item["role"] == "assistant"), "未读到 Skill 文件标记"
-            events = request(client, "GET", f"/runs/{run_id}/events?after=0", owner)
-            assert any((item.get("tool_name") or "").startswith(f"skill:{skill_name}@v1") for item in events), "缺少 Skill 版本事件"
+            snapshot = request(client, "GET", f"/runs/{run_id}/ag-ui/snapshot", owner)
+            events = [frame["event"] for frame in snapshot["events"]]
+            assert any((item.get("toolCallName") or "").startswith(f"skill:{skill_name}@v1") for item in events), "缺少 Skill 版本事件"
             print(f"Skill 真实模型按需读取与版本事件: 通过 (run_id={run_id})")
         finally:
             cleanup_resources(

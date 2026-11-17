@@ -1,6 +1,6 @@
 # M5.1 治理与验收契约
 
-更新日期：2026-11-03。本文约定 Tool/MCP/Skill/脚本依赖的基础治理，不将本机证据等同于目标部署总验收。
+本文约定 Tool/MCP/Skill/脚本依赖的基础治理及当前兼容边界。
 
 ## 版本、凭据与授权
 
@@ -59,30 +59,14 @@ uv run python -m app.cli.reconcile_tool_resources
 
 构建前在共享文件锁下预留 512 MiB，并检查现有缓存、在建预留和文件系统余量。默认应用预算 8 GiB、最低余量 1 GiB；占用/预留到预算 80% 或余量不足时输出告警，容量不足的新准备任务返回脱敏失败。运行中继续执行单文件及构建目录限制。
 
-这些措施是应用预算、准入和故障回收，**不是文件系统硬磁盘配额**。需要硬隔离时须在目标主机提供专用卷/文件系统配额并实际验证；磁盘块、inode、Docker 数据目录和日志也须纳入部署预算。当前本机验证范围为单机 Docker、相同基础镜像、共享环境目录。跨主机分发、远端卷锁语义和目标平台 wheel 不能从本机结果推断。
+这些措施是应用预算、准入和故障回收，**不是文件系统硬磁盘配额**。需要硬隔离时须在目标主机提供专用卷/文件系统配额并实际验证；磁盘块、inode、Docker 数据目录和日志也须纳入部署预算。API 与 Worker 需要使用一致的基础镜像和共享环境目录；跨主机分发、远端卷锁语义和目标平台 wheel 需要对应环境验证。
 
 ## 迁移与兼容
 
-`041_tool_governance.py` 增加凭据撤销水位、恢复与验收字段、资源闸门及租约。历史读取版本回填 `safe`，历史写版本回填 `manual` 且未验收，既有内容摘要不重写。另修复 `040` 在 MySQL 非空变更时丢失的 `requirements/environment_state/environment_attempts` 中文注释。
+历史读取版本沿用 `safe` 策略；未完成恢复契约核对的历史写版本保持 `manual`，不自动启用恢复，既有内容摘要不重写。
 
-目标实例升级前备份业务库和检查点；执行 `alembic upgrade head`、`alembic check`，再重启 API/worker。开发 SQLite 已在线备份至 `.run-private/backups/y_point_pre_041_20261103_093748.db`，从 `040` 升级至 `041`，升级前后 `quick_check=ok`。回退会移除治理字段及短期租约，生产回退前必须停止领取新任务并核对进行中的外部调用，不能把回退当作撤销远端副作用。
+目标实例升级前备份业务库和检查点；执行 `alembic upgrade head`、`alembic check`，再重启 API/worker。回退会移除治理字段及短期租约，生产回退前必须停止领取新任务并核对进行中的外部调用，不能把回退当作撤销远端副作用。
 
-## 验收入口与边界
+## 验证方法
 
-```bash
-# 治理与真实容器故障测试，数据保存在隔离临时目录
-uv run --no-sync pytest -q tests/test_m51_governance.py tests/test_user_tools.py tests/test_tool_environments.py
-
-# 在随机隔离数据库升级、回退重升、结构核对、跨进程争抢与 HTTP/worker 验证
-YPOINT_TEST_MYSQL_M3=1 uv run --no-sync pytest -q tests/test_db_schema.py::test_mysql_m3_migrations
-YPOINT_TEST_POSTGRES_M3=1 uv run --no-sync pytest -q tests/test_db_schema.py::test_postgres_m3_migrations
-
-# 真实模型、Docker、独立 worker、公开只读 MCP；不会复用现有用户和会话数据
-YPOINT_TEST_OLLAMA_M51=1 uv run --no-sync pytest -q tests/test_m51_live_acceptance.py
-```
-
-数据库连接使用运行环境配置；本机 PostgreSQL 容器映射在 5432，现场命令须与实际端口一致。测试自动删除随机隔离库，不对现有 MySQL/PostgreSQL 业务库升级。SIGKILL 测试真实强杀宿主进程，只加速清理时钟，不假设 Python `finally` 能在强杀后执行。
-
-已通过隔离 SQLite 完整回归 184 项；默认跳过 17 项中的 MySQL/PostgreSQL 迁移与跨进程竞争已另行启用通过 2 项，真实模型组合链另行通过 1 项。治理测试另使用真实 MCP SDK + FastMCP 的进程内 HTTP 验证有效/失效/轮换 Bearer、远端 429 及错误脱敏；此处仅替换底层网络，不关闭正式实现的公网校验。真实模型链使用离线 wheel、两个临时用户、旧/新 Agent 固定版本和 DeepWiki 审批恢复。
-
-浏览器双用户流程、具体公网 MCP 服务的鉴权/失效行为、具体外部写服务的幂等/返回丢失、目标平台 wheel、在线/离线交付、生产资源预算和责任人仍须逐项现场验收。缺少浏览器控制工具或目标环境时保持未验收，不据自动化通过勾选 M5/M5.1 总项。
+通用环境准备、隔离测试与结构检查见[数据库迁移与测试](testing.md)。治理验证需分别覆盖权限、外部写恢复、并发容量、资源清理及目标存储，不能以声明字段代替真实外部写入契约核对。

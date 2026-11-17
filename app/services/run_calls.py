@@ -112,7 +112,7 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
         if event.event_type == RunEventType.TOOL_COMPLETED:
             call.status = RunCallStatus.SUCCEEDED
         elif event.event_type == RunEventType.TOOL_FAILED:
-            call.status = RunCallStatus.FAILED
+            call.status = RunCallStatus.INTERRUPTED if event.failure_code == RunCallFailure.RESULT_UNKNOWN else RunCallStatus.FAILED
             call.failure_code = RunCallFailure(event.failure_code) if event.failure_code in FAILURE_MESSAGES else None
             call.failure_reason = call_failure_message(event.failure_code)
     return {run_id: list(calls.values()) for run_id, calls in grouped.items()}

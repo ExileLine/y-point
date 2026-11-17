@@ -96,11 +96,6 @@ async def _session_out(db: AsyncSession, session: AgentSession) -> SessionOut:
     return result
 
 
-def _run_response(run: AgentRun):
-    """将会话提交的 Run 转为公开结构。"""
-    return api_response(http_code=201, code=201, data=RunOut.model_validate(run).model_dump(mode="json"), datetime_format=False)
-
-
 async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body: SessionRunCreateIn) -> AgentRun | None:
     """按用户提交键核对既有 Run，避免配置编辑影响相同请求的幂等重试。"""
     run = await db.scalar(select(AgentRun).where(AgentRun.owner_id == owner_id, AgentRun.request_key == body.request_key))
@@ -363,15 +358,17 @@ async def check_attachments(
     )
 
 
-@router.post("/{session_id}/runs", summary="在智能体会话中提交文本运行")
-async def submit_session_run(
+async def create_session_run(
     agent_id: int,
     session_id: str,
     body: SessionRunCreateIn,
-    actor: Admin = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db_session),
-):
-    """同事务保存 Agent 配置快照、用户消息、Run 和调度意图。"""
+    actor: Admin,
+    db: AsyncSession,
+    *,
+    protocol_run_id: str | None = None,
+    protocol_user_message_id: str | None = None,
+) -> AgentRun:
+    """同事务保存 AG-UI 提交的配置快照、用户消息、Run 和调度意图。"""
     owner_id = actor.id
     session = await _session(db, agent_id, session_id, owner_id)
     context_ids = set(body.context_artifact_ids)
@@ -379,7 +376,7 @@ async def submit_session_run(
         raise CustomException(status_code=400, custom_code=10006, detail="模型上下文附件必须是未重复的消息附件")
     existing = await _matching_retry(db, owner_id, session_id, body)
     if existing is not None:
-        return _run_response(existing)
+        return existing
     agent = await db.scalar(select(AgentConfig).where(AgentConfig.id == agent_id).with_for_update().execution_options(populate_existing=True))
     if agent is None or not await can_use_agent(db, agent_id, owner_id):
         raise CustomException(status_code=404, custom_code=10002, detail="智能体不存在")
@@ -454,6 +451,10 @@ async def submit_session_run(
         if claim.rowcount != 1:
             raise RunConflictError("会话已变化")
         run = await create_run(db, owner_id, **options)
+        run.ag_ui_run_id = protocol_run_id
+        if protocol_user_message_id is not None:
+            user_message = await db.scalar(select(AgentRunMessage).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
+            user_message.ag_ui_message_id = protocol_user_message_id
         await snapshot_run_skills(db, run.id, agent_id, owner_id)
         await snapshot_run_tools(db, run.id, agent_id, owner_id)
         await snapshot_run_knowledge(db, run.id, agent_id, owner_id)
@@ -478,9 +479,11 @@ async def submit_session_run(
         await db.rollback()
         existing = await _matching_retry(db, owner_id, session_id, body)
         if existing is not None:
-            return _run_response(existing)
+            # 回滚使身份对象也过期，恢复后交给流入口继续执行授权检查。
+            await db.refresh(actor)
+            return existing
         raise CustomException(status_code=409, custom_code=10005, detail="会话运行提交冲突") from None
-    return _run_response(run)
+    return run
 
 
 @router.get("/{session_id}/runs", summary="分页查询会话运行")
@@ -515,35 +518,29 @@ async def get_session_metrics(agent_id: int, session_id: str, actor: Admin = Dep
     return response
 
 
-@router.get("/{session_id}/messages", summary="按游标读取会话消息")
-async def list_session_messages(
+async def load_session_message_details(
+    db: AsyncSession,
     agent_id: int,
     session_id: str,
-    after: int = Query(0, ge=0, description="上次读取的消息 ID"),
-    limit: int = Query(100, ge=1, le=200, description="本次最多读取的消息数"),
-    actor: Admin = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db_session),
-):
-    """按消息 ID 递增回放本会话用户输入与最终回答。"""
-    await _session(db, agent_id, session_id, actor.id)
+    owner_id: int,
+) -> dict:
+    """为协议消息补充授权后的文件、模型和交付信息，不另行提供正文历史。"""
     statement = (
         select(AgentRunMessage)
         .join(AgentRun, AgentRun.id == AgentRunMessage.run_id)
         .where(
-            AgentRun.owner_id == actor.id,
+            AgentRun.owner_id == owner_id,
             AgentRun.agent_id == agent_id,
             AgentRun.session_id == session_id,
-            AgentRunMessage.owner_id == actor.id,
-            AgentRunMessage.id > after,
+            AgentRunMessage.owner_id == owner_id,
         )
         .order_by(AgentRunMessage.id)
-        .limit(limit)
     )
     messages = (await db.scalars(statement)).all()
-    by_message = await load_message_attachments(db, actor.id, [item.id for item in messages])
-    by_artifact = await load_message_artifacts(db, actor.id, messages)
-    calls = await load_run_calls(db, actor.id, list({item.run_id for item in messages}))
-    presentation = await load_run_presentation(db, actor.id, list({item.run_id for item in messages}))
+    by_message = await load_message_attachments(db, owner_id, [item.id for item in messages])
+    by_artifact = await load_message_artifacts(db, owner_id, messages)
+    calls = await load_run_calls(db, owner_id, list({item.run_id for item in messages}))
+    presentation = await load_run_presentation(db, owner_id, list({item.run_id for item in messages}))
     model_rows = await db.execute(
         select(AgentRun.id, AgentRun.model_id, ModelCatalog.display_name, ProviderConnection.name)
         .outerjoin(ModelCatalog, ModelCatalog.id == AgentRun.model_id)
@@ -551,7 +548,7 @@ async def list_session_messages(
         .where(AgentRun.id.in_({item.run_id for item in messages})),
     )
     model_labels = {row.id: row for row in model_rows}
-    result = []
+    result = {}
     for item in messages:
         data = SessionMessageOut.model_validate(item).model_dump(mode="json")
         label = model_labels.get(item.run_id)
@@ -562,5 +559,7 @@ async def list_session_messages(
         data["artifacts"] = by_artifact.get(item.id, [])
         data["calls"] = [call.model_dump(mode="json") for call in calls.get(item.run_id, [])]
         data.update(presentation.get(item.run_id, {}))
-        result.append(data)
-    return api_response(data=result, is_pop=False)
+        data.pop("content")
+        data.pop("role")
+        result[item.ag_ui_message_id or str(item.id)] = data
+    return result

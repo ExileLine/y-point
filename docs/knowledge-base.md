@@ -23,7 +23,7 @@
 
 模型在原有对话请求中选择是否调用 `search_knowledge_base`，不额外发起一次分类模型请求。Worker 提供当前实际用户仍有权限访问的目录摘要：最多八个知识库，每库名称最多 128 字符、用途说明最多 384 字符、本轮固定发布索引中的三个文件名样例各最多 160 字符；不预读文档正文、不生成查询 embedding，也不产生检索审计。目录会计入原模型请求的输入用量，只用于相关性判断，不是命中证据；填写准确的知识库名称和用途说明有助于工具选择，文件名样例不代表完整目录。文档删除、知识库撤权或不可用状态会过滤目录，实际检索继续使用原有逐阶段鉴权。
 
-`POST /api/v1/agents` 可传 `knowledge_mode`，省略为 `auto`；`PUT /api/v1/agents/{id}` 按 `expected_version` 修改，省略保留原值，显式 `null` 或未知取值被拒绝。每次会话提交把模式保存到 Run 的 `agent_knowledge_mode`，配置修改仅影响新提交的轮次；重复 `request_key` 仍返回原轮次及其模式快照。迁移 `054` 为既有配置及历史运行填充 `auto`，不改写旧回答或重建索引。
+`POST /api/v1/agents` 可传 `knowledge_mode`，省略为 `auto`；`PUT /api/v1/agents/{id}` 按 `expected_version` 修改，省略保留原值，显式 `null` 或未知取值被拒绝。每次会话提交把模式保存到 Run 的 `agent_knowledge_mode`，配置修改仅影响新提交的轮次；重复 `request_key` 仍返回原轮次及其模式快照。模式变更不改写旧回答或重建索引。
 
 正文引用必须来自实际相关命中，不能把目录或以前的工具调用当作本轮引用。真实执行过的检索仍保留调用状态、耗时及审计；无命中时可在折叠的“本轮知识检索记录”中看到“未找到相关内容 · 耗时”，不展示空引用按钮。工具成功表示检索完成，不等于命中或最终回答采用了资料。工具选择和回答措辞由对话模型执行这些规则，核对是否检索及是否命中时以调用记录和检索审计为准。
 
@@ -87,7 +87,7 @@ flowchart TD
 
 文档更新接口只提交变化文件，但当前每代索引仍按完整知识库构建，可复用解析缓存及已完成的模型加工批次，尚未复用未变化片段的嵌入。新代构建期间保留旧代；更新清单导致 revision 变化后，过期任务不能覆盖新代。删除成功提交后，通过逻辑状态阻断所有代的后续检索和引用，再由 Worker 分批清理正文；既有消息和检查点历史不自动抹除。任务中断通过租约回收和有限重试恢复，解析、预算或上游错误保留失败类别，取消优先于恢复。
 
-### 按格式处理与模型加工（2026-11-13 更新）
+### 按格式处理与模型加工
 
 知识构建采用“原始证据 + 可追溯来源 + 独立检索解释”的结构。解释用于帮助召回业务主题、字段含义及适合检索的问题，不能替代原文或作为计算结果。发布时 `KnowledgeChunk.content` 等于本次提取规范文本 `extracted_text[start_offset:end_offset]`，片段和偏移随索引代固定，后续解析缓存更新不会改写旧片段；`knowledge_notes` 单独保存模型解释，`retrieval_text` 合并两者用于关键词和嵌入。前端的检索、引用、对话检索记录及「加工结果」预览分别展示原始证据与模型解释。
 
@@ -113,15 +113,13 @@ flowchart TD
 
 `processing_model_id` 独立于 `embedding_model_id` 和 Agent 对话模型。`processing_token_budget`（单次加工 Token 预留上限）与 `embedding_token_budget`（单次索引嵌入 Token 预算）默认均为 `null`，页面留空或 API 传 `null` 表示不限制任务累计 Token；填写时须为 1–2000000 的整数，按每次索引构建的输入/输出或嵌入输入保守预留计算，跨重试累计。`processing_cost_budget` 按加工模型币种限制估算费用，启用前必须填写模型输入和输出价格。加工与嵌入分别记账，任务提供 `processing_call_count`、`processing_tokens`、`processing_reserved_tokens`、`processing_estimated_cost` 和逐次耗时/币种/失败类别的 `processing_usage`；供应商未报告的实际用量显示为未报告，不能把保守预留当成实际消耗。
 
-迁移 `051` 保留已有知识库填写的数值和历史任务快照。已有知识库如需取消累计额度，在「设置 → 分块与索引预算」清空上述两个 Token 字段后「保存并重建」；旧任务的重试继续使用原快照，不会自动套用新配置。取消 Token 预算仍记录预留、实际用量和费用，独立费用预算、模型上下文/单次输出限制、单批大小、文件大小及任务总超时仍生效；并不保证任务只会在触发供应商模型上限时停止。
+已有知识库填写的数值和历史任务快照继续保留。已有知识库如需取消累计额度，在「设置 → 分块与索引预算」清空上述两个 Token 字段后「保存并重建」；旧任务的重试继续使用原快照，不会自动套用新配置。取消 Token 预算仍记录预留、实际用量和费用，独立费用预算、模型上下文/单次输出限制、单批大小、文件大小及任务总超时仍生效；并不保证任务只会在触发供应商模型上限时停止。
 
 模型加工每批最多两条证据，按上下文窗口继续缩小，输出最多 2048 Token；单条证据也放不下时明确失败，不截断原始记录。结果须为覆盖本批每条证据的严格 JSON、每条解释最多三百字符；缺失、重复、越界或截断的结果记录为 `invalid_knowledge`。成功批次写入缓存，模型/连接/价格/提示版本或证据变化均使缓存失效。失败、超时和取消请求仍保留预留预算，重试复用已完成批次；失败与取消均不发布半成品，旧活动索引继续可用。
 
 上传/更新的 multipart 可增加 `processing_options` JSON，例如 `{"processing_mode":"enhanced","sheet_names":["报价"],"header_rows":2}`。省略该字段保留既有文档选项，新文档使用默认；`sheet_names=[]` 表示全部可见工作表，`header_rows` 为 1–5，最多选择二十个不同工作表。CSV 不接受工作表选择，非表格不接受工作表或多行表头参数。处理选项变化须通过更新文档生成新版本，保持索引快照与解析缓存对应。
 
 「加工结果」读取已发布活动索引，支持分页；新版本未发布时标记旧版，不重新调用模型，分页期间切代会从新代首页重新读取。当前没有人工确认后才发布的审批步骤。PDF 页面提取与质量控制见下节；HTML 主文、JSON/YAML 配置和 PPTX 幻灯片处理见第三阶段说明。
-
-新增手工验收夹具生成工具 `scripts/generate_knowledge_phase1_fixtures.py`，使用本项目的文件校验器、解析器与分块逻辑生成并校验十七份正常/异常样例，涵盖表头、隐藏数据、公式缓存、CSV 引号和多行、分页及错误输入，不连接业务库、不调用模型。运行 `.venv/bin/python scripts/generate_knowledge_phase1_fixtures.py` 前，`docs/knowledge-phase1-manual/` 中须已有配套 `README.md` 与 `验收记录.md`；脚本仅生成样例和校验清单，打包时读取上述人工文档并输出同名 ZIP，不创建或覆盖它们。
 
 ### PDF 按页提取、OCR 与原页核对（第二阶段）
 
@@ -139,7 +137,7 @@ PDF 提取会合并同一行汉字之间由分词产生的空格，例如将“�
 
 每段 PDF `source_locator` 保存页号、页面类型、`extraction_method`、`bbox`、页面宽高、布局类别及 OCR 置信度。坐标单位为 PDF 点，原点为完整 MediaBox 左上角；原页预览也按完整 MediaBox 渲染，裁剪、旋转和非零原点下沿用同一坐标基准。OCR 行标注 `layout=unverified`、`review_required=true`，不推断扫描表格的列归属、合并单元格关系或图表含义；置信度是识别评分，不是事实准确率。模型解释与 OCR 原文分开，提示词禁止把未核对布局补成确定业务关系。准确的金额、单位和字段关系仍须核对原页。
 
-文档版本新增 `processing_metadata`（迁移 `052`），缓存逐页分类、方法、置信度、块数以及 OCR/空白页统计；索引新增同名快照字段（迁移 `053`），在发布事务内按文档版本固定摘要。`processing-preview` 只读取活动索引的摘要，后台新解析缓存与失败重建不能改变旧代预览。空白页被跳过并计数，整份文档没有有效内容则返回 `ocr_required`；非空页无法生成证据、加密或损坏时明确失败。OCR 的字符加权平均置信度低于阈值，或低分字符占比超过 25%，返回 `ocr_low_confidence`，不通过删除低分词掩盖质量问题。引擎禁用、不可执行或任一配置语言包缺失返回 `ocr_unavailable`；超限、超时沿用 `size_limit`、`timeout`。失败保留旧活动索引。
+文档版本的 `processing_metadata` 缓存逐页分类、方法、置信度、块数以及 OCR/空白页统计；索引中的同名快照字段在发布事务内按文档版本固定摘要。`processing-preview` 只读取活动索引的摘要，后台新解析缓存与失败重建不能改变旧代预览。空白页被跳过并计数，整份文档没有有效内容则返回 `ocr_required`；非空页无法生成证据、加密或损坏时明确失败。OCR 的字符加权平均置信度低于阈值，或低分字符占比超过 25%，返回 `ocr_low_confidence`，不通过删除低分词掩盖质量问题。引擎禁用、不可执行或任一配置语言包缺失返回 `ocr_unavailable`；超限、超时沿用 `size_limit`、`timeout`。失败保留旧活动索引。
 
 新接口 `GET /api/v1/knowledge-bases/{id}/citations/{chunk_id}/page-image` 根据授权引用定位不可变原始版本，返回 PNG；不接受任意文件路径或任意页号，不重新 OCR 或调用模型。渲染前后复核当前权限及文档状态，响应 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`；引用不可访问/非 PDF 为 404，暂不可渲染为 409，并发满额为 429。页面在检索、引用、对话检索记录和加工结果中提供「查看 PDF 原页」，显示区域高亮；关闭、重新聚焦或权限失效时清理旧图像。
 
@@ -167,10 +165,9 @@ PDF 最多 200 页；单页 OCR 最多 35 秒，整个 PDF 解析最多 120 秒�
 
 手动样例位于 `docs/knowledge-phase2-manual/`，涵盖文字、英文/中文扫描、混合页、表格、双栏及异常文件，共九份 PDF 和操作说明。可运行 `.venv/bin/python -m scripts.generate_knowledge_pdf_fixtures` 重新生成，不连接业务数据库或调用模型；脚本会更新固定说明，人工测试记录请另存。建议先用关键词检索与「保留原文」验证 OCR、原页和失败回退，再配置加工模型验证独立解释。本机补充验收范围、复现修复及可执行回归命令见 `docs/m64-phase2-acceptance-20261113.md`。
 
+### HTML、JSON/YAML 与 PPTX 结构处理（第三阶段）
 
-### HTML、JSON/YAML 与 PPTX 结构处理（第三阶段，2026-11-13）
-
-本阶段新增知识库专用上传路由，普通对话附件的格式范围保持既有规则。文件仍进入私有 Blob 和文档不可变版本，解析子进程按格式提取规范证据，沿用任务租约、预算、发布事务和权限校验；没有新增数据库字段，迁移 head 仍为 `054`。新格式解析指纹为 `structured-formats-v1`，不复用缺少匹配指纹的旧解析。模型解释提示版本更新为 `document-evidence-v3`，后续重建可能重新加工，不自动改写已发布索引或历史引用。
+HTML、JSON/YAML 和 PPTX 使用知识库专用上传路由，普通对话附件的格式范围保持既有规则。文件仍进入私有 Blob 和文档不可变版本，解析子进程按格式提取规范证据，沿用任务租约、预算、发布事务和权限校验；新格式解析指纹为 `structured-formats-v1`，不复用缺少匹配指纹的旧解析。模型解释提示版本更新为 `document-evidence-v3`，后续重建可能重新加工，不自动改写已发布索引或历史引用。
 
 - **HTML**：选择最外层主文区域，避免 main/article 嵌套重复；文章 header 内的标题保留，全局导航/header/footer 和显式隐藏内容排除。段落按原有行内顺序提取，代码保留缩进；完整表格行带上明确的首行 th 表头，合并单元格标记待核对，嵌套表格明确返回 `invalid_structure`。这是静态 HTML 的确定性主文规则，不保证任意网站均能自动识别正文，不读取 URL 或执行页面。
 - **JSON/YAML**：父对象的标量字段按有界批次保存，子对象与数组记录独立，混合数组保持下标次序。路径使用 JSON Pointer；YAML 别名展开后的逻辑路径与原始定义行号分别保留。YAML 布尔隐式类型只识别 true/false，日期和 on/off/yes/no 等文本不隐式转换，不修改其他业务使用的 YAML 规则。重复键、循环别名、合并键、自定义标签、非字符串对象键、多文档 YAML、非法/非有限数值均拒绝；有限、非循环别名支持，但按实际展开量限制。`${VAR}` 等占位符作为文件原值保留，不能从它推断服务器实际配置。
@@ -317,8 +314,8 @@ tail -n 0 -F ~/.ollama/logs/server.log \
 | 1 | `GET /agents`，再 `GET /agents/{agentId}` | 选择已启用的 Agent，读取 `version`、`knowledge_base_ids`、`default_model_id`。默认聊天模型必须通过工具调用能力验证。 |
 | 2 | `PUT /agents/{agentId}` | 传 Agent 的 `expected_version` 和 `knowledge_base_ids`；已关联则跳过。数组替换全部关联，保留其他库时一并传入；这不是知识库的 `expected_revision`。 |
 | 3 | `POST /agents/{agentId}/sessions` | 传 `title`，将响应 `data.id` 保存为 `sessionId`；已有适用会话可复用。 |
-| 4 | `POST /agents/{agentId}/sessions/{sessionId}/runs` | 提交 `input_text`、`request_key`，保存本次响应的运行 `id`。 |
-| 5 | `GET /runs/{runId}`，再 `GET /runs/{runId}/messages` | 等待 `completed` 后读取回答；失败先检查运行详情，不把请求已受理视为已完成。 |
+| 4 | `GET /agents/{agentId}/ag-ui/threads/{sessionId}`，再 `POST /agents/{agentId}/ag-ui` | 在完整公开历史后追加新用户消息，携带新消息 ID、threadId/runId 和会话版本；直接消费 SSE，并保存响应头中的业务运行 ID。 |
+| 5 | AG-UI 流及 `/agents/{agentId}/ag-ui/threads/{sessionId}` | 终态后读取公开回答与交付信息；连接中断则使用 AG-UI 快照恢复，失败核对运行状态，不把请求受理视为完成。 |
 | 6 | `GET /runs/{runId}/knowledge-retrievals` | 查看工具检索交付的 `references`、`hit_count`、`embedding_usage` 与耗时。 |
 | 7 | `GET /knowledge-bases/{id}/citations/{chunkId}` | 按回答引用核对原文及位置；引用 `kb:1:i:2:c:16` 中的片段 ID 为 16。 |
 

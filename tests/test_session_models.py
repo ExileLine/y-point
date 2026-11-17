@@ -5,6 +5,8 @@
 
 """验证会话模型解耦、切换续聊、审批保护、幂等和历史线程隔离。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -127,7 +129,8 @@ async def new_session(client: httpx.AsyncClient, headers: dict) -> tuple[str, di
 
 async def submit(client: httpx.AsyncClient, headers: dict, path: str, key: str, text: str, **kwargs) -> httpx.Response:
     """通过正式提交接口发送带幂等键的输入。"""
-    return await client.post(
+    return await submit_agent_run(
+        client,
         f"{path}/runs",
         headers=headers,
         json={
@@ -193,7 +196,7 @@ def test_switch_preserves_completed_history_and_model_snapshots(tmp_path: Path) 
                     "input_text": "复用旧线程",
                 },
             )
-            assert hijack.status_code == 409
+            assert hijack.status_code == 404
             SessionModel.seen_inputs.clear()
             SessionModel.seen_tool_results.clear()
             response = await submit(client, alice, path, "two", "项目叫什么？", model_id=2)
@@ -203,7 +206,7 @@ def test_switch_preserves_completed_history_and_model_snapshots(tmp_path: Path) 
             assert done.state == RunState.COMPLETED
             assert "记住我的项目叫星河" in SessionModel.seen_inputs and "项目叫什么？" in SessionModel.seen_inputs
             assert not SessionModel.seen_tool_results
-            history = (await client.get(f"{path}/messages", headers=alice)).json()["data"]
+            history = (await read_thread_messages(client, f"{path}/messages", headers=alice)).json()["data"]
             assert len(history) == 4
             assert [item["model_id"] for item in history] == [1, 1, 2, 2]
             assert history[-1]["model_name"] == "Model 2" and history[-1]["provider_name"] == "Provider 2"

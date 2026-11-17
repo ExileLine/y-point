@@ -94,6 +94,7 @@ class AgentRun(CustomBaseModel):
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="检查点线程 ID")
     active_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="未结束运行占用的检查点线程 ID")
     request_key: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="用户提交幂等键")
+    ag_ui_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="标准 AG-UI 请求指定的首轮协议运行 ID")
     state: Mapped[str] = mapped_column(String(32), nullable=False, comment="运行状态")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="并发更新版本号")
     event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="最新事件序号")

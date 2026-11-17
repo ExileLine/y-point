@@ -242,6 +242,14 @@ class RunCallKind(StrEnum):
     MCP = "mcp"
 
 
+class SkillActivityPhase(StrEnum):
+    """由固定技能资源和执行证据确认的公开阶段。"""
+
+    INSTRUCTIONS = "instructions"
+    RESOURCE = "resource"
+    SCRIPT = "script"
+
+
 class RunCallStatus(StrEnum):
     """调用事件确认的执行状态，终态缺失时不推断执行结果。"""
 
@@ -257,6 +265,9 @@ class RunEventType(StrEnum):
     STATE = "state"
     TEXT_DELTA = "text_delta"
     REASONING_DELTA = "reasoning_delta"
+    MODEL_STARTED = "model_started"
+    MODEL_FINISHED = "model_finished"
+    DELIVERY_COMPLETED = "delivery_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     TOOL_FAILED = "tool_failed"
@@ -281,6 +292,7 @@ class RunCallFailure(StrEnum):
     RESPONSE_LIMIT = "response_limit"
     TOOL_CHANGED = "tool_changed"
     EXECUTION_ERROR = "execution_error"
+    RESULT_UNKNOWN = "external_result_unknown"
     INTERRUPTED = "execution_interrupted"
 
 

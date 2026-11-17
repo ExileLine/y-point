@@ -28,6 +28,7 @@ class RunApproval(CustomBaseModel):
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="所属运行 ID")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="审批所属用户 ID")
     checkpoint_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="审批中断对应的检查点 ID")
+    ag_ui_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="审批恢复请求的新 AG-UI 协议运行 ID")
     actions: Mapped[list[dict]] = mapped_column(JSON, nullable=False, comment="待审批工具名与参数摘要列表")
     state: Mapped[str] = mapped_column(String(16), nullable=False, comment="审批状态：pending、approved、rejected、expired 或 cancelled")
     expires_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="审批到期时间")

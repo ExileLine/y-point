@@ -5,6 +5,8 @@
 
 """验证真实 SDK 思考流、持久化回放、调用耗时与历史展示权限。"""
 
+from tests.ag_ui_helpers import read_thread_messages
+
 import asyncio
 import json
 from datetime import timedelta
@@ -335,19 +337,16 @@ def test_session_http_restores_failed_text_from_public_events(tmp_path: Path) ->
             app.dependency_overrides[get_current_admin] = current_actor
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 path = "/api/v1/agents/11/sessions/partial-http/messages"
-                response = await client.get(path)
+                response = await read_thread_messages(client, path)
                 assert response.status_code == 200
                 rows = response.json()["data"]
                 assert len(rows) == 1 and rows[0]["role"] == "user" and rows[0]["content"] == "请审查"
                 assert rows[0]["partial_content"] == "此前公开的分析，尚未完成。"
                 assert rows[0]["run_state"] == RunState.FAILED and rows[0]["failure_code"] == RunModelFailureReason.OUTPUT_LIMIT
-                assert (await client.get(path)).json()["data"][0]["partial_content"] == rows[0]["partial_content"]
-                cursor = {
-                    "after": rows[0]["id"],
-                }
-                assert (await client.get(path, params=cursor)).json()["data"] == []
+                assert (await read_thread_messages(client, path)).json()["data"][0]["partial_content"] == rows[0]["partial_content"]
+                assert (await read_thread_messages(client, path + f"?after={rows[0]['id']}")).json()["data"] == []
                 actor = Admin(id=2, username="other", password="unused")
-                assert (await client.get(path)).status_code == 404
+                assert (await read_thread_messages(client, path)).status_code == 404
         finally:
             app.dependency_overrides.pop(get_db_session, None)
             app.dependency_overrides.pop(get_current_admin, None)

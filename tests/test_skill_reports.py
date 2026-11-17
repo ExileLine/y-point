@@ -5,6 +5,8 @@
 
 """验证模板版本固定、审查附件输入、报告交付契约及私有下载链路。"""
 
+from tests.ag_ui_helpers import read_thread_messages, submit_agent_run
+
 import asyncio
 import io
 import json
@@ -307,7 +309,8 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     },
                 )
                 assert rejected.status_code == 413
-                ordinary = await client.post(
+                ordinary = await submit_agent_run(
+                    client,
                     path + "/runs",
                     headers=owner,
                     json={
@@ -331,11 +334,12 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     "request_key": "review-one",
                     **selection,
                 }
-                submitted = await client.post(path + "/runs", headers=owner, json=draft)
+                submitted = await submit_agent_run(client, path + "/runs", headers=owner, json=draft)
                 assert submitted.status_code == 201, submitted.text
                 run_id = submitted.json()["data"]["id"]
-                assert (await client.post(path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
-                mismatch = await client.post(
+                assert (await submit_agent_run(client, path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
+                mismatch = await submit_agent_run(
+                    client,
                     path + "/runs",
                     headers=owner,
                     json={
@@ -490,8 +494,8 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     assert all(event.failure_code == "invalid_tool_arguments" for event in failed_renders)
                     assert result.tool_call_count == 5
                     assert correction_feedback and selection_feedback
-                assert (await client.post(path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
-                response = await client.get(path + "/messages", headers=owner)
+                assert (await submit_agent_run(client, path + "/runs", headers=owner, json=draft)).json()["data"]["id"] == run_id
+                response = await read_thread_messages(client, path + "/messages", headers=owner)
                 assert response.status_code == 200, response.text
                 messages = [item for item in response.json()["data"] if item["run_id"] == run_id]
                 assert messages[0]["attachments"][0]["artifact_id"] == file_id
@@ -514,7 +518,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     **draft,
                     "request_key": "wrong-report",
                 }
-                submitted = await client.post(path + "/runs", headers=owner, json=next_draft)
+                submitted = await submit_agent_run(client, path + "/runs", headers=owner, json=next_draft)
                 assert submitted.status_code == 201, submitted.text
                 run2 = submitted.json()["data"]["id"]
                 generic = SkillModel(
@@ -566,7 +570,8 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     )
                     assert list(text_events) == []
                 # 模板数据也可来自正文指定的工具，不强制上传附件或指定报告选项。
-                from_tool = await client.post(
+                from_tool = await submit_agent_run(
+                    client,
                     path + "/runs",
                     headers=owner,
                     json={
@@ -649,7 +654,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                 )
                 assert finished.state == "completed", finished.failure_code
                 assert tool_calls == ["func1"]
-                tool_messages = (await client.get(path + "/messages", headers=owner)).json()["data"]
+                tool_messages = (await read_thread_messages(client, path + "/messages", headers=owner)).json()["data"]
                 report_id = tool_messages[-1]["artifacts"][0]["artifact_id"]
                 generated = await client.get(f"/api/v1/artifacts/{report_id}/download", headers=owner)
                 assert generated.status_code == 200
@@ -730,7 +735,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                     "input_text": "请生成详细审查报告",
                     "request_key": "multiple-templates",
                 }
-                multi_created = await client.post(multi_path + "/runs", headers=owner, json=multi_draft)
+                multi_created = await submit_agent_run(client, multi_path + "/runs", headers=owner, json=multi_draft)
                 assert multi_created.status_code == 201, multi_created.text
                 multi_run = multi_created.json()["data"]["id"]
                 # 只替换新版本的 B 模板；运行仍固定 v6 的三个资源。
@@ -832,7 +837,7 @@ def test_template_review_http_worker_download_chain(tmp_path: Path, monkeypatch:
                 )
                 assert multi_result.state == "completed", multi_result.failure_code
                 assert template_feedback and multi_result.tool_call_count == 3
-                report_message = (await client.get(multi_path + "/messages", headers=owner)).json()["data"][-1]
+                report_message = (await read_thread_messages(client, multi_path + "/messages", headers=owner)).json()["data"][-1]
                 assert len(report_message["artifacts"]) == 1
                 selected_report = report_message["artifacts"][0]
                 assert selected_report["template_source"]["template_artifact_id"] == templates["B_template.docx"]["artifact_id"]

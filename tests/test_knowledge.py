@@ -5,6 +5,8 @@
 
 """通过真实 HTTP、原生全文检索和持久化 worker 验证知识库行为。"""
 
+from tests.ag_ui_helpers import submit_agent_run
+
 import asyncio
 import io
 import json
@@ -525,7 +527,8 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
             )
             assert session.status_code == 201
             base = f"/api/v1/agents/{agent_id}/sessions/{session.json()['data']['id']}"
-            submitted = await client.post(
+            submitted = await submit_agent_run(
+                client,
                 f"{base}/runs",
                 headers=bob,
                 json={
@@ -554,7 +557,8 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
                     },
                 )
             ).status_code == 200
-            submitted = await client.post(
+            submitted = await submit_agent_run(
+                client,
                 f"{base}/runs",
                 headers=bob,
                 json={
@@ -597,10 +601,11 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
             assert audit_api.status_code == 200 and audit_api.json()["data"][0]["hit_count"] == 1
             assert "报销机密" not in audit_api.text
             assert (await client.get(f"/api/v1/runs/{run_id}/knowledge-retrievals", headers=alice)).status_code == 404
-            snapshot = (await client.get(f"/api/v1/runs/{run_id}/snapshot", headers=bob)).json()["data"]
-            tool_events = [event for event in snapshot["events"] if event["event_type"].startswith("tool_")]
+            snapshot = (await client.get(f"/api/v1/runs/{run_id}/ag-ui/snapshot", headers=bob)).json()["data"]
+            tool_events = [frame["event"] for frame in snapshot["events"] if frame["event"]["type"].startswith("TOOL_CALL_")]
             assert tool_events and "报销机密" not in json.dumps(tool_events, ensure_ascii=False)
-            pending = await client.post(
+            pending = await submit_agent_run(
+                client,
                 f"{base}/runs",
                 headers=bob,
                 json={
@@ -611,7 +616,7 @@ def test_agent_shared_permissions_run_snapshot_and_retrieval_audit(tmp_path, mon
             assert pending.status_code == 201
             pending_id = pending.json()["data"]["id"]
             assert (await client.delete(f"/api/v1/knowledge-bases/{kb['id']}/shares/2", headers=alice)).status_code == 200
-            snapshot = (await client.get(f"/api/v1/runs/{pending_id}/snapshot", headers=bob)).json()["data"]
+            snapshot = (await client.get(f"/api/v1/runs/{pending_id}/ag-ui/snapshot", headers=bob)).json()["data"]
             assert snapshot["run"]["state"] == "cancelled"
 
     asyncio.run(exercise())
@@ -680,7 +685,8 @@ def test_knowledge_no_hit_timeout_does_not_poison_following_turn(tmp_path, monke
 
             async def submit(text: str, key: str) -> str:
                 """用独立幂等键提交同一会话的新轮次。"""
-                response = await client.post(
+                response = await submit_agent_run(
+                    client,
                     f"{base}/runs",
                     headers=owner,
                     json={
