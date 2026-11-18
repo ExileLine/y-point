@@ -6,9 +6,23 @@
 
 ## 文件存储
 
-`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、单文件上限由 `ARTIFACT_UPLOAD_MAX_BYTES` 配置（默认 20 MiB）。支持 UTF-8 TXT/Markdown、PDF、DOCX、XLSX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
+`POST /api/v1/artifacts/uploads` 使用 Bearer 和重复的 `multipart/form-data` 字段 `files`，每批 1 至 5 个文件、单文件上限由 `ARTIFACT_UPLOAD_MAX_BYTES` 配置（默认 20 MiB）。支持 UTF-8 TXT/Markdown、PDF、DOCX、XLSX、PPTX、PNG 和 JPEG；图片另限 2 MiB、2048×2048 像素，并检查实际编码、完整解码和 PNG 结束块。上传响应返回文件 ID、名称、MIME、大小和 SHA-256，不返回私有存储键。`GET /api/v1/artifacts/{artifact_id}` 查询元数据，`GET /api/v1/artifacts/{artifact_id}/download` 下载，`DELETE /api/v1/artifacts/{artifact_id}` 撤销访问；每次都重新检查所有权、状态和期限，跨用户按不存在处理。
 
 默认文件正文位于 Git 忽略的 `.run-private/artifacts`，可通过 `ARTIFACT_STORAGE_DIR` 指向私有目录；元数据位于 `yp_artifact`。设置 `ARTIFACT_STORAGE_BACKEND=s3`、`ARTIFACT_S3_BUCKET` 及对应的 endpoint、region、凭据后可使用私有 S3 兼容桶；`ARTIFACT_STORAGE_DIR` 此时仍用于临时校验文件。切换存储后端不会自动迁移已有正文。停写并备份后可用 `uv run python -m app.cli.migrate_artifacts_to_s3` 复制和校验现有文件，再让 API 与 worker 同时切换配置。上传配额由 `ARTIFACT_OWNER_MAX_BYTES` 和 `ARTIFACT_OWNER_MAX_FILES` 控制；部署时应配置代理上传上限、恶意软件扫描与备份/孤儿文件清理策略。
+
+## 对话中的 PowerPoint 演示文稿
+
+会话支持上传 `.pptx` 并勾选「供模型读取」。服务端按实际幻灯片顺序提取可见文字、表格行列和演讲者备注，保留页码与标题，明确区分正文和备注；隐藏页、隐藏对象不进入模型上下文。图片、图表、动画和嵌入对象不作语义识别，不加载外链或执行宏。当前只支持 `.pptx`，不接受旧二进制 `.ppt` 或宏格式 `.pptm`；空文件、损坏文件、超出解析及上下文预算的文件会明确报错。解析最多 200 页，提取内容和元数据仍受本轮附件总预算约束。
+
+具备已验证工具调用能力的模型可通过内置 `create_presentation_artifact` 生成真实、可编辑的 `.pptx`，无需开启脚本沙箱。工具接收文件名及按页排列的 `slides`，每页包含 `title` 和可选 `content`、`bullets`、`table`、`notes`，使用 16:9 版式、中文文字和可编辑表格；备注保存到 PowerPoint 备注区。最多 50 页、正文及结构总量 100000 字符，表格最多 6 列、10 行；单页内容过密时要求模型拆页或把说明放入备注，不静默裁掉内容。
+
+例如，让 Agent 执行：
+
+> 阅读附件中的 PPTX，总结为五页季度汇报，生成可下载的 .pptx，包含经营数据表格和每页演讲者备注。
+
+用户明确要求 PPT、PPTX、PowerPoint 或演示文稿时，运行交付校验要求实际 `.pptx` 产物；DOCX、大纲或代码块不能替代。模型首次未生成时，在现有预算允许的情况下进行一次内部纠正；最终仍缺失时返回 `artifact_required`。文件沿用既有暂存、租约、完成事务、来源记录及授权下载流程；后续轮次可通过同会话产物读取工具提取内容后生成新版，不保证复刻原文件的视觉版式。
+
+生成文件卡片的「预览」按页展示文字、表格行列和单独标记的演讲者备注。预览最多 20 个有可提取内容的可见页，共享 100000 字符预算，超出时提示截断；它是隔离的只读内容预览，图片、图表、动画与原始版式请下载后使用 PowerPoint 或兼容软件查看。预览和下载每次重新授权，不生成公开文件链接。
 
 ### 开发环境文件盘点与手动清理
 

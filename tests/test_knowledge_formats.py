@@ -133,7 +133,7 @@ def test_yaml_alias_expansion_is_bounded() -> None:
     assert error.value.code == KnowledgeFailure.SIZE_LIMIT
 
 
-@pytest.mark.parametrize("filename", ["policy.html", "policy.json", "policy.yaml", "policy.pptx"])
+@pytest.mark.parametrize("filename", ["policy.html", "policy.json", "policy.yaml"])
 def test_new_formats_are_knowledge_uploads_only(tmp_path, format_files, filename: str) -> None:
     """扩展知识文件不会开放普通聊天附件，Office 仍验证容器和宏限制。"""
     path = tmp_path / filename

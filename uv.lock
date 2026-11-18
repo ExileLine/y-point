@@ -3716,6 +3716,7 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "python-docx" },
     { name = "python-multipart" },
+    { name = "python-pptx" },
     { name = "pytz" },
     { name = "pyyaml" },
     { name = "redis" },
@@ -3728,7 +3729,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
-    { name = "python-pptx" },
 ]
 
 [package.metadata]
@@ -3771,6 +3771,7 @@ requires-dist = [
     { name = "python-dateutil", specifier = ">=2.9.0.post0" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
+    { name = "python-pptx", specifier = ">=1.0.2,<2" },
     { name = "pytz", specifier = ">=2024.1" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "redis", specifier = ">=5.0.8" },
@@ -3781,10 +3782,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.3.2" },
-    { name = "python-pptx", specifier = ">=1.0,<2" },
-]
+dev = [{ name = "pytest", specifier = ">=8.3.2" }]
 
 [[package]]
 name = "zstandard"

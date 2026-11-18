@@ -12,11 +12,13 @@ _ACTION = re.compile(
     re.I,
 )
 _NOT_REQUEST = re.compile(r"(?:不要|不用|不必|无需|别|请勿|如何|怎么|怎样|为什么|是否|能否)(?:帮我|为我|给我)?\s*$", re.I)
-_FORMAT = re.compile("(?<![a-z])\\.?((?:docx|xlsx|pdf|txt|md|html|json|csv))(?![a-z])|(?<![a-z])(?:Word|Excel|Markdown)(?![a-z])", re.I)
+_FORMAT = re.compile("(?<![a-z])\\.?((?:docx|xlsx|pptx|ppt|pdf|txt|md|html|json|csv))(?![a-z])|(?<![a-z])(?:Word|Excel|Markdown|PowerPoint)(?![a-z])", re.I)
 _FILE = re.compile(r"文件|文档|表格|报告|下载|附件|file|document|spreadsheet|report", re.I)
 _CLAUSE_END = re.compile(r"[，。！？；\n!?;]")
 _ALIASES = {
     "word": ".docx",
+    "ppt": ".pptx",
+    "powerpoint": ".pptx",
     "excel": ".xlsx",
     "markdown": ".md",
 }
@@ -38,6 +40,8 @@ def requested_artifact_suffixes(text: str) -> frozenset[str] | None:
             for found in formats:
                 label = (found.group(1) or found.group(0)).lower()
                 suffixes.add(_ALIASES.get(label, "." + label))
+        elif re.search("演示文稿|幻灯片", tail):
+            suffixes.add(".pptx")
         elif _FILE.search(tail):
             generic_file = True
     if suffixes:

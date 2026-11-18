@@ -36,7 +36,7 @@ from app.models.artifact import Artifact
 from app.models.artifact_source import ArtifactSource
 from app.models.base import shanghai_now
 from app.models.run_artifact_read import RunArtifactRead
-from app.services.knowledge_formats import KNOWLEDGE_EXTRA_MEDIA_TYPES
+from app.services.knowledge_formats import KNOWLEDGE_EXTRA_MEDIA_TYPES, PPTX_MEDIA_TYPE
 from app.services.private_blob_store import delete_blob, old_blob_batches, store_blob, using_s3
 
 MAX_FILES = 5
@@ -56,6 +56,7 @@ MEDIA_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": PPTX_MEDIA_TYPE,
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",

@@ -29,6 +29,14 @@ from app.services.artifact_intent import requested_artifact_suffixes
         ("请给我一份 DOCX 文件", frozenset({".docx"})),
         ("把这份 PDF 转换为 Word 文档", frozenset({".docx"})),
         ("不要输出为 PDF，只给文字", None),
+        ("根据附件生成一个 .pptx 文件", frozenset({".pptx"})),
+        ("制作一份 PPT 汇报", frozenset({".pptx"})),
+        ("Create a PowerPoint presentation", frozenset({".pptx"})),
+        ("把 DOCX 转换成 PPTX", frozenset({".pptx"})),
+        ("整理成五页幻灯片", frozenset({".pptx"})),
+        ("制作演示文稿", frozenset({".pptx"})),
+        ("请阅读 PPTX 并总结", None),
+        ("不用生成 PPT 文件", None),
     ],
 )
 def test_requested_artifact_suffixes(text: str, expected: frozenset[str] | None) -> None:

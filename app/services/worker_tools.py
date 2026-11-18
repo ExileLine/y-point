@@ -35,6 +35,7 @@ from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
 from app.models.tool import RunTool
 from app.services.attachment_text import GENERATED_CONTEXT_MEDIA_TYPES, extract_context_text
+from app.services.presentation_artifacts import ArtifactSlide, render_presentation_artifact
 from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact, render_text_artifact
 from app.services.artifact_store import artifact_read_max_bytes, artifact_root, stage_generated_artifact, storage_path
 from app.services.private_blob_store import read_blob, using_s3
@@ -331,6 +332,37 @@ def _create_spreadsheet_artifact(context: ToolContext) -> BaseTool:
     return create_spreadsheet_artifact
 
 
+def _create_presentation_artifact(context: ToolContext) -> BaseTool:
+    """构建复用运行租约、暂存及发布流程的 PPTX 生成工具。"""
+
+    @tool
+    async def create_presentation_artifact(filename: str, slides: list[ArtifactSlide]) -> str:
+        """生成真实可编辑的 .pptx 演示文稿，无需脚本沙箱。
+
+        slides 按顺序包含 title、可选 content、bullets、table 和 notes；最多五十页，单页过长应拆分。
+        用户要求 PPT/PPTX/PowerPoint 时使用此工具，不用 DOCX 替代。
+        """
+        if not filename.lower().endswith(".pptx"):
+            raise ToolException("演示文稿工具仅支持 .pptx，请使用正确的扩展名")
+        async with context.sessions() as db:
+            await context.require_active(db, enabled=lambda run: run.model_id is not None)
+        try:
+            data = await asyncio.to_thread(render_presentation_artifact, slides)
+        except ValueError as exc:
+            raise ToolException(str(exc)) from None
+        artifact = await stage_generated_artifact(context.sessions, context.run_id, context.owner_id, context.lease_token, filename, data, artifact_root())
+        return json.dumps(
+            {
+                "artifact_id": artifact.id,
+                "filename": artifact.filename,
+            },
+            ensure_ascii=False,
+        )
+
+    create_presentation_artifact.handle_tool_error = True
+    return create_presentation_artifact
+
+
 def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> ToolResolver:
     """装载本次 Run 启用的工具，并在执行时复核当前授权。"""
 
@@ -393,6 +425,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 ("create_text_artifact", _create_text_artifact),
                 ("create_document_artifact", _create_document_artifact),
                 ("create_spreadsheet_artifact", _create_spreadsheet_artifact),
+                ("create_presentation_artifact", _create_presentation_artifact),
             ):
                 registry.register(
                     ToolSpec(

@@ -25,7 +25,7 @@ function htmlDocument(content: string): string {
   // 内容仍置于无权限沙箱，CSP 禁止脚本、外部资源、表单及嵌套框架。
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-src 'none'">
-<style>body{margin:24px;color:#182230;font:16px/1.75 system-ui,sans-serif;overflow-wrap:anywhere}h1,h2,h3{line-height:1.4}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}table{border-collapse:collapse;display:block;max-width:100%;overflow:auto}td,th{border:1px solid #d0d5dd;padding:8px;white-space:pre-wrap}a{color:inherit}blockquote{border-left:3px solid #d0d5dd;margin:16px 0;padding-left:16px}</style></head><body>${content}</body></html>`;
+<style>body{margin:24px;color:#182230;font:16px/1.75 system-ui,sans-serif;overflow-wrap:anywhere}h1,h2,h3{line-height:1.4}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}table{border-collapse:collapse;display:block;max-width:100%;overflow:auto}td,th{border:1px solid #d0d5dd;padding:8px;white-space:pre-wrap}a{color:inherit}.presentation-slide{box-sizing:border-box;margin:0 0 24px;padding:24px;border:1px solid #d0d5dd;border-radius:12px;background:#f6f8fc}.presentation-slide h2{margin-top:0;color:#143e70}.presentation-slide h3{margin-top:24px;border-top:1px solid #d0d5dd;padding-top:16px;color:#66758a}blockquote{border-left:3px solid #d0d5dd;margin:16px 0;padding-left:16px}</style></head><body>${content}</body></html>`;
 }
 
 export function PreviewContent({ preview }: { preview: Preview }) {

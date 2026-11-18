@@ -18,8 +18,10 @@ from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
-from app.core.enums import ArtifactPreviewKind
+from app.core.enums import ArtifactPreviewKind, KnowledgeContentRole
 from app.schemas.artifact import ArtifactPreviewOut, ArtifactPreviewSheet
+from app.services.knowledge_formats import PPTX_MEDIA_TYPE
+from app.services.knowledge_slides import parse_pptx_knowledge
 
 MAX_PREVIEW_CHARS = 100_000
 MAX_PREVIEW_ROWS = 200
@@ -30,7 +32,7 @@ MAX_PREVIEW_PAGES = 20
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 PREVIEW_MEDIA_TYPES = frozenset(
-    {"text/plain", "text/markdown", "text/html", "text/csv", "application/json", "application/pdf", DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE},
+    {"text/plain", "text/markdown", "text/html", "text/csv", "application/json", "application/pdf", DOCX_MEDIA_TYPE, XLSX_MEDIA_TYPE, PPTX_MEDIA_TYPE},
 )
 HTML_TAGS = frozenset(
     {
@@ -159,6 +161,40 @@ def _pdf_html(content: bytes, budget: _PreviewBudget) -> str:
     return "".join(parts)
 
 
+def _presentation_html(content: bytes, budget: _PreviewBudget) -> str:
+    """按幻灯片顺序生成隔离内容卡片，明确标记演讲者备注并转义全部文字。"""
+    _check_office(content)
+    parsed = parse_pptx_knowledge(content)
+    pages: dict[int, list[dict]] = {}
+    for block in parsed.blocks:
+        pages.setdefault(block["page"], []).append(block)
+    if len(pages) > MAX_PREVIEW_PAGES:
+        budget.truncated = True
+    parts = []
+    for page, blocks in list(pages.items())[:MAX_PREVIEW_PAGES]:
+        if budget.remaining <= 0:
+            budget.truncated = True
+            break
+        title = blocks[0]["source_locator"]["slide_title"]
+        parts.append(f'<section class="presentation-slide"><h2>{html.escape(budget.take(f"第 {page} 页 · {title}"))}</h2>')
+        notes = False
+        for block in blocks:
+            if budget.remaining <= 0:
+                budget.truncated = True
+                break
+            role = block["source_locator"]["role"]
+            if role == KnowledgeContentRole.NOTES and not notes:
+                parts.append("<h3>演讲者备注</h3>")
+                notes = True
+            # 页标题已经展示，正文和表格保留来源中的完整阅读顺序。
+            if role == KnowledgeContentRole.HEADING:
+                continue
+            value = html.escape(budget.take(parsed.text[block["start"] : block["end"]]))
+            parts.append(f"<pre>{value}</pre>")
+        parts.append("</section>")
+    return "".join(parts)
+
+
 def build_artifact_preview(artifact_id: str, filename: str, media_type: str, content: bytes) -> ArtifactPreviewOut:
     """根据已核验媒体类型生成预览，调用方先完成文件授权和有界读取。"""
     if media_type not in PREVIEW_MEDIA_TYPES:
@@ -169,6 +205,10 @@ def build_artifact_preview(artifact_id: str, filename: str, media_type: str, con
         result.kind = ArtifactPreviewKind.HTML
         result.content = _document_html(content, budget)
         result.notice = "DOCX 内容预览保留正文与表格；图片、页眉页脚及精细版式请下载原件查看。"
+    elif media_type == PPTX_MEDIA_TYPE:
+        result.kind = ArtifactPreviewKind.HTML
+        result.content = _presentation_html(content, budget)
+        result.notice = "PPTX 按页展示可见文字、表格行列和演讲者备注；隐藏页与隐藏对象不展示。图片、图表、动画及原始版式请下载原件查看。"
     elif media_type == "application/pdf":
         result.kind = ArtifactPreviewKind.HTML
         result.content = _pdf_html(content, budget)

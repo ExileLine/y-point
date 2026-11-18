@@ -16,6 +16,8 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from app.core.config import get_config
+from app.services.knowledge_formats import PPTX_MEDIA_TYPE
+from app.services.knowledge_slides import parse_pptx_knowledge
 
 
 def context_max_bytes() -> int:
@@ -28,6 +30,7 @@ CONTEXT_MEDIA_TYPES = frozenset(
         "text/plain",
         "text/markdown",
         "application/pdf",
+        PPTX_MEDIA_TYPE,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     },
@@ -89,6 +92,22 @@ def extract_context_text(content: bytes, media_type: str) -> str:
         parser = _HTMLText()
         parser.feed(content.decode("utf-8"))
         return _bounded_text("".join(parser.lines).splitlines())
+    if media_type == PPTX_MEDIA_TYPE:
+        parsed = parse_pptx_knowledge(content)
+
+        def slide_lines():
+            """按页码和正文、备注身份标记可见文字，保留表格的行列标签。"""
+            yield "PPTX 内容提取：按对象顺序读取可见页；图片、图表及嵌入对象未作语义识别。"
+            if parsed.metadata.get("hidden_slides"):
+                yield "隐藏幻灯片已排除。"
+            heading = None
+            for block in parsed.blocks:
+                if block["heading"] != heading:
+                    heading = block["heading"]
+                    yield heading
+                yield from parsed.text[block["start"] : block["end"]].splitlines()
+
+        return _bounded_text(slide_lines())
     if media_type == "application/pdf":
         try:
             reader = PdfReader(io.BytesIO(content), strict=True)

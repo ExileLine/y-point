@@ -235,7 +235,8 @@ class DeepAgentsRuntimeAdapter:
             system_prompt += (
                 "\n当用户要求生成可下载的文件时，按扩展名调用对应工具："
                 "TXT/Markdown/HTML/JSON/CSV 使用 create_text_artifact，DOCX/PDF 使用 create_document_artifact，"
-                "XLSX 使用 create_spreadsheet_artifact。工具成功后再回复用户。"
+                "XLSX 使用 create_spreadsheet_artifact，PPT/PPTX/PowerPoint 演示文稿使用 create_presentation_artifact。"
+                "要求 PPTX 时必须交付真实 .pptx，不能用 DOCX、大纲或代码替代。工具成功后再回复用户。"
                 "Markdown 代码块不能代替文件产物。"
             )
         if "render_skill_document" in config.tool_names:

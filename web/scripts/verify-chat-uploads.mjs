@@ -31,7 +31,8 @@ try {
       if (path.endsWith('/artifacts/uploads')) {
         uploads.push(request.postDataBuffer());
         if (uploadFail) return send(null, 400, '测试上传失败');
-        return send([{ id: 'uploaded-file', filename: '待审合同.txt', media_type: 'text/plain', byte_size: 32 }], 201);
+        const isPptx = request.postDataBuffer().includes(Buffer.from('.pptx'));
+        return send([{ id: 'uploaded-file', filename: isPptx ? '季度汇报.pptx' : '待审合同.txt', media_type: isPptx ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation' : 'text/plain', byte_size: 32 }], 201);
       }
       if (path.endsWith('/attachments/check')) {
         preflights.push(request.postDataJSON());
@@ -57,15 +58,17 @@ try {
     await page.getByRole('textbox', { name: '消息内容' }).fill('请审查附件并按模板生成报告');
     assert.equal(await page.getByRole('combobox', { name: '指定报告 Skill' }).count(), 0, '对话不提供报告 Skill 选择，由模型按任务读取 Skill'); checks++;
     const input = page.locator('.chat-attachments input[type=file]');
-    await input.setInputFiles({ name: '待审合同.txt', mimeType: 'text/plain', buffer: Buffer.from('合同正文：15个工作日内报销') });
+    assert.ok((await input.getAttribute('accept')).includes('.pptx')); checks++;
+    await input.setInputFiles({ name: '季度汇报.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', buffer: Buffer.from('PPTX browser fixture; parsing is covered by backend tests') });
     await page.getByText('测试上传失败', { exact: false }).waitFor();
     assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isDisabled(), true); checks++;
     await page.getByRole('textbox', { name: '消息内容' }).press('Enter');
     assert.equal(submissions.length, 0, '附件上传失败时按回车不能提交'); checks++;
     uploadFail = false;
-    await page.getByRole('button', { name: '重试上传 待审合同.txt' }).click();
+    await page.getByRole('button', { name: '重试上传 季度汇报.pptx' }).click();
     await page.getByText('上传完成', { exact: false }).waitFor();
     assert.equal(uploads.length, 2); checks++;
+    await page.getByText('PPTX 提取可见页文字、表格和演讲者备注', { exact: false }).waitFor(); checks++;
     await input.setInputFiles(Array.from({ length: 5 }, (_, index) => ({ name: `附件${index + 2}.txt`, mimeType: 'text/plain', buffer: Buffer.from('小型参考材料') })));
     await page.waitForFunction(() => document.querySelectorAll('.chat-file').length === 5 && [...document.querySelectorAll('.chat-file small')].every(item => item.textContent.includes('上传完成')));
     assert.equal(uploads.length, 6); checks++;
@@ -99,7 +102,7 @@ try {
     assert.deepEqual(first.forwardedProps.context_artifact_ids, ['uploaded-file']); checks++;
     submitFail = false;
     await page.getByRole('button', { name: '重试提交' }).click();
-    await page.getByText('待审合同.txt', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByText('季度汇报.pptx', { exact: true }).waitFor({ state: 'hidden' });
     assert.deepEqual(submissions[1], first); checks++;
     assert.equal(await page.getByRole('textbox', { name: '消息内容' }).inputValue(), ''); checks++;
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false); checks++;

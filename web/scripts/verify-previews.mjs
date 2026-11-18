@@ -11,6 +11,7 @@ const entries = [
   ['json', '数据.json', 'text', '{\n  "amount": 100\n}'],
   ['html', '页面.html', 'html', '<h1>HTML 报告</h1><p>可阅读正文</p><script>window.parent.previewInjected=true</script><img src="https://preview-remote.example/track">'],
   ['docx', '文档.docx', 'html', '<h1>Word 报告</h1><p>正文段落</p><table><tr><td>金额</td><td>100</td></tr></table>'],
+  ['pptx', '季度汇报.pptx', 'html', '<section class="presentation-slide"><h2>第 1 页 · 季度汇报</h2><pre>营收增长</pre><h3>演讲者备注</h3><pre>关键结论</pre></section><section class="presentation-slide"><h2>第 2 页 · 数据明细</h2><pre>表1；行1；列1=营收；列2=120万元</pre></section>'],
   ['pdf', '报告.pdf', 'html', '<h2>第 1 页</h2><pre>PDF 文字内容</pre>'],
   ['xlsx', '统计.xlsx', 'sheets', ''], ['csv', '统计.csv', 'sheets', ''],
   ['large', '长文档.txt', 'text', '有界的部分内容'], ['retry', '重试.md', 'markdown', '# 重试成功'],
@@ -64,7 +65,7 @@ try {
         if (id === 'expired' && request.headers().authorization === 'Bearer fixture') return send('登录已过期', 401);
         if (id === 'slow') { slowSeen(); await slowGate; }
         const [, filename, kind, content] = item;
-        return send({ artifact_id: id, filename, media_type: 'fixture', kind, content, truncated: id === 'large', notice: ['docx', 'pdf'].includes(id) ? '内容预览不保留原文件的完整排版。' : null,
+        return send({ artifact_id: id, filename, media_type: 'fixture', kind, content, truncated: id === 'large', notice: id === 'pptx' ? 'PPTX 按页展示可见文字、表格行列和演讲者备注；图片、图表、动画及原始版式请下载原件查看。' : ['docx', 'pdf'].includes(id) ? '内容预览不保留原文件的完整排版。' : null,
           sheets: kind === 'sheets' ? [{ name: '统计', rows: [['月份', '金额'], ['十一月', '100'], ['公式', '=1+1'], ['文本', '<script>不可执行</script>']] }, ...(id === 'xlsx' ? [{ name: '备注', rows: [['第二个工作表']] }] : [])] : [] });
       }
       unexpected.push(path); return send('未定义的测试接口', 404);
@@ -77,14 +78,22 @@ try {
     const open = async filename => { await generated.getByRole('button', { name: `预览 ${filename}`, exact: true }).click(); await page.getByRole('dialog', { name: '文件预览', exact: true }).waitFor(); };
     const drawer = () => page.getByRole('dialog', { name: '文件预览', exact: true });
     const close = async () => { await drawer().getByRole('button', { name: 'Close', exact: true }).click(); await drawer().waitFor({ state: 'hidden' }); };
-    for (const [id, filename, kind, content] of entries.slice(0, 9)) {
+    for (const [id, filename, kind, content] of entries.slice(0, 10)) {
       await open(filename);
       await drawer().getByText('正在加载预览…', { exact: true }).waitFor({ state: 'hidden' });
       if (kind === 'html') {
         const frame = page.frameLocator('.artifact-preview-html');
-        await frame.locator('body').getByText(id === 'html' ? 'HTML 报告' : id === 'docx' ? 'Word 报告' : '第 1 页', { exact: true }).waitFor();
+        await frame.locator('body').getByText(id === 'html' ? 'HTML 报告' : id === 'docx' ? 'Word 报告' : id === 'pptx' ? '第 1 页 · 季度汇报' : '第 1 页', { exact: true }).waitFor();
         assert.equal(await drawer().locator('iframe').getAttribute('sandbox'), ''); checks++;
         assert.ok((await frame.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content')).includes("default-src 'none'")); checks++;
+        if (id === 'pptx') {
+          assert.equal(await frame.locator('.presentation-slide').count(), 2); checks++;
+          await frame.getByRole('heading', { name: '演讲者备注', exact: true }).waitFor();
+          await frame.getByText('120万元', { exact: false }).waitFor(); checks++;
+          assert.equal(await frame.locator('body').evaluate(element => element.scrollWidth <= innerWidth), true); checks++;
+          await frame.locator('h2').first().scrollIntoViewIfNeeded();
+          await page.screenshot({ path: screenshotPath(`y-point-preview-pptx-${layout}.png`), animations: 'disabled' });
+        }
       } else if (kind === 'sheets') {
         await drawer().getByRole('cell', { name: '十一月', exact: true }).waitFor();
         assert.equal(await drawer().getByRole('cell', { name: '=1+1', exact: true }).count(), 1); checks++;

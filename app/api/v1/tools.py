@@ -44,6 +44,7 @@ BUILTIN_TOOLS = (
     ("create_text_artifact", "生成文本文件"),
     ("create_document_artifact", "生成 DOCX 或 PDF"),
     ("create_spreadsheet_artifact", "生成 XLSX"),
+    ("create_presentation_artifact", "生成 PPTX 演示文稿"),
 )
 
 

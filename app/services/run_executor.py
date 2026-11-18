@@ -744,6 +744,7 @@ def _artifact_retry_tools_available(suffixes: frozenset[str], tools: list[BaseTo
         ".docx": "create_document_artifact",
         ".pdf": "create_document_artifact",
         ".xlsx": "create_spreadsheet_artifact",
+        ".pptx": "create_presentation_artifact",
     }
     available = {tool.name for tool in tools}
     if not suffixes:

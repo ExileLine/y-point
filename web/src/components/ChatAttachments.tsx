@@ -6,7 +6,7 @@ import { createClientId } from "../browser-compat";
 import { formatMiB, useRuntimeLimits } from "../runtime-limits";
 
 export type ChatFile = { key: string; file: File; state: "uploading" | "ready" | "failed"; started?: boolean; artifact?: UploadedArtifact; context: boolean; error?: string };
-const contextTypes = new Set(["text/plain", "text/markdown", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "image/png", "image/jpeg"]);
+const contextTypes = new Set(["text/plain", "text/markdown", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "image/png", "image/jpeg"]);
 
 export default function ChatAttachments({ items, onChange, disabled }: {
   items: ChatFile[]; onChange: (update: (items: ChatFile[]) => ChatFile[]) => void; disabled: boolean;
@@ -23,7 +23,7 @@ export default function ChatAttachments({ items, onChange, disabled }: {
   }
   return <div className="chat-attachments">
     {limitsError && <Alert type="error" showIcon message={`附件限制加载失败：${limitsError}`} action={<Button size="small" onClick={retry}>重试</Button>} />}
-    <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled || !limits}
+    <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled || !limits}
       beforeUpload={(file, batch) => {
         if (!limits) return false;
         if (items.length + batch.indexOf(file) >= limits.max_files) { if (items.length + batch.indexOf(file) === limits.max_files) message.warning(`本轮最多附加 ${limits.max_files} 个文件`); return false; }
@@ -44,7 +44,7 @@ export default function ChatAttachments({ items, onChange, disabled }: {
         contextTypes.has(item.artifact?.media_type || "") ? <Checkbox checked={item.context} disabled={disabled} onChange={event => onChange(current => current.map(entry => entry.key === item.key ? { ...entry, context: event.target.checked } : entry))}>供模型读取</Checkbox> : <Tag>仅附加</Tag>}
       <Tooltip title="移除附件"><Button type="text" aria-label={`移除 ${item.file.name}`} icon={<X size={16} />} disabled={disabled} onClick={() => onChange(current => current.filter(entry => entry.key !== item.key))} /></Tooltip>
     </div>)}</div>
-    {items.length > 0 && <p className="chat-file-notice">文本提取合计上限：{limits ? formatMiB(limits.context_max_bytes) : "加载中…"}；图片需要视觉模型。文件仅供本轮读取，长文档请拆分或导入知识库。</p>}
+    {items.length > 0 && <p className="chat-file-notice">文本提取合计上限：{limits ? formatMiB(limits.context_max_bytes) : "加载中…"}；PPTX 提取可见页文字、表格和演讲者备注，不识别图片、图表；图片需要视觉模型。文件仅供本轮读取，长文档请拆分或导入知识库。</p>}
   </div>;
 }
 

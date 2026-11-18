@@ -88,6 +88,7 @@ def test_text_artifact_tool_rechecks_authorization(tmp_path: Path, monkeypatch: 
                 "create_text_artifact",
                 "create_document_artifact",
                 "create_spreadsheet_artifact",
+                "create_presentation_artifact",
             }
             list_tool, read_tool = (next(item for item in tools if item.name == name) for name in ("list_text_artifacts", "read_text_artifact"))
             assert json.loads(await list_tool.ainvoke({})) == [

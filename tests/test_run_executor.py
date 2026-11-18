@@ -3428,6 +3428,20 @@ def test_model_created_text_file_is_published_with_assistant_message(tmp_path: P
             },
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ),
+        (
+            "create_presentation_artifact",
+            "汇报.pptx",
+            {
+                "slides": [
+                    {
+                        "title": "项目概览",
+                        "bullets": ["已支持真实演示文稿"],
+                        "notes": "演讲者备注",
+                    },
+                ],
+            },
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
     ],
 )
 def test_model_created_office_file_is_published_with_assistant_message(

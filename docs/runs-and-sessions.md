@@ -28,16 +28,17 @@ Worker 从业务库领取排队 Run，并在有效租约内调用 DeepAgents。�
 
 内部领域事件 `tool_started`、`tool_completed`、`tool_failed` 保存关联 ID、授权名称、固定技能阶段及受控公开摘要，经 AG-UI 适配器投影为工具跨度、脱敏结果与执行活动，不把原始参数、结果、异常正文或文件内容塞进 SSE。文本文件读取工具只有在 Run 开启且模型工具能力已验证时才可用；`list_text_artifacts` 返回授权文件摘要，`read_text_artifact` 需要所有者审批，执行时再次检查文件和权限。具备工具能力的模型可自行调用生成工具，无需前端传 `publish_answer_artifact`；生成文件先暂存，Run 完成时与助手消息一同发布并写入 `artifact_published`。审批展示使用 `GET /api/v1/runs/{run_id}/approval`，决定通过 `POST /api/v1/agents/{agent_id}/ag-ui` 的 `resume` 提交；拒绝会取消 Run，同意只保存决定，worker 才会根据检查点恢复执行。产物也可用 `GET /api/v1/artifacts?run_id={run_id}` 查询，下载仍走授权文件接口。
 
-具备已验证工具能力的模型还可调用 `list_session_artifacts` 查看本会话最近已发布产物的 ID、名称和类型，再用 `read_generated_artifact` 按指定 ID 读取文本。本轮选入上下文的用户上传附件已在消息的“参考文件内容”中提供，直接使用该正文；上传附件 ID 不适用于此工具。读取 ID 不属于当前可读生成产物（包括跨会话、已删除或过期）时，返回 `status=error`、`error=generated_artifact_unavailable` 的可修正提示，模型可继续使用已有附件正文或重新列出可用产物；拒绝读取不登记产物来源，不泄漏目标文件是否存在或其正文。授权失效和文件损坏等实际读取故障仍按原流程处理。读取时再次核对当前 Run 租约、用户、会话、产物状态、期限、大小和 SHA-256；TXT、Markdown、HTML、JSON、CSV、PDF、DOCX、XLSX 的可提取文本单次最多 20 MiB。HTML 只提取可见文本；扫描 PDF、复杂嵌入对象及超限文件不能据此完整续编辑。工具结果属于模型内部上下文，不写入公开消息或 SSE，但可能保留在检查点中；删除源文件不会自动清除已有检查点内容。模型仅在判断需要时调用工具，多个候选文件时应先确认目标；服务端不会在每轮自动读取所有产物。依次列出、读取、回答通常至少需要 3 次模型调用和 2 次工具调用；再生成新版文件还需预留额外预算。
+具备已验证工具能力的模型还可调用 `list_session_artifacts` 查看本会话最近已发布产物的 ID、名称和类型，再用 `read_generated_artifact` 按指定 ID 读取文本。本轮选入上下文的用户上传附件已在消息的“参考文件内容”中提供，直接使用该正文；上传附件 ID 不适用于此工具。读取 ID 不属于当前可读生成产物（包括跨会话、已删除或过期）时，返回 `status=error`、`error=generated_artifact_unavailable` 的可修正提示，模型可继续使用已有附件正文或重新列出可用产物；拒绝读取不登记产物来源，不泄漏目标文件是否存在或其正文。授权失效和文件损坏等实际读取故障仍按原流程处理。读取时再次核对当前 Run 租约、用户、会话、产物状态、期限、大小和 SHA-256；TXT、Markdown、HTML、JSON、CSV、PDF、DOCX、XLSX、PPTX 的可提取文本单次最多 20 MiB。HTML 只提取可见文本；扫描 PDF、复杂嵌入对象及超限文件不能据此完整续编辑。工具结果属于模型内部上下文，不写入公开消息或 SSE，但可能保留在检查点中；删除源文件不会自动清除已有检查点内容。模型仅在判断需要时调用工具，多个候选文件时应先确认目标；服务端不会在每轮自动读取所有产物。依次列出、读取、回答通常至少需要 3 次模型调用和 2 次工具调用；再生成新版文件还需预留额外预算。
 
 | 模型生成工具 | 产物格式 | 输入与边界 |
 | --- | --- | --- |
 | `create_text_artifact` | `.txt`、`.md`、`.html`、`.json`、`.csv` | TXT/Markdown 保留 UTF-8 正文；HTML 由 Markdown 转换并清洗活动标签；JSON 解析后保存；CSV 限制行列并把公式样式的单元格转为文本。 |
 | `create_document_artifact` | `.docx`、`.pdf` | 从 Markdown 风格正文生成标题、段落和列表；输出后重新打开校验。当前不保留复杂表格、图片、模板或精细分页。 |
 | `create_spreadsheet_artifact` | `.xlsx` | 模型提供有名称和二维 `rows` 的工作表，最多 5 表、每表 1000 行、总计 10000 个单元格；字符串不作为公式执行，保存后重新打开校验。 |
+| `create_presentation_artifact` | `.pptx` | 结构化标题、正文、要点、表格和演讲者备注生成真实可编辑的 16:9 演示文稿，最多 50 页；过密内容要求拆页，不用 DOCX 替代，详见 [PowerPoint 支持](artifacts.md#对话中的-powerpoint-演示文稿)。 |
 | `render_skill_document` | `.docx` | 按本轮固定 Skill 版本的模板及独立字段契约渲染；有多个模板时必须指定 `template_name`。适用流程、模板发布和版本规则见[对话附件与 Skill 固定模板产物](skills.md#对话附件与-skill-固定模板产物)。 |
 
-生成产物单文件最多 10 MiB、每轮最多 5 个；HTML 下载使用附件方式，不作为站内可信页面执行。Agent 会话中，用户明确要求生成或导出文件时，worker 在完成前核对本轮模型工具暂存的产物；若指定 TXT、Markdown、HTML、JSON、CSV、DOCX、PDF 或 XLSX，还会核对格式。首次只有文字且剩余预算足以调用生成工具并回复时，运行时在同一 Run 内最多补一次内部纠正回合；这会增加模型调用与用量，内部提示只保存在检查点，不成为业务消息。校验前不公开本轮文字增量；最终缺失或格式不符则返回 `failed/artifact_required`，不追加助手最终消息，失败后同一会话仍可继续提交。该判定基于明确的文字指令，不能覆盖所有含糊表达；也不会把 `publish_answer_artifact` 的异步 TXT 回答导出当作模型生成的文件。前端仅在助手消息的 `artifacts` 非空时展示产物，并以授权下载接口确认当前可用性。生成文件的实际类型由服务端校验，不能只依据扩展名展示预览。
+生成产物单文件最多 10 MiB、每轮最多 5 个；HTML 下载使用附件方式，不作为站内可信页面执行。Agent 会话中，用户明确要求生成或导出文件时，worker 在完成前核对本轮模型工具暂存的产物；若指定 TXT、Markdown、HTML、JSON、CSV、DOCX、PDF、XLSX 或 PPTX，还会核对格式。首次只有文字且剩余预算足以调用生成工具并回复时，运行时在同一 Run 内最多补一次内部纠正回合；这会增加模型调用与用量，内部提示只保存在检查点，不成为业务消息。校验前不公开本轮文字增量；最终缺失或格式不符则返回 `failed/artifact_required`，不追加助手最终消息，失败后同一会话仍可继续提交。该判定基于明确的文字指令，不能覆盖所有含糊表达；也不会把 `publish_answer_artifact` 的异步 TXT 回答导出当作模型生成的文件。前端仅在助手消息的 `artifacts` 非空时展示产物，并以授权下载接口确认当前可用性。生成文件的实际类型由服务端校验，不能只依据扩展名展示预览。
 
 ### 会话内模型切换
 
@@ -85,11 +86,12 @@ Agent 的 `default_model_id` 只决定新会话的初始模型；`yp_agent_sessi
 | HTML | 服务端按标签白名单清洗，再由无权限沙箱与 CSP 隔离展示；不执行脚本或加载外部资源。 |
 | DOCX | 按正文顺序展示标题、段落和表格；图片、页眉页脚及精细排版须下载原件查看。 |
 | PDF | 按页展示可提取的文字；扫描页、图片和原始版式须下载原件查看。 |
+| PPTX | 按页展示可见文字、表格行列和演讲者备注；不显示隐藏页与隐藏对象，图片、图表、动画及原始版式以原件为准。 |
 | CSV、XLSX | 展示行列内容；XLSX 支持切换工作表，不计算公式、不加载外部链接，图表与样式以原件为准。 |
 
 `GET /api/v1/artifacts/{artifact_id}/preview` 沿用下载接口的文件所有权、状态、逻辑删除和有效期校验，返回 `artifact_id/filename/media_type/kind/content/sheets/truncated/notice`。展示方式以服务端核验的媒体类型及返回的 `kind` 为准，不依据文件名推断。接口复用私有本地/S3 存储读取，不生成公共链接、不新增预览文件或数据库表，响应带 `Cache-Control: no-store`。未登录返回 401；不存在、跨用户、未发布、已删除或过期的文件返回 404；不支持的格式返回 415，内容解析失败返回 422；抽屉内保留错误说明、重试和原件下载入口。
 
-预览读取上限取对话上传配置与生成产物 10 MiB 上限的较大值（默认 20 MiB），正文共享 100000 字符预算；PDF 最多 20 页；表格最多 5 张工作表，每表 200 行、50 列，总计 5000 个单元格。超限通过 `truncated=true` 和界面提示说明仅展示部分内容，完整内容仍通过原件下载。Office 解析前限制 ZIP 条目和解压体积；解析在后台线程执行。预览不会更改文件、消息、Run 状态或模型上下文。
+预览读取上限取对话上传配置与生成产物 10 MiB 上限的较大值（默认 20 MiB），正文共享 100000 字符预算；PDF 和 PPTX 内容预览最多 20 页；表格最多 5 张工作表，每表 200 行、50 列，总计 5000 个单元格。超限通过 `truncated=true` 和界面提示说明仅展示部分内容，完整内容仍通过原件下载。Office 解析前限制 ZIP 条目和解压体积；解析在后台线程执行。预览不会更改文件、消息、Run 状态或模型上下文。
 
 ### 对话思考、耗时与用量
 
@@ -173,7 +175,7 @@ Agent 所有者调用 `POST /api/v1/agents/{agent_id}/shares` 并传 `{"user_id"
 
 | 场景 | 接口与前端处理 | 业务数据落库和流转 |
 | --- | --- | --- |
-| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT/Markdown、PDF、DOCX、XLSX 文本；单轮提取后连同文件标识受 `ATTACHMENT_CONTEXT_MAX_BYTES` 控制，默认 20 MiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且本轮会话模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT/Markdown 原文件在提交时另受本轮附件正文预算限制；未选中的附件只供展示和下载。 |
+| 上传并引用文件 | `POST /api/v1/artifacts/uploads` 上传；会话 Run 提交时传最多 5 个 `artifact_ids`，需要模型读取正文时再传其子集 `context_artifact_ids`。 | 文件元数据写入 `yp_artifact`，原文件在私有存储；用户消息和有序的 `yp_agent_message_attachment` 引用同事务提交。Worker 执行前重验所有权、期限、MIME、大小和哈希，提取选中的 TXT/Markdown、PDF、DOCX、XLSX、PPTX 文本；单轮提取后连同文件标识受 `ATTACHMENT_CONTEXT_MAX_BYTES` 控制，默认 20 MiB。PNG/JPEG 每张最多 2 MiB、2048×2048 像素；每轮最多选择两张，且本轮会话模型须通过 `vision` 能力验证。图片去除元数据后作为多模态块进入模型和私有检查点，不进入公开消息或 SSE；旧检查点可能保留图片内容，删除原文件不会清除旧检查点。超限、加密、损坏或无法读取时 Run 以 `attachment_unavailable` 失败。TXT/Markdown 原文件在提交时另受本轮附件正文预算限制；未选中的附件只供展示和下载。 |
 | 根据附件生成文件 | 本轮上传文件 ID 同时放入 `artifact_ids` 与 `context_artifact_ids`，`input_text` 写明所需格式；完成后读取会话 `messages`，从助手消息的 `artifacts` 获取生成文件 ID、`context_artifact_ids` 和 `read_source_artifact_ids`。Agent 的 `max_model_calls` 至少预留 2 次供工具调用与最终回复；需要首次未生成时自动纠正，则至少预留 3 次。 | 用户上传文件始终在用户消息的 `attachments`；模型生成文件写入私有存储，先记为 `pending`，完成时改为 `ready` 并与助手消息、事件同事务提交。产物列表和详情也返回本轮参考文件 ID，历史引用在原文件失效后保留。失败或取消后暂存文件不可下载，过期由清理任务回收。模型未调用工具时不会凭代码块自动生成文件。 |
 | 继续使用本会话产物 | 用户说“修改刚才生成的文件”时无需把产物 ID 填入 `context_artifact_ids`；模型可先列出本会话产物，再按需读取目标。前端仍可从历史助手消息取得产物 ID，供用户明确指定。 | 产物仍存于私有文件存储，读取工具只访问同一用户、同一会话中已完成 Run 的有效产物，不把全部产物自动加入每轮上下文。成功读取记录在 `yp_run_artifact_read`；其后生成新文件时，将此前读取的旧产物 ID 固定在 `yp_artifact_source`。生成产物 ID 目前不能作为上传附件传给会话提交接口；模型未调用读取工具时，下一轮仅沿用原有检查点历史。 |
 | 删除附件 | `DELETE /api/v1/artifacts/{artifact_id}` 后重新读取消息；下载仍用 `GET /api/v1/artifacts/{artifact_id}/download`。 | 文件状态变为 `deleted`，私有正文尽力清理；历史附件快照仍保留，动态 `available=false`，下载及新 Run 引用返回 404。已进入旧检查点的内容不会自动抹除。 |
