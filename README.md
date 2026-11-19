@@ -18,7 +18,7 @@ Y-Point 提供 React 工作台和 FastAPI 服务端。你可以接入模型供�
 | Agent 与多轮会话 | 自定义提示词、模型和预算；指定用户共享 Agent，会话、文件和运行按实际用户隔离；支持会话模型切换。 |
 | 知识库与可追溯检索 | 处理文本、Office、PDF、HTML 和配置文件，支持本地 OCR、关键词与向量混合检索，区分原文证据与模型解释。 |
 | Skill 与报告模板 | 管理可版本固定的 Skill 文件包、参考资料和脚本；通过 DOCX 模板与字段契约交付报告。 |
-| Tool 与 MCP | 接入 Python/Bash 脚本及 MCP 工具，提供授权、依赖准备、执行限制和调用记录。 |
+| Tool 与 MCP | 接入 Python/Bash 脚本及 MCP 工具；MCP 支持可复用的 HTTP/HTTPS 连接与受控 stdio，显示名称和调用标识独立，提供授权、执行限制和调用记录。 |
 | 文件与运行追踪 | 上传对话附件、按需读取历史产物并生成文件；通过 AG-UI 1.0 + SSE 查看分段公开思考、工具和 Skill 过程、耗时及已报告 Token，支持持久化恢复、审批与取消。 |
 
 功能与限制详见 [架构与业务概览](docs/architecture.md)、[会话与运行](docs/runs-and-sessions.md)、[AG-UI 接口与过程展示](docs/ag-ui.md) 和 [知识库指南](docs/knowledge-base.md)。

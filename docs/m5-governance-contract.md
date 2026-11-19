@@ -6,22 +6,28 @@
 
 Tool 定义仍以不可变版本关联 Agent/Run，代码、Schema、依赖、连接和凭据不会被后续编辑静默替换。启停、私有化、删除、凭据撤销和共享授权是调用时持续复核的规则；快照不能绕过撤权。
 
-| 操作 | API 规则 | 旧版本与运行中的行为 |
+新建 MCP Tool 复用共享连接，凭据通过 `PUT /api/v1/mcp-connections/{id}` 管理；更新提交完整配置及 `expected_version`。Tool 固定发布时的连接配置和版本，连接普通更新不修改旧快照。
+
+| 连接操作 | API 规则 | 旧快照与运行中的行为 |
 | --- | --- | --- |
-| 保留凭据 | PUT 时省略 `mcp_bearer_token`，或传空字符串 | 保留当前版本密钥，仍受既有撤销水位约束 |
-| 替换/轮换 | PUT `expected_version` 与非空 `mcp_bearer_token` | 发布新版本，将此前版本纳入凭据撤销水位，取消引用旧凭据的运行 |
-| 清除 | PUT `clear_mcp_credentials=true`，不能同时替换 | 新版本不带凭据；匿名发现须成功，旧带凭据运行取消 |
-| 紧急撤销 | POST `/api/v1/tools/{id}/credentials/revoke`，传 `expected_version` | 不访问上游即可推进撤销水位、禁用 Tool、取消相关运行；不会删除历史审计 |
-| 关闭共享 | PUT `share_credentials=false`；公开带凭据的配置须同时转私有或清除凭据 | 其他用户的旧 Run 也受当前共享规则限制 |
+| 保留凭据 | 同传输下省略或留空 HTTP `bearer_token`、stdio `env` | 保留已保存凭据；更换 stdio 配置时仍校验环境变量白名单。 |
+| 替换/轮换 | 提供非空 `bearer_token` 或非空 `env`；stdio 凭据对象整体替换 | 递增连接版本，撤销历史凭据版本并取消相关活动运行；采用新凭据需重新发布 Tool 并更新 Agent 关联。 |
+| 清除凭据 | `clear_credentials=true`，与新凭据互斥 | 清除凭据并撤销历史版本；后续发布和调用按当前授权重新验证。 |
+| 停用或删除 | PUT `enabled=false` 或 DELETE 连接 | 阻断旧快照的新调用并请求取消相关活动运行，保留历史审计。 |
+| 关闭凭据共享 | PUT `share_credentials=false` | 其他用户使用该连接凭据的旧快照失效，相关活动运行请求取消。 |
+
+直接保存 URL 的旧 HTTP Tool 继续使用 `mcp_bearer_token`、`clear_mcp_credentials` 维护凭据；绑定共享连接后在连接管理中操作。`POST /api/v1/tools/{id}/credentials/revoke` 仍可撤销指定 MCP Tool 的历史凭据并禁用该 Tool，其作用范围不替代共享连接的整体撤权。
 
 排队与待审批运行直接结束；运行中任务进入 `cancel_requested`，正式 worker 监视取消并停止模型/工具。已经发出的上游操作无法撤回，外部结果不明时须核对，不能以本地取消成功证明远端无副作用。密文保留在旧版本用于历史核对，响应、事件和日志不回传明文密钥。
 
 ## MCP 接收与发现预算
 
+以下网络预算适用于 Streamable HTTP。受控 stdio 的容器配置、stdout/stderr 预算和回收规则见 [Tool 指南](tools.md#stdio-受控运行)；两种传输共用发现数量、调用结果及权限治理。
+
 - 每条连接包含初始化、发现、调用和 SSE 的累计接收预算，默认 1 MiB；在字节交给 SDK 前执行。超限或非法声明长度关闭原始响应。
 - 请求使用 `Accept-Encoding: identity`，拒绝上游压缩编码，避免解压绕过预算；支持 HTTP/HTTPS、公网、内网、回环及保留地址与自定义端口；按本次 DNS 解析结果固定目标 IP、原协议和端口，HTTPS 保留 TLS 原域名，拒绝全部重定向。
 - 发现覆盖分页，默认最多 128 个工具、总结果 256 KiB；单项名称 128 B、描述 4 KiB、Schema 16 KiB。重复名称、循环游标和过多空页均拒绝。
-- 发现总时限 15 秒；正式调用由单次工具、整轮 Run 与连接读取时限共同约束。调用结果仍执行解析后的 64 KiB 限制。
+- 发现总时限 15 秒；正式调用由 Agent 单次工具时限、`MCP_CALL_TIMEOUT_SECONDS` 与连接时限共同约束；对话不设置整轮总倒计时。调用结果仍执行解析后的 64 KiB 限制。
 
 ## 外部写入恢复
 

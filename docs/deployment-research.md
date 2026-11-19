@@ -1,10 +1,10 @@
-# y-point 本机模拟生产部署：Docker 官方资料核实
+# Docker 部署设计与官方资料参考
 
-核实日期：**2026-11-13**。范围限定为 Docker Compose 服务划分、健康检查与依赖、环境覆盖、`local` 日志轮转、Docker socket 与宿主路径安全边界。下列“采用”是部署设计建议，不表示已验证仓库现有实现；本次未运行、停止或重建容器。
+资料核实日期：**2026-11-13**。本文保留服务划分、启动依赖、环境覆盖、日志及 Docker 权限的设计依据；当前可执行配置和命令以[部署手册](deployment-guide.md)及[部署架构](deployment.md)为准。原始研究过程归档到工作区 `y-point-server-todo.md`。
 
 ## 1. 服务按职责与权限拆分
 
-**采用：**应用、独立后台任务（如有）、有状态依赖分别声明为 Compose service；需要 Docker API 的功能集中到专用管理服务，普通业务服务不挂 socket。官方原则是“一容器一种职责”，不是强制“一容器只能有一个进程”。
+**设计依据：**应用、后台任务和有状态依赖分别声明为 Compose service。当前项目分别运行 web、API、Worker、PostgreSQL 与 Redis；启用 `--sandbox` 时 API 和 Worker 接入宿主 Docker，以支持试运行和正式执行。独立执行服务属于后续隔离方案，当前没有单独的 Docker 管理服务；权限边界见[部署架构](deployment.md#启用本机真实脚本沙箱)。
 
 **限制：**拆分便于分别配置健康检查、日志和权限，但管理服务若可访问同一个 Docker daemon，仍能操作该 daemon 管理的其他资源；服务拆分本身不构成强安全隔离。后者是依据 daemon 默认授权模型得出的设计判断。
 
@@ -28,11 +28,12 @@
 
 ## 3. 显式选择环境覆盖文件，检查合并结果
 
-**采用：**基础配置保留公共服务定义，本机模拟生产配置放在单独覆盖文件；部署入口显式传入文件顺序，例如下列仅渲染配置的命令（本次未执行；文件名为建议）：
+**设计依据：**公共服务放在基础 Compose 文件中，环境差异由覆盖文件和私有配置表达。项目通过 `scripts/deploy.py` 显式选择环境和覆盖文件；核对最终配置可执行：
 
-```sh
-docker compose --env-file .env.local-prod \
-  -f compose.yaml -f compose.local-prod.yaml config
+```bash
+python3 scripts/deploy.py compose -- config --quiet
+# 需要脚本和 MCP stdio 执行时：
+python3 scripts/deploy.py compose --sandbox -- config --quiet
 ```
 
 **限制：**后文件覆盖前文件不等于整份替换。映射按键合并；`ports` 按 `{ip, target, published, protocol}` 唯一键合并，新端口可能与旧端口同时保留；`volumes` 按容器内 `target` 合并。不要以为写一个新端口或 `ports: []` 就清除了旧端口。需要完整替换时使用 `!override`，并要求 Compose **2.24.4+**；否则把环境专属端口只放在各自覆盖文件，避免基础文件预置。多个 `-f` 文件中的相对路径统一相对第一个基础文件解析。
@@ -78,7 +79,7 @@ logging:
 
 ## 6. socket 的 `:ro` 不等于 API 只读
 
-**采用：**普通业务服务不挂 `/var/run/docker.sock`。确有 Docker 管理需求时，仅专用管理服务持有 socket；将其视为高权限组件，并限制其可接收的操作及调用方。
+**设计约束：**持有 `/var/run/docker.sock` 的组件属于高权限组件，必须限制可接收的操作及调用方。项目仅在显式启用 `--sandbox` 时为 API 与 Worker 接入宿主 Docker；web、数据库和 Redis 不需要该权限。需要更强的多租户隔离时，执行引擎与 daemon 边界需另行设计。
 
 **限制：**Docker daemon 默认采用“可访问即拥有全部命令权限”的授权模型。socket 挂载成 `:ro` 仍可建立连接、发送创建／删除／挂载等修改 API，不能称为只读 API 或权限沙箱；容器自身 `read_only`、非 root 用户等措施也不能替代 daemon API 授权。OWASP 官方原文明确说明 socket 只读挂载不限制修改请求；Docker 的 Compose 信任模型页虽建议尽量使用只读 socket 挂载，不能据此推导 API 只读。
 
@@ -119,4 +120,4 @@ volumes:
 
 建议基线：显式双 Compose 文件与 `--env-file`；使用 `!override` 时 Compose ≥ 2.24.4；关键依赖等待健康；常驻服务退出重启、应用负责断线恢复；各服务 `local: 20m × 5`；socket 权限集中；宿主挂载白名单、只读优先、禁止自动建目录。以上选择及限制以各节列出的原始来源为依据，统一核实日期为 **2026-11-13**。
 
-本次只做官方资料核实和此文档写入，未评审现有业务实现，未执行 Docker 命令或改变容器状态。网页工具未返回可读结果时，使用只读 HTTP 请求获取官方原页正文交叉核实。
+升级 Compose 或调整权限时，重新核对本文引用及仓库配置；资料引用不代替目标环境的启动、恢复和隔离验证。

@@ -43,7 +43,7 @@
 
 ## 前端实现参考
 
-页面对接和设计记录适合参与前端开发时查阅；其中的阶段状态与截图不是新的用户操作要求。
+页面契约和设计规范适合参与前端开发时查阅；截图用于说明布局，页面验证过程另存本地 TODO。
 
 - [Agent 页面](web-agent-page.md)、[供应商与模型管理](web-model-catalog-page.md)、[会话工作台](web-sessions-page.md)、[知识库页面](web-knowledge-page.md)。
 - [设计简报](web-design-brief.md)、[布局规范](web-layout-spec.md)、[组件约定](web-component-guidelines.md)。
@@ -53,7 +53,7 @@
 以下资料记录方案选择与资料核查，当前操作和接口以各专题为准。
 
 - [Docker 部署调研](deployment-research.md)。
-- [AG-UI 改造方案（设计参考）](ag-ui-migration-plan-20261117.md)、[协议与 SDK 研究](ag-ui-protocol-research-20261117.md)；当前实现见 [AG-UI 接口与处理过程](ag-ui.md)。
+- [AG-UI 方案归档入口](ag-ui-migration-plan-20261117.md)、[协议与 SDK 参考](ag-ui-protocol-research-20261117.md)；当前实现见 [AG-UI 接口与处理过程](ag-ui.md)。
 
 <a id="历史验证与研究"></a>
 

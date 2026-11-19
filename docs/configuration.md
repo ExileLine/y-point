@@ -14,11 +14,11 @@ API 与 worker 通过同一套环境配置读取附件容量和单次调用时�
 | --- | --- | --- |
 | `ARTIFACT_UPLOAD_MAX_BYTES` | `20971520`（20 MiB） | 对话上传单文件字节上限；multipart 请求总限额自动按 5 个文件加 1 MiB 开销计算。 |
 | `ATTACHMENT_CONTEXT_MAX_BYTES` | `20971520`（20 MiB） | 本轮附件提取正文及 JSON 元信息的 UTF-8 字节预算；预检查与 worker 共用。 |
-| `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS` | `120` | 新 Agent 和独立 Run 默认的单次模型调用时限；普通生成和历史摘要均受其控制。 |
-| `AGENT_MAX_MODEL_TIMEOUT_SECONDS` | `3600` | Agent、独立 Run 及供应商管理允许设置的模型或请求超时上限。 |
-| `AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS` | `120` | 新 Agent 和独立 Run 默认的单次工具调用时限。 |
+| `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS` | `120` | 新 Agent 默认的单次模型调用时限；普通生成和历史摘要均受其控制。 |
+| `AGENT_MAX_MODEL_TIMEOUT_SECONDS` | `3600` | Agent 及供应商管理允许设置的模型或请求超时上限。 |
+| `AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS` | `120` | 新 Agent 默认的单次工具调用时限。 |
 | `AGENT_MAX_TOOL_TIMEOUT_SECONDS` | `3600` | 允许设置的单次工具调用时限上限。 |
-| `AGENT_DEFAULT_MAX_OUTPUT_TOKENS` | `4096` | 创建 Agent 或独立 Run 时省略额度采用的单次输出 Token 默认值；Agent 显式传 `null` 可交由供应商决定。 |
+| `AGENT_DEFAULT_MAX_OUTPUT_TOKENS` | `4096` | 创建 Agent 时省略额度采用的单次输出 Token 默认值；Agent 显式传 `null` 可交由供应商决定。 |
 | `AGENT_MAX_OUTPUT_TOKENS` | `65536` | Agent 创建、修改时允许填写的最大整数额度；不约束显式 `null`，也不代表供应商实际输出上限。 |
 | `AGENT_MODEL_CONNECTION_MAX_RETRIES` | `1` | OpenAI/Anthropic 模型尚未返回数据时，SDK 连接错误的最多重试次数；范围 0–3，0 为禁用。每次尝试均消耗模型调用次数。 |
 | `AGENT_MODEL_CONNECTION_RETRY_DELAY_SECONDS` | `1` | 连接重试前等待秒数，范围 0–30；所有尝试和等待共用原单次模型时限。 |
@@ -99,12 +99,12 @@ Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随
 | 配置层 | 配置入口与读取规则 | 修改后的生效范围 |
 | --- | --- | --- |
 | 工程环境 | `FAST_API_ENV` 选择环境。常规加载的同名值优先级从高到低为：进程环境变量 → 开发环境 `.env.development.local` → `.env.<环境>` → `.env` → `ENV_FILE` 指定文件 → `BaseConfig` 代码默认值；不存在的可选文件跳过，显式指定但不存在的 `ENV_FILE` 会报错。 | API、worker 分别在进程内缓存，修改后需要两者重启并使用同一配置来源；`ENV_FILE` 在当前实现中首先装载，不是最高优先级。生产环境不加载开发本地文件。 |
-| 工程默认值 `AGENT_DEFAULT_*` | 仅在创建 Agent 或独立 Run 且对应字段省略时补默认值；Agent 新建页会先填入当前默认值。 | 修改默认值不会覆盖已有 Agent，也不会改历史 Run；需要编辑已有 Agent，再提交新任务。 |
+| 工程默认值 `AGENT_DEFAULT_*` | 仅在创建 Agent 且对应字段省略时补默认值；Agent 新建页会先填入当前默认值。 | 修改默认值不会覆盖已有 Agent，也不会改历史 Run；需要编辑已有 Agent，再提交新任务。 |
 | 工程上限 `AGENT_MAX_*` | 校验页面/API 允许填写的最大整数值，三个 `AGENT_DEFAULT_*` 不能超过对应上限。 | 调高上限只放宽后续填写校验，不会自动调高 Agent 值、供应商能力或模型部署窗口。 |
 | 模型与供应商页面 | 管理员在“模型管理”维护连接、部署窗口、价格及已验证能力；Agent 通过模型 ID 引用它们。 | 保存通常无需重启。连接、模型标识和部署窗口等在执行器领取时读取；已经构造的模型实例不会在调用途中动态重建。启用成本预算时的价格/币种在提交时另存快照。修改被 Agent 默认模型引用的连接关键项、模型 ID/声明能力/窗口或停用时，接口可能要求先更换 Agent 默认模型。 |
 | Agent 页面 | 默认模型、生成温度、思考模式、输出额度、模型/工具时限及每轮预算保存在 Agent。 | 保存无需重启；新提交的 Run 固定这些生成参数和预算快照，修改不改变已排队、正在运行或历史 Run 中的 Agent 快照。 |
 | 会话选模 | 新会话采用 Agent 默认模型；已有会话使用自身选定模型，可在空闲时切换。 | 修改 Agent 默认模型不替换已有会话模型。切换时会重新校验文本/工具能力、思考模式、窗口和成本配置。模型目录的“默认”标记也不会批量覆盖已有 Agent 或会话。 |
-| 请求重试与新测试 | 同一 `request_key` 表示同一次提交；失败后重复旧键会返回原 Run。 | 要验证新配置，应等待当前运行结束或显式取消，再用新 `request_key` 提交；会话版本采用当前读取的 `expected_session_version`，Agent 修改采用当前 `expected_version`。 |
+| 请求重试与新测试 | 同一协议 `runId` 和相同完整输入表示同一次提交；重试保持用户消息 ID 不变，返回原业务 Run。 | 验证新配置时，等待当前运行结束或显式取消，重新读取公开历史后生成新的协议 `runId` 和用户消息 ID；会话版本通过 `forwardedProps.expected_session_version` 校验，Agent 修改采用当前 `expected_version`。 |
 
 环境文件中的数值配置省略时使用上表优先级找到的值，所有来源均省略才使用代码默认。不要用 `KEY=`、`null` 或 `0` 表示通用的“无限制”：正整数配置的空字符串/`null` 会校验失败，只有字段明确允许时 `0` 才有专门含义。页面清空和 API 显式 JSON `null` 的规则按下表逐项判断；更新请求省略字段通常表示保留原值。
 
@@ -157,7 +157,6 @@ Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随
 | `ARTIFACT_UPLOAD_MAX_BYTES` / `ATTACHMENT_CONTEXT_MAX_BYTES` | 各 20971520 字节（20 MiB），正整数。 | 分别限制对话上传单文件和本轮正文/元信息总字节；满足容量检查仍可能超过模型 Token 窗口。窗口不足时按章节/批次审查并汇总，摘要后需要细节可分段回读已授权历史。 |
 | `TOOL_CALL_GLOBAL_LIMIT` / `TOOL_CALL_USER_LIMIT` / `TOOL_CALL_RUN_LIMIT` | 16 / 4 / 2，均至少 1。 | 限制同时执行的工具数量，和 `max_tool_calls` 的累计次数不同。容量不足时应检查并发、资源和租约，单纯延长超时不能增加容量。 |
 | 文件存储与配额 | 所有者默认最多 1 GiB、1000 个文件，保留期 30 天；生成单文件等还有各自上限。 | 参考“文件存储”“开发环境文件盘点与手动清理”。长任务完成文字审查后仍需有容量生成/发布文件；开发测试应定期盘点，不要把渲染或配额错误统称模型超时。 |
-| 独立 Run 的 `max_queue_wait_seconds` | 默认 `null` 不设排队截止；填写 `1～86400` 秒，`0` 非法。Agent 会话页面未暴露此项。 | 只约束领取前的排队等待，不控制领取后的任务总时长；可用于避免无 worker 或拥堵时无限排队。 |
 | worker / 代理 / 浏览器 | `GET /api/v1/health/worker` 检查 worker；反向代理/模型服务的时限由其部署决定。 | 无 worker 会排队，重启运行中的 worker 可能中断任务；心跳和租约用于判断存活，不是任务总时限。前端断线、刷新或某个预览请求被取消不等于 Run 已取消，应查询 Run 状态并恢复事件流。 |
 
 ### 按场景选择配置起点
@@ -207,7 +206,7 @@ Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随
 | 校验工具失败或 `artifact_required` | 工具结果中的字段错误、脚本入参、报告模板、产物类型及文件配额。 | 修正输入/Skill 契约或产物流程；模型修正并再次调用会计次数，没有统一的“工具失败固定重试三次”。 |
 | `lease_expired`、`lease_monitor_error` 或长时间排队 | worker 健康、进程日志、数据库连接/锁及租约。 | 恢复执行环境后按状态重新提交；避免在任务执行中重启 worker，不通过单纯延长模型超时修复。 |
 | 预览请求 `(canceled)`、SSE 断开或刷新页面 | Run 是否仍为 `running`、是否出现终态事件。 | 先查询状态并恢复消息/事件读取，不因前端单次请求结束而重复创建任务；需要停止任务时使用显式取消。 |
-| `timed_out / queue_timeout`（独立 Run） | 排队截止设置、worker 是否在线及排队积压。 | 调整独立 Run 的排队预算或恢复 worker；模型单次时限在领取后才与模型调用相关。 |
+| 历史 `timed_out / queue_timeout` | 对应 Run 保存的排队期限、Worker 在线状态及排队积压。 | 当前 AG-UI 入口不开放自定义排队预算；先核对历史运行和 Worker 状态。单次模型时限仅在模型调用时生效。 |
 | `execution_timeout` 或旧整轮超时记录 | 是否为历史记录、内部执行调用方显式传入的时限。 | 当前默认对话无整轮总倒计时，旧 `RUN_EXECUTION_TIMEOUT_SECONDS` 不控制新对话；不要据此反复增加无效环境变量。 |
 
 当前可直接核对的实现位置：`app/core/config.py`、`app/schemas/agent.py`、`app/schemas/provider.py`、`app/schemas/runtime_limits.py`、`app/services/call_timeouts.py`、`app/services/model_adapter.py`、`app/services/session_models.py`、`app/services/run_manager.py` 与 `app/services/run_executor.py`。本文中的建议用于选择可解释的配置，不保证供应商、网络、工具契约或模型生成必定成功。

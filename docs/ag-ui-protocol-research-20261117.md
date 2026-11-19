@@ -1,6 +1,6 @@
 # AG-UI 协议、SDK 与集成核实
 
-核查日期：2026-11-17。用于 [Y-Point 改造方案](ag-ui-migration-plan-20261117.md)。这是资料研究，不是实现或业务验收记录。
+资料核查日期：2026-11-17。本文保留协议来源与集成约束；当前接口、SDK 版本和支持能力以 [AG-UI 契约](ag-ui.md)及项目锁文件为准。研究过程与阶段判断归档到工作区 `y-point-server-todo.md`。
 
 ## 结论
 
@@ -78,17 +78,14 @@ Y-Point 应校验 owned thread 与公开历史的一致性；若重用服务器 
 
 AG-UI 官方仓库包含 Python/TypeScript SDK 与 LangGraph 集成；官方文档也提供 LangGraph 的能力、工具流式与人工介入指南。[1][11]
 
-这只证明存在参考实现，**不证明**当前 Y-Point 锁文件中的 DeepAgents/LangGraph 与最新 AG-UI 集成可直接兼容，也不证明任意版本的 `ag-ui-core`、`@ag-ui/client` 已完整覆盖冻结 1.0。本轮没有安装这些包或运行互操作程序，不编造已验证版本号。
-
-P0 的必需结果是：记录 Python/TS 包的确切版本；跑通文本、reasoning、server tool、interrupt/resume/cancel、usage 与重订阅；确认旧事件投影与新事件都能通过冻结 schema 及真实客户端行为检查。不能只靠 schema 校验声称行为完全符合规范。[1][8]
-
+项目使用 `ag-ui-protocol` 校验和编码事件，使用 `@ag-ui/core` 类型与 Schema 消费事件。`app/services/ag_ui_projection.py` 从持久化公开事件生成协议投影，`app/api/v1/ag_ui.py` 负责授权输入、提交和观察；当前未引入 `ag_ui_langgraph.add_langgraph_fastapi_endpoint`。升级任一 SDK 或框架时，应重新核对消息、工具、思考、中断恢复及游标行为，不能只凭 Schema 校验推断完整互操作性。
 现有 Y-Point worker 的任务领取、租约、审批、审计与工具执行继续负责业务；AG-UI 只读取公开事件并提供标准输入门面。不能把官方 HTTP 示例直接替换为在 API 进程内运行模型。[11]
 
 ## 界面参考
 
 assistant-ui 的 Run Activity 聚合消息/工具/思考等活动，提供可展开的过程视图。其工具分组强调不丢失失败状态；其 AG-UI runtime options 区分 run、resume 与 connect。[12][13]
 
-AI Elements 的 Reasoning 与 Tool 可借鉴进行中/结束折叠和工具状态表达。但其官方页面在核查日明确提示迁往 shadcn/ui，并计划在 2026 年 11 月底弃用原项目。因此建议只参考模式，继续使用项目已有 Ant Design，不引入旧包。[14][15]
+Reasoning、Tool 与 Chain of Thought 的公开示例可用于参考折叠行为和工具状态表达；项目沿用 Ant Design 与自身的 `RunActivity`，没有因借鉴交互而引入参考页面的组件包。[14][15]
 
 ## 来源
 

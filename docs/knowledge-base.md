@@ -23,7 +23,7 @@
 
 模型在原有对话请求中选择是否调用 `search_knowledge_base`，不额外发起一次分类模型请求。Worker 提供当前实际用户仍有权限访问的目录摘要：最多八个知识库，每库名称最多 128 字符、用途说明最多 384 字符、本轮固定发布索引中的三个文件名样例各最多 160 字符；不预读文档正文、不生成查询 embedding，也不产生检索审计。目录会计入原模型请求的输入用量，只用于相关性判断，不是命中证据；填写准确的知识库名称和用途说明有助于工具选择，文件名样例不代表完整目录。文档删除、知识库撤权或不可用状态会过滤目录，实际检索继续使用原有逐阶段鉴权。
 
-`POST /api/v1/agents` 可传 `knowledge_mode`，省略为 `auto`；`PUT /api/v1/agents/{id}` 按 `expected_version` 修改，省略保留原值，显式 `null` 或未知取值被拒绝。每次会话提交把模式保存到 Run 的 `agent_knowledge_mode`，配置修改仅影响新提交的轮次；重复 `request_key` 仍返回原轮次及其模式快照。模式变更不改写旧回答或重建索引。
+`POST /api/v1/agents` 可传 `knowledge_mode`，省略为 `auto`；`PUT /api/v1/agents/{id}` 按 `expected_version` 修改，省略保留原值，显式 `null` 或未知取值被拒绝。每次会话提交把模式保存到 Run 的 `agent_knowledge_mode`，配置修改仅影响新提交的轮次；相同协议 `runId` 和完整输入重试仍返回原轮次及其模式快照。模式变更不改写旧回答或重建索引。
 
 正文引用必须来自实际相关命中，不能把目录或以前的工具调用当作本轮引用。真实执行过的检索仍保留调用状态、耗时及审计；无命中时可在折叠的“本轮知识检索记录”中看到“未找到相关内容 · 耗时”，不展示空引用按钮。工具成功表示检索完成，不等于命中或最终回答采用了资料。工具选择和回答措辞由对话模型执行这些规则，核对是否检索及是否命中时以调用记录和检索审计为准。
 
@@ -59,7 +59,7 @@ flowchart TD
 1. **上传并排队**：[`_upload_knowledge_document()`](../app/api/v1/knowledge.py) 调用 `save_upload()` 校验和保存文件，检查管理权限、配额、同名摘要及 `expected_revision`。[`enqueue_knowledge_index()`](../app/services/knowledge.py) 以条件更新递增 revision，固定全库当前文档版本和配置，创建 `BUILDING` 索引及 `UPLOADED` 任务；文件元数据、文档版本和调度意图在同一次数据库提交中保存。异常时回滚数据库并补偿清理文件，Blob 与数据库之间没有跨系统原子事务。
 2. **后台构建并发布**：[`_knowledge_loop()`](../app/cli/run_worker.py) 经 [`process_next_knowledge_job()`](../app/services/knowledge_jobs.py) 领取租约，交给 `_build_knowledge_index()`。解析结果按解析器和文档选项身份缓存到文档版本；[`chunk_knowledge()`](../app/services/knowledge_parser.py) 对文本按标题、页码和长度切块，对表格按完整记录合并，对配置按对象/数组记录分组，对 HTML/PPTX 保留段落、表格及备注边界。支持加工的文档按处理策略通过 [`enrich_knowledge_chunks()`](../app/services/knowledge_enrichment.py) 生成并缓存独立解释，原始数值与原文偏移保持不变；关键词和混合模式的检索输入均可包含解释，混合模式通过 [`embed_texts()`](../app/services/embedding_adapter.py) 分批生成归一化向量。发布事务再次检查用户、租约、取消状态和最新 revision，再一次性写入片段及全文索引、将索引置为 `READY`、切换 `active_index_id` 并完成任务；失败保留旧活动索引。
 3. **手动检索**：搜索接口选择请求时的活动索引，进入 [`search_knowledge()`](../app/services/knowledge.py)。服务先过滤授权索引及已删除文档，执行关键词和可选向量召回，以 RRF 融合并去重、截断；远程查询嵌入返回后及交付片段前再次鉴权。引用固定到索引代、文档版本和片段，字符偏移对应规范化提取原文；返回 `score` 是融合后的排序分数，不是直接的余弦相似度。
-4. **Agent 回答**：Agent 配置将关联保存到 `AgentKnowledgeBase`，默认聊天模型须通过工具调用能力验证。[`submit_session_run()`](../app/api/v1/agent_sessions.py) 在创建 Run 的事务中调用 `snapshot_run_knowledge()`，保存实际用户有权访问的索引快照。[`make_worker_tool_resolver()`](../app/services/worker_tools.py) 注册只读、无需审批的工具，[`knowledge_search_tool()`](../app/services/knowledge_tool.py) 从本轮快照推导检索范围，仅向模型开放 `query/top_k`。模型自行决定是否调用，工具调用前后复核用户、Run 和租约；返回证据后，回答沿用既有 Run 执行链路保存。
+4. **Agent 回答**：Agent 配置将关联保存到 `AgentKnowledgeBase`，默认聊天模型须通过工具调用能力验证。[`run_agent()`](../app/api/v1/ag_ui.py) 校验公开历史并调用内部 [`create_session_run()`](../app/api/v1/agent_sessions.py)，在创建 Run 的事务中调用 `snapshot_run_knowledge()`，保存实际用户有权访问的索引快照。[`make_worker_tool_resolver()`](../app/services/worker_tools.py) 注册只读、无需审批的工具，[`knowledge_search_tool()`](../app/services/knowledge_tool.py) 从本轮快照推导检索范围，仅向模型开放 `query/top_k`。模型自行决定是否调用，工具调用前后复核用户、Run 和租约；返回证据后，回答沿用既有 Run 执行链路保存。
 
 ### 版本、落库与一致性
 
@@ -332,12 +332,23 @@ Agent 关联请求示例，`expected_version=1` 仅作格式示例，必须替�
 
 ```json
 {
-  "input_text": "请先调用知识库检索工具，查询员工手册中的报销时限，再回答：出差回来后，最晚什么时候需要提交费用报销？请注明来源文档及实际章节或页码；没有依据时请明确说明。",
-  "request_key": "kb1-reimbursement-test-001"
+  "threadId": "替换为实际 sessionId",
+  "runId": "kb-reimbursement-turn-001",
+  "protocolVersion": "1.0",
+  "messages": [
+    {
+      "id": "kb-user-message-001",
+      "role": "user",
+      "content": "请检索员工手册：出差后最晚何时提交费用报销？请注明实际来源及章节或页码，没有依据时请明确说明。"
+    }
+  ],
+  "forwardedProps": {
+    "expected_session_version": 1
+  }
 }
 ```
 
-同一次提交重试保持 `request_key` 不变；新的问题更换它，并记录新 `runId`。连续追问沿用同一个 `sessionId`，例如“那超过30天才提交呢？超过90天还有例外吗？”，再核对回答与原文。
+该示例仅适用于空历史会话，须替换 `threadId` 和当前会话版本；已有历史必须先完整读取 `/ag-ui/threads/{sessionId}`，再追加新用户消息。以 `Accept: text/event-stream` POST 到 `/agents/{agentId}/ag-ui`，业务 Run ID 从 `X-Y-Point-Run-ID` 响应头取得。同一次提交重试保持完整输入、协议 `runId` 和消息 ID 不变；新问题重新读取历史并生成新身份。连续追问沿用同一 `threadId`，完整契约见 [AG-UI](ag-ui.md)。
 
 内置工具只向模型开放 `query/top_k`，使用 `KnowledgeSearchIn` 的默认 `keyword_only=false`、`min_similarity=0.7`、`rerank=none`。手动 `/search` 设置的 `0.5` 不会保存到知识库，也不会自动影响 Agent 检索。聊天模型可能改写查询，不能假定其相似度与手动测试相同。
 

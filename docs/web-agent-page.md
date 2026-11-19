@@ -1,12 +1,12 @@
-# Agent 代表性页面（任务三第二步）
+# Agent 页面
 
-全局布局确认后选用 Agent 目录作为代表性页面。页面包括“我的 Agent / 共享给我”Tab、当前页筛选、卡片/表格切换、详情抽屉，以及本人 Agent 的创建、编辑、删除和指定用户授权。共享视图只展示服务端安全摘要，不读取或展示系统指令；卡片、表格和详情现可进入会话页，接口交接见 `web-sessions-page.md`。
+Agent 目录包括“我的 Agent / 共享给我”Tab、当前页筛选、卡片/表格切换、详情抽屉，以及本人 Agent 的创建、编辑、删除和指定用户授权。共享视图只展示服务端安全摘要，不读取或展示系统指令；卡片、表格和详情均可进入[会话页](web-sessions-page.md)。
 
 ## 接口交接
 
 | 页面操作 | 当前接口 | 权限与数据边界 |
 | --- | --- | --- |
-| 登录与恢复 | `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout` | 登录返回访问/轮换刷新令牌；本阶段浏览器会话存于 `sessionStorage`，401 且刷新失败时返回登录页。后续 W0 继续审查跨标签页和长期会话策略。 |
+| 登录与恢复 | `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/auth/refresh`、`POST /api/v1/auth/logout` | 登录返回访问/轮换刷新令牌；浏览器会话存于 `sessionStorage`，401 且刷新失败时返回登录页。 |
 | 我的 Agent | `GET /api/v1/agents?page=&page_size=20` | 只返回当前用户自己的配置，含分页总数和系统指令；本页搜索仅过滤当前页，明确标为“筛选当前页”。 |
 | 共享给我 | `GET /api/v1/agents/shared` | 返回共享摘要数组，无系统指令、模型配置或所有者文件。 |
 | 详情 | `GET /api/v1/agents/{id}` 或 `GET /api/v1/agents/shared/{id}` | 打开抽屉时重新读取；共享详情仍只使用安全摘要。 |

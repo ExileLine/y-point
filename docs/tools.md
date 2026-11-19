@@ -191,31 +191,11 @@ docker load -i y-point-script-sandbox.tar
 
 只读 MCP 返回 `isError=true` 时，该次调用仍记为失败，原因码为 `remote_error`；平台将有界的远端错误作为不可信工具结果反馈给模型，允许它修正参数后使用新的调用 ID 再调用，或说明当前无法完成。平台不会自动重发相同请求，也不保证模型一定修正成功。反馈中的远端结果最多 8 KiB，超过时省略；超过总结果 64 KiB 的响应仍中止。远端正文不写入公开调用事件与审计摘要，按正常工具结果进入私有检查点。外部写工具的错误仍中止运行并保留结果不明语义。工具执行异常导致整轮结束时使用 `tool_error`，页面提示检查失败的工具调用；真正的模型供应商异常仍使用 `model_error`。
 
-#### Context7 调用示例
+#### 发现与调用核对
 
-先创建一个地址为 `https://mcp.context7.com/mcp` 的 Streamable HTTP 连接，再在工具管理中分别为 `resolve-library-id` 和 `query-docs` 创建两个 Tool，选择同一个连接，最后将两个 Tool 关联到同一个 Agent。建议分别命名为 `context7_resolve` 和 `context7_docs`，并在描述中写明先解析库 ID、再查询文档。单独关联 `query-docs` 时，需要提供有效的库 ID，模型不能调用未关联的解析工具。
+连接发现成功只表示协议握手和工具目录可读取，不代表业务函数执行成功。发布前核对远端函数名、输入 Schema、读写声明和权限；多个函数分别发布为 Tool 并关联到 Agent。依赖前置查询的调用，应使用前置函数实际返回的标识，不猜测或复用示例 ID。
 
-先调用 `resolve-library-id`：
-
-```json
-{
-  "libraryName": "FastAPI",
-  "query": "FastAPI 使用 Depends 实现依赖注入"
-}
-```
-
-再使用解析结果中的 ID 调用 `query-docs`，例如：
-
-```json
-{
-  "libraryId": "/websites/fastapi_tiangolo",
-  "query": "使用 Depends 实现依赖注入的最小示例",
-  "language": "Python"
-}
-```
-
-库 ID 以远端本次解析结果为准。Context7 可能将旧 ID 标记为迁移并以错误结果返回新 ID；只读反馈允许模型看到迁移提示并修正。HTTP 连接成功不代表工具执行成功，`remote_error` 也不一定表示服务宕机。测试时可发送：“请先用 Context7 解析 FastAPI 的库 ID，再查询 Depends 的官方用法；依据查询结果给出最小示例，不要猜测库 ID。”修改关联版本后从新一轮验证；旧运行记录保留原结果。
-
+实际调用以持久化调用记录为准：`remote_error` 表示远端返回工具错误，不等于连接或服务不可用。只读纠错使用新的调用 ID，旧结果保留；外部写入结果未知时先核实副作用。
 连接使用 SDK 的 `streamable_http_client` 和显式管理的 `httpx.AsyncClient`，统一认证、连接/读取超时及退出清理。支持公网、内网、回环及保留地址上的 `http://` 和 `https://`，分别默认使用 80 和 443，也支持显式指定 1–65535 的端口，例如 `http://mcp.example.com:8080/mcp`。地址中禁止内嵌用户名/密码或 fragment，Bearer 凭据通过独立字段填写；不按 IP 地址类别限制解析结果，支持 `localhost`、`127.0.0.1`、私网 IPv4 和 IPv6 等端点。请求按原协议和实际端口固定到校验后的 IP，保留包含非默认端口的 Host，HTTPS 保留原 TLS 域名；传输层拒绝协议、主机、端口变化及所有 3xx 响应。API 的发现/发布和 Worker 的正式调用均须能访问配置的地址；Docker 部署中的 `localhost`/`127.0.0.1` 指向各自容器；Docker Desktop 访问宿主机可使用 `host.docker.internal`，其他部署使用容器网络可达的宿主机或服务地址。同时支持以下受控 stdio 传输；两种传输共用 SDK `ClientSession` 的初始化协商、工具发现、Schema 复核、审批、读写治理和结果处理。协议版本由所安装 SDK 与服务端协商，不以传输名称推断协议版本。每次连接在 SDK 解析前累计限制接收 1 MiB，拒绝压缩响应及超预算的声明长度；结果解析后仍保留 64 KiB 上限。发现支持有界分页，默认最多 128 个工具、总量 256 KiB，单个名称/描述/Schema 分别限制为 128 B/4 KiB/16 KiB，并拒绝重复工具名和循环游标。
 
 #### 连接管理与版本
@@ -231,7 +211,7 @@ docker load -i y-point-script-sandbox.tar
 
 普通连接配置更新不会改写旧 Tool 快照。需要采用新配置时，重新保存 Tool 发布新版，再更新 Agent 的固定 Tool 关联。停用或删除连接、轮换/清除凭据、撤销凭据共享会立即限制旧快照，并取消受影响的活动运行；无法撤回已经执行的外部操作。`clear_credentials=true` 与提供新凭据互斥；HTTP 空 token、stdio 空环境变量对象表示保留原凭据。stdio 提供非空环境变量对象时，整体替换该连接的环境变量凭据。
 
-已有直接保存 URL 的 HTTP Tool 及对应 API 请求继续可用，原 `POST /tools/mcp/discover` 供此类工具发现；新建页面使用共享连接。已有工具可以选择新连接并发布 Tool 新版完成迁移。使用共享连接的 Tool 不接受同时填写 `mcp_url` 或直接替换凭据，需在连接管理中操作。
+已有直接保存 URL 的 HTTP Tool 及对应 API 请求继续可用；`POST /api/v1/tools/mcp/discover` 已在 OpenAPI 标记为弃用，仅用于旧 HTTP 配置发现。新建页面使用 `/api/v1/mcp-connections`，可选择新连接并发布 Tool 新版。共享连接 Tool 不接受同时填写 `mcp_url` 或直接替换凭据，需在连接管理中操作；维护旧配置不代表新增一套对话提交入口。
 
 #### stdio 受控运行
 

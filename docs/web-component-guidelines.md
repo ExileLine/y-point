@@ -1,6 +1,6 @@
-# Y-Point 前端组件使用约定（开发准备）
+# Y-Point 前端组件使用约定
 
-此约定与 `web-design-tokens.css` 配套。W0 骨架已建立 `web/` 工程，tokens 镜像到 `web/src/styles/design-tokens.css` 并映射到 Ant Design `ConfigProvider.theme.token`。修改设计值时须同步两份文件；正式发布前确认裁切标识的原始资源。
+设计变量统一维护在 `web/src/styles/design-tokens.css`，并映射到 Ant Design `ConfigProvider.theme.token`。修改主题时以该文件为准，组件使用语义变量。
 
 | 场景 | 优先组件与规则 |
 | --- | --- |
@@ -29,4 +29,4 @@
 - 历史消息有数据时采用后台同步，不卸载消息列表或用骨架屏覆盖；流式和终态切换不得清空已有回复。滚动跟随取决于用户是否正在底部，向上阅读时保留位置。
 - `MessageContent` 统一安全 Markdown/GFM 与代码高亮；`CopyButton` 复制消息原文，代码复制仅包含代码。HTML 源码按文本展示，避免引入 raw HTML 执行；表格/代码自身滚动，手机页面不产生横向溢出。
 - `StreamingMessage` 只控制呈现进度，不改动 SSE 序号、快照恢复、最终消息和用量记录。遵循系统减少动画偏好。
-- 状态色的文字、浅底和边框分别定义；能力配色与验证状态分别表达，禁止以颜色替代验证标记。两份设计变量同步维护。
+- 状态色的文字、浅底和边框分别定义；能力配色与验证状态分别表达，禁止以颜色替代验证标记。设计变量集中维护。
