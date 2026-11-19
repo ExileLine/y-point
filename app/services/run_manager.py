@@ -92,7 +92,7 @@ async def create_run(
     thread_id: str | None = None,
     request_key: str | None = None,
     input_text: str | None = None,
-    model_timeout_seconds: int | None = None,
+    model_timeout_seconds: int | None | EllipsisType = ...,
     tool_timeout_seconds: int | None = None,
     max_queue_wait_seconds: int | None = None,
     enable_text_artifact_tool: bool = False,
@@ -103,7 +103,7 @@ async def create_run(
     max_estimated_cost: Decimal | None = None,
     cost_pricing: tuple[Decimal, Decimal, str] | None = None,
 ) -> AgentRun:
-    """创建运行、调度意图与可选输入；省略输出额度采用默认值，显式空值跟随供应商。"""
+    """创建运行及配置快照；省略超时和输出额度采用默认值，显式空值跟随供应商。"""
     if owner_id <= 0 or request_key is not None and (not request_key or len(request_key) > 128):
         raise ValueError("无效的运行所有者或提交键")
     if thread_id is not None and (not thread_id or len(thread_id) > 36):
@@ -122,9 +122,10 @@ async def create_run(
     agent_thinking_mode = ModelThinkingMode(agent_thinking_mode)
     agent_knowledge_mode = KnowledgeAnswerMode(agent_knowledge_mode)
     config = get_config()
-    model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
+    if model_timeout_seconds is ...:
+        model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS
     tool_timeout_seconds = config.AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS if tool_timeout_seconds is None else tool_timeout_seconds
-    if not 1 <= model_timeout_seconds <= config.AGENT_MAX_MODEL_TIMEOUT_SECONDS:
+    if model_timeout_seconds is not None and not 1 <= model_timeout_seconds <= config.AGENT_MAX_MODEL_TIMEOUT_SECONDS:
         raise ValueError(f"模型生成超时秒数必须在 1 到 {config.AGENT_MAX_MODEL_TIMEOUT_SECONDS} 之间")
     if not 1 <= tool_timeout_seconds <= config.AGENT_MAX_TOOL_TIMEOUT_SECONDS:
         raise ValueError(f"单次工具执行超时秒数必须在 1 到 {config.AGENT_MAX_TOOL_TIMEOUT_SECONDS} 之间")

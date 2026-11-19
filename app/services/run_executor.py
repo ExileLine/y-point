@@ -293,7 +293,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.run_id = run_id
         self.lease_token = lease_token
         self.tool_timeout_seconds = tool_timeout_seconds
-        self.model_timeout_seconds = config.AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS if model_timeout_seconds is None else model_timeout_seconds
+        self.model_timeout_seconds = model_timeout_seconds
         self.model_usage = model_usage if model_usage is not None else []
         self.max_total_tokens = max_total_tokens
         self.max_estimated_cost = max_estimated_cost

@@ -55,7 +55,7 @@ class RuntimeLimitsOut(BaseModel):
     knowledge_embedding_timeout_seconds: int = Field(description="单批嵌入请求时限", examples=[60])
     script_execution_timeout_seconds: int = Field(description="单次正式脚本执行时限", examples=[30])
     script_test_timeout_seconds: int = Field(description="脚本试运行时限", examples=[10])
-    default_model_timeout_seconds: int = Field(description="新建 Agent 默认单次模型超时秒数", examples=[120])
+    default_model_timeout_seconds: int | None = Field(description="新建 Agent 默认单次模型超时秒数；null 不设置平台倒计时", examples=[120, None])
     max_model_timeout_seconds: int = Field(description="单次模型或供应商请求超时秒数上限", examples=[3600])
     default_tool_timeout_seconds: int = Field(description="新建 Agent 默认单次工具超时秒数", examples=[120])
     max_tool_timeout_seconds: int = Field(description="单次工具超时秒数上限", examples=[3600])

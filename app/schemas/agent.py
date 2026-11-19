@@ -45,10 +45,10 @@ class AgentCreateIn(BaseModel):
         description="思考模式；auto 跟随上游，enabled/disabled 要求兼容服务支持 enable_thinking",
         examples=["auto"],
     )
-    model_timeout_seconds: ModelTimeout = Field(
+    model_timeout_seconds: ModelTimeout | None = Field(
         default_factory=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
-        description="单次模型生成超时秒数",
-        examples=[60],
+        description="单次模型生成超时秒数；null 不设置平台倒计时，创建时省略使用平台默认值",
+        examples=[60, None],
     )
     tool_timeout_seconds: ToolTimeout = Field(
         default_factory=lambda: get_config().AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS,
@@ -99,7 +99,7 @@ class AgentUpdateIn(BaseModel):
         description="思考模式；显式启闭仅支持实现 enable_thinking 的 OpenAI 兼容服务",
         examples=["disabled"],
     )
-    model_timeout_seconds: ModelTimeout | None = Field(default=None, description="单次模型生成超时秒数", examples=[60])
+    model_timeout_seconds: ModelTimeout | None = Field(default=None, description="单次模型生成超时秒数；null 不设置平台倒计时", examples=[60, None])
     tool_timeout_seconds: ToolTimeout | None = Field(default=None, description="单次工具执行超时秒数", examples=[30])
     max_model_calls: int | None = Field(default=None, ge=1, le=100, description="每轮模型调用次数上限；null 清除上限", examples=[3])
     max_tool_calls: int | None = Field(default=None, ge=1, le=100, description="每轮工具调用次数上限；null 清除上限", examples=[5])
@@ -133,7 +133,7 @@ class AgentOut(BaseModel):
     max_output_tokens: int | None = Field(description="单次最大输出 Token 数；null 表示由供应商决定", examples=[4096, None])
     knowledge_mode: KnowledgeAnswerMode = Field(description="知识回答模式", examples=["auto", "knowledge_only"])
     thinking_mode: ModelThinkingMode = Field(description="模型思考模式", examples=["auto"])
-    model_timeout_seconds: int = Field(description="单次模型生成超时秒数", examples=[60])
+    model_timeout_seconds: int | None = Field(description="单次模型生成超时秒数；null 不设置平台倒计时", examples=[60, None])
     tool_timeout_seconds: int = Field(description="单次工具执行超时秒数", examples=[30])
     max_model_calls: int | None = Field(description="每轮模型调用次数上限", examples=[3])
     max_tool_calls: int | None = Field(description="每轮工具调用次数上限", examples=[5])

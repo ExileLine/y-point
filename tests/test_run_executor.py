@@ -1440,7 +1440,7 @@ async def exercise_cancel_and_timeout(database_path: Path, checkpoint_path: Path
             SlowModel.started = asyncio.Event()
             SlowModel.stopped = asyncio.Event()
             async with sessions.begin() as db:
-                run = await create_run(db, 1, input_text="wait", model_timeout_seconds=1 if action == "timeout" else 120)
+                run = await create_run(db, 1, input_text="wait", model_timeout_seconds=1 if action == "timeout" else None)
             task = asyncio.create_task(
                 execute_text_run(
                     sessions,

@@ -29,7 +29,7 @@ export type Agent = {
   max_output_tokens: number | null;
   thinking_mode: ModelThinkingMode;
   knowledge_mode: KnowledgeAnswerMode;
-  model_timeout_seconds: number;
+  model_timeout_seconds: number | null;
   tool_timeout_seconds: number;
   max_model_calls: number | null;
   max_tool_calls: number | null;
@@ -279,7 +279,7 @@ export type AgentDraft = {
   max_output_tokens?: number | null;
   thinking_mode?: ModelThinkingMode;
   knowledge_mode?: KnowledgeAnswerMode;
-  model_timeout_seconds?: number;
+  model_timeout_seconds?: number | null;
   tool_timeout_seconds?: number;
   max_model_calls?: number | null;
   max_tool_calls?: number | null;

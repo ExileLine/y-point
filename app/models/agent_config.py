@@ -51,11 +51,11 @@ class AgentConfig(CustomBaseModel):
         server_default=ModelThinkingMode.AUTO,
         comment="模型思考模式：auto 跟随上游，enabled 启用，disabled 关闭",
     )
-    model_timeout_seconds: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
+    model_timeout_seconds: Mapped[int | None] = mapped_column(
+        Integer().evaluates_none(),
+        nullable=True,
         default=lambda: get_config().AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS,
-        comment="单次模型生成超时秒数",
+        comment="单次模型生成超时秒数，空值不设置平台倒计时",
     )
     tool_timeout_seconds: Mapped[int] = mapped_column(
         Integer,

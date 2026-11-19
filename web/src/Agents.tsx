@@ -215,7 +215,7 @@ function AgentEditor({
         if ((values.max_output_tokens ?? null) !== agent.max_output_tokens) changes.max_output_tokens = values.max_output_tokens ?? null;
         if (values.thinking_mode !== agent.thinking_mode) changes.thinking_mode = values.thinking_mode;
         if (values.knowledge_mode !== (agent.knowledge_mode || "auto")) changes.knowledge_mode = values.knowledge_mode;
-        if (values.model_timeout_seconds !== agent.model_timeout_seconds) changes.model_timeout_seconds = values.model_timeout_seconds;
+        if ((values.model_timeout_seconds ?? null) !== agent.model_timeout_seconds) changes.model_timeout_seconds = values.model_timeout_seconds ?? null;
         if (values.tool_timeout_seconds !== agent.tool_timeout_seconds) changes.tool_timeout_seconds = values.tool_timeout_seconds;
         if ((values.max_model_calls ?? null) !== agent.max_model_calls) changes.max_model_calls = values.max_model_calls ?? null;
         if ((values.max_tool_calls ?? null) !== agent.max_tool_calls) changes.max_tool_calls = values.max_tool_calls ?? null;
@@ -225,7 +225,7 @@ function AgentEditor({
         await updateAgent(agent.id, agent.version, changes);
       } else {
         if (!values.default_model_id) return;
-        await createAgent({ ...values, default_model_id: values.default_model_id, max_output_tokens: values.max_output_tokens ?? null });
+        await createAgent({ ...values, default_model_id: values.default_model_id, max_output_tokens: values.max_output_tokens ?? null, model_timeout_seconds: values.model_timeout_seconds ?? null });
       }
       message.success(agent ? "Agent 已更新" : "Agent 已创建");
       onSaved();
@@ -289,7 +289,7 @@ function AgentEditor({
             if (value != null && selectedModel?.context_window && Number(value) + 1024 > selectedModel.context_window) throw new Error("输出上限需为上下文保留至少 1024 Token");
           } }]}><InputNumber placeholder="留空由供应商决定" min={1} max={limits?.max_output_tokens} precision={0} className="agent-number-input" /></Form.Item>
           <div className="agent-form-pair">
-            <Form.Item name="model_timeout_seconds" label="单次模型超时（秒）" extra="必填，包含一次调用的思考、正文和工具参数生成；历史摘要同样受限。长任务还需检查供应商请求超时。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_model_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
+            <Form.Item name="model_timeout_seconds" label="单次模型超时（秒）" extra="留空不设置平台单次调用倒计时，使用供应商连接的请求超时及上游限制；填写时包含思考、正文和工具参数生成，历史摘要也使用此值。"><InputNumber placeholder="留空跟随供应商" min={1} max={limits?.max_model_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
             <Form.Item name="tool_timeout_seconds" label="单次工具超时（秒）" extra="必填；MCP、知识检索和脚本还受各自部署时限约束，仅调大此值可能仍会提前超时。" rules={[{ required: true }]}><InputNumber min={1} max={limits?.max_tool_timeout_seconds} precision={0} className="agent-number-input" /></Form.Item>
           </div>
           <div className="agent-form-pair">
@@ -552,7 +552,7 @@ export default function Agents() {
               { key: "output", label: "最大输出", children: detail.agent.max_output_tokens == null ? "由供应商决定" : `${detail.agent.max_output_tokens} Token` },
               { key: "knowledge_mode", label: "知识回答", children: detail.agent.knowledge_mode === "knowledge_only" ? "仅知识库" : "智能融合 · 按需检索" },
               { key: "thinking", label: "模型思考", children: detail.agent.thinking_mode === "enabled" ? "启用思考" : detail.agent.thinking_mode === "disabled" ? "关闭思考" : "跟随模型" },
-              { key: "timeouts", label: "模型 / 工具超时", children: `${detail.agent.model_timeout_seconds} / ${detail.agent.tool_timeout_seconds} 秒` },
+              { key: "timeouts", label: "模型 / 工具超时", children: `${detail.agent.model_timeout_seconds == null ? "跟随供应商" : `${detail.agent.model_timeout_seconds} 秒`} / ${detail.agent.tool_timeout_seconds} 秒` },
               { key: "budget", label: "每轮预算", children: `模型 ${detail.agent.max_model_calls ?? "不限"} 次 · 工具 ${detail.agent.max_tool_calls ?? "不限"} 次 · Token ${detail.agent.max_total_tokens ?? "不限"} · 成本 ${detail.agent.max_estimated_cost ?? "不限"}` },
             ] : [{ key: "owner", label: "所有者", children: `用户 #${detail.agent.owner_id}` }]),
             { key: "welcome", label: "欢迎语", children: detail.agent.welcome_message || "未设置" },

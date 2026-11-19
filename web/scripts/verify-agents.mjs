@@ -81,7 +81,7 @@ async function withFixture(page, role) {
     }
     if (pathname === "/api/v1/tools/catalog") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ builtin: [], user_tools: [{ id: 31, owner_id: 1, name: "tool_stable_identity", display_name: "天气查询 Weather", model_name: "user_tool_31_tool_stable_identity", description: "查询实时天气", kind: "mcp", visibility: "private", enabled: true, current_version: 1 }] })) });
     if (pathname === "/api/v1/skills") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope([])) });
-    if (pathname === "/api/v1/agents/runtime-limits") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ default_max_output_tokens: 4096, max_output_tokens: 1000000, default_model_timeout_seconds: 120, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600, recursion_limit: 9999, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 120, script_execution_timeout_seconds: 120 })) });
+    if (pathname === "/api/v1/agents/runtime-limits") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ default_max_output_tokens: 4096, max_output_tokens: 1000000, default_model_timeout_seconds: null, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600, recursion_limit: 9999, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 120, script_execution_timeout_seconds: 120 })) });
     const data = pathname === "/api/v1/auth/me" ? { id: 1, username: "tester", nickname: "测试用户", role }
       : pathname === "/api/v1/agents" ? { items: [owned], total: 1, page: 1, page_size: 20 }
       : pathname === "/api/v1/agents/shared" ? [shared]
@@ -141,13 +141,16 @@ try {
     await page.getByRole("combobox", { name: "知识回答模式" }).press("ArrowDown");
     await page.getByText("仅知识库 · 依据资料回答", { exact: true }).click();
     await page.locator(".ant-form-item").filter({ has: page.locator("#knowledge_mode") }).screenshot({ path: `${screenshotDir}/web-agent-knowledge-mode-${name}.png` });
+    await page.getByText("运行设置", { exact: true }).click();
+    await page.getByRole("spinbutton", { name: "单次模型超时（秒）", exact: true }).fill("");
     await page.getByRole("button", { name: /保\s*存/ }).click();
     await page.waitForFunction(() => !document.body.innerText.includes("编辑 Agent"));
     assert.equal(getUpdate()?.expected_version, 2);
     assert.equal(getUpdate()?.name, "需求分析助手新版");
     assert.equal(getUpdate()?.knowledge_mode, "knowledge_only");
     assert.deepEqual(getUpdate()?.tool_ids, [31]);
-    assert.equal(Object.keys(getUpdate()).length, 4);
+    assert.equal(getUpdate()?.model_timeout_seconds, null);
+    assert.equal(Object.keys(getUpdate()).length, 5);
 
     if (name === "desktop") {
       await page.getByRole("button", { name: "新建 Agent" }).click();
@@ -157,6 +160,7 @@ try {
       await page.getByText("运行设置", { exact: true }).click();
       await page.getByRole("spinbutton", { name: "模型调用上限" }).fill("4");
       assert.equal(await page.getByRole("spinbutton", { name: "最大输出 Token" }).inputValue(), "");
+      assert.equal(await page.getByRole("spinbutton", { name: "单次模型超时（秒）", exact: true }).inputValue(), "");
       await page.getByRole("button", { name: /保\s*存/ }).click();
       await page.locator(".ant-drawer-open").waitFor({ state: "hidden", timeout: 3000 }).catch(async () => {
         console.log("create diagnostic", JSON.stringify({ request: getCreate(), drawer: await page.locator(".ant-drawer-open").innerText() }));
@@ -166,6 +170,7 @@ try {
       assert.equal(getCreate()?.knowledge_mode, "auto");
       assert.equal(getCreate()?.default_model_id, 1);
       assert.equal(getCreate()?.max_output_tokens, null);
+      assert.equal(getCreate()?.model_timeout_seconds, null);
       assert.equal(getCreate()?.max_model_calls, 4);
       await page.getByRole("button", { name: "查看详情" }).first().click();
       await page.getByRole("button", { name: "删除 Agent" }).click();

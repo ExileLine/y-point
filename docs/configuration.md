@@ -14,7 +14,7 @@ API 与 worker 通过同一套环境配置读取附件容量和单次调用时�
 | --- | --- | --- |
 | `ARTIFACT_UPLOAD_MAX_BYTES` | `20971520`（20 MiB） | 对话上传单文件字节上限；multipart 请求总限额自动按 5 个文件加 1 MiB 开销计算。 |
 | `ATTACHMENT_CONTEXT_MAX_BYTES` | `20971520`（20 MiB） | 本轮附件提取正文及 JSON 元信息的 UTF-8 字节预算；预检查与 worker 共用。 |
-| `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS` | `120` | 新 Agent 默认的单次模型调用时限；普通生成和历史摘要均受其控制。 |
+| `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS` | 留空 | 新 Agent 默认不设置平台单次模型倒计时；可配置正整数作为创建默认值，普通生成和历史摘要均使用保存值。 |
 | `AGENT_MAX_MODEL_TIMEOUT_SECONDS` | `3600` | Agent 及供应商管理允许设置的模型或请求超时上限。 |
 | `AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS` | `120` | 新 Agent 默认的单次工具调用时限。 |
 | `AGENT_MAX_TOOL_TIMEOUT_SECONDS` | `3600` | 允许设置的单次工具调用时限上限。 |
@@ -33,7 +33,7 @@ API 与 worker 通过同一套环境配置读取附件容量和单次调用时�
 
 正式调用的有效时限按调用类型确定：
 
-- 模型：Agent/Run 保存的 `model_timeout_seconds` 控制一次调用的整体等待，供应商 `timeout_seconds` 独立控制 SDK 请求；OpenAI、兼容服务、Ollama 和 Azure 的异步流式数据块等待也显式使用该值，SSE 心跳不会延长数据块等待时限。较短的限制可能先触发。历史摘要同样有单次模型时限，不受整轮累计耗时影响。
+- 模型：Agent/Run 保存的 `model_timeout_seconds` 为正整数时控制一次调用的整体等待；为空时不设置平台倒计时，Worker 不补默认值，历史摘要遵守相同规则。供应商 `timeout_seconds` 独立控制 SDK 请求；OpenAI、兼容服务、Ollama 和 Azure 的异步流式数据块等待也显式使用供应商请求时限，SSE 心跳不会延长它。留空不取消供应商、网关或模型服务自身的限制；设置了平台倒计时时，较短的限制可能先触发。
 - MCP：`min(Agent.tool_timeout_seconds, MCP_CALL_TIMEOUT_SECONDS)`；HTTP 建连另受 `MCP_CONNECT_TIMEOUT_SECONDS` 约束。初始化、结构复核和调用共享一次 MCP 预算，SDK 进度通知不延长它。工具发现使用单独的发现预算。
 - 知识检索：Agent 中使用 `min(Agent.tool_timeout_seconds, KNOWLEDGE_SEARCH_TIMEOUT_SECONDS)`；独立 HTTP 检索采用部署的检索时限。嵌入请求还受 `min(嵌入供应商.timeout_seconds, KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS)` 约束，完整检索预算覆盖其内的多次嵌入和召回。
 - 脚本：正式执行使用 `min(Agent.tool_timeout_seconds, SCRIPT_EXECUTION_TIMEOUT_SECONDS)`；页面试运行使用 `SCRIPT_TEST_TIMEOUT_SECONDS`。容器在超时或取消时清理；超时不会自动重放脚本或外部写入。
@@ -80,7 +80,9 @@ RUNTIME_RECURSION_LIMIT=9999
 
 输出 Token 上限和调用时限需要分别判断。模型以 `length`、`max_tokens` 等结束原因停止时，平台记录 `failed/model_output_limit_exceeded`，不会把部分回答标为完成，也不会在相同额度下自动补救文件或执行被截断的工具参数；本轮已报告的模型用量仍进入 Run 和调用记录。思考模型可能在正文、工具参数生成前耗尽输出额度；应结合 Agent 的“模型思考模式”“最大输出 Token”、实际模型能力、上下文窗口和单次模型时限调整。没有明确的输出截断标记且最终正文为空时，仍记录 `empty_response`；不能仅凭输出用量等于上限判断截断。
 
-Agent 的 `max_output_tokens` 支持显式 `null`：前端清空“最大输出 Token”后保存，或在 Agent 创建/修改请求中发送 `"max_output_tokens": null`，后续 Run 快照保留空值，支持的供应商请求不再发送 `max_tokens`、`max_completion_tokens` 或对应的输出额度参数。创建时省略字段仍使用 `AGENT_DEFAULT_MAX_OUTPUT_TOKENS`，修改时省略则保留原值；`0` 仍非法，既有整数配置和历史 Run 快照保持原值。此模式由供应商采用自身默认额度及模型硬上限，不保证自动使用模型最大输出能力；平台单次模型时限、已配置的累计 Token/费用/次数预算仍生效。Anthropic Messages 必须填写额度，配置或切换到该供应商时会返回明确提示，避免 SDK 隐式补额度。需要先执行 `uv run alembic upgrade head` 升级到 049，再重启 API 与 worker；回退 048 会将 Agent 空额度回填为旧版默认值 4096。
+Agent 的 `model_timeout_seconds` 支持显式 `null`：清空“单次模型超时（秒）”后保存，或在创建/修改请求中发送 `"model_timeout_seconds": null`。后续 Run 保留该空值快照，普通生成、连接重试和历史摘要不再套用平台默认倒计时；供应商连接的 `timeout_seconds`、上游限制、取消操作及其他预算仍生效。已有 Agent 的整数配置和历史 Run 不自动改变；默认值调整仅影响后续创建，清空 Agent 参数仅影响后续提交的运行。
+
+Agent 的 `max_output_tokens` 支持显式 `null`：前端清空“最大输出 Token”后保存，或在 Agent 创建/修改请求中发送 `"max_output_tokens": null`，后续 Run 快照保留空值，支持的供应商请求不再发送 `max_tokens`、`max_completion_tokens` 或对应的输出额度参数。创建时省略字段仍使用 `AGENT_DEFAULT_MAX_OUTPUT_TOKENS`，修改时省略则保留原值；`0` 仍非法，既有整数配置和历史 Run 快照保持原值。此模式由供应商采用自身默认额度及模型硬上限，不保证自动使用模型最大输出能力；平台单次模型时限、已配置的累计 Token/费用/次数预算仍生效。Anthropic Messages 必须填写额度，配置或切换到该供应商时会返回明确提示，避免 SDK 隐式补额度。数据库结构变更后执行 `uv run alembic upgrade head`，再重启 API 与 worker。
 
 未指定输出额度时，上下文预检与摘要只扣除已知的输入开销，不再暗中预留平台默认输出额度；供应商自行决定的输出预留仍可能导致上下文拒绝。供应商报错继续使用脱敏故障码返回；即使请求没有指定额度，上游正常响应中的 `length`、`max_tokens` 等截断标记仍记录为 `model_output_limit_exceeded`，不会把不完整回答或工具参数当作成功，也不会以同样参数盲目重试。
 
@@ -131,7 +133,7 @@ Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随
 | 生成温度 `temperature` | 默认 `1`，范围 `0～2`，不能为空；`0` 为合法温度。 | 控制随机性，不能增加输出长度或延长时间。供应商可能有额外约束；若支持可调温度，结构化审查可从较低温度试起，以实际质量比较。 |
 | 最大输出 Token `max_output_tokens` | 创建时省略采用 `AGENT_DEFAULT_MAX_OUTPUT_TOKENS=4096`；页面清空或 API 显式 `null` 表示不向供应商指定额度；修改时省略保留原值。 | 整数范围 `1～AGENT_MAX_OUTPUT_TOKENS`，代码上限默认 65536；该上限不是模型实际能力。正文、工具参数和上游报告的思考输出可能共同占额度。`null` 使用供应商默认额度，不能保证无限或自动用满最大输出。Anthropic 要求填写整数。 |
 | 模型思考模式 `thinking_mode` | 默认 `auto`（跟随供应商），不能清空；`auto` 不等于关闭思考。 | `enabled/disabled` 仅支持已实现 `enable_thinking` 扩展的 OpenAI 兼容服务。长思考同时消耗时间和输出额度；关闭思考仍保留工具权限，具体质量和扩展支持需在目标服务验证。 |
-| 单次模型超时 `model_timeout_seconds` | 创建时省略采用 `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS=120` 秒；不能为空。 | 正整数，最大 `AGENT_MAX_MODEL_TIMEOUT_SECONDS`（默认 3600）；每次完整模型调用分别计时，含思考、正文、工具参数生成。摘要也受该时限控制，连接重试和其等待不重置原时限。 |
+| 单次模型超时 `model_timeout_seconds` | 默认留空；创建时省略采用 `AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS`，显式 `null` 始终清空，修改时省略保留原值。 | 留空不设置平台倒计时，继续使用供应商连接的请求超时及上游限制。填写时为正整数，最大 `AGENT_MAX_MODEL_TIMEOUT_SECONDS`（默认 3600）；每次完整调用分别计时，含思考、正文、工具参数生成和连接重试等待；历史摘要同样使用此值。 |
 | 单次工具超时 `tool_timeout_seconds` | 创建时省略采用 `AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS=120` 秒；不能为空。 | 正整数，最大 `AGENT_MAX_TOOL_TIMEOUT_SECONDS`（默认 3600）；MCP、知识检索、脚本采用该值与对应工程分类时限的较小值。纯 Skill 文档读取没有独立的整个 Skill 倒计时。 |
 | 每轮模型调用上限 `max_model_calls` | 默认 `null`；留空不设置本轮该项上限，填写 `1～100`；`0` 非法。 | 不受 `AGENT_DEFAULT_*` 补值；包括生成、摘要、模型自我纠正及允许的连接重试。整轮长不等于某一次超时，但累计调用仍可能触顶。 |
 | 每轮工具调用上限 `max_tool_calls` | 默认 `null`；留空不设置本轮该项上限，填写 `1～100`；`0` 非法。 | Skill 文件读取、正式工具调用和失败调用都会消耗次数；需要为读取说明、校验、修正和最终渲染预留次数。 |

@@ -359,7 +359,7 @@ def test_long_session_summarizes_without_changing_visible_messages(tmp_path: Pat
 
 @pytest.mark.parametrize(
     "failure_kind",
-    ["error", "provider_timeout", "stream_timeout", "model_timeout", "connection_once", "connection_error", "connection_budget", "context_overflow"],
+    ["error", "provider_timeout", "nullable_provider_timeout", "stream_timeout", "model_timeout", "connection_once", "connection_error", "connection_budget", "context_overflow"],
 )
 def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str) -> None:
     """验证摘要失败与两层超时分别归类，并保留历史以供后续会话恢复。"""
@@ -473,7 +473,7 @@ def test_summary_failure_keeps_visible_history_and_reports_failure(tmp_path: Pat
                         agent_max_output_tokens=256,
                         input_text=f"第{index + 1}轮：" + "甲" * 1000,
                         max_model_calls=1 if failure_kind == "connection_budget" and index == 1 else 3,
-                        model_timeout_seconds=1 if failure_kind == "model_timeout" else 120,
+                        model_timeout_seconds=None if failure_kind == "nullable_provider_timeout" else 1 if failure_kind == "model_timeout" else 120,
                     )
                 TrackingModel.fail_summary = index == 1
                 result = await execute_text_run(sessions, run.id, model, checkpoint)

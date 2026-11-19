@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -167,7 +167,7 @@ class BaseConfig(BaseSettings):
     WORKER_HEALTH_FILE: str = Field(default="", description="当前 worker 心跳标识文件，留空不写入，容器探针逐进程核对", examples=["/tmp/y-point-worker-id"])
 
     # AGENT配置参数
-    AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数", examples=[300])
+    AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int | None = Field(default=None, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数，空值不设置平台倒计时", examples=[300, None])
     AGENT_MAX_MODEL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次模型或供应商请求超时秒数上限", examples=[3600])
     AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次工具超时秒数", examples=[120])
     AGENT_MAX_TOOL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次工具超时秒数上限，具体工具可有更严限制", examples=[3600])
@@ -262,12 +262,19 @@ class BaseConfig(BaseSettings):
     # SSE 票据 Cookie 配置参数
     STREAM_COOKIE_SECURE: bool | None = Field(default=None, description="SSE 票据 Cookie 是否仅通过 HTTPS 发送；未配置时由应用环境决定")
 
+    @field_validator("AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS", mode="before")
+    @classmethod
+    def normalize_optional_model_timeout(cls, value):
+        """环境变量留空时不设置平台单次模型倒计时。"""
+        return None if isinstance(value, str) and not value.strip() else value
+
     @model_validator(mode="after")
     def validate_runtime_defaults(self) -> "BaseConfig":
         """启动时拒绝默认值大于对应可配置上限的配置。"""
         for name in ("MODEL_TIMEOUT_SECONDS", "TOOL_TIMEOUT_SECONDS", "MAX_OUTPUT_TOKENS"):
             maximum = "AGENT_MAX_OUTPUT_TOKENS" if name == "MAX_OUTPUT_TOKENS" else f"AGENT_MAX_{name}"
-            if getattr(self, f"AGENT_DEFAULT_{name}") > getattr(self, maximum):
+            default = getattr(self, f"AGENT_DEFAULT_{name}")
+            if default is not None and default > getattr(self, maximum):
                 raise ValueError(f"AGENT_DEFAULT_{name} 不能超过 {maximum}")
         return self
 

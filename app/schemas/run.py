@@ -41,7 +41,7 @@ class RunOut(BaseModel):
     agent_config_version: int | None = Field(description="提交时的智能体配置版本", examples=[1])
     agent_knowledge_mode: KnowledgeAnswerMode = Field(description="提交时知识回答模式快照", examples=["auto", "knowledge_only"])
     agent_thinking_mode: ModelThinkingMode = Field(description="提交时模型思考模式快照", examples=["auto"])
-    model_timeout_seconds: int = Field(description="单次模型生成最长秒数", examples=[60])
+    model_timeout_seconds: int | None = Field(description="单次模型生成最长秒数；null 不设置平台倒计时", examples=[60, None])
     tool_timeout_seconds: int = Field(description="单次工具执行最长秒数", examples=[30])
     max_queue_wait_seconds: int | None = Field(description="排队等待最长秒数", examples=[300])
     queue_expires_at: datetime | None = Field(description="排队等待截止时间", examples=["2026-10-22T22:05:00"])

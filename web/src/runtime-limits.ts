@@ -13,7 +13,7 @@ export type RuntimeLimits = {
   knowledge_embedding_timeout_seconds: number;
   script_execution_timeout_seconds: number;
   script_test_timeout_seconds: number;
-  default_model_timeout_seconds: number;
+  default_model_timeout_seconds: number | null;
   max_model_timeout_seconds: number;
   default_tool_timeout_seconds: number;
   max_tool_timeout_seconds: number;
