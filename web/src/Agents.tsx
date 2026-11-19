@@ -43,6 +43,7 @@ import {
   listSharedAgents,
   listSkills,
   listToolCatalog,
+  toolDisplayName,
   revokeAgentShare,
   searchShareTargets,
   updateAgent,
@@ -270,7 +271,7 @@ function AgentEditor({
         </Form.Item>
         <Form.Item name="tool_ids" label="Tool">
           <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择可用 Tool"
-            options={tools.filter((item) => item.enabled).map((item) => ({ value: item.id, label: `${item.name} · ${item.description}` }))} />
+            options={tools.filter((item) => item.enabled).map((item) => ({ value: item.id, label: `${toolDisplayName(item)} · ${item.description}` }))} />
         </Form.Item>
         {knowledgeError && <Alert className="drawer-alert" type="warning" showIcon message={`知识库目录加载失败：${knowledgeError}`} description="保留原有关联，关闭后重新打开编辑器可重试加载。" />}
         <Form.Item name="knowledge_base_ids" label="知识库" extra="最多 8 个；Agent 共享不会扩大知识库权限，接收方需要单独授权。未发布索引的资料暂不参与检索。">

@@ -21,10 +21,9 @@ from app.services.user_tools import model_tool_name
 
 async def require_dependencies(db: AsyncSession, versions: list[SkillVersion], tools: list[UserTool]) -> None:
     """仅接受显式关联且名称唯一的外部工具，Skill 配置不扩展工具授权。"""
-    names = [tool.name for tool in tools]
     for version in versions:
         config = execution_config(version.files) if any(entry.get("package_file") for entry in version.manifest) else {}
-        missing = [name for name in config.get("required_tools", []) if names.count(name) != 1]
+        missing = [name for name in config.get("required_tools", []) if sum(name in (tool.name, model_tool_name(tool)) for tool in tools) != 1]
         if missing:
             raise CustomException(status_code=409, custom_code=10005, detail="Skill 必需工具未关联、不可用或重名：" + "、".join(missing))
 

@@ -1,0 +1,4 @@
+# 受控协议测试镜像；仅用于本机验收，不作为真实业务 MCP Server。
+FROM python:3.12-slim-bookworm
+COPY mcp_stdio_server.py /app/server.py
+ENTRYPOINT ["python", "/app/server.py"]

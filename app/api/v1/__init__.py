@@ -19,6 +19,7 @@ from app.api.v1.skills import router as skills_router
 from app.api.v1.skill_packages import router as skill_packages_router
 from app.api.v1.skill_templates import router as skill_templates_router
 from app.api.v1.tools import router as tools_router
+from app.api.v1.mcp_connections import router as mcp_connections_router
 from app.api.v1.knowledge import router as knowledge_router, embedding_router, retrieval_router
 
 api_router = APIRouter(prefix="/v1")
@@ -36,6 +37,7 @@ api_router.include_router(skill_packages_router)
 api_router.include_router(skills_router)
 api_router.include_router(skill_templates_router)
 api_router.include_router(tools_router)
+api_router.include_router(mcp_connections_router)
 
 api_router.include_router(knowledge_router)
 api_router.include_router(embedding_router)

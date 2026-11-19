@@ -13,7 +13,7 @@
 | 身份与模型 | 用户、会话和资源授权；供应商名称唯一、凭据加密及冲突回滚；模型接入、能力探测、用量及估算成本记录。 |
 | Agent 与对话 | Agent 配置版本、模型思考偏好、知识回答模式（智能融合/仅知识库）、可空输出额度和运行快照；多会话隔离、多轮检查点续聊、会话内模型切换、指定用户共享与撤权；无需 Agent 的独立文本 Run；长会话摘要、窗口预算和原文分页回读。 |
 | Skill | 标准文件包工作区，支持草稿/校验/发布、参考资料、完整 ZIP、多个模板独立契约、受管脚本沙箱及 Agent/Run 版本固定；报告 Skill ID、模板名称和字段错误支持在原运行预算内修正，候选仅来自本轮有权限的固定绑定。 |
-| Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
+| Tool | 私有或公开的 Python/Bash 脚本及 MCP 工具；MCP 连接支持公网、内网及本机地址的 Streamable HTTP 与固定镜像中的受控 stdio，可由多个 Tool 复用并固定连接版本；Agent 可直接关联多个 Tool，无需 Skill；Python 依赖按版本准备、锁定并支持离线 wheel，脚本在 Docker 沙箱试运行后发布，调用时复核用户授权并记录脱敏状态。 |
 | Tool 治理 | MCP 凭据轮换、清除与撤销；传输及发现限额；跨进程调用与依赖准备名额；外部写幂等契约验收及结果不明禁止重放；资源核对和存储预算。 |
 | 知识库 | 私有或指定只读共享；TXT/Markdown/DOCX 按文本结构处理，XLSX/CSV 保留完整记录和单元格来源，PDF 支持按页提取、本地 OCR、质量检查及原页核对；HTML 提取静态主文，JSON/YAML 保留配置路径与字段类型，PPTX 区分正文、表格及备注；可独立配置文本模型生成检索解释；后台索引、关键词/向量混合检索、发布代加工预览及固定引用，支持撤权、删除、取消与恢复。 |
 | Run 执行 | 数据库队列、幂等提交、租约与心跳、取消/超时/失败终态、审批基础协议、单次模型/工具时限及图步数预算；模型响应前连接失败有限重试、上下文与输出截断分类、工具并发排队和参数同轮纠正；worker 故障后按条件恢复已完成的无工具运行。 |
@@ -39,7 +39,8 @@
 | `app/services/artifact_store.py`、`message_attachments.py`、`attachment_text.py` | 私有文件存储、消息附件引用、常见文件文本提取和清理。 |
 | `app/services/artifact_renderers.py`、`worker_tools.py` | 生成常见格式文件，按会话授权列出或读取旧产物，并装配本轮已授权用户 Tool。 |
 | `app/services/user_tools.py`、`tool_environments.py` | Tool 定义、授权、版本快照、自然名称映射，以及依赖准备任务、锁和缓存校验。 |
-| `app/services/script_sandbox.py`、`mcp_tools.py` | 在 Docker 中执行脚本，通过 MCP Streamable HTTP 发现和调用远端工具。 |
+| `app/services/script_sandbox.py`、`mcp_tools.py`、`mcp_stdio.py` | 在 Docker 中执行脚本；通过标准 HTTP 或容器 stdio 发现和调用 MCP 工具，统一处理协议与结果限额。 |
+| `app/services/mcp_connections.py` | 共享 MCP 连接、固定执行配置、凭据策略及撤权范围；Tool 与 Run 继续固定版本。 |
 | `app/services/knowledge.py`、`knowledge_jobs.py` | 知识库授权、完整索引代、检索审计，以及可恢复的后台解析和原子发布。 |
 | `app/services/knowledge_parser.py`、`knowledge_backend.py`、`embedding_adapter.py` | 文档结构与偏移、原生全文/向量后端、独立嵌入协议和维度验证。 |
 | `app/core/enums.py` | 跨模块业务类型、状态、角色、可见性和策略的统一枚举。 |

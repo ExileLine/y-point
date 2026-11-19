@@ -79,6 +79,8 @@ async function withFixture(page, role) {
       lastDelete = pathname;
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope(null)) });
     }
+    if (pathname === "/api/v1/tools/catalog") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ builtin: [], user_tools: [{ id: 31, owner_id: 1, name: "tool_stable_identity", display_name: "天气查询 Weather", model_name: "user_tool_31_tool_stable_identity", description: "查询实时天气", kind: "mcp", visibility: "private", enabled: true, current_version: 1 }] })) });
+    if (pathname === "/api/v1/skills") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope([])) });
     if (pathname === "/api/v1/agents/runtime-limits") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ default_max_output_tokens: 4096, max_output_tokens: 1000000, default_model_timeout_seconds: 120, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600, recursion_limit: 9999, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 120, script_execution_timeout_seconds: 120 })) });
     const data = pathname === "/api/v1/auth/me" ? { id: 1, username: "tester", nickname: "测试用户", role }
       : pathname === "/api/v1/agents" ? { items: [owned], total: 1, page: 1, page_size: 20 }
@@ -131,6 +133,10 @@ try {
     await page.waitForTimeout(350);
     await page.screenshot({ path: `${screenshotDir}/web-agent-editor-${name}.png`, fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+    const toolSelect = page.locator(".ant-form-item").filter({ has: page.locator("#tool_ids") }).locator(".ant-select");
+    await toolSelect.click();
+    await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText("天气查询 Weather · 查询实时天气", { exact: true }).click();
+    await page.getByRole("textbox", { name: "名称" }).click();
     await page.getByRole("textbox", { name: "名称" }).fill("需求分析助手新版");
     await page.getByRole("combobox", { name: "知识回答模式" }).press("ArrowDown");
     await page.getByText("仅知识库 · 依据资料回答", { exact: true }).click();
@@ -140,7 +146,8 @@ try {
     assert.equal(getUpdate()?.expected_version, 2);
     assert.equal(getUpdate()?.name, "需求分析助手新版");
     assert.equal(getUpdate()?.knowledge_mode, "knowledge_only");
-    assert.equal(Object.keys(getUpdate()).length, 3);
+    assert.deepEqual(getUpdate()?.tool_ids, [31]);
+    assert.equal(Object.keys(getUpdate()).length, 4);
 
     if (name === "desktop") {
       await page.getByRole("button", { name: "新建 Agent" }).click();

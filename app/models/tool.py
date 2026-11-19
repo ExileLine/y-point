@@ -18,6 +18,7 @@ class UserTool(CustomBaseModel):
     __table_name__ = "user_tool"
     __table_args__ = (
         UniqueConstraint("owner_id", "name", name="uq_yp_user_tool_owner_name"),
+        UniqueConstraint("owner_id", "display_name", name="uq_yp_user_tool_owner_display_name"),
         {
             "comment": "用户创建的脚本或 MCP Tool",
         },
@@ -26,6 +27,7 @@ class UserTool(CustomBaseModel):
     skill_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="所属 Skill ID，空表示独立 Tool")
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="创建用户 ID")
     name: Mapped[str] = mapped_column(String(64), nullable=False, comment="创建者范围内的 Tool 名称")
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="工具显示名称，为空时回退内部标识")
     description: Mapped[str] = mapped_column(String(1024), nullable=False, comment="模型可见的 Tool 用途说明")
     kind: Mapped[str] = mapped_column(String(16), nullable=False, comment="脚本或 MCP 来源类型")
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, comment="私有或公开")
@@ -69,6 +71,9 @@ class UserToolVersion(CustomBaseModel):
     environment_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="环境准备尝试次数")
     script_language: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="脚本语言")
     source_code: Mapped[str | None] = mapped_column(Text, nullable=True, comment="脚本源代码")
+    mcp_connection_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True, comment="所属 MCP 连接 ID")
+    mcp_connection_version: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="固定的 MCP 连接版本")
+    mcp_config: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="固定且不含凭据的 MCP 连接配置")
     mcp_url: Mapped[str | None] = mapped_column(String(512), nullable=True, comment="MCP Streamable HTTP 地址")
     mcp_tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="远端 MCP 工具名")
     encrypted_credentials: Mapped[str | None] = mapped_column(Text, nullable=True, comment="加密的 MCP 连接凭据")

@@ -31,7 +31,8 @@
     "verify:knowledge-processing": "node scripts/verify-knowledge-processing.mjs",
     "verify:knowledge-pdf": "node scripts/verify-knowledge-pdf.mjs",
     "verify:ag-ui": "node scripts/verify-ag-ui.mjs",
-    "verify:ag-ui-submit": "node scripts/verify-ag-ui-submit.mjs"
+    "verify:ag-ui-submit": "node scripts/verify-ag-ui-submit.mjs",
+    "verify:mcp": "node scripts/verify-mcp-connections.mjs"
   },
   "dependencies": {
     "@ag-ui/core": "1.0.4",

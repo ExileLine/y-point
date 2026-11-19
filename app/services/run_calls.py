@@ -17,7 +17,7 @@ from app.models.knowledge import KnowledgeBase, RunKnowledgeBase
 from app.models.skill import Skill, RunSkill
 from app.models.skill_package import SkillScript
 from app.models.tool import RunTool, UserTool
-from app.services.user_tools import model_tool_name
+from app.services.user_tools import model_tool_name, tool_display_name
 from app.schemas.run import RunCallOut
 from app.services.knowledge import knowledge_access
 from app.services.run_manager import TERMINAL_STATES
@@ -33,14 +33,20 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
     rows = (
         await db.execute(
             select(AgentRunEvent, AgentRun.state)
-            .join(AgentRun, AgentRun.id == AgentRunEvent.run_id)
+            .join(
+                AgentRun,
+                AgentRun.id == AgentRunEvent.run_id,
+            )
             .where(
                 AgentRun.owner_id == owner_id,
                 AgentRun.id.in_(run_ids),
                 AgentRunEvent.event_type.in_(TOOL_EVENTS),
                 AgentRunEvent.tool_call_id.is_not(None),
             )
-            .order_by(AgentRunEvent.run_id, AgentRunEvent.sequence),
+            .order_by(
+                AgentRunEvent.run_id,
+                AgentRunEvent.sequence,
+            ),
         )
     ).all()
     knowledge_runs = {event.run_id for event, _ in rows if event.tool_name == "search_knowledge_base"}
@@ -53,7 +59,10 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                     KnowledgeBase,
                     and_(KnowledgeBase.id == RunKnowledgeBase.knowledge_base_id, knowledge_access(owner_id)),
                 )
-                .where(RunKnowledgeBase.run_id.in_(knowledge_runs), RunKnowledgeBase.index_id.is_not(None))
+                .where(
+                    RunKnowledgeBase.run_id.in_(knowledge_runs),
+                    RunKnowledgeBase.index_id.is_not(None),
+                )
                 .order_by(RunKnowledgeBase.id),
             )
         ).all()
@@ -63,22 +72,31 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
     managed = (
         await db.execute(
             select(RunTool, UserTool, SkillScript, Skill, RunSkill.skill_version)
-            .join(UserTool, UserTool.id == RunTool.tool_id)
-            .join(SkillScript, and_(SkillScript.tool_id == RunTool.tool_id, SkillScript.package_hash == RunTool.content_hash))
-            .join(Skill, Skill.id == SkillScript.skill_id)
-            .join(RunSkill, and_(RunSkill.run_id == RunTool.run_id, RunSkill.skill_id == Skill.id))
+            .join(
+                UserTool,
+                UserTool.id == RunTool.tool_id,
+            )
+            .join(
+                SkillScript,
+                and_(SkillScript.tool_id == RunTool.tool_id, SkillScript.package_hash == RunTool.content_hash),
+            )
+            .join(
+                Skill,
+                Skill.id == SkillScript.skill_id,
+            )
+            .join(
+                RunSkill,
+                and_(RunSkill.run_id == RunTool.run_id, RunSkill.skill_id == Skill.id),
+            )
             .where(RunTool.run_id.in_(run_ids)),
         )
     ).all()
     for fixed, tool, binding, skill, version in managed:
         visible = not skill.is_deleted and skill.enabled and (skill.owner_id == owner_id or skill.visibility == Visibility.PUBLIC)
         script_names[(fixed.run_id, model_tool_name(tool))] = f"{skill.name}@v{version} / {binding.path}" if visible else "Skill 脚本（已不可用）"
-    mcp_tools = (
-        await db.execute(
-            select(RunTool.run_id, UserTool).join(UserTool, UserTool.id == RunTool.tool_id).where(RunTool.run_id.in_(run_ids), UserTool.kind == ToolKind.MCP)
-        )
-    ).all()
-    mcp_names = {(run_id, model_tool_name(tool)) for run_id, tool in mcp_tools}
+    user_tools = (await db.execute(select(RunTool.run_id, UserTool).join(UserTool, UserTool.id == RunTool.tool_id).where(RunTool.run_id.in_(run_ids)))).all()
+    mcp_names = {(run_id, model_tool_name(tool)) for run_id, tool in user_tools if tool.kind == ToolKind.MCP}
+    tool_names = {(run_id, model_tool_name(tool)): tool_display_name(tool) for run_id, tool in user_tools}
     grouped: dict[str, dict[str, RunCallOut]] = {}
     for event, run_state in rows:
         calls = grouped.setdefault(event.run_id, {})
@@ -91,7 +109,21 @@ async def load_run_calls(db: AsyncSession, owner_id: int, run_ids: list[str]) ->
                 kind = RunCallKind.KNOWLEDGE
                 name = "、".join(knowledge_names.get(event.run_id, [])) or "知识库检索"
             else:
-                kind, name = RunCallKind.TOOL, script_names.get((event.run_id, tool_name), re.sub(r"^user_tool_\d+_", "", tool_name))
+                kind, name = (
+                    RunCallKind.TOOL,
+                    script_names.get((event.run_id, tool_name), tool_names.get((event.run_id, tool_name), re.sub(r"^user_tool_\d+_", "", tool_name))),
+                )
+            recorded_name = (event.details or {}).get("display_name")
+            recorded_kind = (event.details or {}).get("call_kind")
+            if (
+                recorded_kind in (RunCallKind.TOOL, RunCallKind.MCP)
+                and tool_name.startswith("user_tool_")
+                and (event.run_id, tool_name) not in script_names
+                and isinstance(recorded_name, str)
+                and recorded_name
+            ):
+                name = recorded_name
+                kind = RunCallKind(recorded_kind)
             if (event.run_id, tool_name) in mcp_names:
                 kind = RunCallKind.MCP
             call = RunCallOut(

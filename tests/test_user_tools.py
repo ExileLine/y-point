@@ -33,7 +33,7 @@ from app.models.tool import AgentTool, RunTool, ToolInvocation, UserTool, UserTo
 from app.services.run_executor import execute_text_run
 from app.services.run_manager import claim_run, create_run, fail_run
 from app.services import mcp_tools
-from app.services.mcp_tools import _PinnedPublicTransport
+from app.services.mcp_tools import _PinnedMcpTransport
 from app.services.script_sandbox import SandboxConfigurationError, run_script
 from app.services.skills import snapshot_run_skills, validate_package
 from app.services.user_tools import (
@@ -342,16 +342,15 @@ def test_script_sandbox_blocks_network_and_times_out() -> None:
     asyncio.run(exercise())
 
 
-def test_mcp_address_is_pinned_to_public_ip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MCP 拒绝私网解析结果，并在传输层固定已验证公网 IP。"""
+def test_mcp_address_is_pinned_to_resolved_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP 允许内网解析结果，并在传输层固定解析 IP。"""
 
     def private_address(*args, **kwargs):
         """模拟域名解析到内网。"""
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
 
     monkeypatch.setattr(socket, "getaddrinfo", private_address)
-    with pytest.raises(ValueError, match="内网"):
-        validate_mcp_url("https://mcp.example.com/mcp")
+    assert validate_mcp_url("https://mcp.example.com/mcp") == "127.0.0.1"
 
     async def exercise() -> None:
         """截获固定 IP 的请求，不访问外部服务。"""
@@ -362,7 +361,7 @@ def test_mcp_address_is_pinned_to_public_ip(monkeypatch: pytest.MonkeyPatch) -> 
             seen.append(request)
             return httpx.Response(200, text="ok")
 
-        transport = _PinnedPublicTransport("mcp.example.com", "1.1.1.1")
+        transport = _PinnedMcpTransport("mcp.example.com", "1.1.1.1")
         await transport.transport.aclose()
         transport.transport = httpx.MockTransport(respond)
         async with httpx.AsyncClient(transport=transport) as client:
@@ -675,7 +674,7 @@ def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch
         assert http_client.timeout.connect == 4 and http_client.timeout.read == 7
         assert not http_client.follow_redirects
         assert http_client._trust_env is False
-        assert isinstance(http_client._transport, _PinnedPublicTransport)
+        assert isinstance(http_client._transport, _PinnedMcpTransport)
         assert http_client._transport.address == "1.1.1.1"
         seen.append(http_client)
         yield "read", "write", None
@@ -696,7 +695,8 @@ def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch
     asyncio.run(exercise())
 
 
-def test_mcp_transport_rejects_same_origin_redirects() -> None:
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_mcp_transport_rejects_same_origin_redirects(scheme) -> None:
     """即使新版 SDK 会处理同源跳转，固定 IP 传输层也必须先拒绝。"""
 
     async def exercise() -> None:
@@ -709,16 +709,163 @@ def test_mcp_transport_rejects_same_origin_redirects() -> None:
             return httpx.Response(
                 307,
                 headers={
-                    "Location": "https://mcp.example.com/other",
+                    "Location": f"{scheme}://mcp.example.com/other",
                 },
             )
 
-        transport = _PinnedPublicTransport("mcp.example.com", "1.1.1.1")
+        transport = _PinnedMcpTransport("mcp.example.com", "1.1.1.1", scheme=scheme)
         await transport.transport.aclose()
         transport.transport = httpx.MockTransport(redirect)
         async with httpx.AsyncClient(transport=transport, follow_redirects=True) as client:
             with pytest.raises(ValueError, match="不允许重定向"):
-                await client.post("https://mcp.example.com/mcp")
+                await client.post(f"{scheme}://mcp.example.com/mcp")
         assert len(seen) == 1
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("scheme,port", [("http", 80), ("http", 8080), ("https", 443), ("https", 8443)])
+def test_mcp_http_address_and_port(monkeypatch, scheme, port) -> None:
+    """HTTP 与 HTTPS 均按实际端口解析并固定公网目标。"""
+    seen = []
+
+    def resolve(host, resolved_port, **kwargs):
+        """记录实际解析端口并返回确定的公网地址。"""
+        seen.append((host, resolved_port))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", resolved_port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    default_port = 80 if scheme == "http" else 443
+    authority = "mcp.example.com" if port == default_port else f"mcp.example.com:{port}"
+    assert validate_mcp_url(f"{scheme}://{authority}/mcp") == "1.1.1.1"
+    assert seen == [("mcp.example.com", port)]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://mcp.example.com/mcp",
+        "http://user:pass@mcp.example.com/mcp",
+        "http://@mcp.example.com/mcp",
+        "http://mcp.example.com:0/mcp",
+        "http://mcp.example.com:65536/mcp",
+        "http://mcp.example.com:invalid/mcp",
+        "http://mcp.example.com/mcp#secret",
+        "http://mcp.example.com/\nsecret",
+    ],
+)
+def test_mcp_rejects_invalid_http_address(url) -> None:
+    """HTTP 不绕过协议、内嵌凭据、端口和控制字符检查。"""
+    with pytest.raises(ValueError, match="MCP 地址必须"):
+        validate_mcp_url(url)
+
+
+@pytest.mark.parametrize(
+    "scheme,port,address,host",
+    [
+        ("http", 80, "1.1.1.1", "mcp.example.com"),
+        ("http", 8080, "1.1.1.1", "mcp.example.com"),
+        ("https", 8443, "1.1.1.1", "mcp.example.com"),
+        ("http", 8080, "2606:4700:4700::1111", "2606:4700:4700::1111"),
+    ],
+)
+def test_mcp_transport_pins_scheme_host_and_port(scheme, port, address, host) -> None:
+    """保留原始 Host 和端口，固定 IPv4/IPv6，拒绝协议或端口变化。"""
+
+    async def exercise():
+        """捕获底层请求并检查 authority、TLS 与来源约束。"""
+        seen = []
+
+        async def respond(request):
+            """记录真正送往底层连接池的固定地址。"""
+            seen.append(request)
+            return httpx.Response(200, text="ok")
+
+        transport = _PinnedMcpTransport(host, address, scheme=scheme, port=port)
+        await transport.transport.aclose()
+        transport.transport = httpx.MockTransport(respond)
+        host_header = f"[{host}]" if ":" in host else host
+        default_port = 80 if scheme == "http" else 443
+        authority = host_header if port == default_port else f"{host_header}:{port}"
+        async with httpx.AsyncClient(transport=transport) as client:
+            assert (await client.get(f"{scheme}://{authority}/mcp")).status_code == 200
+            with pytest.raises(ValueError, match="目标已变化"):
+                await client.get(f"{scheme}://{host_header}:{port + 1}/mcp")
+            other_scheme = "https" if scheme == "http" else "http"
+            with pytest.raises(ValueError, match="目标已变化"):
+                await client.get(f"{other_scheme}://{authority}/mcp")
+        assert seen[0].url.host == address
+        assert (seen[0].url.port or default_port) == port
+        assert seen[0].headers["Host"] == authority
+        assert seen[0].extensions.get("sni_hostname") == (host if scheme == "https" else None)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_mcp_nonpublic_dns_is_allowed_for_both_schemes(monkeypatch, scheme) -> None:
+    """HTTP 和 HTTPS 允许内网、回环、链路本地及保留地址，并固定本次首个解析结果。"""
+    for private in ("127.0.0.1", "10.0.0.1", "192.168.1.2", "169.254.169.254", "192.0.2.1", "::1", "fc00::1"):
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *args, **kwargs: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (private, 8080)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 8080)),
+            ],
+        )
+        assert validate_mcp_url(f"{scheme}://mcp.example.com:8080/mcp") == private
+
+
+def test_mcp_loopback_discovery_and_call_over_real_http() -> None:
+    """通过真实回环 HTTP 端口完成官方 SDK 初始化、工具发现及调用。"""
+    import uvicorn
+    from mcp.server.fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
+
+    from app.services.mcp_tools import discover_mcp_tools, invoke_mcp_tool
+
+    async def exercise():
+        """启动隔离 MCP 服务，并在成功或异常后关闭监听和后台任务。"""
+        server = FastMCP("loopback-test", stateless_http=True, json_response=True)
+
+        @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+        async def echo(value: int) -> int:
+            """返回输入值，验证工具调用确实到达回环服务。"""
+            return value
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            application = uvicorn.Server(uvicorn.Config(server.streamable_http_app(), log_level="critical"))
+            task = asyncio.create_task(application.serve(sockets=[listener]))
+            try:
+                async with asyncio.timeout(5):
+                    while not application.started:
+                        if task.done():
+                            await task
+                            raise RuntimeError("测试 MCP 服务未启动")
+                        await asyncio.sleep(0.01)
+                target = {
+                    "transport": "streamable_http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+                tools = await discover_mcp_tools(target)
+                assert [item["name"] for item in tools] == ["echo"]
+                result = await invoke_mcp_tool(
+                    target,
+                    "echo",
+                    {
+                        "value": 42,
+                    },
+                    None,
+                    5,
+                    tools[0]["input_schema"],
+                    expected_read_only=True,
+                )
+                assert "42" in result
+            finally:
+                application.should_exit = True
+                await asyncio.wait_for(task, timeout=5)
 
     asyncio.run(exercise())

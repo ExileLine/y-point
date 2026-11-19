@@ -95,7 +95,7 @@ python3 scripts/deploy_all.py --sandbox
 python3 scripts/deploy_all.py --create-admin admin
 ```
 
-此模式下，Python/Bash Tool 的依赖准备、试运行和正式调用，以及 Skill 受管脚本均不可用；需要先完成脚本试运行才能发布的版本也会受影响。远程 MCP 和不含受管脚本的 Skill 不依赖这个开关。已有管理员省略 `--create-admin admin`。
+此模式下，Python/Bash Tool 的依赖准备、试运行和正式调用，以及 Skill 受管脚本和 MCP stdio 均不可用；需要先完成脚本试运行才能发布的版本也会受影响。远程 MCP 和不含受管脚本的 Skill 不依赖这个开关。已有管理员省略 `--create-admin admin`。
 
 ### 脚本参数
 

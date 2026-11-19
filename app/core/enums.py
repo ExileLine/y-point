@@ -18,6 +18,13 @@ class ToolKind(StrEnum):
     MCP = "mcp"
 
 
+class McpTransport(StrEnum):
+    """平台支持的 MCP 标准传输。"""
+
+    STREAMABLE_HTTP = "streamable_http"
+    STDIO = "stdio"
+
+
 class ScriptLanguage(StrEnum):
     """沙箱支持的脚本语言。"""
 

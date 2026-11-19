@@ -17,6 +17,8 @@ from app.core.response import api_response
 
 
 SENSITIVE_FIELDS = {
+    "env",
+    "bearertoken",
     "password",
     "passwd",
     "pwd",

@@ -8,7 +8,6 @@
 import ast
 from collections import Counter
 import hashlib
-import ipaddress
 import json
 import re
 import socket
@@ -29,6 +28,11 @@ TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 MAX_SOURCE_BYTES = 64 * 1024
 MAX_SCHEMA_BYTES = 16 * 1024
 MAX_AGENT_TOOLS = 16
+
+
+def tool_display_name(tool: UserTool) -> str:
+    """返回可读显示名称，兼容既有工具和 Skill 管理的脚本。"""
+    return tool.display_name or tool.name
 
 
 def model_tool_name(tool: UserTool) -> str:
@@ -52,30 +56,43 @@ def skill_tool_catalog(tools: list[UserTool], aliases: dict[str, str]) -> str:
     ]
     for tool in tools:
         status = "名称唯一" if tool.name in aliases else "名称冲突，必须明确工具 ID/所有者"
-        lines.append(f"- {tool.name}（Tool ID={tool.id}，所有者={tool.owner_id}，{status}）→ {model_tool_name(tool)}")
+        lines.append(f"- {tool_display_name(tool)}（内部标识={tool.name}，Tool ID={tool.id}，所有者={tool.owner_id}，{status}）→ {model_tool_name(tool)}")
     if not tools:
         lines.append("- 本轮未关联可用的用户 Tool。")
     return "\n".join(lines)
 
 
 def validate_mcp_url(url: str) -> str:
-    """仅允许公网 HTTPS MCP 端点，并返回本次固定的连接 IP。"""
-    parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.fragment or parts.port not in (None, 443):
-        raise ValueError("MCP 地址必须是无凭据的公网 HTTPS 地址")
+    """允许 HTTP/HTTPS MCP 端点，按实际端口解析并返回固定连接 IP。"""
     try:
-        addresses = socket.getaddrinfo(parts.hostname, 443, type=socket.SOCK_STREAM)
+        parts = urlsplit(url)
+        port = parts.port
+        valid = (
+            parts.scheme in ("http", "https")
+            and parts.hostname
+            and parts.username is None
+            and parts.password is None
+            and not parts.fragment
+            and (port is None or 1 <= port <= 65535)
+            and not any(char.isspace() or ord(char) < 32 for char in url)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("MCP 地址必须是无内嵌凭据的 HTTP 或 HTTPS 地址，端口范围为 1–65535")
+    try:
+        addresses = socket.getaddrinfo(parts.hostname, port or (80 if parts.scheme == "http" else 443), type=socket.SOCK_STREAM)
     except OSError as exc:
         raise ValueError("MCP 域名无法解析") from exc
-    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
-        raise ValueError("MCP 地址不得指向内网、回环或保留地址")
+    if not addresses:
+        raise ValueError("MCP 域名无法解析")
     return addresses[0][4][0]
 
 
 def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, str, bool, str]:
     """校验脚本或 MCP 执行定义，并返回读写属性、审批策略及摘要。"""
     if TOOL_NAME_RE.fullmatch(name) is None:
-        raise ValueError("Tool 名称只能使用小写字母、数字和下划线，且以字母开头")
+        raise ValueError("Tool 内部调用标识只能使用小写字母、数字和下划线，且以字母开头")
     schema = fields.get("input_schema")
     if not isinstance(schema, dict) or schema.get("type") != "object":
         raise ValueError("Tool 参数结构必须是对象型 JSON Schema（type: object），不能提交示例参数或返回结果")
@@ -92,7 +109,7 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
         language, source = fields.get("script_language"), fields.get("source_code")
         if language not in ScriptLanguage or not isinstance(source, str) or not 1 <= len(source.encode()) <= MAX_SOURCE_BYTES:
             raise ValueError("脚本需提供 64 KiB 内的 Python 或 Bash 源码")
-        if any(fields.get(key) for key in ("mcp_url", "mcp_tool_name", "mcp_bearer_token", "encrypted_credentials")):
+        if any(fields.get(key) for key in ("mcp_url", "mcp_connection_id", "mcp_tool_name", "mcp_bearer_token", "encrypted_credentials")):
             raise ValueError("脚本 Tool 不能包含 MCP 连接配置")
         if language == ScriptLanguage.PYTHON:
             try:
@@ -104,9 +121,10 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
         fields["idempotency_key_field"] = None
     elif kind == ToolKind.MCP:
         url, remote_name = fields.get("mcp_url"), fields.get("mcp_tool_name")
-        if not isinstance(url, str) or not isinstance(remote_name, str) or not remote_name or len(remote_name) > 128:
+        if (not fields.get("mcp_config") and not isinstance(url, str)) or not isinstance(remote_name, str) or not remote_name or len(remote_name) > 128:
             raise ValueError("MCP Tool 需要连接地址与远端工具名")
-        validate_mcp_url(url)
+        if not fields.get("mcp_config"):
+            validate_mcp_url(url)
         if fields.get("source_code") or fields.get("script_language"):
             raise ValueError("MCP Tool 不能包含脚本源码")
         if fields.get("visibility") == Visibility.PUBLIC and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
@@ -137,6 +155,9 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
         "script_language",
         "source_code",
         "mcp_url",
+        "mcp_connection_id",
+        "mcp_connection_version",
+        "mcp_config",
         "mcp_tool_name",
         "share_credentials",
         "encrypted_credentials",
@@ -159,6 +180,11 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
     if token:
         fields["encrypted_credentials"] = encrypt_credentials(token, {})
     fields["share_credentials"] = bool(fields["share_credentials"])
+    if body.get("mcp_connection_id") is not None and any(body.get(key) for key in ("mcp_url", "mcp_bearer_token", "clear_mcp_credentials")):
+        raise ValueError("选择共享连接后，请在连接管理中修改地址和凭据")
+    if body.get("mcp_url") or body.get("mcp_bearer_token") or body.get("clear_mcp_credentials"):
+        if previous is not None and previous.mcp_connection_id is not None:
+            raise ValueError("此工具使用共享连接，请在连接管理中修改地址和凭据")
     fields["visibility"] = body["visibility"]
     return fields
 
@@ -269,6 +295,10 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
             or version.content_hash != row.content_hash
         ):
             raise CustomException(status_code=409, custom_code=10005, detail="Tool 授权或版本已失效")
+        if tool.kind == ToolKind.MCP:
+            from app.services.mcp_connections import require_connection
+
+            await require_connection(db, tool, version, actor_id)
         if tool.skill_id is not None:
             from app.services.skill_package_runtime import managed_script_resources
 

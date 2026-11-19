@@ -298,16 +298,19 @@ export type ToolEnvironment = {
   locked_requirements: { name: string; version: string; sha256: string }[];
 };
 export type UserTool = {
-  id: number; owner_id: number; name: string; model_name: string; description: string;
+  id: number; owner_id: number; name: string; display_name?: string; model_name: string; description: string;
   kind: "script" | "mcp"; visibility: "private" | "public"; enabled: boolean; current_version: number;
   input_schema?: Record<string, unknown>; script_language?: "python" | "bash" | null;
+  mcp_connection_id?: number | null; mcp_connection_version?: number | null; mcp_transport?: "streamable_http" | "stdio" | null;
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
   has_credentials?: boolean; share_credentials?: boolean; requires_approval?: boolean;
   verified?: boolean; requirements?: string[]; environment?: ToolEnvironment;
 };
+export const toolDisplayName = (tool: UserTool): string => tool.display_name || tool.name;
 export type ToolDraft = {
-  name: string; description: string; kind: "script" | "mcp"; visibility: "private" | "public";
+  name?: string; display_name?: string; description: string; kind: "script" | "mcp"; visibility: "private" | "public";
   input_schema?: Record<string, unknown> | null; script_language?: "python" | "bash" | null;
+  mcp_connection_id?: number | null;
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
   mcp_bearer_token?: string; share_credentials?: boolean; requires_approval?: boolean; requirements?: string[];
 };
@@ -331,6 +334,24 @@ export const testUserTool = (id: number, args: Record<string, unknown>): Promise
   request(`/tools/${id}/test`, { method: "POST", body: JSON.stringify({ arguments: args }) });
 export const discoverMcpTools = (url: string, bearerToken?: string): Promise<DiscoveredTool[]> =>
   request("/tools/mcp/discover", { method: "POST", body: JSON.stringify({ url, bearer_token: bearerToken || null }) });
+
+export type McpConnection = {
+  id: number; name: string; version: number; transport: "streamable_http" | "stdio";
+  url: string | null; stdio_profile: string | null; args: string[]; enabled: boolean;
+  has_credentials: boolean; share_credentials: boolean; credentials_revoked_through: number;
+};
+export type McpConnectionDraft = {
+  name: string; transport: "streamable_http" | "stdio"; url?: string; stdio_profile?: string;
+  args?: string[]; env?: Record<string, string>; bearer_token?: string; share_credentials: boolean; enabled: boolean;
+};
+export const listMcpConnections = (): Promise<McpConnection[]> => request("/mcp-connections");
+export const listMcpStdioProfiles = (): Promise<{ name: string; env_keys: string[] }[]> => request("/mcp-connections/stdio-profiles");
+export const createMcpConnection = (draft: McpConnectionDraft): Promise<McpConnection> =>
+  request("/mcp-connections", { method: "POST", body: JSON.stringify(draft) });
+export const updateMcpConnection = (id: number, draft: McpConnectionDraft & { expected_version: number; clear_credentials: boolean }): Promise<McpConnection> =>
+  request(`/mcp-connections/${id}`, { method: "PUT", body: JSON.stringify(draft) });
+export const deleteMcpConnection = (id: number): Promise<void> => request(`/mcp-connections/${id}`, { method: "DELETE" });
+export const discoverMcpConnection = (id: number): Promise<DiscoveredTool[]> => request(`/mcp-connections/${id}/discover`, { method: "POST" });
 
 export type SkillReportTemplate = { template_key?: string; artifact_id: string; filename: string; sha256: string; fields_schema: Record<string, unknown> };
 export type Skill = {

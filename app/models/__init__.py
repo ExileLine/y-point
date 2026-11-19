@@ -28,9 +28,11 @@ from app.models.skill import Skill, SkillVersion, AgentSkill, RunSkill
 from app.models.skill_template import SkillTemplate
 from app.models.skill_package import SkillDraft, SkillVersionFile, SkillScript
 from app.models.tool_execution import ToolExecutionGate, ToolExecutionLease
+from app.models.mcp_connection import McpConnection
 from app.models.tool import UserTool, UserToolVersion, AgentTool, RunTool, ToolInvocation
 
 __all__ = [
+    "McpConnection",
     "SkillTemplate",
     "SkillDraft",
     "SkillVersionFile",

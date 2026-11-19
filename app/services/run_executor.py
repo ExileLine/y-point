@@ -107,7 +107,7 @@ from app.services.runtime_checkpoint import open_async_checkpointer
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
 from app.services.tool_registry import RESERVED_TOOL_NAMES
 from app.services.skills import load_run_skill_files
-from app.services.user_tools import load_run_tools, model_tool_name, skill_tool_catalog, tool_name_aliases
+from app.services.user_tools import load_run_tools, model_tool_name, tool_display_name, skill_tool_catalog, tool_name_aliases
 
 ModelResolver = Callable[[AsyncSession, AgentRun], Awaitable[BaseChatModel]]
 ToolResolver = Callable[[AsyncSession, AgentRun], Awaitable[tuple[list[BaseTool], dict[str, bool]]]]
@@ -462,7 +462,7 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if matched is None:
                     raise PermissionError("Tool 未在本轮授权")
                 item, version = matched
-                display_name = item.name
+                display_name = tool_display_name(item)
                 call_kind = RunCallKind.MCP if item.kind == ToolKind.MCP else RunCallKind.TOOL
                 if item.skill_id is not None:
                     binding = await db.execute(

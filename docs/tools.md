@@ -10,6 +10,17 @@
 
 用户可创建私有或公开的脚本/MCP Tool。Agent 可关联最多 16 个当前有权使用的本人 Tool 或公开启用 Tool，内置 Tool 不受该可见性规则限制；模型可以直接调用关联 Tool，也可以按 Skill 指引选择调用。Agent 关联及 Run 均固定 Tool 执行版本；修改源码、连接等执行定义后需重新保存 Agent 关联才能选用新版。审批开关单独按每轮提交时的当前配置固定，修改后下一轮对话直接生效。
 
+Tool 的显示名称与调用标识分别保存：
+
+| 字段 | 含义 |
+| --- | --- |
+| `display_name` | 页面、Agent 选择器及运行过程中的可读名称，支持中文、空格和大小写，去除两端空白后为 1–128 个字符，同一创建者范围内唯一。可以编辑，不改变调用标识或远端函数。 |
+| `name` | 不可变内部标识。新建时通常省略，由系统自动生成；已有客户端仍可提交符合原格式的值，未提供显示名称时以此作为显示名称。 |
+| `model_name` | 服务端返回的模型调用标识，由 Tool ID 和内部标识组成。模型按此名称调用平台 Tool，修改显示名称不影响已有 Agent/Run 的工具身份。 |
+| `mcp_tool_name` | MCP 服务的原始远端函数名，从发现结果选择，按原值调用；与页面显示名称、模型调用标识相互独立。 |
+
+页面新建脚本或 MCP Tool 只需填写显示名称，无需手工编写内部标识。已有工具会保留原调用标识，以原名称回填显示名称；调用事件记录当时的显示名称，随后改名不改写已记录的运行过程。
+
 | 接口 | 职责与使用条件 |
 | --- | --- |
 | `POST /api/v1/tools` | 创建 `script` 或 `mcp` Tool。脚本先私有创建，初始 `verified=false`、`enabled=false`；MCP 经远端发现后保存定义。 |
@@ -20,7 +31,7 @@
 | `GET /api/v1/tools/catalog` | 列出可选 Tool 目录。 |
 | `GET /api/v1/tools/runs/{run_id}/calls` | 仅向 Run 所有者返回调用版本、状态和脱敏失败类别；终态时未完成的调用标为 `unknown`，不能视为成功或可安全重试。 |
 
-脚本创建参数包含 `name`、`description`、`kind=script`、`input_schema`、`script_language`（`python`/`bash`）和 `source_code`。`input_schema` 必须是对象型 JSON Schema，描述调用参数；无参数脚本可填 `{"type":"object","properties":{},"additionalProperties":false}`。源码通过 JSON 字符串传递，由序列化器处理实际换行；`/test` 不接受源码或语言字段。
+脚本创建参数包含 `display_name`、`description`、`kind=script`、`input_schema`、`script_language`（`python`/`bash`）和 `source_code`。`input_schema` 必须是对象型 JSON Schema，描述调用参数；无参数脚本可填 `{"type":"object","properties":{},"additionalProperties":false}`。源码通过 JSON 字符串传递，由序列化器处理实际换行；`/test` 不接受源码或语言字段。
 
 正式 worker 调用用户脚本或 MCP Tool 前，严格校验该版本的输入 JSON Schema。模型遗漏必填字段、类型不符或包含多余字段时，工具返回 `status=error` 的可修正反馈：`error=invalid_tool_arguments`、`retryable=true` 及最多 8 条字段路径/规则/缺失字段提示，并标明是否截断；不回显输入正文、完整 Schema 或原始校验异常。该次工具尚未执行；模型可使用新的调用 ID 补齐真实数据后再次调用，同一 Run 继续编排。错误调用仍计入工具次数和事件，调用审计记录 `failed/invalid_tool_arguments`，修正成功另记一次成功调用；不自动填入空列表、删除约束或编造审查结果，重试仍受已有模型/工具预算及图步数限制。
 
@@ -34,7 +45,7 @@ Python Tool 通过 `requirements` 声明依赖，前端支持逐行填写或导�
 
 ```json
 {
-  "name": "format_number",
+  "display_name": "数字格式化 Format Number",
   "description": "将数字格式化为易读文本",
   "kind": "script",
   "visibility": "private",
@@ -176,13 +187,13 @@ docker load -i y-point-script-sandbox.tar
 
 ### MCP Tool
 
-创建时提交 `kind=mcp`、公网 HTTPS `mcp_url`、远端 `mcp_tool_name`，可选 `mcp_bearer_token`。创建和更新时发现远端工具并固定输入结构；凭据加密保存，仅所有者可读连接详情，响应仅提供 `has_credentials`，不回传凭据明文。公开带凭据连接须设置 `share_credentials=true`。`requires_approval` 控制正式调用前是否需要人工审批，创建时默认 `false`，脚本和 MCP 均适用。页面新增/编辑 Tool 中可切换「调用前需要审批」：关闭时直接执行，开启时 Agent 会话出现工具审批面板，由运行所有者点击「同意执行」继续，或点击「拒绝执行」取消本轮运行；开启后的连续调用可能需逐次确认。调用时再次发现并核对结构，变化时需发布新版本。
+先在 Tool 页的「MCP 连接」中创建连接，点击「测试连接并发现工具」，从发现结果点击「添加为 Tool」，确认显示名称、用途、可见性与审批设置并保存。也可从「新建 Tool → MCP」选择已保存连接及远端函数；两条路径共用同一 Tool 编辑与发布流程，地址和凭据只在连接中维护。接口提交 `display_name`、`kind=mcp`、`mcp_connection_id` 和远端 `mcp_tool_name`，内部 `name` 由系统生成。连接本身不是可执行函数，不加入 `/api/v1/tools/catalog`；保存 Tool 后才进入目录并可关联到 Agent。在 Tool 编辑器内打开连接管理时，发现结果的「用于当前 Tool」会回填当前草稿，保留已填写的显示名称、用途和审批设置，保存后生效。同一连接可被多个 Tool 复用；一个 Tool 对应一个远端函数。创建和更新 Tool 时发现远端工具并固定输入结构、连接版本、执行配置及加密凭据。连接仅所有者可管理，凭据不回显；公开带凭据的 Tool 前，须在连接中启用 `share_credentials=true`。`requires_approval` 控制正式调用前是否需要人工审批，创建时默认 `false`，脚本和 MCP 均适用。页面新增/编辑 Tool 中可切换「调用前需要审批」：关闭时直接执行，开启时 Agent 会话出现工具审批面板，由运行所有者点击「同意执行」继续，或点击「拒绝执行」取消本轮运行；开启后的连续调用可能需逐次确认。调用时再次发现并核对结构，变化时需发布新版本。
 
 只读 MCP 返回 `isError=true` 时，该次调用仍记为失败，原因码为 `remote_error`；平台将有界的远端错误作为不可信工具结果反馈给模型，允许它修正参数后使用新的调用 ID 再调用，或说明当前无法完成。平台不会自动重发相同请求，也不保证模型一定修正成功。反馈中的远端结果最多 8 KiB，超过时省略；超过总结果 64 KiB 的响应仍中止。远端正文不写入公开调用事件与审计摘要，按正常工具结果进入私有检查点。外部写工具的错误仍中止运行并保留结果不明语义。工具执行异常导致整轮结束时使用 `tool_error`，页面提示检查失败的工具调用；真正的模型供应商异常仍使用 `model_error`。
 
 #### Context7 调用示例
 
-一个 MCP Tool 对应一个远端函数。在工具管理中分别创建 `resolve-library-id` 和 `query-docs`，连接地址均为 `https://mcp.context7.com/mcp`，再将两个 Tool 关联到同一个 Agent。建议分别命名为 `context7_resolve` 和 `context7_docs`，并在描述中写明先解析库 ID、再查询文档。单独关联 `query-docs` 时，需要提供有效的库 ID，模型不能调用未关联的解析工具。
+先创建一个地址为 `https://mcp.context7.com/mcp` 的 Streamable HTTP 连接，再在工具管理中分别为 `resolve-library-id` 和 `query-docs` 创建两个 Tool，选择同一个连接，最后将两个 Tool 关联到同一个 Agent。建议分别命名为 `context7_resolve` 和 `context7_docs`，并在描述中写明先解析库 ID、再查询文档。单独关联 `query-docs` 时，需要提供有效的库 ID，模型不能调用未关联的解析工具。
 
 先调用 `resolve-library-id`：
 
@@ -205,7 +216,59 @@ docker load -i y-point-script-sandbox.tar
 
 库 ID 以远端本次解析结果为准。Context7 可能将旧 ID 标记为迁移并以错误结果返回新 ID；只读反馈允许模型看到迁移提示并修正。HTTP 连接成功不代表工具执行成功，`remote_error` 也不一定表示服务宕机。测试时可发送：“请先用 Context7 解析 FastAPI 的库 ID，再查询 Depends 的官方用法；依据查询结果给出最小示例，不要猜测库 ID。”修改关联版本后从新一轮验证；旧运行记录保留原结果。
 
-连接使用 SDK 的 `streamable_http_client` 和显式管理的 `httpx.AsyncClient`，统一认证、连接/读取超时及退出清理。仅允许公网 HTTPS，解析结果不得包含私网、回环或保留地址；请求固定到校验后的 IP，保留原 Host 与 TLS 域名，并在传输层拒绝所有 3xx 响应。当前只支持 Streamable HTTP，每个 Tool 保存一个远端定义，无独立连接实体供多个 Tool 统一维护。每次连接在 SDK 解析前累计限制接收 1 MiB，拒绝压缩响应及超预算的声明长度；结果解析后仍保留 64 KiB 上限。发现支持有界分页，默认最多 128 个工具、总量 256 KiB，单个名称/描述/Schema 分别限制为 128 B/4 KiB/16 KiB，并拒绝重复工具名和循环游标。
+连接使用 SDK 的 `streamable_http_client` 和显式管理的 `httpx.AsyncClient`，统一认证、连接/读取超时及退出清理。支持公网、内网、回环及保留地址上的 `http://` 和 `https://`，分别默认使用 80 和 443，也支持显式指定 1–65535 的端口，例如 `http://mcp.example.com:8080/mcp`。地址中禁止内嵌用户名/密码或 fragment，Bearer 凭据通过独立字段填写；不按 IP 地址类别限制解析结果，支持 `localhost`、`127.0.0.1`、私网 IPv4 和 IPv6 等端点。请求按原协议和实际端口固定到校验后的 IP，保留包含非默认端口的 Host，HTTPS 保留原 TLS 域名；传输层拒绝协议、主机、端口变化及所有 3xx 响应。API 的发现/发布和 Worker 的正式调用均须能访问配置的地址；Docker 部署中的 `localhost`/`127.0.0.1` 指向各自容器；Docker Desktop 访问宿主机可使用 `host.docker.internal`，其他部署使用容器网络可达的宿主机或服务地址。同时支持以下受控 stdio 传输；两种传输共用 SDK `ClientSession` 的初始化协商、工具发现、Schema 复核、审批、读写治理和结果处理。协议版本由所安装 SDK 与服务端协商，不以传输名称推断协议版本。每次连接在 SDK 解析前累计限制接收 1 MiB，拒绝压缩响应及超预算的声明长度；结果解析后仍保留 64 KiB 上限。发现支持有界分页，默认最多 128 个工具、总量 256 KiB，单个名称/描述/Schema 分别限制为 128 B/4 KiB/16 KiB，并拒绝重复工具名和循环游标。
+
+#### 连接管理与版本
+
+| 接口 | 行为 |
+| --- | --- |
+| `GET /api/v1/mcp-connections` | 查询自己的连接；返回传输、版本和凭据存在标记，不返回凭据。 |
+| `POST /api/v1/mcp-connections` | 创建 HTTP 或受控 stdio 连接；不自动执行远端发现。 |
+| `PUT /api/v1/mcp-connections/{id}` | 提交完整配置及 `expected_version`，发布下一连接版本；同传输未提供新凭据时保留现值。 |
+| `DELETE /api/v1/mcp-connections/{id}` | 删除并禁止继续使用，取消相关活动运行；保留历史审计。 |
+| `POST /api/v1/mcp-connections/{id}/discover` | 使用已保存的凭据发现工具，沿用发现预算与调用容量名额。 |
+| `GET /api/v1/mcp-connections/stdio-profiles` | 查询管理员允许的启动配置名及凭据环境变量键。 |
+
+普通连接配置更新不会改写旧 Tool 快照。需要采用新配置时，重新保存 Tool 发布新版，再更新 Agent 的固定 Tool 关联。停用或删除连接、轮换/清除凭据、撤销凭据共享会立即限制旧快照，并取消受影响的活动运行；无法撤回已经执行的外部操作。`clear_credentials=true` 与提供新凭据互斥；HTTP 空 token、stdio 空环境变量对象表示保留原凭据。stdio 提供非空环境变量对象时，整体替换该连接的环境变量凭据。
+
+已有直接保存 URL 的 HTTP Tool 及对应 API 请求继续可用，原 `POST /tools/mcp/discover` 供此类工具发现；新建页面使用共享连接。已有工具可以选择新连接并发布 Tool 新版完成迁移。使用共享连接的 Tool 不接受同时填写 `mcp_url` 或直接替换凭据，需在连接管理中操作。
+
+#### stdio 受控运行
+
+stdio Server 在 API 或 Worker 发起的独立 Docker 容器中运行，通过标准输入/输出交换换行分帧的 MCP JSON-RPC 消息；标准错误作为日志丢弃并限制字节。平台不执行用户填写的宿主机命令、不自动安装包或拉取镜像。API 和 Worker 均需具备 `--sandbox` 对应的 Docker 接入和相同的管理员启动配置，镜像应提前构建并导入。
+
+维护者在环境配置中设置 `MCP_STDIO_PROFILES`，固定镜像 ID 或带摘要的镜像引用、启动命令、固定参数及可填写的环境变量白名单。例如以下结构中的镜像摘要需要替换为实际镜像：
+
+```json
+{
+  "local_tools": {
+    "image": "your-registry/mcp-server@sha256:<实际64位摘要>",
+    "command": ["python", "/app/server.py"],
+    "args": [],
+    "env_keys": ["API_KEY"]
+  }
+}
+```
+
+然后通过连接 API 创建：
+
+```json
+{
+  "name": "本地资料服务",
+  "transport": "stdio",
+  "stdio_profile": "local_tools",
+  "args": ["--read-only"],
+  "env": {"API_KEY": "仅写入的凭据"},
+  "share_credentials": false,
+  "enabled": true
+}
+```
+
+用户只能选择已配置的启动配置、追加有界字符串参数及填写白名单环境变量；敏感值应写入 `env`，不要放在启动参数中。环境变量加密保存，执行时通过权限为 `0600` 的临时 env 文件交给 Docker，不拼入命令行，临时文件在退出时删除。请求日志对 `env` 和 Bearer 字段整体脱敏。
+
+容器固定为非 root、只读根文件系统、无额外 capability、有限 CPU/内存/进程和临时目录，默认且当前仅支持 `--network=none`，不挂载业务目录或 Docker socket。需要外部网络的 MCP 优先使用 Streamable HTTP；当前 stdio 不适用于需要宿主机目录、动态安装依赖或联网的 Server。启动配置发生变化或被移除时，旧执行快照会拒绝运行，需重新发布连接和 Tool。
+
+stdio 在 SDK 解析前限制每行及累计 stdout 字节，stderr 也有累计上限，正式结果仍受 64 KiB 上限约束。超时、主动取消、非法消息及进程异常均回收容器、管道任务和临时文件；进程被强杀时，沿用工具资源标签和周期清理机制。旧 HTTP + SSE、WebSocket、自定义 MCP 传输及 stdio 网络/文件挂载暂不支持。
 
 ### Tool 治理与兼容边界
 
@@ -229,6 +292,7 @@ Tool 治理覆盖凭据撤销、外部写恢复契约和数据库并发租约。
 
 | 配置 | 默认值及用途 |
 | --- | --- |
+| `MCP_STDIO_PROFILES` | `{}`，管理员提供的固定镜像/命令/环境变量白名单；空配置不提供 stdio 启动项。 |
 | `MCP_RESPONSE_MAX_BYTES` | `1048576`，每次连接在解析前累计接收上限。 |
 | `MCP_DISCOVERY_MAX_TOOLS` / `MCP_DISCOVERY_MAX_BYTES` | `128` / `262144`，发现工具数量及总字节上限。 |
 | `TOOL_CALL_GLOBAL_LIMIT` / `TOOL_CALL_USER_LIMIT` / `TOOL_CALL_RUN_LIMIT` | `16` / `4` / `2`，工具调用并发名额。 |

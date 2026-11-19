@@ -40,7 +40,7 @@ from app.services.artifact_renderers import ArtifactSheet, render_document_artif
 from app.services.artifact_store import artifact_read_max_bytes, artifact_root, stage_generated_artifact, storage_path
 from app.services.private_blob_store import read_blob, using_s3
 from app.services.tool_registry import ToolContext, ToolRegistry, ToolSpec
-from app.services.user_tools import load_run_tools, model_tool_name
+from app.services.user_tools import load_run_tools, model_tool_name, tool_display_name
 from app.services.script_sandbox import ScriptInputRejected, run_script
 from app.services.tool_environments import require_script_environment
 from app.services.mcp_tools import invoke_mcp_tool
@@ -497,7 +497,10 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         token, _ = decrypt_credentials(selected_version.encrypted_credentials)
                         if selected.owner_id != run.owner_id and selected_version.encrypted_credentials and not selected_version.share_credentials:
                             raise ValueError("MCP 凭据未授权共享")
-                        url, remote_name = selected_version.mcp_url, selected_version.mcp_tool_name
+                        url = selected_version.mcp_config or selected_version.mcp_url
+                        if selected_version.mcp_config:
+                            token = selected_version.encrypted_credentials
+                        remote_name = selected_version.mcp_tool_name
                         expected_schema = selected_version.input_schema
                         validate_tool_arguments(selected_version.input_schema, arguments)
                     else:
@@ -552,7 +555,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                 StructuredTool.from_function(
                     coroutine=invoke,
                     name=tool_name,
-                    description=f"工具名称：{definition.name}。{definition.description}",
+                    description=f"工具名称：{tool_display_name(definition)}。{definition.description}",
                     args_schema=schema,
                     handle_tool_error=tool_argument_error_content,
                 ),

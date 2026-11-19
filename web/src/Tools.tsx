@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Tabs, Tag, Typography, message } from "antd";
 import { Code2, Plug, Wrench, FlaskConical, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import {
-  createUserTool, deleteUserTool, discoverMcpTools, getUserTool, listToolCatalog, testUserTool, updateUserTool, retryToolEnvironment,
+  createUserTool, deleteUserTool, discoverMcpTools, toolDisplayName, getUserTool, listToolCatalog, testUserTool, updateUserTool, retryToolEnvironment,
   type DiscoveredTool, type ToolCatalog, type ToolDraft, type UserTool,
 } from "./api";
+
+import McpConnections from "./McpConnections";
+import { listMcpConnections, discoverMcpConnection, type McpConnection } from "./api";
 
 import { PageHeader, ResourceCard, ResourceCollection } from "./components/ResourcePage";
 
@@ -15,7 +18,7 @@ const defaultSource = "import json\nimport sys\n\nargs = json.load(sys.stdin)\np
 type Editor = {
   item: UserTool | null;
   kind: "script" | "mcp";
-  name: string;
+  displayName: string;
   description: string;
   visibility: "private" | "public";
   enabled: boolean;
@@ -24,6 +27,7 @@ type Editor = {
   source: string;
   requirements: string;
   url: string;
+  connectionId?: number;
   remoteName: string;
   bearerToken: string;
   shareCredentials: boolean;
@@ -32,7 +36,7 @@ type Editor = {
 
 function blankEditor(): Editor {
   return {
-    item: null, kind: "script", name: "", description: "", visibility: "private", enabled: true,
+    item: null, kind: "script", displayName: "", description: "", visibility: "private", enabled: true,
     schema: defaultSchema, language: "python", source: defaultSource, requirements: "",
     url: "", remoteName: "", bearerToken: "", shareCredentials: false, requiresApproval: false,
   };
@@ -43,6 +47,9 @@ function errorText(error: unknown): string {
 }
 
 export default function Tools({ userId }: { userId: number }) {
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [connections, setConnections] = useState<McpConnection[]>([]);
+  const [connectionError, setConnectionError] = useState("");
   const [catalog, setCatalog] = useState<ToolCatalog>(emptyCatalog);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
@@ -68,6 +75,11 @@ export default function Tools({ userId }: { userId: number }) {
   }
 
   useEffect(() => { void reload(); }, []);
+  async function reloadConnections() {
+    try { setConnections(await listMcpConnections()); setConnectionError(""); }
+    catch (failure) { setConnectionError(errorText(failure)); }
+  }
+  useEffect(() => { if (editor?.kind === "mcp") void reloadConnections(); }, [editor?.kind]);
 
   const environmentState = editor?.item?.environment?.state;
   const environmentPending = environmentState === "pending" || environmentState === "building";
@@ -123,11 +135,12 @@ export default function Tools({ userId }: { userId: number }) {
     try {
       const full = await getUserTool(item.id);
       setEditor({
-        item: full, kind: full.kind, name: full.name, description: full.description,
+        item: full, kind: full.kind, displayName: toolDisplayName(full), description: full.description,
         visibility: full.visibility, enabled: full.enabled,
         schema: JSON.stringify(full.input_schema || {}, null, 2), language: full.script_language || "python",
         requirements: (full.requirements || []).join("\n"),
         source: full.source_code || "", url: full.mcp_url || "", remoteName: full.mcp_tool_name || "",
+        connectionId: full.mcp_connection_id || undefined,
         bearerToken: "", shareCredentials: Boolean(full.share_credentials), requiresApproval: Boolean(full.requires_approval),
       });
     } catch (failure) { message.error(errorText(failure)); }
@@ -141,11 +154,22 @@ export default function Tools({ userId }: { userId: number }) {
     if (!editor) return;
     setDiscovering(true);
     try {
-      const found = await discoverMcpTools(editor.url.trim(), editor.bearerToken || undefined);
+      if (!editor.connectionId && !editor.item) throw new Error("请先选择 MCP 连接");
+      const found = editor.connectionId ? await discoverMcpConnection(editor.connectionId) : await discoverMcpTools(editor.url.trim(), editor.bearerToken || undefined);
       setDiscovered(found);
       if (!found.some((item) => item.name === editor.remoteName)) update({ remoteName: found[0]?.name || "" });
     } catch (failure) { message.error(errorText(failure)); }
     finally { setDiscovering(false); }
+  }
+
+  function selectConnectionTool(connection: McpConnection, tool: DiscoveredTool) {
+    setEditor(current => ({
+      ...(current || blankEditor()), kind: "mcp", connectionId: connection.id, remoteName: tool.name,
+      displayName: current?.displayName || tool.name, description: current?.description || tool.description.slice(0, 1024) || `调用 ${tool.name}`,
+      url: "", bearerToken: "", schema: JSON.stringify(tool.input_schema, null, 2),
+    }));
+    setDiscovered([tool]); setEditorError(""); setTestResult(null); setConnectionsOpen(false);
+    void reloadConnections();
   }
 
   async function importScript(file: File) {
@@ -164,11 +188,11 @@ export default function Tools({ userId }: { userId: number }) {
 
   async function save() {
     if (!editor) return;
-    if (!editor.name.trim() || !editor.description.trim()) { setEditorError("请填写名称和用途"); return; }
+    if (!editor.displayName.trim() || !editor.description.trim()) { setEditorError("请填写名称和用途"); return; }
     setSaving(true); setEditorError("");
     try {
       const draft: ToolDraft = {
-        name: editor.name.trim(), description: editor.description.trim(), kind: editor.kind,
+        display_name: editor.displayName.trim(), description: editor.description.trim(), kind: editor.kind,
         visibility: editor.kind === "script" && !editor.item ? "private" : editor.visibility,
         requires_approval: editor.requiresApproval,
       };
@@ -178,9 +202,11 @@ export default function Tools({ userId }: { userId: number }) {
         draft.source_code = editor.source;
         draft.requirements = editor.language === "python" ? requirementLines(editor.requirements) : [];
       } else {
-        draft.mcp_url = editor.url.trim();
+        if (editor.connectionId) draft.mcp_connection_id = editor.connectionId;
+        else if (editor.item) draft.mcp_url = editor.url.trim();
+        else throw new Error("请先选择 MCP 连接");
         draft.mcp_tool_name = editor.remoteName;
-        if (editor.bearerToken) draft.mcp_bearer_token = editor.bearerToken;
+        if (!editor.connectionId && editor.bearerToken) draft.mcp_bearer_token = editor.bearerToken;
         draft.share_credentials = editor.shareCredentials;
       }
       let saved: UserTool;
@@ -226,7 +252,7 @@ export default function Tools({ userId }: { userId: number }) {
     finally { setTesting(false); }
   }
 
-  const filtered = catalog.user_tools.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(query.trim().toLowerCase())
+  const filtered = catalog.user_tools.filter((item) => `${toolDisplayName(item)} ${item.name} ${item.description}`.toLowerCase().includes(query.trim().toLowerCase())
     && (kindFilter === "all" || item.kind === kindFilter) && (scope === "all" || (scope === "mine" ? item.owner_id === userId : item.owner_id !== userId)));
   const builtins = catalog.builtin.filter((item) => `${item.model_name} ${item.description}`.toLowerCase().includes(query.trim().toLowerCase()));
   const toolIcon = (item: UserTool) => item.kind === "mcp" ? <Plug size={20} /> : <Code2 size={20} />;
@@ -239,7 +265,7 @@ export default function Tools({ userId }: { userId: number }) {
     </Popconfirm>
   </Space> : <span className="resource-muted">他人公开 · 只读</span>;
   return <div className="tools-page resource-page">
-    <PageHeader title="Tool" description="连接脚本与 MCP 服务，让 Agent 安全地执行操作。" actions={<Button type="primary" icon={<Plus size={16} />} onClick={() => void openEditor()}>新建 Tool</Button>} />
+    <PageHeader title="Tool" description="连接脚本与 MCP 服务，让 Agent 安全地执行操作。" actions={<Space wrap><Button icon={<Plug size={16} />} onClick={() => setConnectionsOpen(true)}>MCP 连接</Button><Button type="primary" icon={<Plus size={16} />} onClick={() => void openEditor()}>新建 Tool</Button></Space>} />
     <section className="resource-surface" aria-label="Tool 列表">
       <Tabs activeKey={view} onChange={setView} items={[{ key: "user", label: `用户 Tool (${catalog.user_tools.length})` }, { key: "builtin", label: `内置 Tool (${catalog.builtin.length})` }]} />
       <div className="resource-toolbar"><div className="resource-filters">
@@ -251,25 +277,29 @@ export default function Tools({ userId }: { userId: number }) {
       {(!error || catalog.user_tools.length + catalog.builtin.length > 0) && (view === "user" ? <ResourceCollection rowKey="id" items={filtered} loading={loading}
         empty={<Empty description={catalog.user_tools.length ? "没有匹配的 Tool，请调整筛选条件" : "创建脚本或连接 MCP 服务，扩展 Agent 的能力"} />}
         columns={[
-          { title: "名称", dataIndex: "name", render: (name: string, item: UserTool) => <span className="resource-title-cell">{toolIcon(item)}<strong>{name}</strong></span> },
+          { title: "显示名称", render: (_: unknown, item: UserTool) => <span className="resource-title-cell">{toolIcon(item)}<strong>{toolDisplayName(item)}</strong></span> },
           { title: "用途", dataIndex: "description", ellipsis: true },
           { title: "类型", dataIndex: "kind", render: (value: string) => value === "mcp" ? "MCP" : "脚本" },
           { title: "状态", render: (_: unknown, item: UserTool) => <div className="resource-tags">{tags(item)}</div> },
           { title: "版本", dataIndex: "current_version", render: (value: number) => `v${value}` },
           { title: "操作", render: (_: unknown, item: UserTool) => actions(item) },
-        ]} renderCard={(item) => <ResourceCard icon={toolIcon(item)} title={item.name} description={item.description} tags={tags(item)} meta={`${item.kind === "mcp" ? "MCP" : item.script_language === "bash" ? "Bash 脚本" : "Python 脚本"} · v${item.current_version}`} actions={actions(item)} />} />
+        ]} renderCard={(item) => <ResourceCard icon={toolIcon(item)} title={toolDisplayName(item)} description={item.description} tags={tags(item)} meta={`${item.kind === "mcp" ? "MCP" : item.script_language === "bash" ? "Bash 脚本" : "Python 脚本"} · v${item.current_version}`} actions={actions(item)} />} />
         : <ResourceCollection rowKey="model_name" items={builtins} loading={loading} empty={<Empty description="没有匹配的内置工具" />}
           columns={[{ title: "名称", dataIndex: "model_name" }, { title: "用途", dataIndex: "description" }]}
           renderCard={(item) => <ResourceCard icon={<Wrench size={20} />} title={item.model_name} description={item.description} tags={<Tag>系统内置</Tag>} />} />)}
       <p className="resource-note">脚本保存后需通过试运行才能启用；Python 依赖环境的准备进度可在编辑面板查看。</p>
     </section>
+    <McpConnections open={connectionsOpen} onClose={() => setConnectionsOpen(false)} onChanged={() => void reloadConnections()} onSelectTool={selectConnectionTool} selectLabel={editor ? "用于当前 Tool" : "添加为 Tool"} />
     <Drawer rootClassName="resource-editor" title={editor?.item ? "编辑 Tool" : "新建 Tool"} open={Boolean(editor)} onClose={() => { if (!saving && !testing && !discovering && !retrying) setEditor(null); }}
       width="min(100vw, var(--yp-editor-width))" extra={<Button type="primary" loading={saving} onClick={() => void save()}>保存</Button>}>
       {editor && <Space direction="vertical" size="middle" className="resource-full-width">
         {editorError && <Alert type="error" showIcon message={editorError} description="输入内容已保留，请检查后重新保存。" />}
         <Segmented aria-label="工具类型" block value={editor.kind} onChange={(kind) => update({ kind: kind as Editor["kind"] })} disabled={Boolean(editor.item)}
           options={[{ label: "脚本", value: "script" }, { label: "MCP", value: "mcp" }]} />
-        <label htmlFor="tool-name">名称<Input id="tool-name" value={editor.name} disabled={Boolean(editor.item)} maxLength={64} onChange={(event) => update({ name: event.target.value })} /></label>
+        {editor.kind === "mcp" && <Typography.Paragraph type="secondary">MCP Tool 将连接中的一个远端函数加入工具目录；连接地址与凭据在“MCP 连接”中统一管理。</Typography.Paragraph>}
+        <label htmlFor="tool-name">显示名称<Input id="tool-name" value={editor.displayName} maxLength={128} placeholder="例如：天气查询 Weather" onChange={(event) => update({ displayName: event.target.value })} /></label>
+        <Typography.Text type="secondary">支持中文、空格和大小写；显示名称独立于模型调用标识及 MCP 远端函数名。</Typography.Text>
+        {editor.item && <Typography.Text type="secondary">模型调用标识：<Typography.Text code style={{ wordBreak: "break-all" }}>{editor.item.model_name}</Typography.Text>（系统生成，修改显示名称不会改变此标识）</Typography.Text>}
         <label htmlFor="tool-description">用途<Input.TextArea id="tool-description" aria-label="用途" value={editor.description} maxLength={1024} rows={3} onChange={(event) => update({ description: event.target.value })} /></label>
         <label>可见性<Select aria-label="可见性" style={{ width: "100%" }} value={editor.visibility} disabled={editor.kind === "script" && !editor.item} onChange={(visibility) => update({ visibility })}
           options={[{ value: "private", label: "私有" }, { value: "public", label: "公开" }]} /></label>
@@ -310,14 +340,21 @@ export default function Tools({ userId }: { userId: number }) {
             <Button icon={<FlaskConical size={16} />} loading={testing} disabled={Boolean(editor.item.environment && !["ready", "not_required"].includes(editor.item.environment.state))} onClick={() => void test()}>试运行</Button>
           </>}
         </> : <>
-          <label htmlFor="tool-url">MCP 地址<Input id="tool-url" value={editor.url} placeholder="https://example.com/mcp" onChange={(event) => update({ url: event.target.value })} /></label>
+          {connectionError && <Alert type="error" showIcon message={connectionError} action={<Button onClick={() => void reloadConnections()}>重试加载连接</Button>} />}
+          <label>MCP 连接<Select aria-label="Tool MCP 连接" style={{ width: "100%" }} value={editor.connectionId}
+            onChange={connectionId => { update({ connectionId, remoteName: "" }); setDiscovered([]); }}
+            options={connections.filter(item => item.enabled).map(item => ({ value: item.id, label: `${item.name} · ${item.transport} · v${item.version}` }))} placeholder="选择已保存的连接" /></label>
+          <Button onClick={() => setConnectionsOpen(true)}>管理 MCP 连接</Button>
+          {editor.item?.mcp_connection_version && <Typography.Text type="secondary">当前工具固定连接 v{editor.item.mcp_connection_version}；保存会采用所选连接的当前版本。</Typography.Text>}
+          {!editor.connectionId && editor.item && <><label htmlFor="tool-url">MCP 地址<Input id="tool-url" value={editor.url} placeholder="http://example.com:8080/mcp 或 https://example.com/mcp" onChange={(event) => update({ url: event.target.value })} /></label>
           <label htmlFor="tool-token">Bearer 凭据<Input.Password id="tool-token" value={editor.bearerToken} placeholder={editor.item?.has_credentials ? "留空保留当前凭据" : undefined}
-            onChange={(event) => update({ bearerToken: event.target.value })} /></label>
+            onChange={(event) => update({ bearerToken: event.target.value })} /></label></>}
           <Button icon={<Search size={16} />} loading={discovering} onClick={() => void discover()}>发现工具</Button>
-          <label>远端工具<Select aria-label="远端工具" style={{ width: "100%" }} showSearch value={editor.remoteName || undefined}
+          <label>MCP 远端函数名<Select aria-label="MCP 远端函数名" style={{ width: "100%" }} showSearch value={editor.remoteName || undefined}
             onChange={(remoteName) => update({ remoteName })} options={discovered.map((item) => ({ value: item.name, label: item.name }))}
             placeholder={editor.remoteName || "选择发现的工具"} /></label>
-          {editor.visibility === "public" && <label className="resource-switch-row">允许其他用户使用此连接凭据<Switch aria-label="共享连接凭据" checked={editor.shareCredentials} onChange={(shareCredentials) => update({ shareCredentials })} /></label>}
+          <Typography.Text type="secondary">按 MCP 服务发现的原始函数名调用，修改显示名称不会改变此函数名。</Typography.Text>
+          {!editor.connectionId && editor.visibility === "public" && <label className="resource-switch-row">允许其他用户使用此连接凭据<Switch aria-label="共享连接凭据" checked={editor.shareCredentials} onChange={(shareCredentials) => update({ shareCredentials })} /></label>}
         </>}
         <label className="resource-switch-row">调用前需要审批<Switch aria-label="调用前需要审批" checked={editor.requiresApproval} onChange={(requiresApproval) => update({ requiresApproval })} /></label>
         <Typography.Text type="secondary">默认关闭，Agent 可直接调用。开启后，每次调用需在会话中手动确认。保存后下一轮对话生效；已开始的轮次保持原设置。</Typography.Text>

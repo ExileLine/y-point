@@ -3,7 +3,7 @@
 # @Author  : yangyuexiong
 # @File    : mcp_tools.py
 
-"""通过 MCP Streamable HTTP 发现和调用远端工具。"""
+"""通过标准 MCP HTTP 或受控 stdio 发现和调用工具。"""
 
 import asyncio
 import json
@@ -16,14 +16,17 @@ from mcp import ClientSession, McpError
 from mcp.client.streamable_http import streamable_http_client
 
 from app.core.config import get_config
+from app.core.enums import McpTransport
+from app.services.mcp_stdio import stdio_connection
 from app.services.user_tools import validate_mcp_url
+from app.services.provider_credentials import decrypt_credentials
 from app.services.tool_arguments import MCPReadToolError
 
 
 class _BoundedResponseStream(httpx.AsyncByteStream):
     """在字节进入 SDK 解析器前执行连接级接收预算。"""
 
-    def __init__(self, stream: httpx.AsyncByteStream, transport: "_PinnedPublicTransport") -> None:
+    def __init__(self, stream: httpx.AsyncByteStream, transport: "_PinnedMcpTransport") -> None:
         """保留底层流及多个响应共用的接收计数。"""
         self.stream = stream
         self.transport = transport
@@ -44,12 +47,14 @@ class _BoundedResponseStream(httpx.AsyncByteStream):
         await self.stream.aclose()
 
 
-class _PinnedPublicTransport(httpx.AsyncBaseTransport):
-    """将 HTTPS 连接固定到校验过的公网 IP，保留原始域名用于 TLS 校验。"""
+class _PinnedMcpTransport(httpx.AsyncBaseTransport):
+    """将 HTTP/HTTPS 连接固定到解析得到的 IP，保留原始 authority。"""
 
-    def __init__(self, host: str, address: str) -> None:
-        """保存本次域名和已验证公网地址。"""
+    def __init__(self, host: str, address: str, *, scheme: str = "https", port: int | None = None) -> None:
+        """保存本次域名和本次解析地址。"""
         self.host = host
+        self.scheme = scheme
+        self.port = port or (80 if scheme == "http" else 443)
         self.address = address
         self.received = 0
         self.max_bytes = get_config().MCP_RESPONSE_MAX_BYTES
@@ -57,21 +62,24 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """拒绝跨域请求并固定目标地址与 TLS SNI。"""
-        if request.url.scheme != "https" or request.url.host != self.host or request.url.port not in (None, 443):
+        request_port = request.url.port or (80 if request.url.scheme == "http" else 443)
+        if request.url.scheme != self.scheme or request.url.host != self.host or request_port != self.port:
             raise ValueError("MCP 请求目标已变化")
         address = f"[{self.address}]" if ":" in self.address else self.address
-        target = request.url.copy_with(host=address, port=443)
+        target = request.url.copy_with(host=address, port=self.port)
         headers = request.headers.copy()
-        headers["Host"] = self.host
+        authority_host = f"[{self.host}]" if ":" in self.host else self.host
+        default_port = 80 if self.scheme == "http" else 443
+        headers["Host"] = authority_host if self.port == default_port else f"{authority_host}:{self.port}"
+        extensions = request.extensions.copy()
+        if self.scheme == "https":
+            extensions["sni_hostname"] = self.host
         rewritten = httpx.Request(
             request.method,
             target,
             headers=headers,
             stream=request.stream,
-            extensions={
-                **request.extensions,
-                "sni_hostname": self.host,
-            },
+            extensions=extensions,
         )
         response = await self.transport.handle_async_request(rewritten)
         if 300 <= response.status_code < 400:
@@ -91,9 +99,20 @@ class _PinnedPublicTransport(httpx.AsyncBaseTransport):
 
 
 @asynccontextmanager
-async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int):
-    """管理固定公网 IP 的 HTTP 客户端及 MCP 连接生命周期。"""
+async def _mcp_connection(url: str | dict, bearer_token: str | None, read_timeout: int):
+    """管理固定解析 IP 的 HTTP 客户端及 MCP 连接生命周期。"""
+    if isinstance(url, dict):
+        if url["transport"] == McpTransport.STDIO:
+            _, env = decrypt_credentials(bearer_token)
+            async with stdio_connection(url, env, read_timeout) as streams:
+                yield streams
+            return
+        if url["transport"] != McpTransport.STREAMABLE_HTTP:
+            raise ValueError("不支持的 MCP 传输方式")
+        url = url["url"]
+        bearer_token, _ = decrypt_credentials(bearer_token)
     address = validate_mcp_url(url)
+    parts = urlsplit(url)
     headers = (
         {
             "Authorization": f"Bearer {bearer_token}",
@@ -107,7 +126,7 @@ async def _mcp_connection(url: str, bearer_token: str | None, read_timeout: int)
             "Accept-Encoding": "identity",
         },
         timeout=httpx.Timeout(get_config().MCP_CONNECT_TIMEOUT_SECONDS, read=read_timeout),
-        transport=_PinnedPublicTransport(urlsplit(url).hostname, address),
+        transport=_PinnedMcpTransport(parts.hostname, address, scheme=parts.scheme, port=parts.port),
         trust_env=False,
         follow_redirects=False,
     ) as client:
@@ -171,7 +190,7 @@ async def _mcp_deadline(seconds: int):
         raise
 
 
-async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[dict]:
+async def discover_mcp_tools(url: str | dict, bearer_token: str | None = None) -> list[dict]:
     """在配置的完整连接时限和传输预算内发现远端可发布工具。"""
     timeout = get_config().MCP_DISCOVERY_TIMEOUT_SECONDS
     async with _mcp_deadline(timeout):
@@ -182,7 +201,7 @@ async def discover_mcp_tools(url: str, bearer_token: str | None = None) -> list[
 
 
 async def invoke_mcp_tool(
-    url: str,
+    url: str | dict,
     name: str,
     arguments: dict,
     bearer_token: str | None,

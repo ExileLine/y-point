@@ -17,11 +17,13 @@ try {
       const send = data => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ code: 200, message: "操作成功", data }) });
       if (path === "/api/v1/auth/me") return send({ id: 1, username: "tester", role: "admin" });
       if (path === "/api/v1/tools/catalog") return send({ builtin: [], user_tools: items });
-      if (path === "/api/v1/tools/mcp/discover") return send([{ name: "lookup", description: "查询", input_schema: { type: "object" } }]);
+      if (path === "/api/v1/mcp-connections") return send([{ id: 1, name: "共享文档服务", transport: "streamable_http", version: 1, enabled: true }]);
+      if (path === "/api/v1/mcp-connections/1/discover") return send([{ name: "lookup", description: "查询", input_schema: { type: "object" } }]);
       if (path === "/api/v1/tools" && method === "POST") {
         const draft = req.postDataJSON();
         saved.push(draft);
-        const item = { ...draft, id: items.length + 1, owner_id: 1, current_version: 1, verified: true, enabled: true };
+        const id = items.length + 1;
+        const item = { ...draft, id, name: `tool_fixture_${id}`, model_name: `user_tool_${id}_tool_fixture_${id}`, owner_id: 1, current_version: 1, verified: true, enabled: true };
         items.push(item);
         return send(item);
       }
@@ -53,17 +55,20 @@ try {
       await drawer.getByText(/保存后下一轮对话生效；已开始的轮次保持原设置/).waitFor();
       await drawer.getByText("MCP", { exact: true }).click();
       assert.equal(await toggle.getAttribute("aria-checked"), "false");
-      await page.getByLabel("名称", { exact: true }).fill(requiresApproval ? "confirmed_lookup" : "direct_lookup");
+      await page.getByLabel("显示名称", { exact: true }).fill(requiresApproval ? "confirmed_lookup" : "direct_lookup");
       await page.getByLabel("用途", { exact: true }).fill("读取公开资料");
-      await page.getByLabel("MCP 地址", { exact: true }).fill("https://mcp.example.com/mcp");
+      await drawer.locator(".ant-select").filter({ has: page.getByRole("combobox", { name: "Tool MCP 连接", exact: true }) }).click();
+      await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").filter({ hasText: "共享文档服务 · streamable_http · v1" }).click();
       await page.getByRole("button", { name: "发现工具", exact: true }).click();
-      await drawer.locator(".ant-select").filter({ has: page.getByRole("combobox", { name: "远端工具", exact: true }) }).getByText("lookup", { exact: true }).waitFor();
+      await drawer.locator(".ant-select").filter({ has: page.getByRole("combobox", { name: "MCP 远端函数名", exact: true }) }).getByText("lookup", { exact: true }).waitFor();
       if (requiresApproval) await toggle.click();
       await toggle.scrollIntoViewIfNeeded();
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
       await page.screenshot({ path: screenshotPath(`web-tool-approval-${requiresApproval}-${width}.png`), animations: "disabled" });
       await save();
       assert.equal(saved.at(-1).requires_approval, requiresApproval, "保存时明确传递布尔值，包括 false");
+      assert.equal(saved.at(-1).mcp_connection_id, 1);
+      assert.equal(saved.at(-1).mcp_url, undefined);
     }
     const edit = async index => {
       const buttons = width < 768 ? page.locator(".resource-mobile-list").getByRole("button", { name: "编辑", exact: true }) : page.getByRole("button", { name: "编辑", exact: true });

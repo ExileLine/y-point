@@ -7,15 +7,45 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.enums import RecoveryPolicy, ScriptLanguage, ToolEffect, ToolKind, Visibility
 
 
-class ToolCreateIn(BaseModel):
+class _ToolDisplayNameIn(BaseModel):
+    """创建与更新工具共用的可读显示名称。"""
+
+    display_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="创建者范围内唯一的工具显示名称，支持中文、空格及大小写",
+        examples=["天气查询 Weather"],
+    )
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value):
+        """去除名称两端空白，拒绝空名称和不可见控制字符。"""
+        if isinstance(value, str):
+            value = value.strip()
+            if not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError("Tool 显示名称不能为空或包含控制字符")
+        return value
+
+
+class ToolCreateIn(_ToolDisplayNameIn):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=64, description="创建者范围内的工具名称", examples=["disk_report"])
+    name: str | None = Field(default=None, min_length=1, max_length=64, description="不可变内部调用标识，未提供时自动生成", examples=["disk_report"])
+
+    @model_validator(mode="after")
+    def require_tool_name(self):
+        """新客户端填写显示名称，已有客户端可继续提交内部名称。"""
+        if self.display_name is None and self.name is None:
+            raise ValueError("请填写 Tool 显示名称")
+        return self
+
     description: str = Field(min_length=1, max_length=1024, description="模型可见的工具用途", examples=["读取磁盘使用摘要"])
     kind: ToolKind = Field(description="脚本或 MCP 工具", examples=["script"])
     visibility: Visibility = Field(default=Visibility.PRIVATE, description="私有或公开", examples=["private"])
@@ -36,7 +66,14 @@ class ToolCreateIn(BaseModel):
         examples=[["httpx>=0.27,<1"]],
     )
     source_code: str | None = Field(default=None, description="UTF-8 脚本源码", examples=["import json\nprint(json.dumps({'ok': True}))"])
-    mcp_url: str | None = Field(default=None, max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"])
+    mcp_connection_id: int | None = Field(default=None, ge=1, description="复用的 MCP 连接 ID，发布时固定当前连接版本", examples=[1])
+    mcp_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description="旧 HTTP 工具兼容地址，新建工具使用 mcp_connection_id",
+        deprecated=True,
+        examples=["https://mcp.example.com/mcp"],
+    )
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="远端 MCP 工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="MCP Bearer 凭据，仅写入时接收", examples=["token-value"])
     share_credentials: bool = Field(default=False, description="公开 MCP 工具时明确允许他人使用该凭据", examples=[False])
@@ -52,7 +89,7 @@ class ToolCreateIn(BaseModel):
     )
 
 
-class ToolUpdateIn(BaseModel):
+class ToolUpdateIn(_ToolDisplayNameIn):
     model_config = ConfigDict(extra="forbid")
 
     expected_version: int = Field(ge=1, description="预期的当前 Tool 版本号", examples=[1])
@@ -75,7 +112,14 @@ class ToolUpdateIn(BaseModel):
         examples=[["httpx==0.28.1"]],
     )
     source_code: str | None = Field(default=None, description="新版脚本源码", examples=["print('{}')"])
-    mcp_url: str | None = Field(default=None, max_length=512, description="新版 MCP 地址", examples=["https://mcp.example.com/mcp"])
+    mcp_connection_id: int | None = Field(default=None, ge=1, description="新版工具采用的 MCP 连接 ID，重新固定该连接当前版本", examples=[1])
+    mcp_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description="旧 HTTP 工具兼容地址，共享连接在连接管理中修改",
+        deprecated=True,
+        examples=["https://mcp.example.com/mcp"],
+    )
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="新版远端工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="替换 MCP Bearer 凭据，留空时保留", examples=["new-token"])
     share_credentials: bool | None = Field(default=None, description="公开时是否授权共享凭据", examples=[True])
@@ -102,7 +146,12 @@ class ToolTestIn(BaseModel):
 class McpDiscoverIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(max_length=512, description="MCP Streamable HTTP 地址", examples=["https://mcp.example.com/mcp"])
+    url: str = Field(
+        max_length=512,
+        description="旧 HTTP 工具兼容地址，新建工具使用 mcp_connection_id",
+        deprecated=True,
+        examples=["https://mcp.example.com/mcp"],
+    )
     bearer_token: str | None = Field(default=None, description="可选的 MCP Bearer 凭据", examples=["token-value"])
 
 

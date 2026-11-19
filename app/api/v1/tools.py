@@ -6,6 +6,7 @@
 """用户脚本与 MCP Tool 的发布、可见性和试运行接口。"""
 
 import hashlib
+from uuid import uuid4
 
 import asyncio
 
@@ -16,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_config
-from app.core.enums import RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, UserRole, Visibility
+from app.core.enums import McpTransport, RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, UserRole, Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin, require_admin
@@ -28,10 +29,11 @@ from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdate
 from app.schemas.tool import ToolWriteContractVerifyIn
 from app.services.identity import audit
 from app.services.mcp_tools import discover_mcp_tools
+from app.services.mcp_connections import bind_connection
 from app.services.provider_credentials import decrypt_credentials
 from app.services.script_sandbox import SandboxConfigurationError, run_script
 from app.services.tool_environments import environment_output, initial_environment_fields, require_script_environment
-from app.services.user_tools import cancel_tool_runs, model_tool_name, validate_tool_definition, version_fields
+from app.services.user_tools import cancel_tool_runs, model_tool_name, tool_display_name, validate_tool_definition, version_fields
 from app.services.tool_execution import ToolCapacityError, tool_execution_slot
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -61,6 +63,7 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
         "id": tool.id,
         "owner_id": tool.owner_id,
         "name": tool.name,
+        "display_name": tool_display_name(tool),
         "model_name": model_tool_name(tool),
         "description": tool.description,
         "kind": tool.kind,
@@ -80,6 +83,9 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
                 "requires_approval": version.requires_approval,
                 "script_language": version.script_language,
                 "source_code": version.source_code,
+                "mcp_connection_id": version.mcp_connection_id,
+                "mcp_connection_version": version.mcp_connection_version,
+                "mcp_transport": (version.mcp_config or {}).get("transport", McpTransport.STREAMABLE_HTTP) if tool.kind == ToolKind.MCP else None,
                 "mcp_url": version.mcp_url,
                 "mcp_tool_name": version.mcp_tool_name,
                 "has_credentials": bool(version.encrypted_credentials),
@@ -105,10 +111,14 @@ async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = Fal
 async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: AsyncSession, owner_id: int) -> tuple[dict, str, bool, str]:
     """验证 Tool 执行定义，MCP 输入结构从远端发现结果取得。"""
     if kind == ToolKind.MCP:
+        if fields.get("mcp_connection_id"):
+            await bind_connection(db, fields, owner_id)
         try:
             sessions = async_sessionmaker(db.bind, expire_on_commit=False)
-            async with tool_execution_slot(sessions, owner_id, None, ToolLeaseKind.CALL, 15):
-                found = await discover_mcp_tools(fields["mcp_url"], token)
+            async with tool_execution_slot(sessions, owner_id, None, ToolLeaseKind.CALL, get_config().MCP_DISCOVERY_TIMEOUT_SECONDS):
+                target = fields.get("mcp_config") or fields["mcp_url"]
+                secret = fields["encrypted_credentials"] if fields.get("mcp_config") else token
+                found = await discover_mcp_tools(target, secret)
         except ToolCapacityError as exc:
             raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
         except Exception as exc:
@@ -165,12 +175,12 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
     )
 
 
-@router.post("/mcp/discover", summary="发现 MCP 连接的工具")
+@router.post("/mcp/discover", summary="发现旧 HTTP 配置中的 MCP 工具", deprecated=True)
 async def discover_tools(body: McpDiscoverIn, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """校验公网连接并列出远端工具，不保存提交的凭据。"""
     try:
         sessions = async_sessionmaker(db.bind, expire_on_commit=False)
-        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, 15):
+        async with tool_execution_slot(sessions, actor.id, None, ToolLeaseKind.CALL, get_config().MCP_DISCOVERY_TIMEOUT_SECONDS):
             found = await discover_mcp_tools(body.url, body.bearer_token)
     except ToolCapacityError as exc:
         raise CustomException(status_code=429, custom_code=10005, detail=str(exc)) from exc
@@ -212,10 +222,12 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
         fields = version_fields(body.model_dump(), None)
     except ValueError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
-    fields, effect, approval, digest = await _prepare(body.kind, body.name, fields, body.mcp_bearer_token, db, actor.id)
+    name = body.name or f"tool_{uuid4().hex[:16]}"
+    fields, effect, approval, digest = await _prepare(body.kind, name, fields, body.mcp_bearer_token, db, actor.id)
     tool = UserTool(
         owner_id=actor.id,
-        name=body.name,
+        name=name,
+        display_name=body.display_name or name,
         description=body.description,
         kind=body.kind,
         visibility=body.visibility,
@@ -313,6 +325,8 @@ async def update_tool(tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(g
     verified = tool.kind == ToolKind.MCP or previous.verified and not execution_changed
     if tool.kind == ToolKind.SCRIPT and not verified:
         visibility = Visibility.PRIVATE
+    if "display_name" in changes:
+        tool.display_name = changes["display_name"]
     if "description" in changes:
         tool.description = changes["description"]
     tool.visibility = visibility
@@ -333,7 +347,11 @@ async def update_tool(tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(g
         ),
     )
     audit(db, "tool.updated", actor_id=actor.id, target_id=tool.id)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise CustomException(status_code=409, custom_code=10005, detail="同名 Tool 已存在") from None
     return api_response(data=_output(tool, await _version(db, tool)), datetime_format=False)
 
 
@@ -345,6 +363,7 @@ async def delete_tool(tool_id: int, actor: Admin = Depends(get_current_admin), d
     tool.is_deleted = 1
     tool.enabled = False
     tool.name = f"_deleted_{tool.id}"
+    tool.display_name = None
     audit(db, "tool.deleted", actor_id=actor.id, target_id=tool.id)
     await db.commit()
     return api_response(message="Tool 已删除")

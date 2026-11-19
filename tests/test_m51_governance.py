@@ -32,7 +32,7 @@ from app.models.agent_run import AgentRun
 from app.models.base import Base, shanghai_now
 from app.models.tool import RunTool, ToolInvocation, UserTool, UserToolVersion
 from app.models.tool_execution import ToolExecutionLease
-from app.services.mcp_tools import _PinnedPublicTransport, _discover_session
+from app.services.mcp_tools import _PinnedMcpTransport, _discover_session
 from app.services.run_manager import claim_run, create_approval_request, create_run, decide_approval
 from app.services.tool_execution import ToolCapacityError, acquire_tool_slot, release_tool_slot, tool_execution_slot
 from app.services.tool_resources import (
@@ -99,7 +99,8 @@ async def _http_platform(sessions):
         app.dependency_overrides.clear()
 
 
-def test_mcp_transport_limits_before_sdk_parsing(monkeypatch) -> None:
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_mcp_transport_limits_before_sdk_parsing(monkeypatch, scheme) -> None:
     """声明长度、压缩编码及分块超限均关闭原始流，后续请求共享预算。"""
     monkeypatch.setattr(get_config(), "MCP_RESPONSE_MAX_BYTES", 8)
 
@@ -143,20 +144,20 @@ def test_mcp_transport_limits_before_sdk_parsing(monkeypatch) -> None:
                 """构造恶意上游响应。"""
                 return httpx.Response(200, headers=headers, stream=stream)
 
-            transport = _PinnedPublicTransport("mcp.example.com", "1.1.1.1")
+            transport = _PinnedMcpTransport("mcp.example.com", "1.1.1.1", scheme=scheme)
             await transport.transport.aclose()
             transport.transport = httpx.MockTransport(respond)
             async with httpx.AsyncClient(transport=transport) as client:
                 with pytest.raises(ValueError):
-                    await client.get("https://mcp.example.com/mcp")
+                    await client.get(f"{scheme}://mcp.example.com/mcp")
             assert stream.closed
-        transport = _PinnedPublicTransport("mcp.example.com", "1.1.1.1")
+        transport = _PinnedMcpTransport("mcp.example.com", "1.1.1.1", scheme=scheme)
         await transport.transport.aclose()
         transport.transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Stream([b"12345"])))
         async with httpx.AsyncClient(transport=transport) as client:
-            assert (await client.get("https://mcp.example.com/mcp")).content == b"12345"
+            assert (await client.get(f"{scheme}://mcp.example.com/mcp")).content == b"12345"
             with pytest.raises(ValueError, match="字节上限"):
-                await client.get("https://mcp.example.com/mcp")
+                await client.get(f"{scheme}://mcp.example.com/mcp")
 
     asyncio.run(exercise())
 
@@ -917,7 +918,8 @@ asyncio.run(exercise())
             subprocess.run(["docker", "network", "rm", identifier], capture_output=True)
 
 
-def test_mcp_sdk_authenticated_discovery_rotation_and_failures(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("endpoint", ["https://mcp.example.com/mcp", "http://mcp.example.com:8080/mcp"])
+def test_mcp_sdk_authenticated_discovery_rotation_and_failures(tmp_path: Path, monkeypatch, endpoint: str) -> None:
     """真实 MCP SDK 经 HTTP 协议验证有效、失效、轮换凭据及限流，并保持 API 错误脱敏。"""
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
@@ -956,16 +958,18 @@ def test_mcp_sdk_authenticated_discovery_rotation_and_failures(tmp_path: Path, m
         else:
             await application(scope, receive, send)
 
-    def initialize_transport(self, host, address):
+    def initialize_transport(self, host, address, *, scheme="https", port=None):
         """只将最底层网络换为进程内 HTTP，上层限额及 SDK 协议保持正式实现。"""
         self.host = host
+        self.scheme = scheme
+        self.port = port or (80 if scheme == "http" else 443)
         self.address = address
         self.received = 0
         self.max_bytes = get_config().MCP_RESPONSE_MAX_BYTES
         self.transport = httpx.ASGITransport(app=authenticated)
 
     monkeypatch.setattr(mcp_tools, "validate_mcp_url", lambda url: "1.1.1.1")
-    monkeypatch.setattr(_PinnedPublicTransport, "__init__", initialize_transport)
+    monkeypatch.setattr(_PinnedMcpTransport, "__init__", initialize_transport)
 
     async def exercise():
         """轮换远端接受的凭据，核对正式发现路由及调用结果。"""
@@ -979,7 +983,7 @@ def test_mcp_sdk_authenticated_discovery_rotation_and_failures(tmp_path: Path, m
                     "/api/v1/tools/mcp/discover",
                     headers=owner,
                     json={
-                        "url": "https://mcp.example.com/mcp",
+                        "url": endpoint,
                         "bearer_token": token,
                     },
                 )
@@ -989,7 +993,7 @@ def test_mcp_sdk_authenticated_discovery_rotation_and_failures(tmp_path: Path, m
             remote = response.json()["data"][0]
             assert remote["name"] == "double" and remote["read_only"] is True
             result = await mcp_tools.invoke_mcp_tool(
-                "https://mcp.example.com/mcp",
+                endpoint,
                 "double",
                 {
                     "value": 21,

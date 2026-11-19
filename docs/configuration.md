@@ -148,6 +148,7 @@ Agent 编辑页 → 运行设置提供“模型思考模式”：`auto`（跟随
 | `MCP_CONNECT_TIMEOUT_SECONDS` | 10 秒，正整数，不能清空/设 0。 | MCP 建连、写入和连接池等待有独立限制；整次调用的预算较大也不能覆盖较短的建连限制。 |
 | `MCP_DISCOVERY_TIMEOUT_SECONDS` | 15 秒，正整数。 | 页面发现工具时的总时限，含握手和分页；与对话中的正式调用时限独立。 |
 | `MCP_CALL_TIMEOUT_SECONDS` | 120 秒，正整数。 | 正式 MCP 总预算为 `min(Agent.tool_timeout_seconds, 此值)`，含初始化、契约复核及调用；进度通知不会刷新总预算。 |
+| `MCP_STDIO_PROFILES` | `{}`，JSON 对象。 | stdio 固定镜像和启动配置；API/Worker 保持一致，镜像提前导入。配置和禁网限制见 [MCP Tool](tools.md#mcp-tool)。 |
 | `KNOWLEDGE_SEARCH_TIMEOUT_SECONDS` | 60 秒，正整数。 | Agent 检索预算为 `min(Agent.tool_timeout_seconds, 此值)`；独立检索接口也使用此工程值，完整检索涵盖其内的嵌入和召回。 |
 | `KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS` | 60 秒，正整数。 | 单批嵌入预算还受嵌入供应商 `timeout_seconds` 限制；只调高聊天模型供应商不能解决嵌入超时。 |
 | `SCRIPT_EXECUTION_TIMEOUT_SECONDS` / `SCRIPT_TEST_TIMEOUT_SECONDS` | 正式 30 秒 / 页面试运行 10 秒，均为正整数。 | 正式 Tool 和 Skill 脚本采用 `min(Agent.tool_timeout_seconds, 正式时限)`；试运行独立使用测试时限。依赖环境构建还有独立的 `SCRIPT_DEPENDENCY_BUILD_TIMEOUT_SECONDS=180`，不是脚本运行时限。 |

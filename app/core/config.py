@@ -212,6 +212,20 @@ class BaseConfig(BaseSettings):
     MCP_DISCOVERY_MAX_TOOLS: int = Field(default=128, ge=1, le=1024, description="MCP 发现工具数量上限", examples=[128])
     MCP_DISCOVERY_MAX_BYTES: int = Field(default=256 * 1024, ge=1024, le=1024 * 1024, description="MCP 发现结果总字节上限", examples=[262144])
     MCP_RESPONSE_MAX_BYTES: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576])
+    MCP_STDIO_PROFILES: dict[str, dict] = Field(
+        default_factory=dict,
+        description="管理员提供的 stdio 配置，键为配置名，值含固定镜像 image、command、args 和允许注入的 env_keys；无网络或宿主目录挂载",
+        examples=[
+            {
+                "local_tools": {
+                    "image": "sha256:" + "a" * 64,
+                    "command": ["python", "/app/server.py"],
+                    "args": [],
+                    "env_keys": [],
+                },
+            }
+        ],
+    )
 
     # 知识库配置参数
     KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(
