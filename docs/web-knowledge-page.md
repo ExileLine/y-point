@@ -42,7 +42,7 @@
 
 ## 验证入口与交付边界
 
-在仓库根目录执行 `npm --prefix web run typecheck`、`npm --prefix web run build`。启动前端后执行 `npm --prefix web run verify:knowledge`，可以用 `WEB_BASE_URL` 指定地址、`CHROME_PATH` 指定浏览器可执行文件。脚本默认使用本机 Chrome；接口响应由浏览器拦截构造，不连接业务数据或真实模型。完整执行结果、开发进度与待验收事项记录在 `y-point-web-todo.md`。
+在仓库根目录执行 `npm --prefix web run typecheck`、`npm --prefix web run build`。启动前端后执行 `npm --prefix web run verify:knowledge`，可以用 `WEB_BASE_URL` 指定地址、`CHROME_PATH` 指定浏览器可执行文件。脚本默认使用本机 Chrome；接口响应由浏览器拦截构造，不连接业务数据或真实模型。现场复验步骤和执行结果归档到 `y-point-server-todo.md`，日常前端开发任务由 `y-point-web-todo.md` 跟踪。
 
 日常联调使用仓库的 `make dev`，由现有启动脚本配置 API 代理与 worker。独立启动前端时可用 `API_PROXY_TARGET=http://127.0.0.1:7769 npm --prefix web run dev`。
 

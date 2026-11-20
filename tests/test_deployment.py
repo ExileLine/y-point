@@ -15,12 +15,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+CLI = [sys.executable, "-m", "ypoint_cli"]
 
 
 def initialize(directory: Path, *arguments: str) -> subprocess.CompletedProcess:
     """通过真实 CLI 在临时目录生成独立的部署配置。"""
     return subprocess.run(
-        [sys.executable, str(ROOT / "scripts/deploy.py"), "init", "--directory", str(directory), *arguments],
+        [*CLI, "init", "--directory", str(directory), *arguments],
+        cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=30,
@@ -70,10 +72,11 @@ def test_compose_sandbox_is_explicit_and_keeps_server_configuration(tmp_path: Pa
     directory = tmp_path / "private"
     result = initialize(directory, *(["--https"] if https else []))
     assert result.returncode == 0, result.stderr
-    command = [sys.executable, str(ROOT / "scripts/deploy.py"), "compose", "--directory", str(directory)]
+    command = [*CLI, "compose", "--directory", str(directory)]
     for sandbox in (False, True):
         completed = subprocess.run(
             [*command, *(["--sandbox"] if sandbox else []), "--", "config", "--format", "json"],
+            cwd=ROOT,
             capture_output=True,
             text=True,
             timeout=30,
@@ -97,7 +100,7 @@ def test_compose_sandbox_is_explicit_and_keeps_server_configuration(tmp_path: Pa
         assert web["environment"]["YPOINT_HTTPS_ENABLED"] == str(https).lower()
         assert {port["target"] for port in web["ports"]} == ({8080, 8443} if https else {8080})
         assert any(volume["target"] == "/run/tls" for volume in web.get("volumes", [])) == https
-        assert "ports" not in config["services"]["db"]
+        assert [(port["host_ip"], port["published"], port["target"]) for port in config["services"]["db"]["ports"]] == [("127.0.0.1", "15432", 5432)]
         redis = config["services"]["redis"]
         assert "ports" not in redis and redis["user"] == "redis"
         assert redis["read_only"] and redis["logging"]["driver"] == "local"
@@ -120,8 +123,9 @@ def test_http_initialization_needs_neither_certificate_nor_openssl(tmp_path: Pat
     environment_variables = os.environ.copy()
     environment_variables["PATH"] = ""
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/deploy.py"), "init", "--directory", str(directory), "--environment", environment],
+        [*CLI, "init", "--directory", str(directory), "--environment", environment],
         env=environment_variables,
+        cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=15,
@@ -135,7 +139,7 @@ def test_http_initialization_needs_neither_certificate_nor_openssl(tmp_path: Pat
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="HTTPS 测试需要 OpenSSL")
 def test_protocol_switch_and_legacy_configuration_preserve_credentials(tmp_path: Path) -> None:
     """协议可双向切换；旧配置默认继续 HTTPS，切换不改密码、业务密钥和证书。"""
-    from scripts.deploy import configured_https, read_private_values
+    from ypoint_cli.deployment import configured_https, read_private_values
 
     directory = tmp_path / "switch"
     assert initialize(directory).returncode == 0
@@ -192,8 +196,7 @@ def test_production_http_keeps_resource_overlay_without_tls(tmp_path: Path) -> N
     assert initialize(directory, "--environment", "production").returncode == 0
     result = subprocess.run(
         [
-            sys.executable,
-            str(ROOT / "scripts/deploy.py"),
+            *CLI,
             "compose",
             "--environment",
             "production",
@@ -204,6 +207,7 @@ def test_production_http_keeps_resource_overlay_without_tls(tmp_path: Path) -> N
             "--format",
             "json",
         ],
+        cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=30,
@@ -218,7 +222,7 @@ def test_production_http_keeps_resource_overlay_without_tls(tmp_path: Path) -> N
 
 def test_reinitialization_preserves_external_gateway_cookie_setting(tmp_path: Path) -> None:
     """外层网关终止 TLS 时，无协议参数的重复初始化保留显式 Cookie 设置。"""
-    from scripts.deploy import read_private_values, update_private_values
+    from ypoint_cli.deployment import read_private_values, update_private_values
 
     directory = tmp_path / "external-gateway"
     assert initialize(directory).returncode == 0
@@ -248,7 +252,8 @@ def test_legacy_compose_configuration_keeps_https_overlay(tmp_path: Path) -> Non
     path = directory / "compose.env"
     path.write_text("\n".join(line for line in path.read_text().splitlines() if not line.startswith("YPOINT_HTTPS_ENABLED=")) + "\n")
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts/deploy.py"), "compose", "--directory", str(directory), "--", "config", "--format", "json"],
+        [*CLI, "compose", "--directory", str(directory), "--", "config", "--format", "json"],
+        cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=30,
@@ -262,7 +267,7 @@ def test_legacy_compose_configuration_keeps_https_overlay(tmp_path: Path) -> Non
 
 def test_explicit_listening_updates_preserve_other_configuration(tmp_path: Path) -> None:
     """可更新已有部署的监听参数，省略时保留且不改业务凭据和镜像标签。"""
-    from scripts.deploy import read_private_values, update_private_values
+    from ypoint_cli.deployment import read_private_values, update_private_values
 
     directory = tmp_path / "listening"
     assert initialize(directory, "--bind-ip", "0.0.0.0", "--http-port", "19080").returncode == 0
@@ -339,7 +344,7 @@ def test_worker_probe_rejects_own_stale_heartbeat_even_with_another_live_worker(
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
 def test_redis_password_is_independent_private_and_stable(tmp_path: Path, environment: str) -> None:
     """各环境启用托管 Redis，密码独立且重复初始化不会轮换或泄露。"""
-    from scripts.deploy import read_private_values
+    from ypoint_cli.deployment import read_private_values
 
     directory = tmp_path / environment
     first = initialize(directory, "--environment", environment)
@@ -360,7 +365,7 @@ def test_redis_password_is_independent_private_and_stable(tmp_path: Path, enviro
 
 def test_legacy_deployment_adds_redis_without_rotating_business_credentials(tmp_path: Path) -> None:
     """旧三文件部署补齐 Redis，已有数据库、JWT 和供应商密钥及镜像配置均保留。"""
-    from scripts.deploy import read_private_values
+    from ypoint_cli.deployment import read_private_values
 
     directory = tmp_path / "legacy-redis"
     assert initialize(directory).returncode == 0
@@ -406,7 +411,7 @@ def test_damaged_managed_redis_configuration_is_not_regenerated(tmp_path: Path, 
 
 def test_legacy_external_redis_configuration_is_preserved(tmp_path: Path) -> None:
     """旧部署已指定外部 Redis 时，仅补容器私有配置，保留原连接参数。"""
-    from scripts.deploy import read_private_values, update_private_values
+    from ypoint_cli.deployment import read_private_values, update_private_values
 
     directory = tmp_path / "external-redis"
     assert initialize(directory).returncode == 0
@@ -437,8 +442,7 @@ def test_redis_resource_defaults_reserve_memory_for_persistence(tmp_path: Path, 
     assert initialize(directory, "--environment", environment).returncode == 0
     result = subprocess.run(
         [
-            sys.executable,
-            str(ROOT / "scripts/deploy.py"),
+            *CLI,
             "compose",
             "--environment",
             environment,
@@ -449,6 +453,7 @@ def test_redis_resource_defaults_reserve_memory_for_persistence(tmp_path: Path, 
             "--format",
             "json",
         ],
+        cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=30,

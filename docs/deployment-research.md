@@ -1,6 +1,6 @@
 # Docker 部署设计与官方资料参考
 
-资料核实日期：**2026-11-13**。本文保留服务划分、启动依赖、环境覆盖、日志及 Docker 权限的设计依据；当前可执行配置和命令以[部署手册](deployment-guide.md)及[部署架构](deployment.md)为准。原始研究过程归档到工作区 `y-point-server-todo.md`。
+本文保留服务划分、启动依赖、环境覆盖、日志及 Docker 权限的设计依据；当前可执行配置和命令以[部署手册](deployment-guide.md)及[部署架构](deployment.md)为准。原始研究过程归档到工作区 `y-point-server-todo.md`。
 
 ## 1. 服务按职责与权限拆分
 
@@ -8,7 +8,8 @@
 
 **限制：**拆分便于分别配置健康检查、日志和权限，但管理服务若可访问同一个 Docker daemon，仍能操作该 daemon 管理的其他资源；服务拆分本身不构成强安全隔离。后者是依据 daemon 默认授权模型得出的设计判断。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/build/building/best-practices/#decouple-applications
 - https://docs.docker.com/engine/extend/plugins_authorization/
 
@@ -20,7 +21,8 @@
 
 **采用：**常驻服务可设服务级 `restart: unless-stopped`；一次性任务不采用此策略。健康检查只改变健康状态，单纯变成 `unhealthy` 不会触发该退出重启策略。依赖项内的 `restart: true` 是另一项机制：跟随显式 Compose 更新／重启操作，不跟随容器运行时因崩溃而执行的自动重启；该字段要求 Compose **2.17.0+**。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/compose/how-tos/startup-order/
 - https://docs.docker.com/reference/compose-file/services/#depends_on
 - https://docs.docker.com/reference/dockerfile/#healthcheck
@@ -28,29 +30,31 @@
 
 ## 3. 显式选择环境覆盖文件，检查合并结果
 
-**设计依据：**公共服务放在基础 Compose 文件中，环境差异由覆盖文件和私有配置表达。项目通过 `scripts/deploy.py` 显式选择环境和覆盖文件；核对最终配置可执行：
+**设计依据：**公共服务放在基础 Compose 文件中，环境差异由覆盖文件和私有配置表达。项目通过 `ypoint_cli/deployment.py` 显式选择环境和覆盖文件；核对最终配置可执行：
 
 ```bash
-python3 scripts/deploy.py compose -- config --quiet
+python3 -m ypoint_cli compose -- config --quiet
 # 需要脚本和 MCP stdio 执行时：
-python3 scripts/deploy.py compose --sandbox -- config --quiet
+python3 -m ypoint_cli compose --sandbox -- config --quiet
 ```
 
 **限制：**后文件覆盖前文件不等于整份替换。映射按键合并；`ports` 按 `{ip, target, published, protocol}` 唯一键合并，新端口可能与旧端口同时保留；`volumes` 按容器内 `target` 合并。不要以为写一个新端口或 `ports: []` 就清除了旧端口。需要完整替换时使用 `!override`，并要求 Compose **2.24.4+**；否则把环境专属端口只放在各自覆盖文件，避免基础文件预置。多个 `-f` 文件中的相对路径统一相对第一个基础文件解析。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/compose/how-tos/multiple-compose-files/merge/
 - https://docs.docker.com/reference/compose-file/merge/
 
 ## 4. 区分配置插值与容器环境变量注入
 
-**采用：**显式 `--env-file .env.local-prod` 提供 Compose 插值，必填值用 `${VAR:?说明}` 让缺失或空值直接报错；容器需要的变量再通过服务的 `environment`／`env_file` 明确注入。
+**当前入口：**`ypoint_cli/deployment.py` 显式将 `.deployment/<environment>/compose.env` 传给 Docker Compose 的 `--env-file`，必填值用 `${VAR:?说明}` 让缺失或空值直接报错；容器需要的变量再通过服务的 `environment`／`env_file` 明确注入。
 
 **限制：**`.env`／CLI `--env-file` 不是自动给所有容器注入变量的机制。当前官方插值优先级为：**宿主 shell > 显式 `--env-file` > 未指定该参数时的项目目录 `.env`**；多个 `--env-file` 后者覆盖前者。默认项目目录依次由 `--project-directory`、首个 `-f` 文件所在目录、当前目录决定；`COMPOSE_FILE` 改变项目目录时还可能加载优先级较低的第二份 `.env`。固定部署入口应显式指定文件，避免依赖默认查找。
 
 **采用：**容器内同名变量按来源核对：CLI `docker compose run -e` 优先；官方随后区分来自插值的 `environment`／`env_file`、直接写入的 `environment`、普通 `env_file`、镜像 `ENV`。常规静态配置中 `environment` 会覆盖 `env_file`。宿主已导出的变量仍可能改变插值结果，不能认为 `--env-file` 压过 shell。需要在容器 shell 中展开 `$VAR` 时，Compose 配置使用 `$$VAR` 转义。渲染输出可能包含敏感值，应按配置内容控制可见范围。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/
 - https://docs.docker.com/compose/how-tos/environment-variables/envvars-precedence/
 - https://docs.docker.com/reference/compose-file/interpolation/
@@ -69,11 +73,12 @@ logging:
     compress: "true"
 ```
 
-**已核实：**上述值也是 `local` 官方默认值：单文件达到 `20m` 轮转，最多保留 5 个日志文件，超过时删除最旧文件，默认压缩已轮转文件；官方按每容器约 **100 MB 日志消息**描述默认保留量。`max-size` 接受正整数及 `k/m/g` 单位，`max-file` 是正整数。选项值使用字符串。
+**配置含义：**本项目显式使用 `local` 的这些参数：单文件达到 `20m` 轮转，最多保留 5 个日志文件，超过时删除最旧文件，默认压缩已轮转文件；官方按每容器约 **100 MB 日志消息**描述默认保留量。`max-size` 接受正整数及 `k/m/g` 单位，`max-file` 是正整数。选项值使用字符串。
 
 **限制：**这是每容器的轮转保留设置，不是整个 Docker 数据目录的严格磁盘配额，也不保证固定保留天数。`local` 捕获容器 stdout/stderr，应用自行写入其他文件的日志不受其管理。Docker 管理日志内部文件，应通过 Docker 日志接口读取，不用外部工具直接修改这些文件。修改 daemon 默认日志配置只作用于之后新建的容器，现有容器不会自动采用新配置；服务现有日志参数的变更应安排重建生效。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/engine/logging/drivers/local/
 - https://docs.docker.com/engine/logging/configure/
 
@@ -85,7 +90,8 @@ logging:
 
 **采用：**需要细粒度授权时评估 Docker authorization plugin；需要隔离受控工作负载时优先使用专用 daemon／虚拟机，并限制其能访问的宿主数据。后者是依据默认授权能力提出的架构选择，不是单个 Compose 配置字段能提供的保证。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/engine/extend/plugins_authorization/
 - https://docs.docker.com/compose/trust-model/
 - https://raw.githubusercontent.com/OWASP/CheatSheetSeries/master/cheatsheets/Docker_Security_Cheat_Sheet.md
@@ -110,7 +116,8 @@ volumes:
 
 **设计判断：**若业务 API 接收宿主路径，必须自行实施规范化后的路径白名单、限制可控的源路径及挂载选项，并保护白名单目录本身；不能只检查字符串前缀或依赖工作目录。即使实现这些检查，也不能将其视为恶意代码的强隔离边界：持有 daemon socket 的服务仍有能力请求其他挂载。强隔离应在专用 daemon／虚拟机及其可见宿主目录边界落实。
 
-来源（核实日期：2026-11-13）：
+参考来源：
+
 - https://docs.docker.com/engine/storage/bind-mounts/
 - https://docs.docker.com/reference/compose-file/services/#volumes
 - https://docs.docker.com/compose/trust-model/
@@ -118,6 +125,6 @@ volumes:
 
 ## 采用清单与研究边界
 
-建议基线：显式双 Compose 文件与 `--env-file`；使用 `!override` 时 Compose ≥ 2.24.4；关键依赖等待健康；常驻服务退出重启、应用负责断线恢复；各服务 `local: 20m × 5`；socket 权限集中；宿主挂载白名单、只读优先、禁止自动建目录。以上选择及限制以各节列出的原始来源为依据，统一核实日期为 **2026-11-13**。
+当前基线：由 CLI 按环境及协议组合基础、production、HTTPS 和沙箱覆盖文件，显式传入 `compose.env`；使用 `!override` 时 Compose ≥ 2.24.4；关键依赖等待健康；常驻服务退出重启、应用负责断线恢复；各服务 `local: 20m × 5`；socket 权限集中；宿主挂载白名单、只读优先、禁止自动建目录。设计约束与参考来源见各节；当时的核查日期、研究过程及原文保存在工作区 `y-point-server-todo.md`。
 
 升级 Compose 或调整权限时，重新核对本文引用及仓库配置；资料引用不代替目标环境的启动、恢复和隔离验证。

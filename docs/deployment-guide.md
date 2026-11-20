@@ -2,6 +2,8 @@
 
 本文用于从项目源码部署到本机 Docker 或单台 Linux 服务器。先完成基础部署与管理员创建，再在页面配置模型。Dockerfile、Compose、进程、日志与安全边界的设计说明见 [部署架构与配置参考](deployment.md)，逐步学习说明见 [Docker 部署逐步讲解](deployment-walkthrough.md#部署文件与执行过程)。
 
+本文使用 `python3 -m ypoint_cli`，Docker 宿主机只需 Python 标准库。已安装项目依赖的开发环境可将此前缀替换为 `uv run yp`，激活虚拟环境后可用 `yp`；三种方式调用同一实现。全量参数和打包配置解释见 [统一命令行与项目配置](cli.md)。
+
 ## 1. 准备部署主机
 
 主机需要安装并启动 Docker Engine（macOS 可用 Docker Desktop）、Docker Compose 插件 v2.24+、Python 3.12+。宿主机不需要安装 Node、uv、PostgreSQL 或项目 Python 依赖，它们在镜像内安装。只有 local HTTPS 自动生成自签证书时需要宿主 OpenSSL。
@@ -18,7 +20,7 @@ docker compose version
 cd /srv/y-point
 ```
 
-本机使用实际项目路径替换 `/srv/y-point`。一键脚本本身也支持从其他目录用绝对路径调用；其中 `--directory` 和证书的相对路径按调用时的目录解析。
+本机使用实际项目路径替换 `/srv/y-point`。模块入口应在源码仓库根目录执行；已安装 `yp` 时可从其他目录运行 `yp --project-dir /srv/y-point deploy --sandbox`，公共参数放在子命令之前。`--directory` 和证书的显式相对路径按调用时的目录解析。
 
 ## 2. 一键部署
 
@@ -27,7 +29,7 @@ cd /srv/y-point
 ### 本机 Docker 模拟生产
 
 ```bash
-python3 scripts/deploy_all.py --sandbox
+python3 -m ypoint_cli deploy --sandbox
 ```
 
 首次运行默认部署 local 环境，HTTP 地址为 `http://127.0.0.1:18080`。local 是部署配置的名字，应用仍使用关闭 DEBUG 的 production 配置。
@@ -37,17 +39,17 @@ python3 scripts/deploy_all.py --sandbox
 首次部署也可以同时创建管理员：
 
 ```bash
-python3 scripts/deploy_all.py --sandbox --create-admin admin
+python3 -m ypoint_cli deploy --sandbox --create-admin admin
 ```
 
-`--sandbox` 开启脚本执行，`--create-admin admin` 创建首位管理员，两者相互独立。后续更新使用 `python3 scripts/deploy_all.py --sandbox`，无需再次创建管理员。
+`--sandbox` 开启脚本执行，`--create-admin admin` 创建首位管理员，两者相互独立。后续更新使用 `python3 -m ypoint_cli deploy --sandbox`，无需再次创建管理员。
 
 在终端输入两次密码；密码不放在参数或配置文件中。已有管理员时不要继续传 `--create-admin`，后续账号通过管理页面/API 创建。省略该参数时，脚本会打印单独创建管理员的命令。
 
 ### 内网 Linux 服务器，使用 HTTP
 
 ```bash
-python3 scripts/deploy_all.py --sandbox --environment production --http \
+python3 -m ypoint_cli deploy --sandbox --environment production --http \
   --bind-ip 0.0.0.0 --http-port 18080 --create-admin admin
 ```
 
@@ -60,7 +62,7 @@ python3 scripts/deploy_all.py --sandbox --environment production --http \
 本机自签证书调试：
 
 ```bash
-python3 scripts/deploy_all.py --sandbox --https
+python3 -m ypoint_cli deploy --sandbox --https
 ```
 
 访问 `https://127.0.0.1:18443`，浏览器需信任或确认 local 自签证书；证书有效期 30 天。HTTP 自动跳转 HTTPS。
@@ -68,7 +70,7 @@ python3 scripts/deploy_all.py --sandbox --https
 服务器提供证书与私钥：
 
 ```bash
-python3 scripts/deploy_all.py --sandbox --environment production --https \
+python3 -m ypoint_cli deploy --sandbox --environment production --https \
   --bind-ip 0.0.0.0 --http-port 80 --https-port 443 \
   --tls-cert /absolute/path/fullchain.pem \
   --tls-key /absolute/path/privkey.pem
@@ -81,7 +83,7 @@ python3 scripts/deploy_all.py --sandbox --environment production --https \
 **使用 Python/Bash Tool 或 Skill 受管脚本时必须启用；“可选”表示可以明确选择仅运行基础功能。** 上述主线命令已经包含它。若此前按不带沙箱的命令部署，可在当前任务结束后运行以下命令补开，保留配置、数据和已有管理员：
 
 ```bash
-python3 scripts/deploy_all.py --sandbox
+python3 -m ypoint_cli deploy --sandbox
 ```
 
 额外构建 `Dockerfile.sandbox`，并将 `docker-compose.sandbox.yml` 合并到部署配置，使 API 和 worker 可以调用宿主 Docker。沙箱镜像名从实际 Compose 应用配置中的 `SCRIPT_SANDBOX_IMAGE` 读取。用户脚本容器在调用时临时创建，不是另起一个常驻 sandbox 服务。
@@ -92,15 +94,17 @@ python3 scripts/deploy_all.py --sandbox
 
 ```bash
 # 仅聊天、知识库、内置文件生成等功能；不包含自定义脚本执行。
-python3 scripts/deploy_all.py --create-admin admin
+python3 -m ypoint_cli deploy --create-admin admin
 ```
 
 此模式下，Python/Bash Tool 的依赖准备、试运行和正式调用，以及 Skill 受管脚本和 MCP stdio 均不可用；需要先完成脚本试运行才能发布的版本也会受影响。远程 MCP 和不含受管脚本的 Skill 不依赖这个开关。已有管理员省略 `--create-admin admin`。
 
-### 脚本参数
+<a id="脚本参数"></a>
+
+### 部署命令参数
 
 ```bash
-python3 scripts/deploy_all.py --help
+python3 -m ypoint_cli deploy --help
 ```
 
 | 参数 | 用途 |
@@ -111,7 +115,7 @@ python3 scripts/deploy_all.py --help
 | `--bind-ip IPv4` | 显式设置或更新监听地址；新配置默认 `127.0.0.1`。 |
 | `--http-port N` / `--https-port N` | 显式设置或更新端口；新配置分别默认 18080/18443；不传保留已有值。 |
 | `--tls-cert PATH` / `--tls-key PATH` | 必须成对提供；同时提供也会启用 HTTPS。 |
-| `--sandbox` | Python/Bash Tool 与 Skill 受管脚本必需；构建沙箱镜像并开放受信任的本机 Docker 接入。每次部署均需携带，不会自动记住。 |
+| `--sandbox` | Python/Bash Tool、Skill 受管脚本与 MCP stdio 必需；构建沙箱镜像并开放受信任的本机 Docker 接入。每次部署均需携带，不会自动记住。 |
 | `--skip-build` | 复用已有镜像，跳过应用和沙箱构建；启用沙箱时会检查对应镜像已存在。适合镜像已经准备好的机器。 |
 | `--wait-timeout N` | 健康等待时限，默认 180 秒；首次启动较慢可增加。镜像构建不计入这个时限。 |
 | `--create-admin USERNAME` | 就绪后交互创建首位管理员，仅首次使用；自动化环境省略此参数。 |
@@ -125,7 +129,7 @@ python3 scripts/deploy_all.py --help
 ### 第一步：初始化独立配置
 
 ```bash
-python3 scripts/deploy.py init --environment production --http \
+python3 -m ypoint_cli init --environment production --http \
   --bind-ip 0.0.0.0 --http-port 18080
 ```
 
@@ -136,7 +140,7 @@ python3 scripts/deploy.py init --environment production --http \
 ### 第二步：校验 Compose
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- config --quiet
+python3 -m ypoint_cli compose --environment production --sandbox -- config --quiet
 ```
 
 成功通常无输出。不要直接将完整 `config` 输出贴到聊天或公共日志，其中可能包含解析后的密码。
@@ -144,7 +148,7 @@ python3 scripts/deploy.py compose --environment production --sandbox -- config -
 ### 第三步：构建镜像
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- build
+python3 -m ypoint_cli compose --environment production --sandbox -- build
 # 独立构建脚本执行镜像；Compose build 不会替你构建这个临时执行镜像。
 docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
 ```
@@ -154,8 +158,8 @@ docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
 ### 第四步：启动并等待健康
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- up -d --wait --wait-timeout 180
-python3 scripts/deploy.py compose --environment production --sandbox -- ps
+python3 -m ypoint_cli compose --environment production --sandbox -- up -d --wait --wait-timeout 180
+python3 -m ypoint_cli compose --environment production --sandbox -- ps
 ```
 
 数据库健康后执行一次性 Alembic 迁移；迁移成功且 Redis 认证健康检查通过后启动 API 和 worker；API 健康后启动 Web。五个常驻服务应为 healthy，migrate 正常退出为 0，不需要持续运行。
@@ -163,7 +167,7 @@ python3 scripts/deploy.py compose --environment production --sandbox -- ps
 ### 第五步：创建首位管理员
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- exec api python -m app.cli.create_admin admin
+python3 -m ypoint_cli compose --environment production --sandbox -- exec api python -m app.cli.create_admin admin
 ```
 
 交互输入两次密码，仅在新数据库首次使用时执行。后续更新不重复创建管理员。
@@ -182,7 +186,7 @@ python3 scripts/deploy.py compose --environment production --sandbox -- exec api
 | staging | `.deployment/staging` | `y-point-staging` | `y-point-server:staging`、`y-point-web:staging` |
 | production | `.deployment/production` | `y-point-production` | `y-point-server:production`、`y-point-web:production` |
 
-默认项目名也决定 PostgreSQL 与 Redis 卷名；自定义环境变量 `COMPOSE_PROJECT_NAME` 会覆盖项目名。不要给同一主机上的不同部署使用相同项目名。不同配置目录本身不会生成新的项目名；同一环境多实例需要显式管理项目名和端口。
+默认项目名也决定 PostgreSQL 与 Redis 卷名；自定义环境变量 `COMPOSE_PROJECT_NAME` 会覆盖项目名。不要给同一主机上的不同部署使用相同项目名。不同配置目录本身不会生成新的项目名；同一环境多实例需要显式管理项目名和端口。基础 Compose 还固定发布 PostgreSQL 到宿主回环地址 `127.0.0.1:15432`（容器内为 `5432`），API 和 Redis 不发布宿主端口。`--bind-ip` 与 `--http-port` 只调整 Web，不调整数据库映射；同一主机并行运行多个环境前，需要在 Compose 中移除或调整数据库宿主端口，并核对 Web 端口。
 
 - `compose.env`：镜像名、监听地址/端口、协议、挂载路径、UID/GID、CPU/内存及日志轮转参数。
 - `application.env`：应用运行配置、JWT/供应商密钥、数据库连接、模型预算、文件和脚本目录等。
@@ -190,7 +194,7 @@ python3 scripts/deploy.py compose --environment production --sandbox -- exec api
 
 不要把仓库根 `.env.example` 直接替换到容器：部署应用配置由 `deploy/config/application.env.example` 生成。私有目录已被 Git 与 Docker 构建忽略，迁移机器时需要单独安全传输并保留权限。
 
-Compose 的合并由 `scripts/deploy.py` 顺序传入多个 `-f` 实现：
+Compose 的合并由 `ypoint_cli/deployment.py` 顺序传入多个 `-f` 实现：
 
 ```text
 docker-compose.yml                     基础拓扑，默认 HTTP
@@ -208,14 +212,14 @@ YPOINT_SERVER_IMAGE='y-point-server:2026.11.14'
 YPOINT_WEB_IMAGE='y-point-web:2026.11.14'
 ```
 
-然后再次构建会使用这些名称和标签；若使用预先发布的镜像，先拉取所需镜像，再运行 `deploy_all.py --sandbox --environment production --skip-build`。初始化保留手动设置的镜像名，不会因为重复执行而改回默认标签。
+然后再次构建会使用这些名称和标签；若使用预先发布的镜像，先拉取所需镜像，再运行 `python3 -m ypoint_cli deploy --sandbox --environment production --skip-build`。初始化保留手动设置的镜像名，不会因为重复执行而改回默认标签。
 
 ## 5. HTTP / HTTPS 切换
 
 已有部署不会因为升级代码而自动从 HTTPS 降为 HTTP。使用一键脚本显式切换，完成配置同步、构建与重建：
 
 ```bash
-python3 scripts/deploy_all.py --sandbox --environment production --http
+python3 -m ypoint_cli deploy --sandbox --environment production --http
 ```
 
 切换 HTTPS 使用 `--https`，首次提供证书；后续可复用保存的证书。local 可自动生成自签证书。示例中的 `--sandbox` 在切换协议时继续保留，避免切换后脚本执行失效。
@@ -230,8 +234,8 @@ python3 scripts/deploy_all.py --sandbox --environment production --http
 
 ```bash
 # 会更新部署容器；本机环境省略 --environment production。
-python3 scripts/deploy_all.py --sandbox --environment production
-python3 scripts/deploy.py compose --environment production --sandbox -- exec -T redis redis-cli ping
+python3 -m ypoint_cli deploy --sandbox --environment production
+python3 -m ypoint_cli compose --environment production --sandbox -- exec -T redis redis-cli ping
 ```
 
 返回 `PONG` 表示认证连接成功。一键脚本会为旧三文件配置补齐 `redis.env` 和连接参数，保留数据库密码、业务密钥和协议。升级示例已包含 `--sandbox`；仅基础功能的部署可省略。已托管 Redis 配置损坏时应从备份恢复，不要删除凭据重新生成。
@@ -252,9 +256,9 @@ docker volume inspect y-point-production_redis-data --format '{{.Mountpoint}}'
 查看状态、日志与空间：
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- ps
-python3 scripts/deploy.py compose --environment production --sandbox -- logs --since 15m --timestamps api worker web redis
-python3 scripts/deploy.py compose --environment production --sandbox -- logs --follow --tail 100 worker
+python3 -m ypoint_cli compose --environment production --sandbox -- ps
+python3 -m ypoint_cli compose --environment production --sandbox -- logs --since 15m --timestamps api worker web redis
+python3 -m ypoint_cli compose --environment production --sandbox -- logs --follow --tail 100 worker
 df -h .deployment/production/data
 du -sh .deployment/production/data
 docker system df
@@ -265,7 +269,7 @@ Nginx 请求 ID 对应 API 的 `rid`，Run ID 用于追踪后台执行。业务�
 停止并保留数据：
 
 ```bash
-python3 scripts/deploy.py compose --environment production --sandbox -- down
+python3 -m ypoint_cli compose --environment production --sandbox -- down
 ```
 
 普通停止不要加 `-v`：`down -v` 会删除 PostgreSQL 与 Redis 卷。删除私有部署目录还会丢失文件和加密密钥。
@@ -277,7 +281,7 @@ python3 scripts/deploy.py compose --environment production --sandbox -- down
 保留私有目录更新代码后，重新执行原来的一键部署命令；已有管理员不再带 `--create-admin`，脚本沙箱部署始终带 `--sandbox`：
 
 ```bash
-python3 scripts/deploy_all.py --environment production --sandbox
+python3 -m ypoint_cli deploy --environment production --sandbox
 ```
 
 本机环境省略 `--environment production`；自定义私有目录时继续传原 `--directory`。脚本会复用配置，构建镜像并执行所需迁移。回退镜像不会自动回退数据库结构，版本回退前必须核对迁移兼容性。
@@ -296,4 +300,4 @@ python3 scripts/deploy_all.py --environment production --sandbox
 | Redis 不健康或提示 NOAUTH / WRONGPASS | 先重新执行 init 补齐旧配置，再核对 application.env 与 redis.env 是否来自同一套备份；Redis 密码不通过命令行传入。 |
 | 自动化终端不能创建管理员 | 部署时省略 `--create-admin`，完成后通过 SSH 交互终端单独创建。 |
 
-部署就绪只说明服务启动和探针通过；实际供应商连接、完整模型会话、目标容量与备份恢复需按实际环境验证。本机的可选只读核对脚本为 `scripts/verify_deployment.py`，使用前核对其 localhost/本机证书假设，不把本机探针直接视为任意域名的生产验收。
+部署就绪只说明服务启动和探针通过；实际供应商连接、完整模型会话、目标容量与备份恢复需按实际环境验证。本机的可选只读核对脚本为 `ypoint_cli/verify.py`，使用前核对其 localhost/本机证书假设，不把本机探针直接视为任意域名的生产验收。

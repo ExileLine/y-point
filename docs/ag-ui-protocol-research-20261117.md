@@ -1,12 +1,14 @@
-# AG-UI 协议、SDK 与集成核实
+# AG-UI 协议、SDK 与集成参考
 
-资料核查日期：2026-11-17。本文保留协议来源与集成约束；当前接口、SDK 版本和支持能力以 [AG-UI 契约](ag-ui.md)及项目锁文件为准。研究过程与阶段判断归档到工作区 `y-point-server-todo.md`。
+本文保留协议来源与集成约束；当前接口、SDK 版本和支持能力以 [AG-UI 契约](ag-ui.md)及项目锁文件为准。研究过程与阶段判断归档到工作区 `y-point-server-todo.md`。
 
-## 结论
+<a id="结论"></a>
 
-1. AG-UI 是 agent/UI 的事件与状态协议，HTTP/SSE 是其传输绑定之一。改造不要求更换 WebSocket。[1][2]
-2. 已存在冻结 AG-UI 1.0；官方于 2026-09-18 发布冻结公告。实施应以冻结规范和 JSON Schema 为准，不照搬旧概念页。[1][3]
-3. 1.0 的 HTTP/SSE 绑定**没有标准断线重放/续传机制**。`Last-Event-ID`、序号与 `transport.resumable` 的存在不等于 stock 客户端会续传。Y-Point 的持久游标、快照和重新订阅应作为明确的应用扩展。[2]
+## 协议与项目边界
+
+1. AG-UI 是 agent/UI 的事件与状态协议，HTTP/SSE 是其传输绑定之一。Y-Point 使用 HTTP/SSE。[1][2]
+2. Y-Point 使用 AG-UI 1.0 的冻结规范和 JSON Schema，版本依据见发布公告与锁文件。[1][3]
+3. 1.0 的 HTTP/SSE 绑定**没有标准断线重放/续传机制**。`Last-Event-ID`、序号与 `transport.resumable` 的存在不等于 stock 客户端会续传。Y-Point 将持久游标、快照和重新订阅作为明确的应用扩展。[2]
 4. 生成工具参数完成和工具实际执行完成是两回事；AG-UI 的 `TOOL_CALL_END` 是前者，`TOOL_CALL_RESULT` 才带回工具结果。[4]
 5. 1.0 支持 reasoning、activity、运行中断/恢复、取消 outcome、能力声明和使用量，但具体 SDK 对这些能力的覆盖仍必须用锁定版本验证。[1][5][6][7]
 
@@ -41,7 +43,7 @@ Run A1 不因恢复而再次打开；A2 与 A1 保持相同 thread。`parentRunI
 | --- | --- | --- |
 | assistant 文本 | `TEXT_MESSAGE_START/CONTENT/END` | 用稳定 messageId 归并，不按全 Run 拼接 |
 | reasoning span | `REASONING_START/END` | 一个 span 可容纳多个 reasoning message |
-| reasoning message | `REASONING_MESSAGE_START/CONTENT/END`，可有 chunk 快捷形式 | 与普通正文独立；支持 opaque encryptedValue，但 Y-Point 首期可不声明 encrypted 能力 |
+| reasoning message | `REASONING_MESSAGE_START/CONTENT/END`，可有 chunk 快捷形式 | 与普通正文独立；支持 opaque encryptedValue，但 Y-Point 不声明 encrypted 能力 |
 | 工具调用请求 | `TOOL_CALL_START/ARGS/END` | END 仅指参数完整；ARGS 是参数文本碎片，协议允许最终文本不能解析；Y-Point 的公开参数投影可额外采用合法 JSON 作为自身契约 |
 | 工具结果 | `TOOL_CALL_RESULT` | 有单独 messageId 和关联 toolCallId；无通用 `TOOL_CALL_FAILED` 标准事件可直接替换项目原错误事件 |
 | Activity | `ACTIVITY_SNAPSHOT/ACTIVITY_DELTA` | 以 messageId 标识可展示活动；activityType 与 content 为应用约定，delta 使用 JSON Patch |
@@ -50,7 +52,7 @@ Run A1 不因恢复而再次打开；A2 与 A1 保持相同 thread。`parentRunI
 
 这些类型均可从冻结规范目录及 JSON Schema 追溯。[1][4][5][8][9]
 
-Skill 不存在必须照搬的标准 `SKILL_STARTED` 事件。Y-Point 可使用 `activityType=y-point.skill` 表达加载说明、读取资料、脚本/模板与产物阶段；真实脚本调用仍保留标准工具事件。活动进度不能比真实执行证据更强。[1][8]
+Skill 不存在必须照搬的标准 `SKILL_STARTED` 事件。Y-Point 使用 `activityType=y-point.skill` 表达加载说明、读取资料、脚本/模板与产物阶段；真实脚本调用仍保留标准工具事件。活动进度不能比真实执行证据更强。[1][8]
 
 ## SSE、恢复与取消的具体限制
 
@@ -62,17 +64,17 @@ Skill 不存在必须照搬的标准 `SKILL_STARTED` 事件。Y-Point 可使用 
 - 审批恢复：带 resume 创建新协议 Run。
 - 连接恢复：Y-Point 的快照/游标重新订阅扩展；不重新提交用户输入，不重新执行模型与工具。
 
-标准 HTTP/SSE 的连接中断代表消费者看到 truncated run；规范明确 producer 可能继续运行，不能把断开自动解释为取消。[2][16] 建议 Y-Point 的标准 POST 门面与现有 GET 观察订阅都保持“断开只解绑观察者”，取消继续走明确业务接口；标准客户端不能据此假设自己能够回到同一条 POST 流。两类端点应分别声明，不能把现有 GET 订阅称作未经扩展的标准 POST 绑定。
+标准 HTTP/SSE 的连接中断代表消费者看到 truncated run；规范明确 producer 可能继续运行，不能把断开自动解释为取消。[2][16] Y-Point 的标准 POST 门面与 GET 观察订阅均采用“断开只解绑观察者”，取消通过明确业务接口执行；标准客户端不能据此假设自己能够回到同一条 POST 流。两类端点应分别声明，不能把现有 GET 订阅称作未经扩展的标准 POST 绑定。
 
-Capabilities 中的 transport.resumable 仅对实现了明确恢复契约的连接有意义；首期对标准 SSE 客户端不宣称自动续传，应用扩展通过 custom capability 说明。[2][7]
+Capabilities 中的 transport.resumable 仅对实现了明确恢复契约的连接有意义；当前对标准 SSE 客户端不宣称自动续传，应用扩展通过 custom capability 说明。[2][7]
 
 ## 输入与状态所有权
 
 标准 RunAgentInput 的 messages 是此次运行的完整对话输入；规范要求服务端不能把输入当成“只追加最后一条”，再悄悄补齐调用方没有提供的历史。tools、context、state、resume 和 forwardedProps 各有规定。[10]
 
-Y-Point 应校验 owned thread 与公开历史的一致性；若重用服务器 checkpoint，必须证明其可见历史与输入一致，冲突在开始流前拒绝。若要接受调用方任意编辑的历史，需要另建符合输入契约的上下文路径，不能暗中合并旧 checkpoint。
+Y-Point 校验 owned thread 与公开历史的一致性；若重用服务器 checkpoint，必须证明其可见历史与输入一致，冲突在开始流前拒绝。若要接受调用方任意编辑的历史，需要另建符合输入契约的上下文路径，不能暗中合并旧 checkpoint。
 
-客户端提供的工具、状态和上下文是输入，不是授权。首期仅支持已授权服务端工具，前端工具执行、额外 provider 选项和未实现 capabilities 不能自动开启。
+客户端提供的工具、状态和上下文是输入，不是授权。当前仅支持已授权服务端工具，前端工具执行、额外 provider 选项和未实现 capabilities 不能自动开启。
 
 ## SDK 与 LangGraph 集成判断
 

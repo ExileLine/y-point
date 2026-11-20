@@ -12,12 +12,12 @@
 | --- | --- |
 | 根 `Dockerfile` | Python 3.12，uv 锁定依赖，多阶段构建；带 Alembic、Docker CLI、PDFium 所需库、Tesseract 中英文语言包和中文字体。API 与 worker 共用该镜像。 |
 | `web/Dockerfile` | Node 构建静态资源，再交给无 root 权限的 Nginx；运行时不包含 Node/npm/Vite。 |
-| `docker-compose.yml` | db → migrate；Redis 独立通过认证健康检查，两者就绪后启动 API/worker，再启动 web。只有 web 暴露端口，数据库、Redis 和 API 留在 Compose 网络。 |
+| `docker-compose.yml` | db → migrate；Redis 独立通过认证健康检查，两者就绪后启动 API/worker，再启动 web。web 发布页面/API 网关端口；PostgreSQL 额外绑定宿主回环 `127.0.0.1:15432` → `5432`，API 和 Redis 不发布宿主端口。 |
 | `docker-compose.sandbox.yml` | 显式启用本机 Docker socket，赋予 API 试运行和 worker 正式运行所需的管理权限。 |
 | `docker-compose.https.yml` | 可选 HTTPS 监听、证书挂载及 HTTP 跳转；由持久化协议开关自动选择。 |
 | `docker-compose.production.yml` | 正式环境资源起点，与同一拓扑和独立 production 私有配置组合。资源值必须按目标机器实测调整。 |
-| `scripts/deploy_all.py` | 一键检查、初始化、构建、启动并等待健康；可交互创建首位管理员，内部复用 deploy.py。 |
-| `scripts/deploy.py` | 生成私有配置、证书、独立密钥；选择环境并透传 Compose 命令，避免漏传配置文件。 |
+| `ypoint_cli/deploy.py` | 一键检查、初始化、构建、启动并等待健康；可交互创建首位管理员，内部复用 `ypoint_cli/deployment.py` 的配置与 Compose 解析。 |
+| `ypoint_cli/deployment.py` | 生成私有配置、证书、独立密钥；选择环境并透传 Compose 命令，避免漏传配置文件。 |
 | `deploy/entrypoint.sh` / `preflight.py` | 密钥、目录权限和启用时的沙箱前置检查，然后 `exec` 主进程。迁移不藏在每个 API 启动流程里。 |
 | `deploy/redis-entrypoint.sh` | 使用 Redis 普通用户，把认证和 AOF 配置写入 tmpfs，再执行 Redis；口令不放入命令参数。 |
 | `deploy/healthcheck.py` | API 检查业务健康协议；worker 核对本容器 UUID 对应的数据库心跳，不能由其他 worker 的心跳冒充健康。 |
@@ -26,7 +26,7 @@
 
 ## 本机启动
 
-完整功能的推荐命令见[项目快速开始](../README.md#快速开始)：首次使用 `python3 scripts/deploy_all.py --sandbox --create-admin admin`，后续更新使用 `python3 scripts/deploy_all.py --sandbox`。本节以下手动示例仅启动基础服务，不包含 Python/Bash Tool 与 Skill 受管脚本执行；需要脚本功能时，按[启用本机真实脚本沙箱](#启用本机真实脚本沙箱)构建镜像，并在后续 Compose 命令中始终携带 `--sandbox`。
+完整功能的推荐命令见[项目快速开始](../README.md#快速开始)：首次使用 `python3 -m ypoint_cli deploy --sandbox --create-admin admin`，后续更新使用 `python3 -m ypoint_cli deploy --sandbox`。本节以下手动示例仅启动基础服务，不包含 Python/Bash Tool 与 Skill 受管脚本执行；需要脚本功能时，按[启用本机真实脚本沙箱](#启用本机真实脚本沙箱)构建镜像，并在后续 Compose 命令中始终携带 `--sandbox`。
 
 需要 Docker Engine/Desktop、Compose v2.24+、Python 3.12；仅 local 自动生成 HTTPS 自签证书时需要 OpenSSL。镜像内 Docker CLI 使用 29 系列，其他引擎版本的 API 协商须单独核对。请给 Docker Desktop 预留构建磁盘及运行内存；默认上限约为 API 2 GiB、worker 2 GiB、PostgreSQL 1 GiB、Redis 512 MiB、Nginx 256 MiB，各容器按需使用而非预占全部内存。OCR/模型请求/依赖构建并发仍受应用层限制。
 
@@ -34,13 +34,13 @@
 
 ```bash
 # 创建 .deployment/local，默认 HTTP；配置和数据均被 Git 与镜像构建排除。
-python3 scripts/deploy.py init
+python3 -m ypoint_cli init
 
 # 基础 Web / API / worker / PostgreSQL / Redis 部署，不授予宿主 Docker 管理权限。
-python3 scripts/deploy.py compose -- config --quiet
-python3 scripts/deploy.py compose -- build
-python3 scripts/deploy.py compose -- up -d --wait --wait-timeout 180
-python3 scripts/deploy.py compose -- ps
+python3 -m ypoint_cli compose -- config --quiet
+python3 -m ypoint_cli compose -- build
+python3 -m ypoint_cli compose -- up -d --wait --wait-timeout 180
+python3 -m ypoint_cli compose -- ps
 ```
 
 新部署默认访问 `http://localhost:18080`，直接提供页面、API 和 SSE，不生成证书、不要求 OpenSSL，也不挂载证书目录。应用环境仍为 production。HTTP 部署显式配置 `STREAM_COOKIE_SECURE=False`，SSE 仍使用短期 HttpOnly、SameSite=Strict、Run 路径 Cookie。
@@ -48,8 +48,8 @@ python3 scripts/deploy.py compose -- ps
 可选 HTTPS：
 
 ```bash
-python3 scripts/deploy.py init --https
-python3 scripts/deploy.py compose -- up -d --wait
+python3 -m ypoint_cli init --https
+python3 -m ypoint_cli compose -- up -d --wait
 ```
 
 local 的 HTTPS 使用 30 天自签证书，访问 `https://localhost:18443`，HTTP 自动跳转；浏览器需要确认例外或在本机信任证书。HTTP 与 HTTPS 共用 `deploy/nginx/locations.conf`，页面路由、缓存、上传限制、SSE 无缓冲、请求 ID 和日志规则保持一致。镜像启动脚本按 `YPOINT_HTTPS_ENABLED` 选择 HTTP/HTTPS 模板。
@@ -57,7 +57,7 @@ local 的 HTTPS 使用 30 天自签证书，访问 `https://localhost:18443`，H
 首次创建管理员使用交互式密码，不将密码写入命令行或 Git：
 
 ```bash
-python3 scripts/deploy.py compose -- exec api python -m app.cli.create_admin admin
+python3 -m ypoint_cli compose -- exec api python -m app.cli.create_admin admin
 ```
 
 本套部署默认全新数据库，不导入开发机的 `y_point.db`、现有用户、Agent、文件或供应商凭据。宿主模型服务地址也要改为容器能访问的地址；Docker Desktop 可使用 `host.docker.internal`，容器中的 `127.0.0.1` 指向容器自身。正式模型连接请登录后配置并重新验证。
@@ -65,7 +65,7 @@ python3 scripts/deploy.py compose -- exec api python -m app.cli.create_admin adm
 停止并保留数据：
 
 ```bash
-python3 scripts/deploy.py compose -- down
+python3 -m ypoint_cli compose -- down
 ```
 
 普通 `down` 保留 PostgreSQL、Redis 命名卷及 bind 数据。`down -v` 会删除命名卷中的数据库、检查点和 Redis 数据；删除 `.deployment/local` 会丢失文件和加密密钥，都不能当成普通停止操作。
@@ -76,8 +76,8 @@ python3 scripts/deploy.py compose -- down
 
 ```bash
 docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
-python3 scripts/deploy.py compose --sandbox -- config --quiet
-python3 scripts/deploy.py compose --sandbox -- up -d --wait --wait-timeout 180
+python3 -m ypoint_cli compose --sandbox -- config --quiet
+python3 -m ypoint_cli compose --sandbox -- up -d --wait --wait-timeout 180
 ```
 
 一键部署在重建沙箱镜像前，会将现存镜像保留为 `y-point-script-sandbox-pinned:<镜像ID的64位摘要>`，构建完成后同样保留新镜像；`--skip-build` 也会保留当前镜像。依赖准备任务会为所用镜像添加相同的内容标签。历史 Tool 版本固定实际镜像 ID，不能仅备份可变的 `y-point-script-sandbox:1` 标签，也不要删除仍被版本引用的内容标签。标签不能防止强制删除或清理所有未使用镜像；完整备份仍需交付所需镜像。固定镜像已缺失时的恢复与新版本重建步骤见[Tool 管理与沙箱](tools.md#tool-管理与沙箱)。
@@ -99,22 +99,22 @@ Linux socket 的 GID 与运行用户不同时，初始化可传 `--docker-gid <g
 local 的应用配置仍为 `production`，关闭 DEBUG、SQL echo 和接口文档；staging 使用 `staging`。协议与环境独立，新部署都默认 HTTP。内网生产首次部署不需要域名或证书：
 
 ```bash
-python3 scripts/deploy.py init --environment production --http --bind-ip 0.0.0.0 --http-port 80
+python3 -m ypoint_cli init --environment production --http --bind-ip 0.0.0.0 --http-port 80
 # 也可将 --bind-ip 换成服务器实际内网 IP。
-python3 scripts/deploy.py compose --environment production -- config --quiet
-python3 scripts/deploy.py compose --environment production -- build
-python3 scripts/deploy.py compose --environment production -- up -d --wait
+python3 -m ypoint_cli compose --environment production -- config --quiet
+python3 -m ypoint_cli compose --environment production -- build
+python3 -m ypoint_cli compose --environment production -- up -d --wait
 ```
 
 生产 HTTPS 显式开启，并提供证书和私钥；兼容旧命令，成对提供证书也会启用 HTTPS：
 
 ```bash
-python3 scripts/deploy.py init --environment production --https --bind-ip 0.0.0.0 \
+python3 -m ypoint_cli init --environment production --https --bind-ip 0.0.0.0 \
   --tls-cert /absolute/path/fullchain.pem --tls-key /absolute/path/privkey.pem \
   --http-port 80 --https-port 443
-python3 scripts/deploy.py compose --environment production -- config --quiet
-python3 scripts/deploy.py compose --environment production -- build
-python3 scripts/deploy.py compose --environment production -- up -d --wait
+python3 -m ypoint_cli compose --environment production -- config --quiet
+python3 -m ypoint_cli compose --environment production -- build
+python3 -m ypoint_cli compose --environment production -- up -d --wait
 ```
 
 默认监听为 `127.0.0.1`。需要其他内网机器或公网访问时，在该环境的 `compose.env` 设置 `YPOINT_BIND_IP` 为服务器网卡 IP 或 `0.0.0.0`，并按实际访问范围放行 HTTP/HTTPS 端口。HTTPS 证书更新后重建 web；重新传证书执行 init 可以复制新证书。当前 Nginx 覆盖来路的 X-Forwarded-For 与请求 ID，API 不发布宿主端口；外层 HTTPS 网关需要另行统一真实客户端 IP 和协议的可信代理链，不能直接透传任意外来代理头。
@@ -125,9 +125,9 @@ python3 scripts/deploy.py compose --environment production -- up -d --wait
 
 ```bash
 # 更新代码后先构建镜像；启用脚本沙箱的部署在所有 compose 命令继续带 --sandbox。
-python3 scripts/deploy.py compose -- build
-python3 scripts/deploy.py init --http
-python3 scripts/deploy.py compose -- up -d --wait
+python3 -m ypoint_cli compose -- build
+python3 -m ypoint_cli init --http
+python3 -m ypoint_cli compose -- up -d --wait
 ```
 
 切回 HTTPS 使用 `init --https`；local 可生成自签证书，其他环境复用已有证书或提供新证书。切换保留数据库密码、JWT/供应商加密密钥、数据路径、镜像名及已有证书，HTTP 即使证书缺失也可初始化。切换后浏览器如仍保留旧 Secure 票据，可清理该站点 Cookie 后重新登录。未记录协议开关的旧版部署默认继续 HTTPS，重复 init 不会静默切换协议；缺损配置必须恢复完整原配置，不自动生成新密钥。
@@ -159,10 +159,10 @@ CPU/内存、监听端口、镜像名、日志阈值通过 `compose.env` 的 `YP
 
 ```bash
 # 示例为 production；本机省略 --environment production。
-python3 scripts/deploy.py init --environment production
-python3 scripts/deploy.py compose --environment production -- config --quiet
-python3 scripts/deploy.py compose --environment production -- up -d --wait --wait-timeout 180
-python3 scripts/deploy.py compose --environment production -- exec -T redis redis-cli ping
+python3 -m ypoint_cli init --environment production
+python3 -m ypoint_cli compose --environment production -- config --quiet
+python3 -m ypoint_cli compose --environment production -- up -d --wait --wait-timeout 180
+python3 -m ypoint_cli compose --environment production -- exec -T redis redis-cli ping
 ```
 
 最后一条应返回 `PONG`，无需手动输入密码。已有脚本沙箱部署继续给每条 Compose 命令加 `--sandbox`。原生开发仍可通过 `REDIS_ENABLED=False` 关闭 Redis；这不改变默认 Docker 拓扑。
@@ -176,10 +176,10 @@ python3 scripts/deploy.py compose --environment production -- exec -T redis redi
 前后端镜像可独立构建：
 
 ```bash
-python3 scripts/deploy.py compose -- build api
-python3 scripts/deploy.py compose -- build web
+python3 -m ypoint_cli compose -- build api
+python3 -m ypoint_cli compose -- build web
 # 只启动后端及其必要依赖；不启动 Web。
-python3 scripts/deploy.py compose -- up -d api worker
+python3 -m ypoint_cli compose -- up -d api worker
 ```
 
 跨主机部署需额外提供 API 的受限网络入口、前端网关 upstream 配置和可信代理策略；当前仓库默认内部 upstream 为 `api:8000`，不把同一主机的 Compose 网络当成跨主机服务发现。文件/依赖目录和 Docker 引擎的同路径要求也需重新设计。可在明确目标部署形态后增加该覆盖配置，首次不引入 Kubernetes、跨主机共享盘或分布式调度。
@@ -198,10 +198,10 @@ python3 scripts/deploy.py compose -- up -d api worker
 每容器默认 `max-size=20m`、`max-file=5`、压缩开启，按日志量约保留 100 MiB 的消息，而非保证保留固定天数或提供整个磁盘硬配额。修改阈值需重建容器；应用自行写其他文件不受该驱动约束。删除或重建容器后，旧容器日志不保证保留；正式跨发布追踪需先接入日志采集/远端聚合，临时诊断可在维护前导出所需范围日志到受限备份位置。Nginx 错误日志保留代理诊断，可能包含请求行；不要把凭据放进 URL。
 
 ```bash
-python3 scripts/deploy.py compose -- logs --since 15m --timestamps api worker web
-python3 scripts/deploy.py compose -- logs --follow --tail 100 worker
-python3 scripts/deploy.py compose -- ps
-python3 scripts/deploy.py compose -- stats --no-stream
+python3 -m ypoint_cli compose -- logs --since 15m --timestamps api worker web
+python3 -m ypoint_cli compose -- logs --follow --tail 100 worker
+python3 -m ypoint_cli compose -- ps
+python3 -m ypoint_cli compose -- stats --no-stream
 # 主机和 Docker 数据空间需同时检查；Desktop 的数据盘是 VM 内磁盘。
 df -h .deployment/local/data
 du -sh .deployment/local/data
@@ -219,12 +219,12 @@ docker system df
 每次升级先备份，并在维护窗口停止写入，再执行：
 
 ```bash
-python3 scripts/deploy.py init
-python3 scripts/deploy.py compose -- build
-python3 scripts/deploy.py compose -- stop api worker
-python3 scripts/deploy.py compose -- run --rm migrate
-python3 scripts/deploy.py compose -- up -d --force-recreate --wait api worker web
-python3 scripts/deploy.py compose -- exec api alembic check
+python3 -m ypoint_cli init
+python3 -m ypoint_cli compose -- build
+python3 -m ypoint_cli compose -- stop api worker
+python3 -m ypoint_cli compose -- run --rm migrate
+python3 -m ypoint_cli compose -- up -d --force-recreate --wait api worker web
+python3 -m ypoint_cli compose -- exec api alembic check
 ```
 
 使用脚本沙箱的部署在上述每次 Compose 调用都带 `--sandbox`。数据库迁移与检查点库不是一个跨库事务；这里放在同一 PostgreSQL 实例只简化备份，不改变业务补偿规则。
@@ -233,16 +233,18 @@ python3 scripts/deploy.py compose -- exec api alembic check
 
 ```bash
 mkdir -p .deployment/local/backups
-python3 scripts/deploy.py compose -- exec -T db pg_dump -U y_point -d y_point -Fc > .deployment/local/backups/database.dump
+python3 -m ypoint_cli compose -- exec -T db pg_dump -U y_point -d y_point -Fc > .deployment/local/backups/database.dump
 ```
 
 正式恢复应先在隔离环境验证：使用匹配的镜像与私有密钥、恢复数据库及同一批文件、检查迁移版本/引用/下载/检查点/沙箱依赖，再切流。绑定路径变更需专门验证。更换 `DB_BACKEND` 不会把原 SQLite 数据迁移过去，复制一份业务库也不能代替文件和检查点恢复；代码回滚是否可行取决于迁移兼容性，不能直接对有业务数据的库自动 downgrade。
 
-## 验证范围与剩余门槛
+<a id="验证范围与剩余门槛"></a>
 
-自动化验证入口：`uv run pytest -q tests/test_deployment.py tests/test_worker_logging.py tests/test_tool_environments.py tests/test_user_tools.py tests/test_m51_governance.py tests/test_runtime_checkpoint.py tests/test_runtime_limits.py tests/test_worker_monitor.py tests/test_db_schema.py`。已启动部署可运行 `python3 scripts/verify_deployment.py --sandbox`；无活跃任务的隔离环境可加 `--restart` 验证重建。独立真实 HTTP/HTTPS 代理验证：`YPOINT_TEST_DEPLOYMENT_PROXY=1 uv run pytest -q tests/test_deployment_proxy.py`。
+## 验证入口与部署边界
 
-本机实际构建/运行结果记录在 `docs/deployment-validation-20261113.md`，与本文件的配置说明分开维护。正式服务器的 TLS/DNS、防火墙、不同 CPU 架构、镜像供应链、实际 OCR/模型/外部写服务、恢复演练、高并发及监控告警仍需按 M8/M11 发布范围验收。
+自动化验证入口：`uv run pytest -q tests/test_cli.py tests/test_deploy_all.py tests/test_deployment.py tests/test_worker_logging.py tests/test_tool_environments.py tests/test_user_tools.py tests/test_m51_governance.py tests/test_runtime_checkpoint.py tests/test_runtime_limits.py tests/test_worker_monitor.py tests/test_db_schema.py`。已启动部署可运行 `python3 -m ypoint_cli verify-deployment --sandbox`；无活跃任务的隔离环境可加 `--restart` 验证重建。独立真实 HTTP/HTTPS 代理验证：`YPOINT_TEST_DEPLOYMENT_PROXY=1 uv run pytest -q tests/test_deployment_proxy.py`。
+
+本机实际构建、运行与现场复验结果统一归档到工作区 `y-point-server-todo.md`；[原部署报告路径](deployment-validation-20261113.md)仅保留归档导航。目标环境仍需核对 TLS/DNS、防火墙、CPU 架构、镜像来源、实际 OCR/模型/外部写服务、备份恢复、容量及监控告警。
 
 参考资料：uv 的 Docker 集成、Uvicorn 的部署、Nginx 代理及 Docker 官方文档；原始地址在 `deployment-research.md` 的来源与下方列出，仓库配置值属于本项目选择。
 

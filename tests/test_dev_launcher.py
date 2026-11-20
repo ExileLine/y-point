@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from scripts.dev import dev_lock, stop_processes
+from ypoint_cli.dev import dev_lock, stop_processes
 
 
 def test_second_dev_launch_stops_first(tmp_path: Path) -> None:
@@ -23,7 +23,7 @@ def test_second_dev_launch_stops_first(tmp_path: Path) -> None:
             sys.executable,
             "-c",
             (
-                "import signal, sys, time; from pathlib import Path; from scripts.dev import dev_lock; "
+                "import signal, sys, time; from pathlib import Path; from ypoint_cli.dev import dev_lock; "
                 "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
                 "lock = dev_lock(Path(sys.argv[1])); lock.__enter__(); print('ready', flush=True); "
                 "time.sleep(30)"

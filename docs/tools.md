@@ -147,7 +147,7 @@ docker build -f Dockerfile.sandbox -t y-point-script-sandbox:1 .
 | `image_unavailable` / `configuration_error` | 沙箱镜像、Docker 访问权限、包源配置、离线安装目录或代理脚本挂载异常。 |
 | `build_timeout` | 完整准备流程超过总时限，检查网络和依赖规模。 |
 
-worker 日志记录失败版本的 `version_id` 和脱敏 `failure_code`，不记录原始 pip 输出、仓库路径或认证信息。Docker 部署可使用 `python3 scripts/deploy.py compose --sandbox -- logs --tail 100 worker` 查看。既有失败记录不包含原始网络错误，修复网络或配置后需要重新准备，才能获得当前分类结果。
+worker 日志记录失败版本的 `version_id` 和脱敏 `failure_code`，不记录原始 pip 输出、仓库路径或认证信息。Docker 部署可使用 `python3 -m ypoint_cli compose --sandbox -- logs --tail 100 worker` 查看。既有失败记录不包含原始网络错误，修复网络或配置后需要重新准备，才能获得当前分类结果。
 
 完全离线环境需同时交付基础镜像和用户依赖的完整 wheel 集合。在与目标 Python、Linux 系统及 CPU 架构一致的联网环境准备：
 

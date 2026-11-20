@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Time    : 2026-11-13 15:39:17
 # @Author  : yangyuexiong
-# @File    : verify_deployment.py
+# @File    : verify.py
 
 """验证已启动的隔离 Docker 部署，不创建账号、不提交模型任务、不修改业务数据。"""
 
@@ -9,14 +9,12 @@ import argparse
 import json
 import ssl
 import subprocess
-import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -27,17 +25,17 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def main() -> None:
+def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
     """按部署协议核对页面、API、worker、持久化挂载和可选的真实 Docker 沙箱。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--environment", choices=("local", "staging", "production"), default="local")
-    parser.add_argument("--directory", type=Path)
-    parser.add_argument("--sandbox", action="store_true")
+    parser = argparse.ArgumentParser(prog="yp verify-deployment", description=__doc__)
+    parser.add_argument("--environment", choices=("local", "staging", "production"), default="local", help="要检查的部署环境，默认 local")
+    parser.add_argument("--directory", type=Path, help="私有部署目录，默认 .deployment/<environment>")
+    parser.add_argument("--sandbox", action="store_true", help="使用脚本沙箱覆盖配置，并检查 API/Worker 的真实 Docker 脚本能力")
     parser.add_argument("--restart", action="store_true", help="重新创建 API 并验证代理重新发现；仅在无活跃任务的隔离部署执行")
-    args = parser.parse_args()
-    directory = (args.directory or ROOT / ".deployment" / args.environment).resolve()
+    args = parser.parse_args(argv)
+    directory = (args.directory or root / ".deployment" / args.environment).expanduser().resolve()
     # 与部署入口使用同一套配置解析，兼容旧版只支持 HTTPS 的部署文件。
-    from scripts.deploy import configured_https, read_private_values
+    from ypoint_cli.deployment import compose_command, configured_https, read_private_values
 
     values = read_private_values(directory / "compose.env")
     https_enabled = configured_https(values)
@@ -45,13 +43,11 @@ def main() -> None:
     https = f"https://localhost:{values['YPOINT_HTTPS_PORT']}"
     http = f"http://localhost:{values['YPOINT_HTTP_PORT']}"
     base_url = https if https_enabled else http
-    command = ["python3", str(ROOT / "scripts/deploy.py"), "compose", "--environment", args.environment, "--directory", str(directory)]
-    if args.sandbox:
-        command.append("--sandbox")
+    command = compose_command(args.environment, directory, sandbox=args.sandbox, root=root)
 
     def compose(*arguments: str) -> str:
         """执行选定部署的只读检查及显式请求的重建操作，避免输出私有配置。"""
-        result = subprocess.run([*command, "--", *arguments], check=False, capture_output=True, text=True, timeout=180)
+        result = subprocess.run([*command, *arguments], check=False, capture_output=True, text=True, timeout=180, cwd=root)
         if result.returncode:
             raise RuntimeError(f"Compose {arguments[0]} 失败：{result.stderr[-2000:]}")
         return result.stdout
@@ -123,7 +119,6 @@ asyncio.run(check_redis())
     assert request_id in logs
     runtime = """
 import subprocess
-import sys
 import pdfplumber
 import pypdfium2
 from PIL import Image

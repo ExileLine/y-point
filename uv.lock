@@ -3676,7 +3676,7 @@ wheels = [
 [[package]]
 name = "y-point"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "ag-ui-protocol" },
     { name = "aiosqlite" },

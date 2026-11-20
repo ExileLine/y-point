@@ -29,8 +29,6 @@
 
 正文来源使用自然中文，例如“来源：《差旅报销管理规定》· 报销流程”；章节、页码和表格位置只能采用实际返回的定位信息。工具返回的 `citation` 字段及 `kb:...` 标识保留为内部定位数据，不要求模型把它们或自编的 `[1]` 编号显示在回答中。历史回答若已有独立或句末的 `citation: [1]`，会话正文将其显示为“来源说明”，点击按需查看本轮实际检索记录，并明确该模型编号未绑定具体原文；不能把 `[1]` 自动对应到本轮第一条片段。若本轮没有检索记录，可回看前文；读取原文仍复核当前权限，撤权后清理已展示的原文。兼容处理同时用于流式正文和失败后保留的正文，不改写数据库中的原始消息，不替换代码块、行内代码、链接、普通数字编号或产物预览内容，无需迁移或重建知识索引。
 
-本地复测可在同一会话依次询问已上传制度中的问题、与资料无关的历史问题、资料未覆盖的公司内部规定；再切换“仅知识库”重复历史问题，检查其说明资料不足。刷新页面并重新发送会生成新请求，旧消息保持原内容。
-
 ### 业务流程与调用链
 
 以“上传《报销制度.md》，再向 Agent 询问报销期限”为例，文件处理和对话检索分开执行。上传成功表示文件及任务已保存，首次索引完成后才能检索；Agent 按需调用工具获取片段，不会在提交 Run 时把整个知识库装入提示词。
@@ -121,7 +119,9 @@ flowchart TD
 
 「加工结果」读取已发布活动索引，支持分页；新版本未发布时标记旧版，不重新调用模型，分页期间切代会从新代首页重新读取。当前没有人工确认后才发布的审批步骤。PDF 页面提取与质量控制见下节；HTML 主文、JSON/YAML 配置和 PPTX 幻灯片处理见第三阶段说明。
 
-### PDF 按页提取、OCR 与原页核对（第二阶段）
+<a id="pdf-按页提取ocr-与原页核对第二阶段"></a>
+
+### PDF 按页提取、OCR 与原页核对
 
 上传或更新 PDF 时，`processing_options.pdf_mode` 可选 `auto`（默认）、`text`、`ocr`。它控制原文提取，与上述模型加工策略独立：
 
@@ -139,9 +139,9 @@ PDF 提取会合并同一行汉字之间由分词产生的空格，例如将“�
 
 文档版本的 `processing_metadata` 缓存逐页分类、方法、置信度、块数以及 OCR/空白页统计；索引中的同名快照字段在发布事务内按文档版本固定摘要。`processing-preview` 只读取活动索引的摘要，后台新解析缓存与失败重建不能改变旧代预览。空白页被跳过并计数，整份文档没有有效内容则返回 `ocr_required`；非空页无法生成证据、加密或损坏时明确失败。OCR 的字符加权平均置信度低于阈值，或低分字符占比超过 25%，返回 `ocr_low_confidence`，不通过删除低分词掩盖质量问题。引擎禁用、不可执行或任一配置语言包缺失返回 `ocr_unavailable`；超限、超时沿用 `size_limit`、`timeout`。失败保留旧活动索引。
 
-新接口 `GET /api/v1/knowledge-bases/{id}/citations/{chunk_id}/page-image` 根据授权引用定位不可变原始版本，返回 PNG；不接受任意文件路径或任意页号，不重新 OCR 或调用模型。渲染前后复核当前权限及文档状态，响应 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`；引用不可访问/非 PDF 为 404，暂不可渲染为 409，并发满额为 429。页面在检索、引用、对话检索记录和加工结果中提供「查看 PDF 原页」，显示区域高亮；关闭、重新聚焦或权限失效时清理旧图像。
+`GET /api/v1/knowledge-bases/{id}/citations/{chunk_id}/page-image` 根据授权引用定位不可变原始版本，返回 PNG；不接受任意文件路径或任意页号，不重新 OCR 或调用模型。渲染前后复核当前权限及文档状态，响应 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`；引用不可访问/非 PDF 为 404，暂不可渲染为 409，并发满额为 429。页面在检索、引用、对话检索记录和加工结果中提供「查看 PDF 原页」，显示区域高亮；关闭、重新聚焦或权限失效时清理旧图像。
 
-API 与 worker 都须 `uv sync` 并升级迁移，执行 OCR 的 worker 还须安装 Tesseract 和配置语言包；默认使用简体中文和英文：
+API 与 worker 都须 `uv sync --locked` 并将数据库升级到当前迁移目标，执行 OCR 的 worker 还须安装 Tesseract 和配置语言包；默认使用简体中文和英文：
 
 ```bash
 # macOS
@@ -163,11 +163,11 @@ tesseract --list-langs
 
 PDF 最多 200 页；单页 OCR 最多 35 秒，整个 PDF 解析最多 120 秒，索引任务总时限仍为 180 秒。原页预览使用 120 DPI；单张 PNG 和 OCR TSV 均最多 8 MiB，PDF 单条证据最多 8192 UTF-8 字节。解析版本、提取选项及 OCR 配置进入缓存指纹；旧 PDF 没有新指纹时会在下次重建重新解析，当前活动代不会自动改写。任务重试沿用排队时快照；配置变更后应创建新重建任务。升级时旧文档摘要为空，重建成功发布后才能展示新来源与原页入口。
 
-手动样例位于 `docs/knowledge-phase2-manual/`，涵盖文字、英文/中文扫描、混合页、表格、双栏及异常文件，共九份 PDF 和操作说明。可运行 `.venv/bin/python -m scripts.generate_knowledge_pdf_fixtures` 重新生成，不连接业务数据库或调用模型；脚本会更新固定说明，人工测试记录请另存。建议先用关键词检索与「保留原文」验证 OCR、原页和失败回退，再配置加工模型验证独立解释。本机补充验收范围、复现修复及可执行回归命令见 `docs/m64-phase2-acceptance-20261113.md`。
+<a id="htmljsonyaml-与-pptx-结构处理第三阶段"></a>
 
-### HTML、JSON/YAML 与 PPTX 结构处理（第三阶段）
+### HTML、JSON/YAML 与 PPTX 结构处理
 
-HTML、JSON/YAML 和 PPTX 使用知识库专用上传路由，普通对话附件的格式范围保持既有规则。文件仍进入私有 Blob 和文档不可变版本，解析子进程按格式提取规范证据，沿用任务租约、预算、发布事务和权限校验；新格式解析指纹为 `structured-formats-v1`，不复用缺少匹配指纹的旧解析。模型解释提示版本更新为 `document-evidence-v3`，后续重建可能重新加工，不自动改写已发布索引或历史引用。
+HTML、JSON/YAML 和 PPTX 使用知识库专用上传路由；普通对话中的 PPTX 附件、生成与预览见[文件专题](artifacts.md#对话中的-powerpoint-演示文稿)。文件仍进入私有 Blob 和文档不可变版本，解析子进程按格式提取规范证据，沿用任务租约、预算、发布事务和权限校验；HTML/配置/PPTX 的解析指纹为 `structured-formats-v1`，不复用缺少匹配指纹的旧解析。模型解释提示版本为 `document-evidence-v3`，后续重建可能重新加工，不自动改写已发布索引或历史引用。
 
 - **HTML**：选择最外层主文区域，避免 main/article 嵌套重复；文章 header 内的标题保留，全局导航/header/footer 和显式隐藏内容排除。段落按原有行内顺序提取，代码保留缩进；完整表格行带上明确的首行 th 表头，合并单元格标记待核对，嵌套表格明确返回 `invalid_structure`。这是静态 HTML 的确定性主文规则，不保证任意网站均能自动识别正文，不读取 URL 或执行页面。
 - **JSON/YAML**：父对象的标量字段按有界批次保存，子对象与数组记录独立，混合数组保持下标次序。路径使用 JSON Pointer；YAML 别名展开后的逻辑路径与原始定义行号分别保留。YAML 布尔隐式类型只识别 true/false，日期和 on/off/yes/no 等文本不隐式转换，不修改其他业务使用的 YAML 规则。重复键、循环别名、合并键、自定义标签、非字符串对象键、多文档 YAML、非法/非有限数值均拒绝；有限、非循环别名支持，但按实际展开量限制。`${VAR}` 等占位符作为文件原值保留，不能从它推断服务器实际配置。
@@ -177,16 +177,14 @@ HTML、JSON/YAML 和 PPTX 使用知识库专用上传路由，普通对话附件
 
 HTML/配置解析最多 20000 节点（含别名实际展开量）、深度 48；PPTX 每个 XML 部件也受节点/深度限制。各新格式最多 10000 个规范来源块、合计 500000 字符；单条配置字段/原子记录最多 8192 UTF-8 字节（配置字段组另按 7600 字节分批），正文先按 2000 字符预切再按分块配置处理。HTML/PPTX 每表最多 2000 行、128 列，PPTX 最多 200 页，ZIP 最多 1000 个部件、展开总量 32 MiB。超限明确失败，不静默省略记录。每代最终仍受 2000 片段、180 秒任务时限及现有配额约束；新格式解析子进程沿用 25 秒上限。失败或取消不发布半成品，旧活动代及其来源摘要继续可读；页面显示当前上传版本与已索引版本的差异，撤权或成功删除后旧引用立即失效。
 
-生产运行使用现有 Python 标准库与 PyYAML，**无需安装 LibreOffice、PowerPoint、浏览器或额外 OCR 引擎来解析这四类格式**；PDF OCR 仍按前述要求安装 Tesseract。`python-pptx` 仅加入开发依赖，用于生成真实 OOXML 样例和回归，不是生产解析依赖。API 与 worker 部署相同代码后重启 worker 即可接入新格式。
-
-手工样例及步骤见 `docs/knowledge-phase3-manual/README.md`，可运行 `.venv/bin/python -m scripts.generate_knowledge_phase3_fixtures` 重新生成。建议先新建关键词知识库，依次上传 `policy.html/json/yaml/pptx`，检索「十五个工作日」「财务部」「甲供应商」「原件」，核对标题、配置路径、表格列名和幻灯片备注；再测试异常配置及版本更新。固定检索样本在 `tests/fixtures/m64_format_retrieval.json`，服务端专项 `tests/test_knowledge_formats.py` 通过真实隔离 SQLite 上传/索引/检索检查正确命中和噪声排除，模型调用使用可控假模型验证模式与计量；真实业务语义质量、实际费用、目标 PostgreSQL/MySQL/S3 与 Docker 环境仍需另行验收。
+生产运行使用现有 Python 标准库与 PyYAML，**无需安装 LibreOffice、PowerPoint、浏览器或额外 OCR 引擎来解析这四类格式**；PDF OCR 仍按前述要求安装 Tesseract。知识库 PPTX 解析直接读取有界 OOXML；`python-pptx` 已作为运行依赖供对话生成可编辑演示文稿使用，也用于构造回归样例。API 与 worker 应部署同一版本，依赖或代码更新后同步重建或重启，Docker 操作见[部署手册](deployment-guide.md)。
 
 ### 知识文档处理的服务端回归
 
-新格式的固定检索样本保存在 `tests/fixtures/m64_format_retrieval.json`。自动化测试直接使用 `scripts` 中的生成函数构造文件，并使用隔离数据库和私有临时目录，不依赖已生成的 `docs` 样例或前端代码；因此仅提交服务端源码、生成器和测试时，仍可运行以下专项：
+新格式的固定检索样本保存在 `tests/fixtures/m64_format_retrieval.json`。自动化测试直接使用 `scripts` 中的生成函数构造文件，并使用隔离数据库和私有临时目录，不依赖已生成的 `docs` 样例或前端代码；可按变更范围运行以下专项：
 
 ```bash
-uv sync --group dev
+uv sync --locked --group dev
 .venv/bin/python -m pytest tests/test_knowledge_formats.py tests/test_knowledge_pdf_acceptance.py tests/test_knowledge_deletion.py -q -rs
 ```
 

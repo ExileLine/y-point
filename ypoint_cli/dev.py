@@ -21,7 +21,6 @@ from typing import Iterator
 ROOT = Path(__file__).resolve().parents[1]
 API_PORT = 7769
 WEB_PORT = 5173
-LOCK_PATH = ROOT / ".run-private" / "dev.lock"
 
 
 def process_start_time(pid: int) -> str | None:
@@ -94,13 +93,13 @@ def port_available(port: int) -> bool:
     return True
 
 
-def check_prerequisites() -> int:
+def check_prerequisites(*, root: Path = ROOT) -> int:
     """检查依赖和端口，并返回可用的前端端口。"""
     for command in ("uv", "npm"):
         if shutil.which(command) is None:
             raise RuntimeError(f"Missing {command} in PATH")
 
-    if not (ROOT / "web/node_modules/.bin/vite").exists():
+    if not (root / "web/node_modules/.bin/vite").exists():
         raise RuntimeError("Missing web dependencies; run npm install in web/")
 
     if not port_available(API_PORT):
@@ -153,10 +152,10 @@ def stop_processes(processes: list[subprocess.Popen], grace_seconds: float = 5) 
             process.wait()
 
 
-def run_services() -> int:
+def run_services(*, root: Path = ROOT) -> int:
     """启动并监控三个开发服务，退出时清理子进程。"""
     try:
-        web_port = check_prerequisites()
+        web_port = check_prerequisites(root=root)
     except RuntimeError as exc:
         print(f"dev: {exc}", file=sys.stderr)
         return 1
@@ -164,9 +163,9 @@ def run_services() -> int:
     web_env = os.environ.copy()
     web_env["API_PROXY_TARGET"] = f"http://127.0.0.1:{API_PORT}"
     services = (
-        ("api", ["uv", "run", "python", "local_run.py"], ROOT, None),
-        ("worker", ["uv", "run", "python", "-m", "app.cli.run_worker"], ROOT, None),
-        ("web", ["npm", "run", "dev", "--", "--port", str(web_port), "--strictPort"], ROOT / "web", web_env),
+        ("api", ["uv", "run", "python", "local_run.py"], root, None),
+        ("worker", ["uv", "run", "python", "-m", "app.cli.run_worker"], root, None),
+        ("web", ["npm", "run", "dev", "--", "--port", str(web_port), "--strictPort"], root / "web", web_env),
     )
     processes: list[subprocess.Popen] = []
     stopped_by_signal = None
@@ -206,11 +205,11 @@ def run_services() -> int:
         signal.signal(signal.SIGTERM, previous_term)
 
 
-def main() -> int:
+def main(*, root: Path = ROOT) -> int:
     """先接管本项目已有开发服务，再启动新一组服务。"""
     try:
-        with dev_lock(LOCK_PATH):
-            return run_services()
+        with dev_lock(root / ".run-private" / "dev.lock"):
+            return run_services(root=root)
     except RuntimeError as exc:
         print(f"dev: {exc}", file=sys.stderr)
         return 1

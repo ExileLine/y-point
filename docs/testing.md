@@ -13,9 +13,11 @@ SQLAlchemy 模型在 `app/models` 注册，Alembic 以其元数据管理业务�
 ```bash
 uv run pytest -q
 uv run alembic check
-uvx ruff check app migrations tests scripts sandbox local_run.py
-uvx ruff format --check app migrations tests scripts sandbox local_run.py
+uvx ruff check app ypoint_cli migrations tests scripts sandbox local_run.py
+uvx ruff format --check app ypoint_cli migrations tests scripts sandbox local_run.py
 ```
+
+`ypoint_cli/` 是统一命令实现。部署测试通过 `python -m ypoint_cli` 验证真实命令入口，CLI 专项另覆盖安装后的 `yp` 和外部工作目录调用。参数、打包配置及标准库模块入口见[命令行说明](cli.md)。
 
 代码与提交约定见[贡献指南](../CONTRIBUTING.md)。
 
@@ -24,7 +26,7 @@ uvx ruff format --check app migrations tests scripts sandbox local_run.py
 先运行覆盖当前变更的测试文件，例如部署入口修改可运行：
 
 ```bash
-uv run pytest -q tests/test_deploy_all.py tests/test_deployment.py
+uv run pytest -q tests/test_cli.py tests/test_deploy_all.py tests/test_deployment.py tests/test_dev_launcher.py tests/test_sandbox_image_retention.py
 ```
 
 前端类型与生产构建：

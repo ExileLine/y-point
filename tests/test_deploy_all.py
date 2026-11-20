@@ -7,11 +7,12 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts import deploy_all
+from ypoint_cli import deploy as deploy_all
 
 
 @pytest.fixture
@@ -44,9 +45,24 @@ def docker_probe(monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[list[str],
     def invoke(command: list[str], **kwargs) -> subprocess.CompletedProcess:
         """保留实际 run 包装器，模拟其子进程返回以检查输出捕获参数。"""
         calls.append((list(command), kwargs))
-        output = json.dumps(config) if command[-3:] == ["config", "--format", "json"] else ""
+        output = json.dumps(config) if command[-3:] == ["config", "--format", "json"] else ("sha256:" + "a" * 64 if command[:3] == ["docker", "image", "inspect"] else "")
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
+    def initialize(arguments, *, root):
+        calls.append(([sys.executable, "in-process-init", *arguments], {"cwd": root}))
+
+    def compose_command(environment, directory, *, sandbox, root):
+        command = ["docker", "compose", "--env-file", str(directory / "compose.env"), "-f", str(root / "docker-compose.yml")]
+        if environment == "production":
+            command.extend(["-f", str(root / "docker-compose.production.yml")])
+        if config["services"]["web"]["environment"]["YPOINT_HTTPS_ENABLED"] == "true":
+            command.extend(["-f", str(root / "docker-compose.https.yml")])
+        if sandbox:
+            command.extend(["-f", str(root / "docker-compose.sandbox.yml")])
+        return command
+
+    monkeypatch.setattr(deploy_all.deployment, "main", initialize)
+    monkeypatch.setattr(deploy_all.deployment, "compose_command", compose_command)
     monkeypatch.setattr(deploy_all.shutil, "which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr(deploy_all.subprocess, "run", invoke)
     return calls, config
@@ -67,7 +83,8 @@ def test_one_click_orders_steps_and_hides_private_configuration(docker_probe, tm
     assert commands[4][-1] == "build"
     assert commands[5][-6:] == ["up", "-d", "--no-build", "--wait", "--wait-timeout", "180"]
     assert commands[6][-1] == "ps"
-    assert all(str(directory) in command for command in commands[2:])
+    assert str(directory) in commands[2]
+    assert all(str(directory / "compose.env") in command for command in commands[3:])
     assert all(options["cwd"] == deploy_all.ROOT for _, options in calls)
     output = capsys.readouterr().out
     assert "http://<服务器IP>:19080" in output
@@ -96,10 +113,10 @@ def test_sandbox_uses_configured_image_and_https_arguments(docker_probe, tmp_pat
     commands = [command for command, _ in calls]
     initialize = commands[2]
     assert "--https" in initialize and str(certificate) in initialize and str(key) in initialize
-    compose = [command for command in commands if "compose" in command and "--environment" in command]
-    assert all("--sandbox" in command for command in compose)
+    compose = [command for command in commands if "--env-file" in command]
+    assert compose and all(str(deploy_all.ROOT / "docker-compose.sandbox.yml") in command for command in compose)
     if skip_build:
-        assert ["docker", "image", "inspect", "custom-script-sandbox:9"] in commands
+        assert any(command[:4] == ["docker", "image", "inspect", "custom-script-sandbox:9"] for command in commands)
         assert not any(command[-1] == "build" or command[:2] == ["docker", "build"] for command in commands)
     else:
         sandbox = next(command for command in commands if command[:2] == ["docker", "build"])

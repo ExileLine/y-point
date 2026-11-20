@@ -61,7 +61,7 @@ x-server: &server
   init: true
   user: "${YPOINT_UID:-10001}:${YPOINT_GID:-10001}"
   env_file:
-    - ${YPOINT_APP_ENV:?请先运行 python3 scripts/deploy.py init}
+    - ${YPOINT_APP_ENV:?请先运行 python3 -m ypoint_cli init}
   environment:
     FAST_API_ENV: ${YPOINT_ENV:-production}
     ENV_FILE: /run/config/application.env
@@ -117,7 +117,7 @@ services:
     user: redis
     init: true
     env_file:
-      - ${YPOINT_REDIS_ENV:?请先运行 python3 scripts/deploy.py init 生成 Redis 配置}
+      - ${YPOINT_REDIS_ENV:?请先运行 python3 -m ypoint_cli init 生成 Redis 配置}
     environment:
       REDIS_MAXMEMORY: ${YPOINT_REDIS_MAXMEMORY:-256mb}
     command: [ /bin/sh, /usr/local/bin/y-point-redis-entrypoint.sh ]

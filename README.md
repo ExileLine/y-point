@@ -32,7 +32,7 @@ git clone https://github.com/ExileLine/y-point.git
 cd y-point
 
 # 首次部署：构建应用和脚本沙箱镜像、启动服务，并交互创建首位管理员。
-python3 scripts/deploy_all.py --sandbox --create-admin admin
+python3 -m ypoint_cli deploy --sandbox --create-admin admin
 ```
 
 **`--sandbox` 是脚本工具和 MCP stdio 容器执行的必要参数**：它为 API/worker 接入宿主 Docker，用于脚本依赖准备、试运行及正式执行；只部署聊天、知识库和内置文件生成时可省略，Python/Bash Tool、Skill 受管脚本与 MCP stdio 将不可用。此方式适用于受信任的本机或单机环境，正式多租户隔离要求见[沙箱部署说明](docs/deployment-guide.md#可选本机脚本沙箱)。
@@ -45,7 +45,9 @@ python3 scripts/deploy_all.py --sandbox --create-admin admin
 2. 创建 Agent，选择可用模型；按需关联知识库、Skill 或 Tool。
 3. 进入会话，发送消息或上传资料，查看回答、引用和生成文件。
 
-后续更新运行 `python3 scripts/deploy_all.py --sandbox`，已有管理员无需重复创建。**沙箱开关不会自动记住，后续部署继续带 `--sandbox`；遗漏会按基础配置重建服务并移除脚本执行所需的 Docker 接入。** 如果之前已省略它部署，现在重新运行带 `--sandbox` 的命令即可补开，无需再次创建管理员；请在无运行中任务时更新。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
+开发环境已执行 `uv sync --locked` 时，也可使用 `uv run yp deploy --sandbox`；激活项目虚拟环境后可直接使用 `yp deploy --sandbox`。以上命令调用同一实现。Docker 宿主机使用上面的模块入口即可，不需要安装应用依赖。全部命令、参数及 `pyproject.toml` 配置解释见 [统一命令行与项目配置](docs/cli.md)。
+
+后续更新运行 `python3 -m ypoint_cli deploy --sandbox`，已有管理员无需重复创建。**沙箱开关不会自动记住，后续部署继续带 `--sandbox`；遗漏会按基础配置重建服务并移除脚本执行所需的 Docker 接入。** 如果之前已省略它部署，现在重新运行带 `--sandbox` 的命令即可补开，无需再次创建管理员；请在无运行中任务时更新。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
 
 | 使用场景 | 入口 |
 | --- | --- |
@@ -80,7 +82,7 @@ flowchart LR
 
 | 主题 | 文档 |
 | --- | --- |
-| 安装、开发与部署 | [本地开发](docs/local-development.md) · [部署手册](docs/deployment-guide.md) · [部署配置参考](docs/deployment.md) |
+| 安装、开发与部署 | [统一 CLI 与参数](docs/cli.md) · [本地开发](docs/local-development.md) · [部署手册](docs/deployment-guide.md) · [部署配置参考](docs/deployment.md) |
 | 配置与模型 | [运行限额与参数](docs/configuration.md) · [认证、授权与模型](docs/authentication-and-models.md) |
 | 对话与文件 | [Run、会话与恢复](docs/runs-and-sessions.md) · [AG-UI 与处理过程](docs/ag-ui.md) · [文件存储与附件](docs/artifacts.md) |
 | 扩展助手能力 | [Skill 与报告模板](docs/skills.md) · [Tool、沙箱与 MCP](docs/tools.md) · [知识库与检索](docs/knowledge-base.md) |

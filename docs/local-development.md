@@ -11,7 +11,7 @@
 开发需要 Python 3.12、uv、Node.js 和 npm；推荐 Node.js 24，与当前前端 Docker 构建版本一致。开发启动器使用 POSIX 文件锁与进程接口，建议在 Linux/macOS 环境运行。项目根目录先安装依赖：
 
 ```bash
-uv sync --group dev
+uv sync --locked --group dev
 npm --prefix web ci
 ```
 
@@ -31,20 +31,22 @@ Path(".env.development.local").chmod(0o600)
 PY
 ```
 
-升级开发数据库，首次创建管理员，再运行 `make dev` 同时启动 API、worker 和前端。已有管理员时省略创建命令：
+升级开发数据库，首次创建管理员，再运行 `uv run yp dev`（或 `make dev`）同时启动 API、worker 和前端。已有管理员时省略创建命令：
 
 ```bash
 uv run alembic upgrade head
 uv run python -m app.cli.create_admin admin
-make dev
+uv run yp dev
 ```
+
+`yp` 由 `pyproject.toml` 的 `[project.scripts]` 注册，`uv sync` 会安装项目并生成命令。`make dev` 只是 `uv run yp dev` 的快捷入口；配置项和部署参数的逐项说明见 [统一命令行与项目配置](cli.md)。
 
 前端默认地址为 `http://127.0.0.1:5173`；若端口被占用，`make dev` 会选择下一个空闲端口并打印实际地址。API 地址为 `http://127.0.0.1:7769`，前端 `/api/v1` 请求会代理到该 API。重复运行 `make dev` 会先通过管理锁停止由本启动器启动的旧 API、worker 和前端进程，待其退出后再启动新进程；按 Ctrl-C 也会清理本轮进程。手动启动或未被管理锁记录的服务不会被自动终止，即使它也来自本项目。若 7769 被这类服务或其他程序占用，脚本会报错；可用 `lsof -nP -iTCP:7769 -sTCP:LISTEN` 确认归属，先在原终端停止服务，再运行 `make dev`。独立运行前端时仍默认代理到 8000，可通过 `API_PROXY_TARGET` 指定其他 API 地址。
 
 只需后端时，可单独启动 API 和 worker：
 
 ```bash
-uv sync --group dev
+uv sync --locked --group dev
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```

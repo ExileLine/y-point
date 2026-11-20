@@ -43,6 +43,7 @@
 | `app/services/mcp_connections.py` | 共享 MCP 连接、固定执行配置、凭据策略及撤权范围；Tool 与 Run 继续固定版本。 |
 | `app/services/knowledge.py`、`knowledge_jobs.py` | 知识库授权、完整索引代、检索审计，以及可恢复的后台解析和原子发布。 |
 | `app/services/knowledge_parser.py`、`knowledge_backend.py`、`embedding_adapter.py` | 文档结构与偏移、原生全文/向量后端、独立嵌入协议和维度验证。 |
+| `ypoint_cli` | `yp` 命令实现；开发启动、部署初始化、Compose 转发与部署检查。入口与参数见[统一 CLI](cli.md)。 |
 | `app/core/enums.py` | 跨模块业务类型、状态、角色、可见性和策略的统一枚举。 |
 | `app/models`、`app/db`、`migrations/versions` | 业务表、数据库连接及 Alembic 迁移。 |
 

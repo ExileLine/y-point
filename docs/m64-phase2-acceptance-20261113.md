@@ -4,6 +4,6 @@
 
 当前操作请阅读：
 
-- [PDF/OCR 操作与边界](knowledge-base.md#pdf-按页提取ocr-与原页核对第二阶段)。
+- [PDF/OCR 操作与边界](knowledge-base.md#pdf-按页提取ocr-与原页核对)。
 
 [返回文档总览](README.md)

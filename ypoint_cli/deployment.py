@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @Time    : 2026-11-13 15:17:57
 # @Author  : yangyuexiong
-# @File    : deploy.py
+# @File    : deployment.py
 
 """生成隔离部署的私有配置，并统一传入 Compose 环境文件与覆盖配置。"""
 
@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,7 +100,7 @@ def redis_configuration(directory: Path, previous: dict[str, str], application: 
     return path, password
 
 
-def initialize(args: argparse.Namespace, directory: Path) -> None:
+def initialize(args: argparse.Namespace, directory: Path, *, root: Path = ROOT) -> None:
     """生成部署配置并升级旧版 Redis 配置；协议切换保留现有业务凭据。"""
     if any(char in str(directory) for char in ("\n", "\r", '"', "'", "$")):
         raise SystemExit("部署目录不能包含换行、引号或 $ 字符")
@@ -215,7 +216,7 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
             "DATA_DIR": str(data),
             "STREAM_COOKIE_SECURE": str(https),
         }
-        template = (ROOT / "deploy/config/application.env.example").read_text(encoding="utf-8")
+        template = (root / "deploy/config/application.env.example").read_text(encoding="utf-8")
         for key, value in values.items():
             template = template.replace("{{" + key + "}}", value)
         socket = Path(args.docker_socket)
@@ -247,7 +248,7 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
     # 两个服务通过同一路径向引擎提交受信任的代理脚本；原子替换避免读到半份文件。
     proxy = data / "runtime/package_proxy.py"
     temporary = proxy.with_suffix(".tmp")
-    shutil.copyfile(ROOT / "sandbox/package_proxy.py", temporary)
+    shutil.copyfile(root / "sandbox/package_proxy.py", temporary)
     temporary.chmod(0o644)
     if os.getuid() == 0:
         os.chown(temporary, uid, gid)
@@ -259,50 +260,80 @@ def initialize(args: argparse.Namespace, directory: Path) -> None:
         print("local 的自签证书仅供本机调试，有效期 30 天；浏览器需信任证书或确认例外。")
 
 
-def main() -> None:
+def compose_command(environment: str, directory: Path, *, sandbox: bool = False, root: Path = ROOT) -> list[str]:
+    """按已保存配置构造 Compose 命令，不执行子进程或输出配置内容。"""
+    config = directory / "compose.env"
+    if not config.is_file():
+        raise ValueError("请先执行 yp init 生成本环境的私有部署配置")
+    command = ["docker", "compose", "--env-file", str(config), "-f", str(root / "docker-compose.yml")]
+    if environment == "production":
+        command.extend(["-f", str(root / "docker-compose.production.yml")])
+    if configured_https(read_private_values(config)):
+        command.extend(["-f", str(root / "docker-compose.https.yml")])
+    if sandbox:
+        command.extend(["-f", str(root / "docker-compose.sandbox.yml")])
+    return command
+
+
+def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
     """选择部署环境并执行初始化或原样透传 Compose 子命令。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "compose"))
-    parser.add_argument("--environment", choices=("local", "staging", "production"), default="local")
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    command = arguments.pop(0) if arguments else ""
+    if command not in {"init", "compose"}:
+        raise ValueError("请选择 init 或 compose 子命令")
+    parser = argparse.ArgumentParser(prog=f"yp {command}", description=__doc__)
+    parser.set_defaults(command=command)
+    parser.add_argument(
+        "--environment", choices=("local", "staging", "production"), default="local", help="local / staging / production；默认 local，各环境配置独立"
+    )
     parser.add_argument("--directory", type=Path, help="私有部署目录，默认 .deployment/<environment>")
     parser.add_argument("--sandbox", action="store_true", help="显式允许 API/worker 管理本机 Docker")
-    parser.add_argument("--uid", type=int)
-    parser.add_argument("--gid", type=int)
-    parser.add_argument("--docker-socket", default="/var/run/docker.sock")
-    parser.add_argument("--docker-gid", type=int)
-    parser.add_argument("--bind-ip", type=IPv4Address, help="init 时设置宿主 IPv4 监听地址，新配置默认 127.0.0.1")
-    parser.add_argument("--http-port", type=int, help="init 时设置 HTTP 端口，新配置默认 18080")
-    parser.add_argument("--https-port", type=int, help="init 时设置 HTTPS 端口，新配置默认 18443")
-    transport = parser.add_mutually_exclusive_group()
-    transport.add_argument("--https", dest="https", action="store_true", help="init 时启用 HTTPS；local 可自动生成自签证书")
-    transport.add_argument("--http", dest="https", action="store_false", help="init 时使用 HTTP，不要求证书")
-    parser.set_defaults(https=None)
-    parser.add_argument("--tls-cert", type=Path)
-    parser.add_argument("--tls-key", type=Path)
-    args, forwarded = parser.parse_known_args()
-    directory = (args.directory or ROOT / ".deployment" / args.environment).expanduser().resolve()
+    if command == "init":
+        parser.add_argument("--uid", type=int, help="init：私有文件和数据目录的容器用户 UID；默认当前用户")
+        parser.add_argument("--gid", type=int, help="init：私有文件和数据目录的容器用户 GID；默认当前用户组")
+        parser.add_argument("--docker-socket", default="/var/run/docker.sock", help="init：宿主 Docker socket，默认 /var/run/docker.sock")
+        parser.add_argument("--docker-gid", type=int, help="init：访问 Docker socket 所需的组 ID；默认从 socket 推断")
+        parser.add_argument("--bind-ip", type=IPv4Address, help="init 时设置宿主 IPv4 监听地址，新配置默认 127.0.0.1")
+        parser.add_argument("--http-port", type=int, help="init 时设置 HTTP 端口，新配置默认 18080")
+        parser.add_argument("--https-port", type=int, help="init 时设置 HTTPS 端口，新配置默认 18443")
+        transport = parser.add_mutually_exclusive_group()
+        transport.add_argument("--https", dest="https", action="store_true", help="init 时启用 HTTPS；local 可自动生成自签证书")
+        transport.add_argument("--http", dest="https", action="store_false", help="init 时使用 HTTP，不要求证书")
+        parser.set_defaults(https=None)
+        parser.add_argument("--tls-cert", type=Path, help="init：HTTPS 证书文件路径，需与 --tls-key 配对")
+        parser.add_argument("--tls-key", type=Path, help="init：HTTPS 私钥文件路径，需与 --tls-cert 配对")
+    args, forwarded = parser.parse_known_args(arguments)
+    directory = (args.directory or root / ".deployment" / args.environment).expanduser().resolve()
     if args.command == "init":
         if forwarded:
             parser.error("init 不接受额外参数")
-        initialize(args, directory)
+        initialize(args, directory, root=root)
         return
-    if any(value is not None for value in (args.https, args.tls_cert, args.tls_key, args.bind_ip, args.http_port, args.https_port)):
-        parser.error("协议、证书及监听选项仅用于 init；compose 自动读取已保存的配置")
+    own_arguments = arguments[: arguments.index("--")] if "--" in arguments else arguments
+    init_options = {
+        "--uid",
+        "--gid",
+        "--docker-socket",
+        "--docker-gid",
+        "--bind-ip",
+        "--http-port",
+        "--https-port",
+        "--http",
+        "--https",
+        "--tls-cert",
+        "--tls-key",
+    }
+    if any(value.split("=", 1)[0] in init_options for value in own_arguments):
+        parser.error("用户、协议、证书及监听选项仅用于 init；compose 自动读取已保存的配置")
     config = directory / "compose.env"
     if not config.is_file():
         parser.error("请先执行 init 生成本环境的私有部署配置")
-    command = ["docker", "compose", "--env-file", str(config), "-f", str(ROOT / "docker-compose.yml")]
-    if args.environment == "production":
-        command.extend(["-f", str(ROOT / "docker-compose.production.yml")])
-    if configured_https(read_private_values(config)):
-        command.extend(["-f", str(ROOT / "docker-compose.https.yml")])
-    if args.sandbox:
-        command.extend(["-f", str(ROOT / "docker-compose.sandbox.yml")])
+    command = compose_command(args.environment, directory, sandbox=args.sandbox, root=root)
     if forwarded[:1] == ["--"]:
         forwarded = forwarded[1:]
     if not forwarded:
         forwarded = ["ps"]
-    raise SystemExit(subprocess.call([*command, *forwarded], cwd=ROOT))
+    raise SystemExit(subprocess.call([*command, *forwarded], cwd=root))
 
 
 if __name__ == "__main__":

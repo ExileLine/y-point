@@ -15,10 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def deploy_all(monkeypatch: pytest.MonkeyPatch):
     """加载仅依赖标准库的真实部署入口，隔离 Docker 命令执行。"""
-    spec = importlib.util.spec_from_file_location("yp_test_deploy_all_images", ROOT / "scripts/deploy_all.py")
+    spec = importlib.util.spec_from_file_location("yp_test_deploy_all_images", ROOT / "ypoint_cli/deploy.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(module.deployment, "main", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module.deployment, "compose_command", lambda *args, **kwargs: ["docker", "compose"])
     return module
 
 
@@ -52,7 +54,7 @@ def test_deployment_retains_image_before_replacing_tag(deploy_all, tmp_path: Pat
         },
     }
 
-    def docker_command(command, *, capture=False):
+    def docker_command(command, *, capture=False, root=None):
         """模拟 Docker 标签移动，检查删除旧标签前已有独立引用。"""
         if command[:3] == ["docker", "image", "inspect"]:
             if command[3] not in references:
@@ -80,7 +82,7 @@ def test_deployment_retains_image_before_replacing_tag(deploy_all, tmp_path: Pat
 def test_retention_does_not_ignore_docker_access_failure(deploy_all, monkeypatch: pytest.MonkeyPatch) -> None:
     """允许首次缺少镜像时，也不能把 Docker 权限错误当成镜像不存在。"""
 
-    def denied_command(command, *, capture=False):
+    def denied_command(command, *, capture=False, root=None):
         """模拟 Docker daemon 权限错误。"""
         raise subprocess.CalledProcessError(1, command, stderr="permission denied")
 

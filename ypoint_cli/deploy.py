@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # @Time    : 2026-11-14 17:44:24
 # @Author  : yangyuexiong
-# @File    : deploy_all.py
+# @File    : deploy.py
 
-"""一键完成 Docker 部署检查、初始化、构建和健康等待，复用 deploy.py 的私有配置与环境选择。"""
+"""一键完成 Docker 部署检查、初始化、构建和健康等待，复用统一配置模块的私有配置与环境选择。"""
 
 import argparse
 import json
@@ -15,27 +15,29 @@ import sys
 from ipaddress import IPv4Address
 from pathlib import Path
 
+from ypoint_cli import deployment
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(command: list[str], *, capture: bool = False) -> str:
+def run(command: list[str], *, capture: bool = False, root: Path = ROOT) -> str:
     """打印可复现命令并执行；配置 JSON 仅在内存读取，不把私有值输出到终端。"""
     print(f"$ {shlex.join(command)}", flush=True)
-    completed = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=capture)
+    completed = subprocess.run(command, cwd=root, check=True, text=True, capture_output=capture)
     return completed.stdout if capture else ""
 
 
-def retain_sandbox_image(image: str, *, allow_missing: bool = False) -> None:
+def retain_sandbox_image(image: str, *, allow_missing: bool = False, root: Path = ROOT) -> None:
     """为沙箱镜像保存按内容 ID 命名的标签，避免更新可变标签后成为悬空镜像。"""
     try:
-        identifier = run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture=True).strip()
+        identifier = run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture=True, root=root).strip()
     except subprocess.CalledProcessError as error:
         if allow_missing and error.returncode == 1 and "No such image" in (error.stderr or ""):
             return
         raise
     if re.fullmatch(r"sha256:[a-f0-9]{64}", identifier) is None:
         raise SystemExit("Docker 未返回有效的沙箱镜像 ID，停止部署以免丢失历史镜像引用")
-    run(["docker", "image", "tag", identifier, f"y-point-script-sandbox-pinned:{identifier.removeprefix('sha256:')}"])
+    run(["docker", "image", "tag", identifier, f"y-point-script-sandbox-pinned:{identifier.removeprefix('sha256:')}"], root=root)
 
 
 def positive_integer(value: str) -> int:
@@ -46,10 +48,15 @@ def positive_integer(value: str) -> int:
     return number
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
     """串行部署选定环境，失败即停并保留现场；管理员密码只通过交互终端输入。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--environment", choices=("local", "staging", "production"), default="local")
+    parser = argparse.ArgumentParser(prog="yp deploy", description=__doc__)
+    parser.add_argument(
+        "--environment",
+        choices=("local", "staging", "production"),
+        default="local",
+        help="部署环境：local 本机、staging 预发布、production 生产；默认 local，分别保存配置",
+    )
     parser.add_argument("--directory", type=Path, help="私有部署目录，默认项目内 .deployment/<environment>")
     parser.add_argument("--bind-ip", type=IPv4Address, help="宿主 IPv4 地址；新配置默认 127.0.0.1，服务器可指定内网 IP")
     parser.add_argument("--http-port", type=int, help="新配置默认 18080；显式传入会更新已保存的端口")
@@ -58,8 +65,8 @@ def main(argv: list[str] | None = None) -> None:
     protocol.add_argument("--http", dest="https", action="store_false", help="显式使用 HTTP，无需证书")
     protocol.add_argument("--https", dest="https", action="store_true", help="显式启用 HTTPS，local 可生成自签证书")
     parser.set_defaults(https=None)
-    parser.add_argument("--tls-cert", type=Path)
-    parser.add_argument("--tls-key", type=Path)
+    parser.add_argument("--tls-cert", type=Path, help="HTTPS 证书文件路径，需与 --tls-key 同时提供")
+    parser.add_argument("--tls-key", type=Path, help="HTTPS 私钥文件路径，需与 --tls-cert 同时提供")
     parser.add_argument("--sandbox", action="store_true", help="显式启用受信任本机 Docker 脚本沙箱，并构建沙箱镜像")
     parser.add_argument("--skip-build", action="store_true", help="复用已有镜像；跳过应用和沙箱镜像构建")
     parser.add_argument("--wait-timeout", type=positive_integer, default=180, help="健康等待秒数，默认 180")
@@ -72,9 +79,9 @@ def main(argv: list[str] | None = None) -> None:
     if shutil.which("docker") is None:
         parser.error("未找到 docker，请先安装 Docker Engine/Desktop 与 Compose 插件")
 
-    directory = (args.directory or ROOT / ".deployment" / args.environment).expanduser().resolve()
+    directory = (args.directory or root / ".deployment" / args.environment).expanduser().resolve()
     common = ["--environment", args.environment, "--directory", str(directory)]
-    initialize = [sys.executable, str(ROOT / "scripts/deploy.py"), "init", *common]
+    initialize = ["init", *common]
     if args.https is not None:
         initialize.append("--https" if args.https else "--http")
     for flag, value in (
@@ -86,32 +93,34 @@ def main(argv: list[str] | None = None) -> None:
     ):
         if value is not None:
             initialize.extend([flag, str(value)])
-    compose = [sys.executable, str(ROOT / "scripts/deploy.py"), "compose", *common]
-    if args.sandbox:
-        compose.append("--sandbox")
-    compose.append("--")
+
+    def execute(command: list[str], *, capture: bool = False) -> str:
+        return run(command, capture=capture, root=root)
+
+    compose: list[str] = []
 
     try:
         print("[1/5] 检查 Docker 与 Compose", flush=True)
-        run(["docker", "compose", "version", "--short"], capture=True)
-        run(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
+        execute(["docker", "compose", "version", "--short"], capture=True)
+        execute(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
         print("[2/5] 初始化或复用私有部署配置", flush=True)
-        run(initialize)
+        deployment.main(initialize, root=root)
+        compose = deployment.compose_command(args.environment, directory, sandbox=args.sandbox, root=root)
         # 配置输出含密码，必须 capture，不能直接打印或写到日志文件。
-        config = json.loads(run([*compose, "config", "--format", "json"], capture=True))
+        config = json.loads(execute([*compose, "config", "--format", "json"], capture=True))
         print("[3/5] 准备运行镜像", flush=True)
         if args.sandbox:
             image = config["services"]["api"]["environment"]["SCRIPT_SANDBOX_IMAGE"]
             if not args.skip_build:
-                retain_sandbox_image(image, allow_missing=True)
-                run(["docker", "build", "-f", str(ROOT / "Dockerfile.sandbox"), "-t", image, str(ROOT)])
-            retain_sandbox_image(image)
+                retain_sandbox_image(image, allow_missing=True, root=root)
+                execute(["docker", "build", "-f", str(root / "Dockerfile.sandbox"), "-t", image, str(root)])
+            retain_sandbox_image(image, root=root)
         if not args.skip_build:
-            run([*compose, "build"])
+            execute([*compose, "build"])
         print("[4/5] 启动数据库、Redis、迁移、API、worker 和 Web，等待健康检查", flush=True)
-        run([*compose, "up", "-d", "--no-build", "--wait", "--wait-timeout", str(args.wait_timeout)])
+        execute([*compose, "up", "-d", "--no-build", "--wait", "--wait-timeout", str(args.wait_timeout)])
         print("[5/5] 查看服务状态", flush=True)
-        run([*compose, "ps"])
+        execute([*compose, "ps"])
     except subprocess.CalledProcessError as error:
         print(f"部署中止：命令退出码 {error.returncode}；已保留配置、数据和容器，便于修复后重新执行。", file=sys.stderr)
         print(f"查看日志：{shlex.join([*compose, 'logs', '--tail', '100', 'api', 'worker', 'web', 'db', 'redis'])}", file=sys.stderr)
@@ -132,7 +141,7 @@ def main(argv: list[str] | None = None) -> None:
     admin = [*compose, "exec", "api", "python", "-m", "app.cli.create_admin", args.create_admin or "admin"]
     if args.create_admin:
         try:
-            run(admin)
+            execute(admin)
         except subprocess.CalledProcessError as error:
             print("服务已部署，首位管理员未创建成功；已有管理员时无需再次创建。", file=sys.stderr)
             raise SystemExit(error.returncode) from error
