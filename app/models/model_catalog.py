@@ -4,11 +4,12 @@
 # @File    : model_catalog.py
 
 from decimal import Decimal
+from datetime import datetime
 
 from sqlalchemy import Boolean, Integer, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import CustomBaseModel
+from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
 class ModelCatalog(CustomBaseModel):
@@ -28,6 +29,8 @@ class ModelCatalog(CustomBaseModel):
     verified_capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list, comment="实际探测通过的模型能力")
     capabilities_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="能力是否已实际验证")
     embedding_dimensions: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="实际嵌入探测通过的向量维度")
+    availability_failure: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="最近确认的模型访问故障，空值表示未被阻断")
+    availability_checked_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="最近模型访问状态核验时间")
     context_window: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="上下文窗口 Token 数")
     input_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="每百万输入 Token 价格")
     output_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="每百万输出 Token 价格")

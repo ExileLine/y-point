@@ -1,3 +1,4 @@
+import { modelAccessFailures } from "./model-failures";
 import type { RunAgentInput } from "@ag-ui/core";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
@@ -39,7 +40,8 @@ const failureLabels: Record<string, string> = {
   graph_step_limit_exceeded: "本次执行已达到图步数上限，请检查模型是否重复调用工具，或联系管理员调整步数限制",
   model_output_limit_exceeded: "模型已达到本次输出额度，回答或工具参数可能未完成。可提高智能体最大输出 Token 或留空交由供应商决定；已留空时需检查供应商默认额度与模型输出上限，必要时分批审查或切换模型",
   empty_response: "模型未返回可展示的正文，请重新发送或切换模型",
-  model_error: "模型请求失败，可重新发送或切换模型；如持续失败请检查供应商连接",
+  ...modelAccessFailures,
+  model_error: "模型请求失败，请检查模型测试结果及供应商连接；确认原因后再重试",
   tool_error: "工具执行失败，请展开失败的工具调用查看原因，并检查工具参数、服务状态或配置",
   summary_error: "上下文摘要失败", checkpoint_mismatch: "会话状态不一致", attachment_unavailable: "附件不可用",
   artifact_required: "需要文件", context_window_exceeded: "超出模型上下文窗口",
@@ -288,7 +290,7 @@ export default function Sessions() {
       if (!controller.signal.aborted) setModelsError(errorText(failure));
     }).finally(() => { if (!controller.signal.aborted) setModelsLoading(false); });
     return () => controller.abort();
-  }, [agentId, selected?.id, modelsRevision]);
+  }, [agentId, selected?.id, modelsRevision, lastRun?.failure_code]);
 
   useLayoutEffect(() => {
     followingRef.current = true;
@@ -428,7 +430,8 @@ export default function Sessions() {
   const currentRun = activeRun || lastRun;
   const preview = streamText && (activeRun?.id === streamText.runId || (lastRun?.id === streamText.runId && terminalStates.has(lastRun.state))) && !messages.some((item) => item.role === "assistant" && item.run_id === streamText.runId) ? streamText : null;
   const pendingRunId = preview?.runId || (activeRun && !messages.some(item => item.role === "assistant" && item.run_id === activeRun.id) ? activeRun.id : null);
-  const canSend = Boolean(selected && !selected.archived && agent?.enabled && !activeRun && !submitting && !pendingDraft && !switchingModel && modelTarget === null && !runsLoading);
+  const selectedModelIssue = models.find(item => item.id === selected?.model_id && !item.selectable);
+  const canSend = Boolean(!selectedModelIssue && selected && !selected.archived && agent?.enabled && !activeRun && !submitting && !pendingDraft && !switchingModel && modelTarget === null && !runsLoading);
 
   function refresh() { setRevision((value) => value + 1); }
 
@@ -710,6 +713,7 @@ export default function Sessions() {
               <span className="sessions-model-hint">{activeRun ? "本轮结束后可切换" : "切换从下一条消息生效"}</span>
               {modelsError && <Tooltip title={modelsError}><Button size="small" onClick={() => setModelsRevision(value => value + 1)}>重试模型目录</Button></Tooltip>}
             </div>
+            {selectedModelIssue && <Alert className="sessions-alert" type="error" showIcon message={`${selectedModelIssue.display_name} 暂不可用`} description={selectedModelIssue.notice || "请管理员检查模型部署和授权，并测试文本调用。"} action={<Button size="small" loading={modelsLoading} onClick={() => setModelsRevision(value => value + 1)}>刷新模型状态</Button>} />}
             <ChatAttachments key={selected.id} items={files} disabled={!canSend} onChange={update => {
               const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
             }} />

@@ -259,7 +259,7 @@ function AgentEditor({
           <Form.Item name="default_model_id" label="默认模型" extra="用于新建会话；已有会话继续使用其选定模型，可在对话页切换。" rules={[{ required: true, message: "请选择模型" }]}>
             <Select
               disabled={Boolean(agent && usableModels.length === 0)}
-              options={[...currentModel, ...usableModels.map((model) => ({ value: model.id, label: model.display_name }))]}
+              options={[...currentModel, ...usableModels.map((model) => ({ value: model.id, disabled: model.selectable === false, label: <Tooltip title={model.notice}><span>{model.display_name}{model.selectable === false ? "（暂不可用）" : ""}</span></Tooltip> }))]}
               placeholder="选择已验证文本能力的模型"
             />
           </Form.Item>
@@ -270,7 +270,7 @@ function AgentEditor({
             options={skills.filter((item) => item.enabled && item.current_version > 0).map((item) => ({ value: item.id, label: `${item.name} · v${item.current_version} · ${item.description}` }))} />
         </Form.Item>
         <Form.Item name="tool_ids" label="Tool">
-          <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择可用 Tool"
+          <Select mode="multiple" optionFilterProp="label" placeholder="选择可用 Tool"
             options={tools.filter((item) => item.enabled).map((item) => ({ value: item.id, label: `${toolDisplayName(item)} · ${item.description}` }))} />
         </Form.Item>
         {knowledgeError && <Alert className="drawer-alert" type="warning" showIcon message={`知识库目录加载失败：${knowledgeError}`} description="保留原有关联，关闭后重新打开编辑器可重试加载。" />}

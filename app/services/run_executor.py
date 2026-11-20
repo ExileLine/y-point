@@ -57,7 +57,8 @@ from app.core.enums import (
 )
 from app.services.call_timeouts import effective_tool_timeout
 from app.services.conversation_history import conversation_history_paths as _conversation_history_paths, read_conversation_history
-from app.services.model_adapter import is_model_context_overflow
+from app.services.model_availability import record_model_availability
+from app.services.model_adapter import classify_model_failure, is_model_context_overflow
 from app.services.model_connection_retry import invoke_model_with_connection_retry
 from app.services.tool_arguments import is_tool_argument_error
 from app.services.run_call_failures import ToolExecutionError, tool_exception_failure, tool_result_failure
@@ -589,6 +590,7 @@ def _record_runtime_call(
     started: float | None,
     *,
     failure: str | None,
+    upstream_status_code: int | None = None,
     messages: Sequence | None = None,
 ) -> None:
     """按本次新消息汇总上游用量，并在当前事务写入脱敏调用记录。"""
@@ -621,7 +623,7 @@ def _record_runtime_call(
             call_type="runtime_run",
             available=failure is None,
             latency_ms=round((time.perf_counter() - started) * 1000),
-            upstream_status_code=None,
+            upstream_status_code=upstream_status_code,
             failure=failure,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -799,6 +801,7 @@ async def _finish_interrupted(
     catalog_model: ModelCatalog | None = None,
     started: float | None = None,
     model_usage: Sequence | None = None,
+    upstream_status_code: int | None = None,
 ) -> AgentRun:
     """优先确认已请求的取消，否则将当前执行失败分类入库。"""
     for _ in range(3):
@@ -816,7 +819,8 @@ async def _finish_interrupted(
                         result = await timeout_run(db, run_id, lease_token, failure_code)
                     else:
                         result = await fail_run(db, run_id, lease_token, failure_code)
-                    _record_runtime_call(db, run, catalog_model, started, failure=failure_code, messages=model_usage)
+                    await record_model_availability(db, catalog_model, failure=failure_code)
+                    _record_runtime_call(db, run, catalog_model, started, failure=failure_code, messages=model_usage, upstream_status_code=upstream_status_code)
                     return result
                 return run
             except RunConflictError:
@@ -911,6 +915,8 @@ async def execute_text_run(
         if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
             return await fail_run(db, run_id, lease_token, "attachment_unavailable")
 
+    if catalog_model is not None and catalog_model.availability_failure:
+        return await _finish_interrupted(sessions, run_id, lease_token, catalog_model.availability_failure)
     assert model is not None
     runtime_config = RuntimeRunConfig.from_run(
         run,
@@ -968,7 +974,7 @@ async def execute_text_run(
         ):
             raise
         except Exception as exc:
-            if is_model_context_overflow(exc):
+            if is_model_context_overflow(exc) or classify_model_failure(exc)[0] != RunModelFailureReason.UPSTREAM:
                 raise
             raise SummaryModelError("摘要模型调用失败") from exc
         await _account_model_response(
@@ -1359,5 +1365,5 @@ async def execute_text_run(
                 return result
             return run
     except Exception as exc:  # noqa: BLE001 - 仅保存脱敏故障类别，不保存上游错误正文。
-        reason = RunModelFailureReason.CONTEXT if is_model_context_overflow(exc) else RunModelFailureReason.UPSTREAM
-        return await _finish_interrupted(sessions, run_id, lease_token, reason, catalog_model=catalog_model, started=started)
+        reason, status = classify_model_failure(exc)
+        return await _finish_interrupted(sessions, run_id, lease_token, reason, catalog_model=catalog_model, started=started, upstream_status_code=status)

@@ -18,6 +18,7 @@ from app.models.agent_session import AgentSession
 from app.models.knowledge import AgentKnowledgeBase
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
+from app.services.model_availability import model_availability_notice
 from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.models.skill import AgentSkill
 from app.models.tool import AgentTool
@@ -75,6 +76,9 @@ def model_issue(
     """统一返回模型不可选原因，目录和写入使用相同规则。"""
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         return SessionModelReason.UNAVAILABLE, "会话模型或供应商不可用，请选择其他模型"
+    notice = model_availability_notice(model)
+    if notice:
+        return SessionModelReason.UNAVAILABLE, notice
     try:
         thinking_request_options(provider.kind, agent.thinking_mode)
     except CustomException as exc:
@@ -117,7 +121,7 @@ async def session_model_options(db: AsyncSession, agent: AgentConfig) -> list[Se
     needs_tools = await requires_tools(db, agent.id)
     result = []
     for model, provider in rows:
-        if ModelCapability.TEXT not in (model.verified_capabilities or []):
+        if ModelCapability.TEXT not in (model.verified_capabilities or []) and not (model.availability_failure and ModelCapability.TEXT in (model.capabilities or [])):
             continue
         issue = model_issue(model, provider, agent, needs_tools)
         result.append(

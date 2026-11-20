@@ -1,3 +1,4 @@
+import { modelAccessFailures } from "../model-failures";
 import { useEffect, useId, useState } from "react";
 import { Alert, Button } from "antd";
 import { Activity, CheckCircle2, ChevronDown, CircleDashed, CircleHelp, XCircle } from "lucide-react";
@@ -33,6 +34,7 @@ export default function RunActivity({ state, active = false, onProgress }: {
       <ChevronDown size={15} aria-hidden="true" />
     </button>
     <div id={id} hidden={!expanded} className="run-activity-body">
+      {state.errorCode && modelAccessFailures[state.errorCode] && <Alert type="error" showIcon message="模型暂不可用" description={modelAccessFailures[state.errorCode]} />}
       <ol className="run-activity-timeline">{entries.map(entry => <li key={entry.id}>
         {entry.kind === "reasoning" ? <><span className="run-activity-source">模型公开思考</span><ReasoningPanel text={entry.text} active={active && entry.active} /></>
           : entry.kind === "text" ? <details className="run-activity-text"><summary>中间说明</summary><MessageContent text={entry.text} /></details>
@@ -45,7 +47,7 @@ export default function RunActivity({ state, active = false, onProgress }: {
             failure_reason: entry.call.failureReason || (entry.call.failureCode ? `执行未成功（${entry.call.failureCode}），请检查对应工具配置或输入。` : undefined),
           }]} />{entry.call.summary && <p className="run-activity-summary">{entry.call.summary}</p>}</>}
       </li>)}</ol>
-      {!entries.length && <p className="run-activity-empty"><Activity size={14} aria-hidden="true" />等待执行器返回活动</p>}
+      {!entries.length && !state.errorCode && <p className="run-activity-empty"><Activity size={14} aria-hidden="true" />{state.status === "failed" ? "本轮执行失败" : "等待执行器返回活动"}</p>}
     </div>
   </section>;
 }
@@ -61,6 +63,7 @@ export function HistoricalRunActivity({ runId }: { runId: string }) {
       onFrame: frame => setState(current => reduceProcess(current, frame)),
       onRun: run => setState(current => ({
         ...current,
+        errorCode: run.failure_code || current.errorCode,
         status: run.state === "completed" ? "succeeded" : run.state === "cancelled" ? "cancelled"
           : ["failed", "timed_out"].includes(run.state) ? "failed" : current.status,
       })),

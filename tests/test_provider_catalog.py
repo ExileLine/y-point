@@ -592,6 +592,8 @@ async def exercise_catalog(database: Path | str | URL, monkeypatch: pytest.Monke
                     "id": model_id,
                     "display_name": "Chat 1",
                     "context_window": 8192,
+                    "selectable": True,
+                    "notice": None,
                 },
             ]
             assert "external_id" not in available.text and "api_key" not in available.text

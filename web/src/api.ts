@@ -56,6 +56,8 @@ export type Model = {
   capabilities: string[];
   verified_capabilities: string[];
   capabilities_verified: boolean;
+  availability_failure?: string | null;
+  availability_checked_at?: string | null;
   context_window: number | null;
   input_price: string | null;
   output_price: string | null;
@@ -64,7 +66,7 @@ export type Model = {
   status: number | null;
 };
 
-export type AgentModelOption = Pick<Model, "id" | "display_name" | "context_window">;
+export type AgentModelOption = Pick<Model, "id" | "display_name" | "context_window"> & { selectable?: boolean; notice?: string | null };
 export type ProviderKind = {
   kind: string;
   display_name: string;

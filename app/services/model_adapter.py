@@ -14,7 +14,7 @@ from openai import BadRequestError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import AzureChatOpenAI
 
-from app.core.enums import ModelThinkingMode, ProviderKind
+from app.core.enums import ModelThinkingMode, ProviderKind, RunModelFailureReason
 from app.core.custom_exception import CustomException
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
@@ -195,3 +195,23 @@ def is_model_context_overflow(error: BaseException) -> bool:
                         return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def classify_model_failure(error: BaseException) -> tuple[str, int | None]:
+    """读取有界异常链中的结构化 HTTP 状态，不保存或匹配供应商错误正文。"""
+    context_overflow = is_model_context_overflow(error)
+    current = error
+    seen = set()
+    status = None
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        candidate = getattr(current, "status_code", None)
+        if candidate is None:
+            candidate = getattr(getattr(current, "response", None), "status_code", None)
+        if type(candidate) is int and 400 <= candidate <= 599:
+            status = candidate
+            reason = {404: RunModelFailureReason.NOT_FOUND, 401: RunModelFailureReason.AUTHENTICATION, 403: RunModelFailureReason.ACCESS_DENIED}.get(status)
+            if reason is not None and not context_overflow:
+                return reason, status
+        current = current.__cause__ or current.__context__
+    return RunModelFailureReason.CONTEXT if context_overflow else RunModelFailureReason.UPSTREAM, status

@@ -291,6 +291,33 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pyte
                     assert calls_response.json()["data"][0]["state"] == "completed"
                     assert isinstance(calls_response.json()["data"][0]["create_time"], str)
                     assert (await client.get(f"/api/v1/tools/runs/{audit_run.id}/calls", headers=owner)).status_code == 404
+                    # 超过旧的 16 个上限仍可创建、编辑，且 Run 不截断工具快照。
+                    async with sessions.begin() as db:
+                        tool_ids = []
+                        for index in range(20):
+                            item = UserTool(owner_id=2, name=f"bulk_tool_{index}", description="批量绑定工具", kind="script", visibility="private")
+                            db.add(item)
+                            await db.flush()
+                            db.add(UserToolVersion(tool_id=item.id, version=1, content_hash="b" * 64, input_schema=_schema(), effect="read", requires_approval=False, verified=True, source_code="print('{}')"))
+                            tool_ids.append(item.id)
+                    bulk = await client.post("/api/v1/agents", headers=other, json={"name": "Many Tools", "default_model_id": 5, "tool_ids": tool_ids})
+                    assert bulk.status_code == 201, bulk.text
+                    assert set(bulk.json()["data"]["tool_ids"]) == set(tool_ids)
+                    agent_id = agent.json()["data"]["id"]
+                    updated = await client.put(f"/api/v1/agents/{agent_id}", headers=other, json={"expected_version": agent.json()["data"]["version"], "tool_ids": tool_ids})
+                    assert updated.status_code == 200, updated.text
+                    assert set(updated.json()["data"]["tool_ids"]) == set(tool_ids)
+                    repeated = await client.put(f"/api/v1/agents/{agent_id}", headers=other, json={"expected_version": updated.json()["data"]["version"], "tool_ids": [*tool_ids, tool_ids[0]]})
+                    assert repeated.status_code == 400, repeated.text
+                    async with sessions.begin() as db:
+                        bulk_run = await create_run(db, 2, agent_id=agent_id, model_id=5, input_text="检查完整工具列表")
+                        await snapshot_run_tools(db, bulk_run.id, agent_id, 2)
+                        bulk_run = await claim_run(db, bulk_run.id)
+                    async with sessions() as db:
+                        snapshots = (await db.scalars(select(RunTool).where(RunTool.run_id == bulk_run.id))).all()
+                        assert {row.tool_id for row in snapshots} == set(tool_ids)
+                        resolved, _ = await make_worker_tool_resolver(sessions)(db, bulk_run)
+                        assert {tool.name for tool in resolved if tool.name.startswith("user_tool_")} == {f"user_tool_{item_id}_bulk_tool_{index}" for index, item_id in enumerate(tool_ids)}
                     changed = await client.put(
                         f"/api/v1/tools/{tool_id}",
                         headers=owner,

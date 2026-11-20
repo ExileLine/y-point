@@ -34,6 +34,7 @@ from app.services.catalog import commit_catalog, flush_catalog, get_model_or_404
 from app.services.capability_probe import probe_capability
 from app.services.identity import audit
 from app.services.model_probe import probe_model
+from app.services.model_availability import model_availability_notice, record_model_availability
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
 
 
@@ -90,6 +91,8 @@ async def import_models(body: ModelImportIn, actor: Admin = Depends(require_admi
         model.capabilities = list(dict.fromkeys(item.capabilities))
         model.verified_capabilities = []
         model.capabilities_verified = False
+        model.availability_failure = None
+        model.availability_checked_at = None
         model.context_window = item.context_window
         model.input_price = item.input_price
         model.output_price = item.output_price
@@ -137,9 +140,9 @@ async def list_available_models(actor: Admin = Depends(get_current_admin), db: A
         .order_by(ModelCatalog.is_default.desc(), ModelCatalog.id),
     )
     data = [
-        AgentModelOptionOut(id=model.id, display_name=model.display_name, context_window=model.context_window).model_dump(mode="json")
+        AgentModelOptionOut(id=model.id, display_name=model.display_name, context_window=model.context_window, selectable=not bool(model.availability_failure), notice=model_availability_notice(model)).model_dump(mode="json")
         for model, _provider in rows
-        if ModelCapability.TEXT in (model.verified_capabilities or []) and (model.context_window is None or model.context_window >= minimum_context_window)
+        if (ModelCapability.TEXT in (model.verified_capabilities or []) or model.availability_failure and ModelCapability.TEXT in (model.capabilities or [])) and (model.context_window is None or model.context_window >= minimum_context_window)
     ]
     return api_response(data=data, is_pop=False)
 
@@ -158,7 +161,9 @@ async def test_model(model_id: int, actor: Admin = Depends(require_admin), db: A
     provider = await get_provider_or_404(db, model.provider_id)
     if model.status != 1 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能测试")
+    snapshot = (model.id, model.provider_id, model.external_id, model.update_time)
     result = await probe_model(model, provider)
+    await record_model_availability(db, model, failure=result.failure, available=result.available, upstream_status_code=result.upstream_status_code, snapshot=snapshot)
     record = ModelCallRecord(
         actor_id=actor.id,
         provider_id=provider.id,
@@ -191,7 +196,9 @@ async def test_model_capability(model_id: int, body: CapabilityTestIn, actor: Ad
         raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能测试")
     external_id = model.external_id
     provider_config = (provider.base_url, provider.encrypted_credentials, provider.api_version)
+    snapshot = (model.id, model.provider_id, model.external_id, model.update_time)
     result = await probe_capability(model, provider, body.capability)
+    await record_model_availability(db, model, failure=result.failure, available=result.available, upstream_status_code=result.upstream_status_code, snapshot=snapshot)
     record = ModelCallRecord(
         actor_id=actor.id,
         provider_id=provider.id,
@@ -276,6 +283,8 @@ async def update_model(model_id: int, body: ModelUpdateIn, actor: Admin = Depend
         model.verified_capabilities = []
         model.capabilities_verified = False
     if "external_id" in fields:
+        model.availability_failure = None
+        model.availability_checked_at = None
         model.verified_capabilities = []
         model.capabilities_verified = False
     if model.status == 0:
@@ -311,6 +320,9 @@ async def set_default_model(model_id: int, actor: Admin = Depends(require_admin)
     provider = await get_provider_or_404(db, model.provider_id)
     if model.status != 1 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="停用的模型或连接不能设为默认")
+    notice = model_availability_notice(model)
+    if notice:
+        raise CustomException(status_code=409, custom_code=10005, detail=notice)
     await db.execute(update(ModelCatalog).where(ModelCatalog.is_default.is_(True)).values(is_default=False, default_slot=None))
     model.is_default = True
     model.default_slot = "global"

@@ -18,6 +18,7 @@ from app.core.enums import RunCallFailure, RunEventType, RunState
 from app.models.agent_run import AgentRun
 from app.models.agent_run_event import AgentRunEvent
 from app.services.run_call_failures import call_failure_message
+from app.services.model_availability import MODEL_AVAILABILITY_MESSAGES
 
 EVENT_ADAPTER = TypeAdapter(Event)
 
@@ -200,7 +201,7 @@ class RunProjection:
                 for call_id, tool in list(self.tools.items()):
                     if tool["status"] == "running":
                         self.activity(call_id, tool["name"], "interrupted")
-                self.emit("RUN_ERROR", message="本轮运行未完成", code=source.failure_code or source.state)
+                self.emit("RUN_ERROR", message=MODEL_AVAILABILITY_MESSAGES.get(source.failure_code, "本轮运行未完成"), code=source.failure_code or source.state)
                 self.open = False
             # completed 的状态事件先于模型产物提交，交付屏障才是真正的成功终点。
             return self.output

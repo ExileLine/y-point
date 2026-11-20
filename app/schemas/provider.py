@@ -131,6 +131,8 @@ class ModelOut(BaseModel):
     capabilities: list[Capability] = Field(description="模型支持的能力", examples=[["text", "streaming"]])
     verified_capabilities: list[Capability] = Field(description="实际探测通过的模型能力", examples=[["text"]])
     capabilities_verified: bool = Field(description="能力是否已验证", examples=[False])
+    availability_failure: str | None = Field(default=None, description="最近确认的模型访问故障，与历史能力验证独立", examples=[None, "model_not_found"])
+    availability_checked_at: datetime | None = Field(default=None, description="最近模型访问状态核验时间", examples=["2026-11-19T18:00:00"])
     embedding_dimensions: int | None = Field(default=None, description="独立嵌入探测通过的实际向量维度", examples=[768])
     context_window: int | None = Field(description="上下文窗口大小（令牌数）", examples=[128000])
     input_price: Decimal | None = Field(description="输入价格", examples=["0.000150"])
@@ -142,6 +144,8 @@ class ModelOut(BaseModel):
 
 
 class AgentModelOptionOut(BaseModel):
+    selectable: bool = Field(default=True, description="是否可用于新建 Agent", examples=[True])
+    notice: str | None = Field(default=None, description="不可用原因和修复指引", examples=[None])
     id: int = Field(description="可选模型 ID", examples=[1])
     display_name: str = Field(description="模型显示名称", examples=["GPT-4o mini"])
     context_window: int | None = Field(description="上下文窗口大小（令牌数）", examples=[8192])

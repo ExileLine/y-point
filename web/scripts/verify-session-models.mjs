@@ -14,6 +14,7 @@ const options = [
 ];
 async function fixture(page) {
   await page.addInitScript(() => sessionStorage.setItem('yp.access_token', 'fixture'));
+  let availabilityFailure = null;
   let session = { id: 'models', agent_id: 11, thread_id: 'thread-a', model_id: 1, title: '模型切换验收', archived: false, version: 1, create_time: now, update_time: now };
   let run = null, busyConflict = false, modelError = false;
   const calls = [], unexpected = [];
@@ -32,7 +33,7 @@ async function fixture(page) {
     if (path === '/api/v1/auth/me') return send({ id: 1, username: 'tester', role: 'user' });
     if (path === '/api/v1/agents/11') return send({ id: 11, name: '模型切换助手', enabled: true, default_model_id: 1 });
     if (path === '/api/v1/agents/11/sessions') return send({ items: [session], total: 1, page: 1, page_size: 20 });
-    if (path.endsWith('/sessions/models/models')) return modelError ? send(null, 503, '目录暂不可用') : send(options);
+    if (path.endsWith('/sessions/models/models')) return modelError ? send(null, 503, '目录暂不可用') : send(options.map(item => item.id === 1 && availabilityFailure ? { ...item, selectable: false, reason: "model_unavailable", notice: "当前供应商未找到该模型或接口（404）。请管理员检查部署和授权，修复后测试文本调用；重建 Agent 或会话无法解决此问题。" } : item));
     if (path.endsWith('/sessions/models') && method === 'GET') return send(session);
     if (path.endsWith('/sessions/models') && method === 'PUT') {
       if (busyConflict) {
@@ -59,7 +60,7 @@ async function fixture(page) {
     if (/^\/api\/v1\/runs\/[^/]+$/.test(path)) return send(run);
     unexpected.push(`${method} ${path}`); return route.abort();
   });
-  return { calls, unexpected, failure(code) {
+  return { calls, unexpected, blockModel() { availabilityFailure = "model_not_found"; }, recoverModel() { availabilityFailure = null; }, failure(code) {
     run = { id: 'failed-run', session_id: 'models', agent_id: 11, model_id: 1, state: code === 'model_error' ? 'failed' : 'timed_out', failure_code: code, create_time: now, update_time: now };
   }, conflict() { busyConflict = true; }, failModels() { modelError = true; }, restoreModels() { modelError = false; } };
 }
@@ -156,6 +157,23 @@ try {
     const submitted = f.calls.findLast(call => call.method === 'POST' && call.path.endsWith('/ag-ui'));
     assert.equal(submitted.body.messages.at(-1).content, '失败后继续对话'); assertions++;
     assert.equal(submitted.body.forwardedProps.model_id, 1); assertions++;
+    assert.deepEqual(f.unexpected, []); assertions++;
+    await page.close();
+  }
+  for (const width of [1440, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const f = await fixture(page); f.blockModel();
+    await page.goto(`${base}/agents/11/sessions/models`);
+    await page.getByText('Model A 暂不可用', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isDisabled(), true); assertions++;
+    assert.equal(await page.getByRole('button', { name: '刷新模型状态' }).isVisible(), true); assertions++;
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); assertions++;
+    f.recoverModel();
+    await page.getByRole('button', { name: '刷新模型状态' }).click();
+    await page.getByText('Model A 暂不可用', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByRole('textbox', { name: '消息内容' }).fill('修复后继续使用原模型');
+    assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isEnabled(), true); assertions++;
+    assert.equal(f.calls.some(call => call.method === 'POST' && call.path.endsWith('/ag-ui')), false); assertions++;
     assert.deepEqual(f.unexpected, []); assertions++;
     await page.close();
   }

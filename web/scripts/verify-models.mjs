@@ -15,6 +15,7 @@ function fixture(page, options = {}) {
   let providers = [{ id: 1, name: "本地 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", has_api_key: false, has_custom_headers: false, api_version: null, region: null, timeout_seconds: 15, remark: null, status: 1 }];
   if (options.discovery) providers.push({ ...providers[0], id: 9, name: "远程连接" });
   let models = [{ id: 3, provider_id: 1, external_id: "llama3.2", display_name: "Llama 3.2", capabilities: ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"], verified_capabilities: [], capabilities_verified: false, context_window: 8192, input_price: null, output_price: null, price_currency: "USD", is_default: false, status: 1 }];
+  if (options.unavailable) models = [{ ...models[0], verified_capabilities: ["text"], availability_failure: "model_not_found" }];
   if (options.embedding) models = [{ ...models[0], capabilities: ["text"], verified_capabilities: [] }];
   page.addInitScript(() => {
     sessionStorage.setItem("yp.access_token", "fixture-access");
@@ -266,6 +267,18 @@ try {
     assert.deepEqual(errors, []);
     console.log(`${name}: catalog layout and interaction passed`);
     await page.close();
+  }
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    fixture(page, { unavailable: true });
+    await page.goto('http://127.0.0.1:5173/models');
+    await page.getByRole('tab', { name: /^模型/ }).click();
+    const catalog = page.locator(width >= 768 ? '.catalog-desktop-table' : '.catalog-mobile-items');
+    await catalog.getByText('暂不可用', { exact: true }).first().waitFor();
+    assert.equal(await catalog.getByRole('button', { name: '设为默认 Llama 3.2' }).isDisabled(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.close();
+    console.log(`${width}: confirmed model access failure is visible and cannot become default`);
   }
 } finally {
   await browser.close();

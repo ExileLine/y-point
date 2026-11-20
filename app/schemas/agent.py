@@ -68,7 +68,7 @@ class AgentCreateIn(BaseModel):
     )
     enabled: bool = Field(default=True, description="是否启用", examples=[True])
     skill_ids: list[int] = Field(default_factory=list, max_length=16, description="关联的可见 Skill ID", examples=[[1, 2]])
-    tool_ids: list[int] = Field(default_factory=list, max_length=16, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
+    tool_ids: list[int] = Field(default_factory=list, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
 
     knowledge_base_ids: list[int] = Field(default_factory=list, max_length=8, description="关联的授权知识库 ID，不随 Agent 共享权限", examples=[[1, 2]])
 
@@ -114,7 +114,7 @@ class AgentUpdateIn(BaseModel):
     )
     enabled: bool | None = Field(default=None, description="是否启用", examples=[False])
     skill_ids: list[int] | None = Field(default=None, max_length=16, description="替换关联的 Skill ID 列表", examples=[[1, 2]])
-    tool_ids: list[int] | None = Field(default=None, max_length=16, description="替换直接关联的 Tool ID 列表", examples=[[1, 2]])
+    tool_ids: list[int] | None = Field(default=None, description="替换直接关联的 Tool ID 列表", examples=[[1, 2]])
 
     knowledge_base_ids: list[int] | None = Field(default=None, max_length=8, description="替换关联的知识库 ID 列表", examples=[[1, 2]])
 

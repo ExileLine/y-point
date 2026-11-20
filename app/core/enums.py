@@ -198,6 +198,9 @@ class RunModelFailureReason(StrEnum):
     """模型生成失败的机器可读原因。"""
 
     UPSTREAM = "model_error"
+    NOT_FOUND = "model_not_found"
+    AUTHENTICATION = "model_authentication"
+    ACCESS_DENIED = "model_access_denied"
     CONTEXT = "context_window_exceeded"
     EMPTY = "empty_response"
     SUMMARY = "summary_error"

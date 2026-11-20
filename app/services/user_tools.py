@@ -27,7 +27,6 @@ from app.services.tool_environments import normalize_requirements
 TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 MAX_SOURCE_BYTES = 64 * 1024
 MAX_SCHEMA_BYTES = 16 * 1024
-MAX_AGENT_TOOLS = 16
 
 
 def tool_display_name(tool: UserTool) -> str:
@@ -191,8 +190,8 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
 
 async def selected_tools(db: AsyncSession, tool_ids: list[int], actor_id: int) -> list[UserTool]:
     """确认 Agent 可关联的私有或公开 Tool。"""
-    if len(tool_ids) != len(set(tool_ids)) or len(tool_ids) > MAX_AGENT_TOOLS:
-        raise CustomException(status_code=400, custom_code=10005, detail="最多关联 16 个不重复的 Tool")
+    if len(tool_ids) != len(set(tool_ids)):
+        raise CustomException(status_code=400, custom_code=10005, detail="关联的 Tool 不能重复")
     items = (await db.scalars(select(UserTool).where(UserTool.id.in_(tool_ids)).with_for_update())).all() if tool_ids else []
     verified_versions = (
         {

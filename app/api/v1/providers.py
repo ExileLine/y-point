@@ -172,7 +172,7 @@ async def update_provider(provider_id: int, body: ProviderUpdateIn, actor: Admin
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
     await flush_catalog(db)
     if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
-        await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(verified_capabilities=[], capabilities_verified=False))
+        await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(verified_capabilities=[], capabilities_verified=False, availability_failure=None, availability_checked_at=None))
     if provider.status == 0:
         await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(is_default=False, default_slot=None))
     audit(db, "provider.updated", actor_id=actor.id, target_id=provider.id)

@@ -31,6 +31,7 @@ from app.models.provider_connection import ProviderConnection
 from app.schemas.agent import AgentCreateIn, AgentOut, AgentPageOut, AgentShareIn, AgentShareOut, AgentUpdateIn, SharedAgentOut
 from app.services.agent_access import can_use_agent
 from app.services.identity import audit
+from app.services.model_availability import model_availability_notice
 from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.services.run_manager import TERMINAL_STATES, request_cancel
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
@@ -103,6 +104,9 @@ async def _available_text_model(db: AsyncSession, model_id: int, max_output_toke
     provider = await db.get(ProviderConnection, model.provider_id) if model is not None else None
     if model is None or model.is_deleted != 0 or model.status != 1 or provider is None or provider.is_deleted != 0 or provider.status != 1:
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型或供应商不可用")
+    notice = model_availability_notice(model)
+    if notice:
+        raise CustomException(status_code=409, custom_code=10005, detail=notice, data={"reason": model.availability_failure})
     thinking_request_options(provider.kind, thinking_mode)
     validate_output_token_setting(provider.kind, max_output_tokens)
     if ModelCapability.TEXT not in (model.verified_capabilities or []):
