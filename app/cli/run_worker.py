@@ -128,6 +128,9 @@ async def run_worker(
     async with open_async_checkpointer(checkpoint_path) as checkpointer:
         await checkpointer.setup()
     worker_id = str(uuid4()) if not once else None
+    from app.services.mcp_sessions import RunMcpSessions, expire_mcp_owners, maintain_abandoned_sessions, cleanup_abandoned_sessions
+
+    mcp_pool = RunMcpSessions(AsyncSessionLocal, worker_id or str(uuid4()))
     health_file = Path(get_config().WORKER_HEALTH_FILE) if get_config().WORKER_HEALTH_FILE and not once else None
     heartbeat_task = None
     environment_task = None
@@ -141,11 +144,16 @@ async def run_worker(
         heartbeat_task = asyncio.create_task(_heartbeat_loop(worker_id, heartbeat_seconds))
         resource_task = asyncio.create_task(_tool_resource_loop())
         knowledge_task = asyncio.create_task(_knowledge_loop(idle_seconds))
+    mcp_task = None
+    mcp_cleanup_task = None
     try:
         last_prune_at = None
         while True:
             try:
                 reconciled = await reconcile_expired_runs(AsyncSessionLocal, checkpoint_path)
+                if mcp_task is None:
+                    mcp_task = asyncio.create_task(mcp_pool.maintain())
+                    mcp_cleanup_task = asyncio.create_task(maintain_abandoned_sessions(AsyncSessionLocal))
                 if once:
                     await prepare_next_tool_environment(AsyncSessionLocal)
                     await prune_deleted_knowledge_blobs(AsyncSessionLocal)
@@ -154,6 +162,7 @@ async def run_worker(
                     environment_task = asyncio.create_task(_tool_environment_loop(idle_seconds))
                 prune_due = last_prune_at is None or time.monotonic() - last_prune_at >= HEARTBEAT_PRUNE_INTERVAL_SECONDS
                 async with AsyncSessionLocal.begin() as db:
+                    await expire_mcp_owners(db)
                     recovered = await recover_expired_runs(db)
                     expired = await expire_approvals(db)
                     queue_expired = await expire_queued_runs(db)
@@ -179,7 +188,13 @@ async def run_worker(
                             logger.info("已清理 {} 个到期文件及 {} 个孤儿文件", expired_files, orphan_files)
                     except Exception as exc:
                         logger.error("文件清理失败：{}", type(exc).__name__)
-                run = await dispatch_next_run(AsyncSessionLocal, checkpoint_path, resolve_tools=make_worker_tool_resolver(AsyncSessionLocal))
+                run = await dispatch_next_run(
+                    AsyncSessionLocal,
+                    checkpoint_path,
+                    resolve_tools=make_worker_tool_resolver(AsyncSessionLocal, mcp_sessions=mcp_pool),
+                    mcp_worker_id=mcp_pool.worker_id,
+                )
+                await mcp_pool.sweep()
                 if run is not None:
                     logger.info("运行 {} 结束，状态 {}", run.id, run.state)
                 root = artifact_path or artifact_root()
@@ -198,6 +213,19 @@ async def run_worker(
             if run is None:
                 await asyncio.sleep(idle_seconds)
     finally:
+        if mcp_task is not None:
+            mcp_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await mcp_task
+        await mcp_pool.aclose()
+        if mcp_cleanup_task is not None:
+            mcp_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await mcp_cleanup_task
+            try:
+                await cleanup_abandoned_sessions(AsyncSessionLocal)
+            except Exception as exc:
+                logger.error("MCP 退出回收失败：{}", type(exc).__name__)
         if health_file is not None:
             health_file.unlink(missing_ok=True)
         if knowledge_task is not None:

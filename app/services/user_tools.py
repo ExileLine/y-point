@@ -15,10 +15,10 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import RecoveryPolicy, RunState, ScriptLanguage, ToolEffect, ToolKind, Visibility
+from app.core.enums import RecoveryPolicy, RunState, ScriptLanguage, ToolApprovalMode, ToolCallability, ToolEffect, ToolKind, Visibility
 from app.core.custom_exception import CustomException
 from app.models.tool import AgentTool, RunTool, UserTool, UserToolVersion
 from app.services.provider_credentials import encrypt_credentials
@@ -128,7 +128,15 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             raise ValueError("MCP Tool 不能包含脚本源码")
         if fields.get("visibility") == Visibility.PUBLIC and fields.get("encrypted_credentials") and not fields.get("share_credentials"):
             raise ValueError("公开 MCP Tool 需明确授权共享连接凭据")
-        effect, approval = fields.get("effect") or ToolEffect.WRITE, fields.get("requires_approval", False)
+        effect = fields.get("effect") or ToolEffect.WRITE
+        mode = fields.get("approval_mode")
+        if mode in (None, ToolApprovalMode.INHERIT):
+            mode = fields.get("connection_approval_mode", ToolApprovalMode.WRITES)
+            if fields.get("approval_mode") is None and fields.get("requires_approval"):
+                mode = ToolApprovalMode.ALWAYS
+        approval = mode == ToolApprovalMode.ALWAYS or mode == ToolApprovalMode.WRITES and effect != ToolEffect.READ
+        if effect != ToolEffect.READ and not (fields.get("recovery_policy") == RecoveryPolicy.IDEMPOTENT and fields.get("write_contract_verified")):
+            approval = True
         policy = fields.get("recovery_policy") or (RecoveryPolicy.SAFE if effect == ToolEffect.READ else RecoveryPolicy.MANUAL)
         key = fields.get("idempotency_key_field")
         if effect == ToolEffect.READ and policy != RecoveryPolicy.SAFE:
@@ -142,6 +150,11 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             fields["idempotency_key_field"] = None
     else:
         raise ValueError("Tool 类型不受支持")
+    fields["requires_approval"] = bool(approval)
+    fields["effect"] = effect
+    fields.pop("effect_explicit", None)
+    fields.pop("read_only_reason", None)
+    fields.pop("connection_approval_mode", None)
     digest = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
     return effect, kind, approval, digest
 
@@ -163,11 +176,25 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
         "recovery_policy",
         "idempotency_key_field",
         "requires_approval",
+        "approval_mode",
+        "effect_source",
+        "mcp_annotations",
+        "read_confirmation",
     )
     fields = {key: getattr(previous, key) if previous is not None else None for key in keys}
     fields.update({key: value for key, value in body.items() if key in keys})
+    if "approval_mode" in body and "requires_approval" in body:
+        raise ValueError("审批覆盖与兼容审批开关不能同时提交")
+    if "approval_mode" in body:
+        fields["approval_mode"] = body["approval_mode"]
+    elif "requires_approval" in body:
+        fields["approval_mode"] = ToolApprovalMode.ALWAYS if body["requires_approval"] else ToolApprovalMode.WRITES
+    elif fields["approval_mode"] is None:
+        fields["approval_mode"] = ToolApprovalMode.ALWAYS if fields["requires_approval"] else ToolApprovalMode.INHERIT
     if previous is None and "requires_approval" not in body:
         fields["requires_approval"] = False
+    fields["read_only_reason"] = body.get("read_only_reason")
+    fields["effect_explicit"] = "effect" in body
     fields["effect"] = body.get("effect", previous.effect if previous is not None else None)
     if body.get("clear_mcp_credentials"):
         if body.get("mcp_bearer_token"):
@@ -189,45 +216,55 @@ def version_fields(body: dict, previous: UserToolVersion | None = None) -> dict:
 
 
 async def selected_tools(db: AsyncSession, tool_ids: list[int], actor_id: int) -> list[UserTool]:
-    """确认 Agent 可关联的私有或公开 Tool。"""
+    """确认 Agent 可直接关联的工具，明确共享与公开授权均按实际使用者检查。"""
+    from app.services.mcp_access import can_access_tool, can_borrow_credentials
+
     if len(tool_ids) != len(set(tool_ids)):
         raise CustomException(status_code=400, custom_code=10005, detail="关联的 Tool 不能重复")
-    items = (await db.scalars(select(UserTool).where(UserTool.id.in_(tool_ids)).with_for_update())).all() if tool_ids else []
-    verified_versions = (
-        {
-            (item.tool_id, item.version)
-            for item in (
-                await db.scalars(
-                    select(UserToolVersion).where(
-                        UserToolVersion.tool_id.in_(tool_ids),
-                        UserToolVersion.verified.is_(True),
-                    ),
-                )
-            ).all()
-        }
-        if tool_ids
-        else {}
-    )
-    if len(items) != len(tool_ids) or any(
-        item.is_deleted != 0
-        or item.skill_id is not None
-        or not item.enabled
-        or (item.id, item.current_version) not in verified_versions
-        or (item.owner_id != actor_id and item.visibility != Visibility.PUBLIC)
-        for item in items
-    ):
+    items = list(await db.scalars(select(UserTool).where(UserTool.id.in_(tool_ids)).with_for_update())) if tool_ids else []
+    if len(items) != len(tool_ids):
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在或不可用")
+    for item in items:
+        version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == item.id, UserToolVersion.version == item.current_version))
+        if (
+            item.is_deleted != 0
+            or item.skill_id is not None
+            or not item.enabled
+            or version is None
+            or not version.verified
+            or not await can_access_tool(db, item, version, actor_id)
+        ):
+            raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在或不可用")
+        if not await can_borrow_credentials(db, item, version, actor_id):
+            raise CustomException(status_code=409, custom_code=10005, detail=f"工具 #{item.id} 未获凭据借用权限，请所有者授权后再关联")
     return items
 
 
-async def agent_tool_rows(db: AsyncSession, agent_id: int) -> list[AgentTool]:
-    """读取 Agent 直接关联的 Tool 版本。"""
-    return (await db.scalars(select(AgentTool).where(AgentTool.agent_id == agent_id).order_by(AgentTool.id))).all()
+async def agent_tool_rows(db: AsyncSession, agent_id: int, *, direct_only: bool = False) -> list:
+    """展开直接关联与连接选择；相同版本去重，不同版本明确拒绝。"""
+    rows = list(await db.scalars(select(AgentTool).where(AgentTool.agent_id == agent_id).order_by(AgentTool.id)))
+    if direct_only:
+        return rows
+    from app.services.agent_mcp import connection_bindings, validate_binding_versions
+
+    grouped = await connection_bindings(db, agent_id)
+    validate_binding_versions({row.tool_id: row.tool_version for row in rows}, grouped)
+    merged = {row.tool_id: row for row in rows}
+    for row in grouped:
+        merged.setdefault(row.tool_id, row)
+    return list(merged.values())
 
 
 async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor_id: int) -> None:
-    """固定 Agent 的执行版本及当前发布的审批设置；共享 Agent 的私有 Tool 自动排除。"""
+    """固定明确选择的工具版本；连接选择缺权时返回修复提示，不静默丢弃。"""
     rows = await agent_tool_rows(db, agent_id)
+    from app.services.mcp_access import can_access_tool, require_group_access
+    from app.services.agent_mcp import connection_bindings
+
+    grouped_rows = await connection_bindings(db, agent_id)
+    grouped_ids = {row.tool_id for row in grouped_rows}
+    for grouped in grouped_rows:
+        await require_group_access(db, grouped.connection_id, grouped.tool_id, actor_id)
     if not rows:
         return
     items = (
@@ -237,16 +274,19 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
                 UserTool.is_deleted == 0,
                 UserTool.skill_id.is_(None),
                 UserTool.enabled.is_(True),
-                or_(UserTool.owner_id == actor_id, UserTool.visibility == Visibility.PUBLIC),
             ),
         )
     ).all()
     by_id = {item.id: item for item in items}
     for row in rows:
         if row.tool_id not in by_id:
+            if row.tool_id in grouped_ids:
+                raise CustomException(status_code=409, custom_code=10005, detail=f"连接工具 #{row.tool_id} 已停用或移除，请修复关联后重试")
             continue
         version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version))
-        if version is None or not version.verified:
+        if version is None or not version.verified or not await can_access_tool(db, by_id[row.tool_id], version, actor_id):
+            if row.tool_id in grouped_ids:
+                raise CustomException(status_code=409, custom_code=10005, detail=f"连接工具 #{row.tool_id} 的授权或固定版本已失效，请修复关联后重试")
             continue
         current_number = by_id[row.tool_id].current_version
         policy = (
@@ -258,13 +298,22 @@ async def snapshot_run_tools(db: AsyncSession, run_id: str, agent_id: int, actor
         )
         if policy is None:
             raise CustomException(status_code=409, custom_code=10005, detail="Tool 当前审批配置不可用")
+        from app.models.agent_run import AgentRun
+        from app.services.mcp_policy import tool_callability
+
+        run = await db.get(AgentRun, run_id)
+        decision = await tool_callability(db, by_id[row.tool_id], version, actor_id, policy_version=policy, require_all=run.require_mcp_approval)
+        if decision["status"] == ToolCallability.BLOCKED:
+            raise CustomException(status_code=409, custom_code=10005, detail=decision["message"])
         db.add(
             RunTool(
                 run_id=run_id,
                 tool_id=row.tool_id,
                 tool_version=row.tool_version,
+                mcp_connection_id=getattr(row, "connection_id", None),
                 content_hash=version.content_hash,
-                requires_approval=policy.requires_approval,
+                requires_approval=decision["policy"]["requires_approval"],
+                approval_policy=decision["policy"],
                 is_deleted=0,
                 status=1,
             ),
@@ -275,29 +324,35 @@ async def load_run_tools(db: AsyncSession, run_id: str, actor_id: int) -> list[t
     """在执行前重新核对版本摘要、状态与当前用户权限。"""
     rows = (await db.scalars(select(RunTool).where(RunTool.run_id == run_id).order_by(RunTool.id))).all()
     result = []
+    from app.services.mcp_access import can_access_tool, can_borrow_credentials, require_group_access
+
     for row in rows:
+        if row.mcp_connection_id is not None:
+            await require_group_access(db, row.mcp_connection_id, row.tool_id, actor_id)
         tool = await db.get(UserTool, row.tool_id)
         version = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == row.tool_id, UserToolVersion.version == row.tool_version))
         if (
             tool is None
             or tool.is_deleted != 0
             or not tool.enabled
-            or tool.owner_id != actor_id
-            and tool.visibility != Visibility.PUBLIC
+            or not await can_access_tool(db, tool, version, actor_id)
             or version is None
             or not version.verified
             or version.encrypted_credentials is not None
             and version.version <= (tool.credentials_revoked_through or 0)
-            or tool.owner_id != actor_id
-            and version.encrypted_credentials is not None
-            and not await _credentials_shared(db, tool)
+            or not await can_borrow_credentials(db, tool, version, actor_id)
             or version.content_hash != row.content_hash
         ):
             raise CustomException(status_code=409, custom_code=10005, detail="Tool 授权或版本已失效")
-        if tool.kind == ToolKind.MCP:
-            from app.services.mcp_connections import require_connection
+        from app.models.agent_run import AgentRun
+        from app.services.mcp_policy import tool_callability
 
-            await require_connection(db, tool, version, actor_id)
+        run = await db.get(AgentRun, run_id)
+        decision = await tool_callability(db, tool, version, actor_id, require_all=bool(run and run.require_mcp_approval))
+        if decision["status"] == ToolCallability.BLOCKED:
+            raise CustomException(status_code=409, custom_code=10005, detail=decision["message"])
+        if tool.kind == ToolKind.MCP and row.requires_approval is False and decision["policy"]["requires_approval"]:
+            raise CustomException(status_code=409, custom_code=10005, detail="Tool 审批策略已收紧，请重新提交运行")
         if tool.skill_id is not None:
             from app.services.skill_package_runtime import managed_script_resources
 

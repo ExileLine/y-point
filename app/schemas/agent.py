@@ -20,6 +20,20 @@ from app.schemas.runtime_limits import ModelTimeout, ToolTimeout, OutputTokens
 AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 
 
+class AgentMcpToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_id: int = Field(gt=0, description="选择的已发布工具 ID", examples=[1])
+    tool_version: int = Field(ge=1, description="明确选择的工具版本，已有绑定升级须通过差异确认", examples=[1])
+
+
+class AgentMcpConnectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_id: int = Field(gt=0, description="拥有或明确共享的 MCP 连接 ID", examples=[1])
+    tools: list[AgentMcpToolIn] = Field(min_length=1, description="明确选择的工具子集，不自动包含新增工具")
+
+
 class AgentCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -70,6 +84,8 @@ class AgentCreateIn(BaseModel):
     skill_ids: list[int] = Field(default_factory=list, max_length=16, description="关联的可见 Skill ID", examples=[[1, 2]])
     tool_ids: list[int] = Field(default_factory=list, description="直接关联的可见用户 Tool ID", examples=[[1, 2]])
 
+    mcp_connections: list[AgentMcpConnectionIn] = Field(default_factory=list, description="按连接选择的已发布工具及固定版本")
+
     knowledge_base_ids: list[int] = Field(default_factory=list, max_length=8, description="关联的授权知识库 ID，不随 Agent 共享权限", examples=[[1, 2]])
 
 
@@ -116,6 +132,8 @@ class AgentUpdateIn(BaseModel):
     skill_ids: list[int] | None = Field(default=None, max_length=16, description="替换关联的 Skill ID 列表", examples=[[1, 2]])
     tool_ids: list[int] | None = Field(default=None, description="替换直接关联的 Tool ID 列表", examples=[[1, 2]])
 
+    mcp_connections: list[AgentMcpConnectionIn] | None = Field(default=None, description="替换连接工具选择，空列表清除，省略保留")
+
     knowledge_base_ids: list[int] | None = Field(default=None, max_length=8, description="替换关联的知识库 ID 列表", examples=[[1, 2]])
 
 
@@ -144,6 +162,7 @@ class AgentOut(BaseModel):
     skill_ids: list[int] = Field(default_factory=list, description="关联的 Skill ID", examples=[[1, 2]])
     tool_ids: list[int] = Field(default_factory=list, description="直接关联的用户 Tool ID", examples=[[1, 2]])
     knowledge_base_ids: list[int] = Field(default_factory=list, description="关联知识库 ID", examples=[[1, 2]])
+    mcp_connections: list[AgentMcpConnectionIn] = Field(default_factory=list, description="按连接明确固定的工具版本")
     create_time: datetime = Field(description="创建时间", examples=["2026-10-26T11:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-26T11:00:00"])
 

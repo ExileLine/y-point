@@ -175,3 +175,7 @@
 .run-approval-actions details, .run-approval-expiry { color: var(--yp-color-text-secondary); font-size: var(--yp-font-size-sm); }
 .run-approval-actions summary { cursor: pointer; }
 .run-approval-actions code { overflow-wrap: anywhere; }
+
+.context-budget-notice { margin: var(--yp-space-3) 0; max-width: 100%; overflow-wrap: anywhere; color: var(--yp-color-text-secondary); font-size: var(--yp-font-size-sm); }
+.context-budget-notice > summary { cursor: pointer; min-height: var(--yp-touch-target); align-content: center; }
+.context-budget-notice .ant-alert { margin: var(--yp-space-2) 0; }

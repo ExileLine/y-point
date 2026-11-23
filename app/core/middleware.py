@@ -34,6 +34,8 @@ SENSITIVE_FIELDS = {
     "sessionid",
     "credential",
     "customheaders",
+    "sensitiveheaders",
+    "headers",
     "mcpbearertoken",
     "sourcecode",
     "currentpassword",

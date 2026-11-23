@@ -8,7 +8,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.config import get_config
@@ -36,6 +36,7 @@ class AgentRun(CustomBaseModel):
     agent_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True, comment="提交时系统指令快照")
     agent_temperature: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, comment="提交时生成温度快照")
     agent_max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="提交时最大输出 Token 数快照")
+    context_budget: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True, comment="最后模型请求的脱敏上下文预算分解")
     model_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="运行时模型 ID")
     agent_knowledge_mode: Mapped[str] = mapped_column(
         String(16),
@@ -89,6 +90,7 @@ class AgentRun(CustomBaseModel):
     cost_input_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输入 Token 价格")
     cost_output_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True, comment="创建运行时每百万输出 Token 价格")
     cost_currency: Mapped[str | None] = mapped_column(String(3), nullable=True, comment="创建运行时价格币种")
+    require_mcp_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="本轮使用者要求所有 MCP 调用均审批")
     max_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="本次运行允许的工具调用次数上限")
     tool_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", comment="已开始的工具调用次数")
     thread_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="检查点线程 ID")
@@ -100,6 +102,8 @@ class AgentRun(CustomBaseModel):
     event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="最新事件序号")
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="执行器租约令牌")
     lease_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="执行器租约到期时间")
+    mcp_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True, comment="持有本轮 MCP 会话的 Worker 启动身份")
+    mcp_owner_expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="MCP 资源拥有者心跳到期；过期不转移远端状态")
     heartbeat_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="执行器最近心跳时间")
     checkpoint_id: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="最近持久化检查点 ID")
     failure_code: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="脱敏运行故障类别")

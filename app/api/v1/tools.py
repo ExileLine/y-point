@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_config
-from app.core.enums import McpTransport, RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, UserRole, Visibility
+from app.core.enums import McpTransport, RecoveryPolicy, ToolEffect, ToolEnvironmentState, ToolKind, ToolLeaseKind, Visibility
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.security import get_current_admin, require_admin
@@ -29,6 +29,7 @@ from app.schemas.tool import McpDiscoverIn, ToolCreateIn, ToolTestIn, ToolUpdate
 from app.schemas.tool import ToolWriteContractVerifyIn
 from app.services.identity import audit
 from app.services.mcp_tools import discover_mcp_tools
+from app.services.mcp_access import can_access_tool
 from app.services.mcp_connections import bind_connection
 from app.services.provider_credentials import decrypt_credentials
 from app.services.script_sandbox import SandboxConfigurationError, run_script
@@ -77,6 +78,10 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
             {
                 "input_schema": version.input_schema,
                 "effect": version.effect,
+                "effect_source": version.effect_source or "legacy",
+                "approval_mode": version.approval_mode or ("always" if version.requires_approval else "inherit"),
+                "mcp_annotations": version.mcp_annotations,
+                "read_confirmation": version.read_confirmation,
                 "recovery_policy": version.recovery_policy,
                 "write_contract_verified": version.write_contract_verified,
                 "idempotency_key_field": version.idempotency_key_field,
@@ -99,6 +104,21 @@ def _output(tool: UserTool, version: UserToolVersion | None = None) -> dict:
     return data
 
 
+async def _callable_output(db: AsyncSession, tool: UserTool, actor_id: int) -> dict:
+    """管理详情和目录共享同一预检，非所有者仅得到安全元数据。"""
+    from app.services.mcp_policy import tool_callability_snapshot
+
+    version = await _version(db, tool)
+    data = _output(tool, version if tool.owner_id == actor_id else None)
+    data.update(await tool_callability_snapshot(db, tool, version, actor_id))
+    if version is not None:
+        data["effect"] = version.effect
+        data["effect_source"] = version.effect_source or "legacy"
+        if data["callability"]["policy"]:
+            data["requires_approval"] = data["callability"]["policy"]["requires_approval"]
+    return data
+
+
 async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = False) -> UserTool:
     """查找由当前用户创建且尚未删除的 Tool。"""
     statement = select(UserTool).where(UserTool.id == tool_id, UserTool.owner_id == actor_id, UserTool.is_deleted == 0, UserTool.skill_id.is_(None))
@@ -108,7 +128,9 @@ async def _owned(db: AsyncSession, tool_id: int, actor_id: int, lock: bool = Fal
     return tool
 
 
-async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: AsyncSession, owner_id: int) -> tuple[dict, str, bool, str]:
+async def _prepare(
+    kind: str, name: str, fields: dict, token: str | None, db: AsyncSession, owner_id: int, previous: UserToolVersion | None = None
+) -> tuple[dict, str, bool, str]:
     """验证 Tool 执行定义，MCP 输入结构从远端发现结果取得。"""
     if kind == ToolKind.MCP:
         if fields.get("mcp_connection_id"):
@@ -126,13 +148,12 @@ async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: As
         remote = next((item for item in found if item["name"] == fields["mcp_tool_name"]), None)
         if remote is None:
             raise CustomException(status_code=409, custom_code=10005, detail="MCP 工具不存在")
-        fields["input_schema"] = remote["input_schema"]
-        if fields.get("effect") == ToolEffect.READ and remote.get("read_only") is not True:
-            owner = await db.get(Admin, owner_id)
-            if owner is None or owner.role != UserRole.ADMIN or remote.get("read_only") is False:
-                raise CustomException(status_code=400, custom_code=10005, detail="远端未声明只读时须由管理员确认；显式写声明不能降为只读")
-        if fields.get("effect") is None:
-            fields["effect"] = ToolEffect.READ if remote.get("read_only") else ToolEffect.WRITE
+        from app.services.mcp_policy import prepare_mcp_effect
+
+        try:
+            prepare_mcp_effect(fields, remote, owner_id, previous)
+        except ValueError as exc:
+            raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     try:
         effect, _, approval, digest = validate_tool_definition(kind, name, fields)
     except ValueError as exc:
@@ -146,13 +167,16 @@ async def _prepare(kind: str, name: str, fields: dict, token: str | None, db: As
 @router.get("/catalog", summary="列出当前用户可选 Tool")
 async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
     """内置 Tool 对所有用户可见，用户 Tool 按私有或公开策略筛选。"""
+    from app.services.mcp_access import shared_tool_ids
+
+    granted_ids = await shared_tool_ids(db, actor.id)
     items = (
         await db.scalars(
             select(UserTool)
             .where(
                 UserTool.is_deleted == 0,
                 UserTool.skill_id.is_(None),
-                or_(UserTool.owner_id == actor.id, (UserTool.visibility == Visibility.PUBLIC) & UserTool.enabled.is_(True)),
+                or_(UserTool.owner_id == actor.id, (UserTool.visibility == Visibility.PUBLIC) & UserTool.enabled.is_(True), UserTool.id.in_(granted_ids)),
             )
             .order_by(UserTool.id.desc()),
         )
@@ -169,7 +193,7 @@ async def list_tool_catalog(actor: Admin = Depends(get_current_admin), db: Async
     return api_response(
         data={
             "builtin": builtins,
-            "user_tools": [_output(item) for item in items],
+            "user_tools": [await _callable_output(db, item, actor.id) for item in items],
         },
         datetime_format=False,
     )
@@ -219,7 +243,13 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
     if body.kind == ToolKind.SCRIPT and body.visibility != Visibility.PRIVATE:
         raise CustomException(status_code=409, custom_code=10005, detail="脚本需先私有创建并试运行")
     try:
-        fields = version_fields(body.model_dump(), None)
+        fields = version_fields(
+            {
+                **body.model_dump(exclude_unset=True),
+                "visibility": body.visibility,
+            },
+            None,
+        )
     except ValueError as exc:
         raise CustomException(status_code=400, custom_code=10005, detail=str(exc)) from exc
     name = body.name or f"tool_{uuid4().hex[:16]}"
@@ -258,7 +288,7 @@ async def create_tool(body: ToolCreateIn, actor: Admin = Depends(get_current_adm
     except IntegrityError:
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail="同名 Tool 已存在") from None
-    return api_response(http_code=201, code=201, data=_output(tool, await _version(db, tool)), datetime_format=False)
+    return api_response(http_code=201, code=201, data=await _callable_output(db, tool, actor.id), datetime_format=False)
 
 
 @router.get("/{tool_id}", summary="查询 Tool 详情")
@@ -270,10 +300,10 @@ async def get_tool(tool_id: int, actor: Admin = Depends(get_current_admin), db: 
         or tool.skill_id is not None
         or tool.is_deleted != 0
         or tool.owner_id != actor.id
-        and (tool.visibility != Visibility.PUBLIC or not tool.enabled)
+        and (not tool.enabled or not await can_access_tool(db, tool, await _version(db, tool), actor.id))
     ):
         raise CustomException(status_code=404, custom_code=10002, detail="Tool 不存在")
-    return api_response(data=_output(tool, await _version(db, tool) if tool.owner_id == actor.id else None), datetime_format=False)
+    return api_response(data=await _callable_output(db, tool, actor.id), datetime_format=False)
 
 
 @router.put("/{tool_id}", summary="更新 Tool 并发布新版本")
@@ -306,7 +336,7 @@ async def update_tool(tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(g
     ):
         raise CustomException(status_code=409, custom_code=10005, detail="凭据已撤销，请替换或清除后发布新版本")
     token, _ = decrypt_credentials(fields["encrypted_credentials"])
-    fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, token, db, actor.id)
+    fields, effect, approval, digest = await _prepare(tool.kind, tool.name, fields, token, db, actor.id, previous)
     credentials_changed = bool(changes.get("mcp_bearer_token") or changes.get("clear_mcp_credentials"))
     if credentials_changed:
         tool.credentials_revoked_through = tool.current_version
@@ -346,13 +376,17 @@ async def update_tool(tool_id: int, body: ToolUpdateIn, actor: Admin = Depends(g
             **fields,
         ),
     )
+    from app.services.mcp_policy import cancel_tightened_tool_runs
+
     audit(db, "tool.updated", actor_id=actor.id, target_id=tool.id)
     try:
+        await db.flush()
+        await cancel_tightened_tool_runs(db, tool_id=tool.id)
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise CustomException(status_code=409, custom_code=10005, detail="同名 Tool 已存在") from None
-    return api_response(data=_output(tool, await _version(db, tool)), datetime_format=False)
+    return api_response(data=await _callable_output(db, tool, actor.id), datetime_format=False)
 
 
 @router.delete("/{tool_id}", summary="删除我的 Tool")
@@ -458,7 +492,7 @@ async def retry_tool_environment(
         raise CustomException(status_code=409, custom_code=10005, detail="依赖环境无需准备或正在准备，请稍后查看")
     audit(db, "tool.environment_retried", actor_id=actor.id, target_id=tool.id)
     await db.commit()
-    return api_response(data=_output(tool, version), datetime_format=False)
+    return api_response(data=await _callable_output(db, tool, actor.id), datetime_format=False)
 
 
 @router.post("/{tool_id}/credentials/revoke", summary="撤销我的 MCP Tool 历史凭据")

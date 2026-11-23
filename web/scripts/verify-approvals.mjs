@@ -9,7 +9,8 @@ const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_P
 async function fixture(page, options = {}) {
   const now = new Date().toISOString();
   let run = { id: "run-approval", session_id: "session-a", agent_id: 11, state: options.live ? "running" : "waiting_for_approval", failure_code: null, create_time: now, update_time: now };
-  let approval = { id: "approval-1", run_id: run.id, state: options.expired ? "expired" : "pending", actions: [{ name: "user_tool_22_mcp_docs_query", arguments_hash: "a".repeat(64), resource_name: null }], expires_at: new Date(Date.now() + 3600000).toISOString(), decided_at: null };
+  let approval = { id: "approval-1", run_id: run.id, state: options.expired ? "expired" : "pending", actions: [{ name: "user_tool_22_mcp_docs_query", arguments_hash: "a".repeat(64), action_id: "action-one", preview: { order_id: "order-7", quantity: 2 }, resource_name: null }], expires_at: new Date(Date.now() + 3600000).toISOString(), decided_at: null };
+  if (options.mixed) approval.actions.push({ name: "delete_orders", arguments_hash: "b".repeat(64), action_id: "action-two", preview: { order_id: "order-8" } });
   const calls = [];
   let releaseDecision;
   const decisionGate = options.hold ? new Promise(resolve => { releaseDecision = resolve; }) : Promise.resolve();
@@ -55,8 +56,8 @@ async function fixture(page, options = {}) {
       } else {
         assert.equal(body.resume[0].interruptId, approval.id);
         const decision = body.resume[0].payload.decision;
-        approval = { ...approval, state: decision === "approve" ? "approved" : "rejected", decided_at: now };
-        if (decision === "reject") run = { ...run, state: "cancelled", failure_code: "approval_rejected" };
+        approval = { ...approval, state: decision === "approve" ? "approved" : ["reject_continue", "resolve"].includes(decision) ? "resolved" : "rejected", decision, decided_at: now };
+        if (["reject", "stop"].includes(decision)) run = { ...run, state: "cancelled", failure_code: "approval_rejected" };
         return agUiPost(route, run);
       }
     } else if (path.endsWith("/cancel") && method === "POST") {
@@ -100,7 +101,7 @@ try {
     assert.equal(await approve.count(), 1, "等待审批时必须提供同意/拒绝入口");
     await approve.click();
     await page.waitForFunction(() => document.querySelector('button[aria-label="同意执行"]')?.disabled === true);
-    assert.equal(await page.getByRole("button", { name: "拒绝执行", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "停止整个任务", exact: true }).isDisabled(), true);
     state.releaseDecision();
     await page.getByText("已同意，等待执行器继续运行", { exact: true }).waitFor();
     assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).length, 1);
@@ -109,13 +110,40 @@ try {
     await page.getByRole("region", { name: "工具审批" }).waitFor({ state: "hidden" });
     await state.transition("waiting_for_approval", true);
     await approve.waitFor();
-    await page.getByRole("button", { name: "拒绝执行", exact: true }).click();
+    await page.getByRole("button", { name: "停止整个任务", exact: true }).click();
     await page.getByText("已取消", { exact: true }).first().waitFor();
-    assert.deepEqual(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0], { interruptId: "approval-2", status: "resolved", payload: { decision: "reject" } });
+    assert.deepEqual(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0], { interruptId: "approval-2", status: "resolved", payload: { decision: "stop" } });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: screenshotPath(`web-approval-${width}.png`), animations: "disabled" });
     await page.close();
     console.log(`${width}: approval restore, submit lock, same-run next approval and rejection passed`);
+  }
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const state = await fixture(page);
+    await page.getByText("操作预览：order_id: order-7 · quantity: 2", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "拒绝本次并继续", exact: true }).click();
+    await page.getByText("已记录逐项决定，等待执行器继续整理结果", { exact: true }).waitFor();
+    assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0].payload.decision, "reject_continue");
+    await state.transition("running");
+    await page.getByRole("region", { name: "工具审批" }).waitFor({ state: "hidden" });
+    await page.close();
+    const mixed = await browser.newPage({ viewport: { width, height: 900 } });
+    const batch = await fixture(mixed, { mixed: true });
+    assert.equal(await mixed.getByRole("button", { name: "提交逐项决定", exact: true }).isDisabled(), true);
+    await mixed.getByRole("group", { name: "操作 1 的决定", exact: true }).getByText("批准此项", { exact: true }).click();
+    assert.equal(await mixed.getByRole("button", { name: "提交逐项决定", exact: true }).isDisabled(), true);
+    await mixed.getByRole("group", { name: "操作 2 的决定", exact: true }).getByText("拒绝此项", { exact: true }).click();
+    await mixed.getByRole("button", { name: "停止整个任务", exact: true }).scrollIntoViewIfNeeded();
+    await mixed.screenshot({ path: screenshotPath(`web-approval-mixed-${width}.png`), animations: "disabled" });
+    assert.equal(await mixed.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await mixed.getByRole("button", { name: "提交逐项决定", exact: true }).click();
+    await mixed.getByText("已记录逐项决定，等待执行器继续整理结果", { exact: true }).waitFor();
+    assert.deepEqual(batch.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0].payload, {
+      decision: "resolve", decisions: [{ action_id: "action-one", decision: "approve" }, { action_id: "action-two", decision: "reject" }],
+    });
+    await mixed.close();
+    console.log(`${width}: reject-and-continue, sanitized preview and mixed action decisions passed`);
   }
   {
     const page = await browser.newPage();

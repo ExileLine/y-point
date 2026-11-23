@@ -86,7 +86,7 @@ Accept: text/event-stream
 }
 ```
 
-上面的 `messages` 必须替换为中断时的完整公开历史。`decision` 可为 `approve/reject`；`status=cancelled` 等价于拒绝。恢复只接受一条 resume，不能改写参数。服务器重新验证当前审批 ID 和归属，并将新协议 ID 与决定一起持久化；同一请求重试可重放对应的协议 attempt。工作台使用同一个 AG-UI POST 回答审批；新消息和审批恢复都固定原请求输入及身份后重试。
+上面的 `messages` 必须替换为中断时的完整公开历史。`decision` 支持 `approve`、`reject_continue`、`stop` 和 `resolve`；旧 `reject` 与 `status=cancelled` 仍停止整轮。`resolve` 必须按动作顺序携带完整 `decisions=[{action_id,decision}]`，每项为 `approve/reject/stop`，任一 stop 优先终止。恢复只接受一条 resume，不能改写参数。服务器重新验证当前审批 ID 和归属，并将新协议 ID 与决定一起持久化；同一请求重试可重放对应的协议 attempt。工作台使用同一个 AG-UI POST 回答审批；新消息和审批恢复都固定原请求输入及身份后重试。
 
 ## 原生工作台的持久化观察扩展
 
@@ -138,3 +138,9 @@ npm --prefix web run verify:ag-ui-submit
 部署与本地开发都应先按[数据库迁移与测试](testing.md)升级数据库，再运行同一版本的 API 与 Worker。当前实现从固定源事件上界重建协议投影，实时连接初始化后增量跟随。大规模长历史的持久化投影检查点和压缩尚未加入，应基于实际事件量再优化，不能改变既有线游标语义。
 
 验证区分两类：后端使用隔离数据库、真实 FastAPI/JWT、真实 DeepAgents/LangGraph 与受控模型；浏览器使用模拟 API 和实际 SSE 连接。它们不代表真实供应商、MCP 服务、脚本沙箱或目标部署环境已完成验收。
+
+逐项审批的参数绑定、拒绝后的防绕过及 Worker 归属见 [逐项审批](tools.md#逐项审批与拒绝后继续) 和 [Run 内 MCP 会话](tools.md#run-内-mcp-会话与跨审批恢复)。
+
+### MCP 预算与大结果交付补充
+
+公开 Run 响应新增可空 `context_budget`，历史轮次 `metrics` 在存在诊断时带相同数值分解，不包含模型请求原文。AG-UI 工具结果仍只投影公开状态，不广播 MCP 结果正文、凭据、私有存储键或原始错误。大结果按成功响应独立发布私有 Artifact，复用 `y-point.artifact.available` 通知；Run 后续失败不会撤回已保存的成功响应。生成产物引用可带 `tool_result` 和 `sha256`，前端据此显示 MCP 结果及固定快照分页，用户/Run 授权仍在读取端重验。详见 [结果契约](tools.md#mcp-大结果预览保存与分段读取)。

@@ -20,6 +20,7 @@ from app.models.agent_run_event import AgentRunEvent
 from app.models.agent_run_message import AgentRunMessage
 from app.models.agent_message_attachment import AgentMessageAttachment
 from app.models.run_approval import RunApproval
+from app.models.run_mcp_resource import RunMcpResource
 from app.models.run_worker_heartbeat import RunWorkerHeartbeat
 from app.models.artifact import Artifact
 from app.models.artifact_source import ArtifactSource
@@ -28,11 +29,14 @@ from app.models.skill import Skill, SkillVersion, AgentSkill, RunSkill
 from app.models.skill_template import SkillTemplate
 from app.models.skill_package import SkillDraft, SkillVersionFile, SkillScript
 from app.models.tool_execution import ToolExecutionGate, ToolExecutionLease
-from app.models.mcp_connection import McpConnection
+from app.models.mcp_connection import AgentMcpTool, McpConnection, McpConnectionShare, McpOperation
 from app.models.tool import UserTool, UserToolVersion, AgentTool, RunTool, ToolInvocation
 
 __all__ = [
     "McpConnection",
+    "McpConnectionShare",
+    "AgentMcpTool",
+    "McpOperation",
     "SkillTemplate",
     "SkillDraft",
     "SkillVersionFile",
@@ -53,6 +57,7 @@ __all__ = [
     "AgentRunMessage",
     "AgentMessageAttachment",
     "RunApproval",
+    "RunMcpResource",
     "RunWorkerHeartbeat",
     "Artifact",
     "ArtifactSource",

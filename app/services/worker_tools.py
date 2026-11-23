@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from botocore.exceptions import BotoCoreError, ClientError
 from langchain_core.tools import BaseTool, ToolException, tool
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.call_timeouts import effective_tool_timeout
@@ -27,13 +27,14 @@ from app.core.enums import (
     ToolEffect,
     ToolFeedbackFailure,
     ToolKind,
+    ToolInvocationState,
 )
 from app.models.agent_run import AgentRun
 from app.models.artifact import Artifact
 from app.models.run_artifact_read import RunArtifactRead
 from app.models.base import shanghai_now
 from app.models.model_catalog import ModelCatalog
-from app.models.tool import RunTool
+from app.models.tool import RunTool, UserTool, ToolInvocation
 from app.services.attachment_text import GENERATED_CONTEXT_MEDIA_TYPES, extract_context_text
 from app.services.presentation_artifacts import ArtifactSlide, render_presentation_artifact
 from app.services.artifact_renderers import ArtifactSheet, render_document_artifact, render_spreadsheet_artifact, render_text_artifact
@@ -46,7 +47,8 @@ from app.services.tool_environments import require_script_environment
 from app.services.mcp_tools import invoke_mcp_tool
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID
 from app.services.provider_credentials import decrypt_credentials
-from app.services.tool_arguments import ScriptInputToolError, tool_argument_error_content, validate_tool_arguments
+from app.services.tool_arguments import ScriptInputToolError, ToolArgumentsError, tool_argument_error_content, validate_tool_arguments
+from app.services.tool_delivery import ToolNotSentError, mark_request_not_sent
 from langchain_core.tools import StructuredTool
 
 MAX_TOOL_TEXT_BYTES = 64 * 1024
@@ -363,7 +365,7 @@ def _create_presentation_artifact(context: ToolContext) -> BaseTool:
     return create_presentation_artifact
 
 
-def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> ToolResolver:
+def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession], *, mcp_sessions=None) -> ToolResolver:
     """装载本次 Run 启用的工具，并在执行时复核当前授权。"""
 
     async def resolve_tools(db: AsyncSession, run: AgentRun) -> tuple[list[BaseTool], dict[str, bool]]:
@@ -461,6 +463,21 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                         staged=True,
                     ),
                 )
+        if await db.scalar(
+            select(RunTool.id).join(UserTool, UserTool.id == RunTool.tool_id).where(RunTool.run_id == run.id, UserTool.kind == ToolKind.MCP).limit(1)
+        ):
+            from app.services.mcp_results import result_reader_tool
+
+            registry.register(
+                ToolSpec(
+                    name="read_tool_result",
+                    factory=result_reader_tool,
+                    enabled=lambda current: current.state == RunState.RUNNING,
+                    requires_approval=False,
+                    effect=ToolEffect.READ,
+                    recovery=RecoveryPolicy.SAFE,
+                )
+            )
         builtins, approvals = await registry.resolve(db, run, sessions)
         user_tools = await load_run_tools(db, run.id, run.owner_id)
         approval_policies = dict((await db.execute(select(RunTool.tool_id, RunTool.requires_approval).where(RunTool.run_id == run.id))).all())
@@ -469,49 +486,56 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
 
             async def invoke(_tool_id=definition.id, _tool_name=tool_name, **arguments):
                 """执行前复核本轮 Tool 授权与参数结构。"""
-                async with sessions() as current_db:
-                    current = await current_db.get(AgentRun, run.id)
-                    context = ToolContext(sessions, run.id, run.owner_id, run.lease_token)
-                    await context.require_active(current_db, enabled=lambda item: item.id == run.id)
-                    available = await load_run_tools(current_db, run.id, run.owner_id)
-                    match = next((item for item in available if item[0].id == _tool_id), None)
-                    if match is None or current is None:
-                        raise ValueError("Tool 授权已失效")
-                    selected, selected_version = match
-                    timeout = effective_tool_timeout(current.tool_timeout_seconds, kind=selected.kind)
-                    if selected.kind == ToolKind.MCP:
-                        if selected_version.effect == ToolEffect.WRITE:
-                            if (
-                                selected_version.recovery_policy != RecoveryPolicy.IDEMPOTENT
-                                or not selected_version.idempotency_key_field
-                                or not selected_version.write_contract_verified
-                            ):
-                                raise ValueError("外部写工具缺少经声明的幂等恢复契约，当前禁止执行")
-                            call_id = CURRENT_TOOL_CALL_ID.get()
-                            if call_id is None:
-                                raise ValueError("外部写工具必须经过正式执行上下文")
-                            arguments = {
-                                **arguments,
-                                selected_version.idempotency_key_field: call_id,
-                            }
-                        token, _ = decrypt_credentials(selected_version.encrypted_credentials)
-                        if selected.owner_id != run.owner_id and selected_version.encrypted_credentials and not selected_version.share_credentials:
-                            raise ValueError("MCP 凭据未授权共享")
-                        url = selected_version.mcp_config or selected_version.mcp_url
-                        if selected_version.mcp_config:
-                            token = selected_version.encrypted_credentials
-                        remote_name = selected_version.mcp_tool_name
-                        expected_schema = selected_version.input_schema
-                        validate_tool_arguments(selected_version.input_schema, arguments)
-                    else:
-                        validate_tool_arguments(selected_version.input_schema, arguments)
-                        language, source = selected_version.script_language, selected_version.source_code
-                        environment = await require_script_environment(selected_version)
-                        package_options = {}
-                        if selected.skill_id is not None:
-                            from app.services.skill_package_runtime import managed_script_resources
+                try:
+                    async with sessions() as current_db:
+                        current = await current_db.get(AgentRun, run.id)
+                        context = ToolContext(sessions, run.id, run.owner_id, run.lease_token)
+                        await context.require_active(current_db, enabled=lambda item: item.id == run.id)
+                        available = await load_run_tools(current_db, run.id, run.owner_id)
+                        match = next((item for item in available if item[0].id == _tool_id), None)
+                        if match is None or current is None:
+                            raise ValueError("Tool 授权已失效")
+                        selected, selected_version = match
+                        timeout = effective_tool_timeout(current.tool_timeout_seconds, kind=selected.kind)
+                        if selected.kind == ToolKind.MCP:
+                            if selected_version.effect == ToolEffect.WRITE:
+                                call_id = CURRENT_TOOL_CALL_ID.get()
+                                if call_id is None:
+                                    raise ValueError("外部写工具必须经过正式执行上下文")
+                                if selected_version.recovery_policy == RecoveryPolicy.IDEMPOTENT:
+                                    if not selected_version.idempotency_key_field or not selected_version.write_contract_verified:
+                                        raise ValueError("幂等写工具缺少已验收的幂等恢复契约")
+                                    arguments = {
+                                        **arguments,
+                                        selected_version.idempotency_key_field: call_id,
+                                    }
+                            token, _ = decrypt_credentials(selected_version.encrypted_credentials)
+                            from app.services.mcp_access import can_borrow_credentials
 
-                            package_options = await managed_script_resources(current_db, run.id, run.owner_id, selected, selected_version)
+                            if not await can_borrow_credentials(current_db, selected, selected_version, run.owner_id):
+                                raise ValueError("MCP 凭据未授权共享")
+                            url = selected_version.mcp_config or selected_version.mcp_url
+                            if selected_version.mcp_config:
+                                token = selected_version.encrypted_credentials
+                            remote_name = selected_version.mcp_tool_name
+                            expected_schema = selected_version.input_schema
+                            validate_tool_arguments(selected_version.input_schema, arguments)
+                        else:
+                            validate_tool_arguments(selected_version.input_schema, arguments)
+                            language, source = selected_version.script_language, selected_version.source_code
+                            environment = await require_script_environment(selected_version)
+                            package_options = {}
+                            if selected.skill_id is not None:
+                                from app.services.skill_package_runtime import managed_script_resources
+
+                                package_options = await managed_script_resources(current_db, run.id, run.owner_id, selected, selected_version)
+                except ToolArgumentsError:
+                    raise
+                except asyncio.CancelledError as exc:
+                    mark_request_not_sent(exc)
+                    raise
+                except Exception as exc:
+                    raise ToolNotSentError("工具执行前核对失败，业务调用尚未发送") from exc
                 if selected.kind == ToolKind.SCRIPT:
                     options = (
                         {
@@ -537,6 +561,25 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                                 ensure_ascii=False,
                             ),
                         ) from None
+                from app.services.mcp_results import deliver_mcp_result
+
+                async def deliver(response):
+                    """使用已确认成功的响应交付结果，不重新执行远端操作。"""
+                    # 协议成功先落审计，再做可能耗时的文件保存；交付超时不能抹掉已确认的操作结果。
+                    async with sessions.begin() as audit_db:
+                        await audit_db.execute(
+                            update(ToolInvocation)
+                            .where(
+                                ToolInvocation.run_id == context.run_id,
+                                ToolInvocation.call_id == CURRENT_TOOL_CALL_ID.get(),
+                                ToolInvocation.state == ToolInvocationState.RUNNING,
+                            )
+                            .values(state=ToolInvocationState.COMPLETED, failure_code=None)
+                        )
+                    return await deliver_mcp_result(
+                        response, context, tool_name=model_tool_name(selected), config=url, credentials=selected_version.encrypted_credentials
+                    )
+
                 return await invoke_mcp_tool(
                     url,
                     remote_name,
@@ -545,6 +588,16 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
                     timeout,
                     expected_schema,
                     expected_read_only=selected_version.effect == ToolEffect.READ,
+                    expected_annotations=selected_version.mcp_annotations,
+                    result_handler=deliver,
+                    session_pool=mcp_sessions,
+                    session_identity={
+                        "run_id": run.id,
+                        "owner_id": run.owner_id,
+                        "lease_token": run.lease_token,
+                        "connection_id": selected_version.mcp_connection_id or f"tool:{selected.id}",
+                        "config_version": selected_version.mcp_connection_version or selected_version.version,
+                    },
                 )
 
             schema = dict(version.input_schema)
@@ -562,9 +615,13 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession]) -> Too
             )
             requires_approval = approval_policies.get(definition.id)
             if requires_approval is None:
-                requires_approval = version.requires_approval
+                from app.services.mcp_policy import tool_callability
+
+                decision = await tool_callability(db, definition, version, run.owner_id, require_all=run.require_mcp_approval)
+                requires_approval = bool(version.requires_approval or decision["policy"]["requires_approval"])
             if requires_approval:
                 approvals[tool_name] = True
         return builtins, approvals
 
+    resolve_tools.mcp_sessions = mcp_sessions
     return resolve_tools

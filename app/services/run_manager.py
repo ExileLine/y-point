@@ -69,7 +69,7 @@ class ToolCallBudgetExceeded(Exception):
 
 TERMINAL_STATES = frozenset({RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED, RunState.TIMED_OUT})
 ALLOWED_TRANSITIONS = {
-    RunState.QUEUED: frozenset({RunState.RUNNING, RunState.CANCELLED, RunState.TIMED_OUT}),
+    RunState.QUEUED: frozenset({RunState.RUNNING, RunState.CANCELLED, RunState.TIMED_OUT, RunState.FAILED}),
     RunState.RUNNING: frozenset({RunState.WAITING_FOR_APPROVAL, RunState.COMPLETED, RunState.FAILED, RunState.CANCEL_REQUESTED, RunState.TIMED_OUT}),
     RunState.WAITING_FOR_APPROVAL: frozenset({RunState.RUNNING, RunState.CANCELLED, RunState.TIMED_OUT}),
     RunState.CANCEL_REQUESTED: frozenset({RunState.CANCELLED, RunState.FAILED, RunState.TIMED_OUT}),
@@ -100,6 +100,7 @@ async def create_run(
     max_model_calls: int | None = None,
     max_total_tokens: int | None = None,
     max_tool_calls: int | None = None,
+    require_mcp_approval: bool = False,
     max_estimated_cost: Decimal | None = None,
     cost_pricing: tuple[Decimal, Decimal, str] | None = None,
 ) -> AgentRun:
@@ -172,6 +173,7 @@ async def create_run(
                 or existing.max_total_tokens != max_total_tokens
                 or existing.max_estimated_cost != max_estimated_cost
                 or existing.max_tool_calls != max_tool_calls
+                or existing.require_mcp_approval != require_mcp_approval
                 or thread_id is not None
                 and existing.thread_id != thread_id
             ):
@@ -252,6 +254,7 @@ async def create_run(
         cost_output_price=cost_pricing[1] if max_estimated_cost is not None else None,
         cost_currency=cost_pricing[2] if max_estimated_cost is not None else None,
         max_tool_calls=max_tool_calls,
+        require_mcp_approval=require_mcp_approval,
         tool_call_count=0,
     )
     run.active_thread_id = run.thread_id
@@ -421,6 +424,7 @@ async def _change_state(
     failure_code: str | None = None,
     require_lease: bool = False,
     require_expired_lease: bool = False,
+    require_expired_mcp_owner: bool = False,
 ) -> AgentRun:
     """通过版本条件原子改变状态，并在同一事务追加一个脱敏事件。"""
     if state not in ALLOWED_TRANSITIONS.get(run.state, ()):
@@ -451,6 +455,8 @@ async def _change_state(
     statement = update(AgentRun).where(AgentRun.id == run.id, AgentRun.version == run.version, AgentRun.state == run.state)
     if require_lease:
         statement = statement.where(AgentRun.lease_token == lease_token, AgentRun.lease_expires_at > now)
+    if require_expired_mcp_owner:
+        statement = statement.where(AgentRun.mcp_owner_expires_at <= now)
     if require_expired_lease:
         statement = statement.where(AgentRun.lease_expires_at <= now)
     if run.state == RunState.QUEUED and state == RunState.RUNNING:
@@ -682,6 +688,18 @@ async def complete_run(db: AsyncSession, run_id: str, lease_token: str, *, check
     run = await db.get(AgentRun, run_id)
     if run is None:
         raise RunNotFoundError("运行不存在")
+    if final_text is not None:
+        resolved = (await db.scalars(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.state == ApprovalState.RESOLVED))).all()
+        rejected = [
+            action["name"] for approval in resolved for action, decision in zip(approval.actions, approval.decisions or [], strict=True) if decision == "reject"
+        ]
+        if rejected:
+            events = (await db.scalars(select(AgentRunEvent).where(AgentRunEvent.run_id == run_id))).all()
+            done = sum(event.event_type == RunEventType.TOOL_COMPLETED for event in events)
+            unknown = sum(event.failure_code == RunCallFailure.RESULT_UNKNOWN for event in events)
+            note = f"\n\n本轮执行记录：{done} 次工具调用已完成；{len(rejected)} 项操作已拒绝且未执行；{unknown} 项外部操作结果未知。"
+            note += "拒绝不会回滚此前已发生的操作；若需执行已拒绝操作，请明确发起新任务。"
+            final_text = final_text[: 262144 - len(note)] + note
     completed = await _change_state(
         db,
         run,
@@ -829,21 +847,30 @@ async def create_approval_request(
     """在保存暂停状态的同一事务中记录不含原始工具参数的审批请求。"""
     if not actions or len(actions) > 20 or ttl_seconds <= 0:
         raise ValueError("无效的审批动作或到期时长")
+    allowed = {
+        "name",
+        "arguments_hash",
+        "resource_id",
+        "preview",
+        "call_id",
+        "action_id",
+        "tool_id",
+        "tool_version",
+        "content_hash",
+        "connection_id",
+        "remote_name",
+        "remote_scope",
+    }
     if any(
-        set(action) not in ({"name", "arguments_hash"}, {"name", "arguments_hash", "resource_id"})
-        or "resource_id" in action
-        and (
-            action["name"] != "read_text_artifact"
-            or not isinstance(action["resource_id"], str)
-            or re.fullmatch(r"[0-9a-f-]{36}", action["resource_id"]) is None
-        )
-        or not isinstance(action["name"], str)
+        not isinstance(action, dict)
+        or set(action) - allowed
+        or not isinstance(action.get("name"), str)
         or not 1 <= len(action["name"]) <= 128
-        or not isinstance(action["arguments_hash"], str)
+        or not isinstance(action.get("arguments_hash"), str)
         or re.fullmatch(r"[0-9a-f]{64}", action["arguments_hash"]) is None
         for action in actions
     ):
-        raise ValueError("审批动作只能包含工具名和参数摘要")
+        raise ValueError("无效的审批动作摘要")
     run = await db.get(AgentRun, run_id)
     if run is None or run.state != RunState.RUNNING or run.lease_token != lease_token:
         raise RunConflictError("执行器未持有运行租约")
@@ -880,29 +907,73 @@ async def get_owned_approval(db: AsyncSession, run_id: str, owner_id: int) -> Ru
     return approval
 
 
-async def decide_approval(db: AsyncSession, run_id: str, owner_id: int, decision: str, *, expected_approval_id: str | None = None) -> RunApproval:
-    """仅允许运行所有者决定一次审批；拒绝时同步结束运行。"""
-    if decision not in {ApprovalDecision.APPROVE, ApprovalDecision.REJECT}:
+async def decide_approval(
+    db: AsyncSession,
+    run_id: str,
+    owner_id: int,
+    decision: str,
+    *,
+    expected_approval_id: str | None = None,
+    decisions: list[dict] | None = None,
+) -> RunApproval:
+    """持久化逐项决定；旧版 reject 与显式 stop 都保留停止整轮的语义。"""
+    if decision not in set(ApprovalDecision):
         raise ValueError("无效的审批决定")
     run = await get_owned_run(db, run_id, owner_id)
     approval = await get_owned_approval(db, run_id, owner_id)
     if expected_approval_id is not None and approval.id != expected_approval_id:
         raise RunConflictError("审批请求已变化，请刷新后确认最新请求")
+    if decision == ApprovalDecision.RESOLVE:
+        if (
+            not isinstance(decisions, list)
+            or len(decisions) != len(approval.actions)
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"action_id", "decision"}
+                or item["action_id"] != action.get("action_id")
+                or not item["action_id"]
+                or item["decision"] not in {"approve", "reject", "stop"}
+                for item, action in zip(decisions, approval.actions, strict=True)
+            )
+        ):
+            raise ValueError("逐项决定必须完整且按动作 ID 与顺序绑定")
+        resolved = [item["decision"] for item in decisions]
+    else:
+        if decisions is not None:
+            raise ValueError("只有 resolve 可以携带逐项决定")
+        resolved = ["approve" if decision == ApprovalDecision.APPROVE else "reject"] * len(approval.actions)
+    stop = decision in {ApprovalDecision.REJECT, ApprovalDecision.STOP} or "stop" in resolved
+    next_state = ApprovalState.REJECTED if stop else ApprovalState.APPROVED if all(item == "approve" for item in resolved) else ApprovalState.RESOLVED
+    # 断线重试只有精确相同决定幂等；相反决定不能覆盖原审计。
+    if approval.state != ApprovalState.PENDING:
+        if approval.decision == decision and approval.decisions == resolved:
+            return approval
+        if (
+            approval.decision is None
+            and approval.decisions is None
+            and (
+                decision == ApprovalDecision.APPROVE
+                and approval.state == ApprovalState.APPROVED
+                or decision == ApprovalDecision.REJECT
+                and approval.state == ApprovalState.REJECTED
+            )
+        ):
+            return approval
+        raise RunConflictError("运行或审批状态已变化")
     now = shanghai_now(naive=True)
-    if run.state != RunState.WAITING_FOR_APPROVAL or run.checkpoint_id != approval.checkpoint_id or approval.state != ApprovalState.PENDING:
+    if run.state != RunState.WAITING_FOR_APPROVAL or run.checkpoint_id != approval.checkpoint_id:
         raise RunConflictError("运行或审批状态已变化")
     if approval.expires_at <= now:
         raise RunConflictError("审批请求已过期")
-    next_state = ApprovalState.APPROVED if decision == ApprovalDecision.APPROVE else ApprovalState.REJECTED
     statement = (
         update(RunApproval)
         .where(RunApproval.id == approval.id, RunApproval.state == ApprovalState.PENDING, RunApproval.expires_at > now)
-        .values(state=next_state, decided_by=owner_id, decided_at=now)
+        .values(state=next_state, decision=decision, decisions=resolved, decided_by=owner_id, decided_at=now)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
     if result.rowcount != 1:
         raise RunConflictError("审批请求已被处理")
-    if decision == ApprovalDecision.REJECT:
+    if stop:
         await _change_state(db, run, RunState.CANCELLED, now=now, failure_code="approval_rejected")
     await db.refresh(approval)
     return approval
@@ -942,7 +1013,7 @@ async def resume_approved_run(db: AsyncSession, run_id: str, *, lease_seconds: i
     if run is None:
         raise RunNotFoundError("运行不存在")
     approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id))
-    if approval is None or approval.state != ApprovalState.APPROVED:
+    if approval is None or approval.state not in {ApprovalState.APPROVED, ApprovalState.RESOLVED}:
         raise RunConflictError("审批尚未同意")
     resumed = await _change_state(db, run, RunState.RUNNING, now=shanghai_now(naive=True), lease_token=str(uuid4()), lease_seconds=lease_seconds)
     if approval.ag_ui_run_id:

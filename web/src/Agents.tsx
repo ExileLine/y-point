@@ -1,3 +1,5 @@
+import { useResourceQuery } from "./hooks/useResourceQuery";
+import { callabilityNotice, callabilityText, checkedTime } from "./components/ToolCallability";
 import { useRuntimeLimits } from "./runtime-limits";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -54,11 +56,13 @@ import {
   type AgentShare,
   type SharedAgent,
   type Skill,
-  type UserTool,
+  type ToolCatalog,
 } from "./api";
 import { listAllKnowledgeBases, type KnowledgeBase } from "./knowledge-api";
 import { PageHeader } from "./components/ResourcePage";
 import "./styles/agents.css";
+import { AgentToolUpgrades } from "./McpToolSync";
+import { McpConnectionPicker } from "./McpConnectionAccess";
 
 type Tab = "my" | "shared";
 type View = "card" | "table";
@@ -130,7 +134,9 @@ function AgentEditor({
   const { limits, error: limitsError, retry: retryLimits } = useRuntimeLimits(open);
   const [saving, setSaving] = useState(false);
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [tools, setTools] = useState<UserTool[]>([]);
+  const toolDirectory = useResourceQuery<ToolCatalog>(listToolCatalog, { builtin: [], user_tools: [] }, open);
+  const tools = toolDirectory.data.user_tools;
+  const selectedToolIds: number[] = Form.useWatch("tool_ids", form) || [];
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeError, setKnowledgeError] = useState("");
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
@@ -149,8 +155,7 @@ function AgentEditor({
     listAllKnowledgeBases().then((rows) => { if (active) setKnowledgeBases(rows); }).catch((failure: unknown) => {
       if (active) setKnowledgeError(failure instanceof Error ? failure.message : "知识库目录加载失败");
     }).finally(() => { if (active) setKnowledgeLoading(false); });
-    listSkills().then(setSkills).catch(() => setSkills([]));
-    listToolCatalog().then((catalog) => setTools(catalog.user_tools)).catch(() => setTools([]));
+    listSkills().then(rows => { if (active) setSkills(rows); }).catch(() => { if (active) setSkills([]); });
     setError("");
     form.setFieldsValue(agent ? {
       name: agent.name,
@@ -171,6 +176,7 @@ function AgentEditor({
       enabled: agent.enabled,
       skill_ids: agent.skill_ids,
       tool_ids: agent.tool_ids,
+      mcp_connections: agent.mcp_connections || [],
       knowledge_base_ids: agent.knowledge_base_ids || [],
     } : {
       name: "",
@@ -191,6 +197,7 @@ function AgentEditor({
       enabled: true,
       skill_ids: [],
       tool_ids: [],
+      mcp_connections: [],
       knowledge_base_ids: [],
     });
     return () => { active = false; };
@@ -209,6 +216,7 @@ function AgentEditor({
         if (values.enabled !== agent.enabled) changes.enabled = values.enabled;
         if (JSON.stringify(values.skill_ids || []) !== JSON.stringify(agent.skill_ids || [])) changes.skill_ids = values.skill_ids || [];
         if (JSON.stringify(values.tool_ids || []) !== JSON.stringify(agent.tool_ids || [])) changes.tool_ids = values.tool_ids || [];
+        if (JSON.stringify(values.mcp_connections || []) !== JSON.stringify(agent.mcp_connections || [])) changes.mcp_connections = values.mcp_connections || [];
         if (JSON.stringify(values.knowledge_base_ids || []) !== JSON.stringify(agent.knowledge_base_ids || [])) changes.knowledge_base_ids = values.knowledge_base_ids || [];
         if (canSelectModel && values.default_model_id !== agent.default_model_id) changes.default_model_id = values.default_model_id;
         if (Number(values.temperature) !== Number(agent.temperature)) changes.temperature = values.temperature;
@@ -269,9 +277,30 @@ function AgentEditor({
           <Select mode="multiple" maxCount={16} optionFilterProp="label" placeholder="选择已发布的 Skill（关联固定版本）"
             options={skills.filter((item) => item.enabled && item.current_version > 0).map((item) => ({ value: item.id, label: `${item.name} · v${item.current_version} · ${item.description}` }))} />
         </Form.Item>
-        <Form.Item name="tool_ids" label="Tool">
-          <Select mode="multiple" optionFilterProp="label" placeholder="选择可用 Tool"
-            options={tools.filter((item) => item.enabled).map((item) => ({ value: item.id, label: `${toolDisplayName(item)} · ${item.description}` }))} />
+        <Space wrap>
+          <Button size="small" loading={toolDirectory.loading} onClick={() => void toolDirectory.refresh()}>刷新工具状态</Button>
+          <Typography.Text type="secondary">{toolDirectory.loading ? "正在核对工具状态…" : `目录查询时间：${checkedTime(toolDirectory.loadedAt)}`}</Typography.Text>
+        </Space>
+        {toolDirectory.error && <Alert type="warning" showIcon message={`工具目录加载失败：${toolDirectory.error}`} description="已有选择及上次成功结果已保留，状态可能过期；请刷新工具状态后重试，也可移除关联。" />}
+        <Form.Item name="tool_ids" label="Tool" extra={`目录展示当前发布版本的预检；现有关联保持固定版本，升级请使用详情中的版本升级入口。${callabilityNotice} 不按固定数量限制；实际执行前按工具 Schema、系统提示、历史、附件及输出预留核对上下文预算。部署启用 MCP 按需加载时，模型先搜索本轮授权集合，再加载匹配工具的参数声明。`}>
+          <Select mode="multiple" loading={toolDirectory.loading} optionFilterProp="label" placeholder="选择可用 Tool"
+            options={[...tools.map(item => ({ value: item.id,
+              disabled: (!item.callability || item.callability.status === "blocked" || toolDirectory.loading || Boolean(toolDirectory.error)) && !selectedToolIds.includes(item.id),
+              label: `${toolDisplayName(item)} · 当前发布 v${item.current_version} · ${callabilityText(item.callability)} · ${item.description}` })),
+              ...selectedToolIds.filter(id => !tools.some(item => item.id === id)).map(id => ({ value: id,
+                label: `工具 #${id} · ${toolDirectory.loading || toolDirectory.error ? "状态待核对，保留原关联" : "当前不可访问"}` }))]} />
+        </Form.Item>
+        {selectedToolIds.length > 0 && <details><summary>查看已选 Tool 的当前发布状态</summary>{selectedToolIds.map(id => {
+          const tool = tools.find(item => item.id === id);
+          return <Typography.Paragraph key={id}>
+            <Typography.Text strong>{tool ? `${toolDisplayName(tool)} · 当前发布 v${tool.current_version}` : `工具 #${id}`}</Typography.Text><br />
+            {tool ? <>{callabilityText(tool.callability)}<br />判断时间：{checkedTime(tool.callability_checked_at)}</>
+              : toolDirectory.loading || toolDirectory.error ? "状态待核对，原关联已保留。" : "当前不可访问，请所有者授权或移除此工具。"}
+          </Typography.Paragraph>;
+        })}</details>}
+        <Form.Item name="mcp_connections" label="MCP 连接工具" extra="仅关联明确选择的已发布工具；远端新增工具不会自动加入。与直接 Tool 选择相同版本时去重，升级请使用详情中的版本升级入口。"
+          rules={[{ validator: async (_, value) => { if ((value || []).some((group: { tools: unknown[] }) => !group.tools.length)) throw new Error("请为每个连接选择至少一个工具，或移除该连接"); } }]}>
+          <McpConnectionPicker active={open} />
         </Form.Item>
         {knowledgeError && <Alert className="drawer-alert" type="warning" showIcon message={`知识库目录加载失败：${knowledgeError}`} description="保留原有关联，关闭后重新打开编辑器可重试加载。" />}
         <Form.Item name="knowledge_base_ids" label="知识库" extra="最多 8 个；Agent 共享不会扩大知识库权限，接收方需要单独授权。未发布索引的资料暂不参与检索。">
@@ -558,7 +587,8 @@ export default function Agents() {
             { key: "welcome", label: "欢迎语", children: detail.agent.welcome_message || "未设置" },
           ]} />
         )}
-        {detail?.kind === "my" && !detailLoading && !detailError && <AgentShares key={detail.agent.id} agentId={detail.agent.id} />}
+        {detail?.kind === "my" && !detailLoading && !detailError && <AgentToolUpgrades key={`upgrades:${detail.agent.id}`} agentId={detail.agent.id} onChanged={refresh} />}
+        {detail?.kind === "my" && !detailLoading && !detailError && <AgentShares key={`shares:${detail.agent.id}`} agentId={detail.agent.id} />}
       </Drawer>
 
       <AgentEditor

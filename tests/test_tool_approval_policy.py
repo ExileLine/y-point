@@ -18,7 +18,7 @@ from app.models.tool import UserToolVersion
 
 @pytest.mark.parametrize("kind,read_only", [("script", None), ("mcp", True), ("mcp", False)])
 def test_tool_approval_defaults_and_version_updates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, read_only: bool | None) -> None:
-    """新增默认免审批，显式启用、保留及关闭均生成可追溯的新版本。"""
+    """默认只读免审批、写操作需审批，兼容开关与保留设置均可追溯。"""
 
     async def discover(url: str, token: str | None) -> list[dict]:
         """模拟远端声明，测试期间不访问外部服务。"""
@@ -79,7 +79,8 @@ def test_tool_approval_defaults_and_version_updates(tmp_path: Path, monkeypatch:
                 response = await client.post("/api/v1/tools", json=draft)
                 assert response.status_code == 201, response.text
                 original = response.json()["data"]
-                assert original["requires_approval"] is False
+                write_default = kind == "mcp" and read_only is False
+                assert original["requires_approval"] is write_default
                 if kind == "mcp":
                     assert original["effect"] == ("read" if read_only else "write")
                 tool_id = original["id"]
@@ -121,7 +122,7 @@ def test_tool_approval_defaults_and_version_updates(tmp_path: Path, monkeypatch:
                         },
                     )
                     assert response.status_code == 200, response.text
-                    assert response.json()["data"]["requires_approval"] is expected
+                    assert response.json()["data"]["requires_approval"] is (expected or write_default)
                 explicit = await client.post(
                     "/api/v1/tools",
                     json={
@@ -151,7 +152,7 @@ def test_tool_approval_defaults_and_version_updates(tmp_path: Path, monkeypatch:
                 assert stale.status_code == 409
                 async with sessions() as db:
                     versions = (await db.scalars(select(UserToolVersion).where(UserToolVersion.tool_id == tool_id).order_by(UserToolVersion.version))).all()
-                    assert [item.requires_approval for item in versions] == [False, True, True, False, False]
+                    assert [item.requires_approval for item in versions] == ([True] * 5 if write_default else [False, True, True, False, False])
                     assert versions[0].content_hash != versions[1].content_hash
                     assert versions[1].content_hash == versions[2].content_hash
                     assert versions[1].content_hash != versions[3].content_hash
@@ -324,7 +325,7 @@ def test_disabling_approval_applies_to_existing_agent_next_run(tmp_path: Path, m
                     "/api/v1/tools/3",
                     json={
                         "expected_version": 2,
-                        "requires_approval": True,
+                        "requires_approval": False,
                         "mcp_url": "https://new-mcp.example.com/mcp",
                     },
                 )
@@ -333,6 +334,19 @@ def test_disabling_approval_applies_to_existing_agent_next_run(tmp_path: Path, m
             assert result.state == "completed", result.failure_code
             assert invoked == ["lookup"]
             async with sessions.begin() as db:
+                tightened = await create_run(db, 1, agent_id=10, input_text="收紧前尚未执行的查询")
+                await snapshot_run_tools(db, tightened.id, 10, 1)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.put(
+                    "/api/v1/tools/3",
+                    json={
+                        "expected_version": 3,
+                        "requires_approval": True,
+                    },
+                )
+                assert response.status_code == 200, response.text
+            async with sessions.begin() as db:
+                assert (await db.get(AgentRun, tightened.id)).state == "cancelled"
                 assert (await db.get(AgentRun, old_run.id)).state == "waiting_for_approval"
                 old_approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == old_run.id))
                 assert old_approval.state == "pending" and old_approval.decided_at is None

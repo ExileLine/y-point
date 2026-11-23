@@ -25,17 +25,17 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse, ToolCallRequest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage, get_buffer_string
-from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 from langgraph.errors import GraphRecursionError
 from deepagents.backends.utils import create_file_data
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.enums import (
-    ApprovalDecision,
     ApprovalState,
+    ContextBudgetScope,
+    McpToolSchemaMode,
     ArtifactOrigin,
     ArtifactState,
     MessageRole,
@@ -64,6 +64,7 @@ from app.services.tool_arguments import is_tool_argument_error
 from app.services.run_call_failures import ToolExecutionError, tool_exception_failure, tool_result_failure
 from app.services.knowledge_policy import load_knowledge_scope
 from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run
+from app.services.tool_delivery import request_not_sent
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
 from app.models.admin import Admin
@@ -74,6 +75,7 @@ from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
+from app.services.run_approval_policy import approval_preview, bind_actions, denied_in_run, denied_tool_names
 from app.models.skill import RunSkill, Skill
 from app.models.skill_package import SkillScript
 from app.services.agent_access import can_access_run_agent
@@ -105,8 +107,9 @@ from app.services.run_manager import (
 )
 from app.services.session_models import handoff_messages
 from app.services.runtime_checkpoint import open_async_checkpointer
+from app.services.mcp_tool_search import McpToolState, make_tool_search, selected_mcp_tools
 from app.services.runtime_adapter import CONVERSATION_SUMMARY_PROMPT, DeepAgentsRuntimeAdapter, RuntimeAdapter, RuntimeRunConfig
-from app.services.tool_registry import RESERVED_TOOL_NAMES
+from app.services.tool_registry import RESERVED_TOOL_NAMES, ToolContext
 from app.services.skills import load_run_skill_files
 from app.services.user_tools import load_run_tools, model_tool_name, tool_display_name, skill_tool_catalog, tool_name_aliases
 
@@ -270,6 +273,8 @@ def _exception_cause_types(error: BaseException) -> list[str]:
 class AuthorizedToolsMiddleware(AgentMiddleware):
     """计数模型调用，只展示获授权的工具并在执行前再次校验。"""
 
+    state_schema = McpToolState
+
     def __init__(
         self,
         allowed_names: set[str],
@@ -285,11 +290,13 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         tool_aliases: dict[str, str] | None = None,
         model_timeout_seconds: int | None = None,
         model_usage: list[AIMessage] | None = None,
+        deferred_tools: dict[str, BaseTool] | None = None,
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
         config = get_config()
         self.tool_call_semaphore = asyncio.Semaphore(min(config.TOOL_CALL_RUN_LIMIT, config.TOOL_CALL_USER_LIMIT, config.TOOL_CALL_GLOBAL_LIMIT))
         self.allowed_names = frozenset(allowed_names)
+        self.deferred_tools = deferred_tools or {}
         self.sessions = sessions
         self.run_id = run_id
         self.lease_token = lease_token
@@ -304,20 +311,45 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         self.history_read_snapshots: dict[str, list[str]] = {}
         self.tool_aliases = {name: target for name, target in (tool_aliases or {}).items() if target in self.allowed_names and name not in self.allowed_names}
 
-    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
-        """请求模型前计数，并移除 DeepAgents 自动注入但未授权的内置工具。"""
+    def tool_loading_diagnostics(self, request: ModelRequest) -> dict:
+        """仅报告实际绑定的工具数量，不保存工具名称或完整 Schema。"""
+        if not self.deferred_tools:
+            return {}
+        return {
+            "tool_loading": {
+                "mode": McpToolSchemaMode.DYNAMIC,
+                "available_mcp_tools": len(self.deferred_tools),
+                "loaded_mcp_tools": sum(getattr(tool, "name", None) in self.deferred_tools for tool in request.tools),
+            },
+        }
+
+    async def prepare_model_request(self, request: ModelRequest) -> ModelRequest:
+        """预算与实际调用共用当前授权过滤，不计入未开放或本轮已拒绝的 Schema。"""
         has_history = bool(_conversation_history_paths(request.state)) or any(
             message.additional_kwargs.get("lc_source") == "summarization" for message in request.messages
         )
+        async with self.sessions() as db:
+            denied_tools = await denied_tool_names(db, self.run_id, self.allowed_names)
+        selected = selected_mcp_tools(request.state, self.run_id)
+        # 从固定全集恢复选择，保证摘要前后多次预算预检得到同一组 Schema。
+        candidates = [tool for tool in request.tools if getattr(tool, "name", None) not in self.deferred_tools]
+        candidates.extend(tool for name, tool in self.deferred_tools.items() if name in selected)
         visible_tools = [
             tool
-            for tool in request.tools
-            if getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and (self.skill_paths or has_history))
+            for tool in candidates
+            if getattr(tool, "name", None) not in denied_tools
+            and (getattr(tool, "name", None) in self.allowed_names or (getattr(tool, "name", None) == "read_file" and (self.skill_paths or has_history)))
         ]
+
+        return request.override(tools=visible_tools)
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
+        """请求模型前计数，再次复核本轮可见工具集合。"""
+        request = await self.prepare_model_request(request)
 
         async def invoke() -> ModelResponse:
             """只重新请求当前模型，不重新运行已完成工具或整轮图。"""
-            return await handler(request.override(tools=visible_tools))
+            return await handler(request)
 
         started = time.perf_counter()
         logger.info("模型调用开始 run_id={} timeout_seconds={}", self.run_id, self.model_timeout_seconds)
@@ -413,6 +445,13 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         tool_name = request.tool_call["name"]
         if tool_name not in self.allowed_names and tool_name != "read_file":
             raise PermissionError("运行未授权该工具")
+        if tool_name in self.deferred_tools and tool_name not in selected_mcp_tools(request.state, self.run_id):
+            return ToolMessage(
+                content="该 MCP 工具尚未加载。先用 tool_search 搜索其用途或完整调用标识，取得完整参数 Schema 后再调用；本次未执行。",
+                tool_call_id=request.tool_call["id"],
+                name=tool_name,
+                status="error",
+            )
         history_read = False
         if tool_name == "read_file":
             path = request.tool_call.get("args", {}).get("file_path")
@@ -435,6 +474,13 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         display_name = "知识库检索" if call_kind == RunCallKind.KNOWLEDGE else tool_name
         async with self.sessions.begin() as db:
             run = await db.get(AgentRun, self.run_id)
+            if await denied_in_run(db, self.run_id, tool_name, request.tool_call["id"], request.tool_call.get("args", {})):
+                return ToolMessage(
+                    content="用户已拒绝该操作；本轮禁止以新的调用 ID、修改参数或等价工具绕过。该工具未执行，请继续汇总已完成的结果。",
+                    tool_call_id=request.tool_call["id"],
+                    name=tool_name,
+                    status="error",
+                )
             if run is None or not await can_access_run_agent(db, run.agent_id, run.owner_id):
                 raise PermissionError("运行授权已失效")
             if tool_name == "read_file" and not history_read:
@@ -491,6 +537,19 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 arguments_hash = hashlib.sha256(
                     json.dumps(request.tool_call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str).encode(),
                 ).hexdigest()
+                if invocation_effect == ToolEffect.WRITE:
+                    unknown = await db.scalar(
+                        select(ToolInvocation.id)
+                        .where(
+                            ToolInvocation.run_id == self.run_id,
+                            ToolInvocation.tool_id == item.id,
+                            ToolInvocation.arguments_hash == arguments_hash,
+                            ToolInvocation.state == ToolInvocationState.UNKNOWN,
+                        )
+                        .limit(1),
+                    )
+                    if unknown is not None:
+                        raise PermissionError("同一写操作已有结果未知记录，禁止更换调用 ID 自动补做")
                 db.add(
                     ToolInvocation(
                         run_id=self.run_id,
@@ -525,24 +584,27 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         try:
             result = await asyncio.wait_for(invoke_tool(), timeout=call_timeout)
         except BaseException as exc:
+            confirmed_success = False
+            result_unknown = invocation_id is not None and invocation_effect == ToolEffect.WRITE and not request_not_sent(exc)
             if invocation_id is not None:
                 async with self.sessions.begin() as db:
                     invocation = await db.scalar(select(ToolInvocation).where(ToolInvocation.run_id == self.run_id, ToolInvocation.call_id == invocation_id))
                     if invocation is not None:
-                        invocation.state = ToolInvocationState.UNKNOWN if invocation_effect == ToolEffect.WRITE else ToolInvocationState.FAILED
-                        invocation.failure_code = tool_exception_failure(exc)
+                        confirmed_success = invocation.state == ToolInvocationState.COMPLETED
+                        result_unknown = result_unknown and not confirmed_success
+                        if not confirmed_success:
+                            invocation.state = ToolInvocationState.UNKNOWN if result_unknown else ToolInvocationState.FAILED
+                            invocation.failure_code = RunCallFailure.RESULT_UNKNOWN if result_unknown else tool_exception_failure(exc)
             with suppress(RunConflictError):
                 async with self.sessions.begin() as db:
                     await append_tool_event(
                         db,
                         self.run_id,
                         self.lease_token,
-                        RunEventType.TOOL_FAILED,
+                        RunEventType.TOOL_COMPLETED if confirmed_success else RunEventType.TOOL_FAILED,
                         tool_call_id,
                         event_name,
-                        failure_code=RunCallFailure.RESULT_UNKNOWN
-                        if invocation_id is not None and invocation_effect == ToolEffect.WRITE
-                        else tool_exception_failure(exc),
+                        failure_code=None if confirmed_success else RunCallFailure.RESULT_UNKNOWN if result_unknown else tool_exception_failure(exc),
                         skill_phase=skill_phase,
                     )
             if isinstance(exc, TimeoutError):
@@ -636,6 +698,15 @@ def _record_runtime_call(
 def _approval_actions(snapshot) -> list[dict]:
     """提取中断中的工具名和参数摘要，丢弃可能包含凭据的原始参数。"""
     actions = []
+    calls = next(
+        (
+            message.tool_calls
+            for message in reversed((getattr(snapshot, "values", {}) or {}).get("messages", []))
+            if isinstance(message, AIMessage) and message.tool_calls
+        ),
+        [],
+    )
+    used_calls = set()
     for task in snapshot.tasks:
         for interrupt in task.interrupts:
             value = interrupt.value
@@ -650,6 +721,14 @@ def _approval_actions(snapshot) -> list[dict]:
                     "name": action["name"],
                     "arguments_hash": digest,
                 }
+                preview = approval_preview(action["args"])
+                if preview:
+                    approved_action["preview"] = preview
+                for call in calls:
+                    if call["id"] not in used_calls and call["name"] == action["name"] and call["args"] == action["args"]:
+                        approved_action["call_id"] = call["id"]
+                        used_calls.add(call["id"])
+                        break
                 if action["name"] == "read_text_artifact":
                     resource_id = action["args"].get("artifact_id")
                     try:
@@ -670,6 +749,7 @@ def _approval_matches(actual: list[dict], approved: list[dict]) -> bool:
         item.get("name") == saved.get("name")
         and item.get("arguments_hash") == saved.get("arguments_hash")
         and ("resource_id" not in saved or item.get("resource_id") == saved["resource_id"])
+        and ("action_id" not in saved or item.get("action_id") == saved["action_id"])
         for item, saved in zip(actual, approved, strict=True)
     )
 
@@ -726,6 +806,7 @@ async def _has_required_artifacts(db: AsyncSession, run_id: str, owner_id: int, 
                 Artifact.owner_id == owner_id,
                 Artifact.source == ArtifactOrigin.GENERATED,
                 Artifact.state == ArtifactState.PENDING,
+                Artifact.tool_result.is_(None),
                 Artifact.is_deleted == 0,
                 Artifact.status == 1,
                 Artifact.publication_key.like("model-%"),
@@ -841,6 +922,7 @@ async def execute_text_run(
     resolve_model: ModelResolver | None = None,
     resolve_tools: ToolResolver | None = None,
     resume: bool = False,
+    mcp_worker_id: str | None = None,
     timeout_seconds: float | None = None,
     lease_seconds: int = 30,
     poll_seconds: float = 5,
@@ -853,6 +935,9 @@ async def execute_text_run(
     if resume and resolve_tools is None:
         raise ValueError("恢复审批运行必须重新解析可用工具")
     async with sessions.begin() as db:
+        candidate = await db.get(AgentRun, run_id)
+        if candidate is not None and candidate.mcp_worker_id is not None and candidate.mcp_worker_id != mcp_worker_id:
+            raise RunConflictError("MCP 会话属于另一 Worker，禁止跨进程恢复")
         run = await (resume_approved_run(db, run_id, lease_seconds=lease_seconds) if resume else claim_run(db, run_id, lease_seconds=lease_seconds))
         lease_token = run.lease_token
         thread_id = run.thread_id
@@ -904,12 +989,22 @@ async def execute_text_run(
             available_tools = [item for item, _ in await load_run_tools(db, run_id, run.owner_id)]
         except Exception:
             return await fail_run(db, run_id, lease_token, "tool_access_revoked")
-        aliases = tool_name_aliases(available_tools, {tool.name for tool in tools} | RESERVED_TOOL_NAMES)
+        deferred_names = {model_tool_name(item) for item in available_tools if item.kind == ToolKind.MCP}
+        deferred_tools = (
+            {tool.name: tool for tool in tools if tool.name in deferred_names} if get_config().MCP_TOOL_SCHEMA_MODE == McpToolSchemaMode.DYNAMIC else {}
+        )
+        if deferred_tools:
+            if any(tool.name == "tool_search" for tool in tools):
+                return await fail_run(db, run_id, lease_token, "runtime_error")
+            tools.append(make_tool_search(ToolContext(sessions, run_id, run.owner_id, lease_token), deferred_tools))
+        aliases = tool_name_aliases(available_tools, {tool.name for tool in tools} | RESERVED_TOOL_NAMES | {"tool_search"})
         catalog = skill_tool_catalog(available_tools, aliases)
         skill_files = {path: content + catalog if path.endswith("/SKILL.md") else content for path, content in skill_files.items()}
         if resume and not tools:
             return await fail_run(db, run_id, lease_token, "runtime_error")
         approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id)) if resume else None
+        denied_names = await denied_tool_names(db, run_id, (tool.name for tool in tools))
+        original_calls = {action.get("call_id") for action in approval.actions} if approval is not None else set()
         knowledge_scope = await load_knowledge_scope(db, run) if any(tool.name == "search_knowledge_base" for tool in tools) else ""
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
         if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
@@ -926,10 +1021,6 @@ async def execute_text_run(
         model_external_id=catalog_model.external_id if catalog_model is not None else None,
         knowledge_scope=knowledge_scope,
     )
-    try:
-        input_budget = runtime_config.input_budget()
-    except ValueError:
-        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.CONTEXT)
     input_content = (
         [
             {
@@ -941,8 +1032,52 @@ async def execute_text_run(
         if image_blocks
         else input_text
     )
-    image_token_reserve = 2048 * sum(block.get("type") == "image_url" for block in image_blocks)
-    if input_budget is not None and count_tokens_approximately([HumanMessage(content=input_content)]) + image_token_reserve > input_budget:
+
+    async def observe_context_budget(budget):
+        """只保存数值与建议，不保存模型请求或工具 Schema 正文。"""
+        async with sessions.begin() as db:
+            await db.execute(
+                update(AgentRun)
+                .where(AgentRun.id == run_id, AgentRun.lease_token == lease_token, AgentRun.state == RunState.RUNNING)
+                .values(context_budget=budget)
+            )
+
+    from app.services.context_budget import estimate_context_budget
+
+    try:
+        runtime_config.input_budget()
+    except ValueError:
+        output_reserve = runtime_config.max_output_tokens if runtime_config.max_output_tokens is not None else (runtime_config.context_window or 0) // 4
+        budget = estimate_context_budget(
+            [HumanMessage(content=input_content)],
+            None,
+            [],
+            context_window=runtime_config.context_window,
+            output_reserve=output_reserve,
+            input_limit=max(0, (runtime_config.context_window or 0) - output_reserve - 512),
+        )
+        budget["scope"] = ContextBudgetScope.CURRENT_INPUT_LOWER_BOUND
+        budget["fits"] = False
+        budget["notice"] += " 当前输出配置未留下最小输入空间；本次仅统计当前输入下限，尚未构造系统提示和工具集合。"
+        budget["suggestions"] = ["降低输出预留或选择更大窗口模型"]
+        await observe_context_budget(budget)
+        return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.CONTEXT)
+
+    # 当前输入本身就放不下时，摘要历史无法解决；用同一估计器直接诊断，避免无意义的模型摘要请求。
+    current_budget = estimate_context_budget(
+        [HumanMessage(content=input_content)],
+        None,
+        [],
+        context_window=runtime_config.context_window,
+        output_reserve=runtime_config.max_output_tokens
+        if runtime_config.max_output_tokens is not None
+        else (runtime_config.context_window // 4 if runtime_config.context_window else None),
+        input_limit=runtime_config.request_input_budget(),
+    )
+    if current_budget["fits"] is False:
+        current_budget["scope"] = ContextBudgetScope.CURRENT_INPUT_LOWER_BOUND
+        current_budget["notice"] += " 当前输入本身已超限；本次仅统计当前输入下限，尚未构造系统提示和工具集合。"
+        await observe_context_budget(current_budget)
         return await _finish_interrupted(sessions, run_id, lease_token, RunModelFailureReason.CONTEXT)
 
     model_usage: list[AIMessage] = []
@@ -1003,7 +1138,15 @@ async def execute_text_run(
                     runtime_config,
                     model=model,
                     tools=tools,
-                    interrupt_on=interrupt_on,
+                    interrupt_on={
+                        name: {
+                            "allowed_decisions": ["approve", "reject"],
+                            "when": lambda request: request.tool_call["name"] not in denied_names or request.tool_call["id"] in original_calls,
+                        }
+                        if enabled
+                        else False
+                        for name, enabled in interrupt_on.items()
+                    },
                     checkpointer=checkpointer,
                     middleware=[
                         AuthorizedToolsMiddleware(
@@ -1020,9 +1163,11 @@ async def execute_text_run(
                             aliases,
                             model_timeout_seconds=run.model_timeout_seconds,
                             model_usage=model_usage,
+                            deferred_tools=deferred_tools,
                         ),
                     ],
                     summarizer=summarize_history,
+                    budget_observer=observe_context_budget,
                     skill_files=skill_files,
                 )
 
@@ -1073,13 +1218,15 @@ async def execute_text_run(
             if resume:
                 try:
                     actions = _approval_actions(snapshot) if snapshot.next else []
+                    async with sessions() as db:
+                        actions = await bind_actions(db, run_id, actual_checkpoint_id, actions)
                 except ValueError:
                     return await _finish_interrupted(sessions, run_id, lease_token, "checkpoint_mismatch")
                 allowed_names = {tool.name for tool in tools if interrupt_on.get(tool.name)}
                 checkpoint_valid = (
                     actual_checkpoint_id == run.checkpoint_id
                     and approval is not None
-                    and approval.state == ApprovalState.APPROVED
+                    and approval.state in {ApprovalState.APPROVED, ApprovalState.RESOLVED}
                     and _approval_matches(actions, approval.actions)
                     and all(action["name"] in allowed_names for action in actions)
                 )
@@ -1091,15 +1238,33 @@ async def execute_text_run(
             if not resume and actual_checkpoint_id is None and expected_run is None:
                 async with sessions() as db:
                     history_seed = await handoff_messages(db, run)
+            if resume and approval.decisions:
+                async with sessions.begin() as db:
+                    for index, (action, decision) in enumerate(zip(approval.actions, approval.decisions, strict=True)):
+                        if decision == "reject":
+                            await append_tool_event(
+                                db,
+                                run_id,
+                                lease_token,
+                                RunEventType.TOOL_FAILED,
+                                str(uuid5(NAMESPACE_URL, f"{run_id}:{action.get('call_id', action.get('action_id', index))}")),
+                                action["name"],
+                                failure_code=RunCallFailure.USER_REJECTED,
+                            )
             previous_message_count = len(snapshot.values.get("messages", [])) + len(history_seed)
             invocation = (
                 Command(
                     resume={
                         "decisions": [
                             {
-                                "type": ApprovalDecision.APPROVE.value,
+                                "type": decision,
+                                **(
+                                    {"message": "用户拒绝了本次操作，工具未执行。继续整理已完成的结果；本轮禁止更换调用 ID、参数或等价工具绕过拒绝。"}
+                                    if decision == "reject"
+                                    else {}
+                                ),
                             }
-                            for _ in actions
+                            for decision in (approval.decisions or ["approve"] * len(actions))
                         ],
                     },
                 )
@@ -1157,7 +1322,11 @@ async def execute_text_run(
                 if snapshot.next:
                     actions = _approval_actions(snapshot)
                     async with sessions.begin() as db:
-                        await create_approval_request(db, run_id, lease_token, checkpoint_id, actions)
+                        actions = await bind_actions(db, run_id, checkpoint_id, actions)
+                        mcp_pool = getattr(resolve_tools, "mcp_sessions", None)
+                        await create_approval_request(
+                            db, run_id, lease_token, checkpoint_id, actions, ttl_seconds=mcp_pool.approval_ttl(run_id) if mcp_pool else 3600
+                        )
                         _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
                         return await db.get(AgentRun, run_id)
                 async with sessions() as db:

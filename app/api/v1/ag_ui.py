@@ -165,8 +165,15 @@ async def run_agent(
     if supplied != expected:
         raise protocol_conflict("消息历史与服务器公开历史不一致，请读取 threads 快照后重试")
     props = body.forwarded_props or {}
-    if not isinstance(props, dict) or set(props) - {"model_id", "expected_session_version", "artifact_ids", "context_artifact_ids", "publish_answer_artifact"}:
-        raise protocol_conflict("forwardedProps 仅接受预期模型、会话版本、附件及回答导出选项")
+    if not isinstance(props, dict) or set(props) - {
+        "model_id",
+        "expected_session_version",
+        "artifact_ids",
+        "context_artifact_ids",
+        "publish_answer_artifact",
+        "require_mcp_approval",
+    }:
+        raise protocol_conflict("forwardedProps 仅接受预期模型、会话版本、附件、回答导出和 MCP 审批收紧选项")
     if not 1 <= len(body.messages[-1].id) <= 128 or body.messages[-1].id in {message["id"] for message in expected}:
         raise protocol_conflict("用户消息 ID 为空、过长或与历史重复")
     from pydantic import ValidationError
@@ -225,11 +232,11 @@ async def resume_agent(agent_id: int, body: RunAgentInput, request: Request, act
     ):
         raise protocol_conflict("恢复历史与服务器公开历史不一致")
     payload = entry.payload or {}
-    if not isinstance(payload, dict) or set(payload) - {"decision"}:
-        raise protocol_conflict("审批 payload 只接受 decision")
+    if not isinstance(payload, dict) or set(payload) - {"decision", "decisions"}:
+        raise protocol_conflict("审批 payload 只接受 decision 与逐项 decisions")
     decision = "reject" if entry.status == "cancelled" else payload.get("decision")
-    if decision not in ("approve", "reject"):
-        raise protocol_conflict("恢复时必须明确 approve 或 reject")
+    if decision not in ("approve", "reject", "reject_continue", "stop", "resolve"):
+        raise protocol_conflict("恢复时必须明确审批决定")
     projection, frames = await load_projection(db, run)
     if (
         body.run_id == run.ag_ui_run_id
@@ -249,20 +256,20 @@ async def resume_agent(agent_id: int, body: RunAgentInput, request: Request, act
     )
     if cursor is None:
         raise protocol_conflict("审批中断尚未持久化")
-    desired_state = ApprovalState.APPROVED if decision == "approve" else ApprovalState.REJECTED
-    if approval.state == ApprovalState.PENDING:
+    pending = approval.state == ApprovalState.PENDING
+    if pending or approval.ag_ui_run_id == body.run_id:
         try:
-            await decide_approval(db, run.id, actor.id, decision, expected_approval_id=approval.id)
-        except RunConflictError:
-            raise protocol_conflict("审批已变化，请刷新后重试") from None
+            await decide_approval(db, run.id, actor.id, decision, expected_approval_id=approval.id, decisions=payload.get("decisions"))
+        except (RunConflictError, ValueError):
+            raise protocol_conflict("审批已变化或逐项决定无效，请刷新后重试") from None
         approval.ag_ui_run_id = body.run_id
-        if decision == "reject":
+        if pending and run.state == "cancelled":
             state_event = await db.scalar(select(AgentRunEvent).where(AgentRunEvent.run_id == run.id, AgentRunEvent.sequence == run.event_seq))
             state_event.details = {
                 "protocol_run_id": body.run_id,
             }
         await db.commit()
-    elif approval.state != desired_state or approval.ag_ui_run_id != body.run_id:
+    else:
         raise protocol_conflict("审批已由另一请求决定")
     business_run_id = run.id
     response = await build_run_stream(business_run_id, request, actor, db, after=cursor, stop_at_interrupt=True)

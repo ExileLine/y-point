@@ -14,7 +14,7 @@ from pydantic import Field, field_validator, model_validator
 from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.enums import KnowledgeVectorBackend
+from app.core.enums import KnowledgeVectorBackend, McpToolSchemaMode
 
 
 class Environment(str, Enum):
@@ -167,7 +167,9 @@ class BaseConfig(BaseSettings):
     WORKER_HEALTH_FILE: str = Field(default="", description="当前 worker 心跳标识文件，留空不写入，容器探针逐进程核对", examples=["/tmp/y-point-worker-id"])
 
     # AGENT配置参数
-    AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int | None = Field(default=None, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数，空值不设置平台倒计时", examples=[300, None])
+    AGENT_DEFAULT_MODEL_TIMEOUT_SECONDS: int | None = Field(
+        default=None, gt=0, description="新建 Agent 或独立 Run 的默认单次模型超时秒数，空值不设置平台倒计时", examples=[300, None]
+    )
     AGENT_MAX_MODEL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次模型或供应商请求超时秒数上限", examples=[3600])
     AGENT_DEFAULT_TOOL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="新建 Agent 或独立 Run 的默认单次工具超时秒数", examples=[120])
     AGENT_MAX_TOOL_TIMEOUT_SECONDS: int = Field(default=3600, gt=0, description="允许设置的单次工具超时秒数上限，具体工具可有更严限制", examples=[3600])
@@ -206,12 +208,23 @@ class BaseConfig(BaseSettings):
     )
 
     # MCP配置参数
+    MCP_TOOL_SCHEMA_MODE: McpToolSchemaMode = Field(
+        default=McpToolSchemaMode.STATIC, description="MCP Schema 加载模式：static 全量，dynamic 搜索后按需加载", examples=["static", "dynamic"]
+    )
     MCP_CONNECT_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="MCP HTTP 建连、写入及连接池等待超时秒数", examples=[10])
     MCP_DISCOVERY_TIMEOUT_SECONDS: int = Field(default=15, gt=0, description="单次 MCP 发现总时限，含握手及分页", examples=[15])
     MCP_CALL_TIMEOUT_SECONDS: int = Field(default=120, gt=0, description="单次正式 MCP 调用时限，含连接、握手及结构复核", examples=[300])
     MCP_DISCOVERY_MAX_TOOLS: int = Field(default=128, ge=1, le=1024, description="MCP 发现工具数量上限", examples=[128])
     MCP_DISCOVERY_MAX_BYTES: int = Field(default=256 * 1024, ge=1024, le=1024 * 1024, description="MCP 发现结果总字节上限", examples=[262144])
+    MCP_FORCE_APPROVAL: bool = Field(default=False, description="部署强制所有 MCP 调用审批，不允许连接或工具覆盖", examples=[False])
     MCP_RESPONSE_MAX_BYTES: int = Field(default=1024 * 1024, ge=1024, le=16 * 1024 * 1024, description="MCP 单次连接接收字节上限", examples=[1048576])
+    MCP_RESULT_MAX_BYTES: int = Field(default=8 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024, description="MCP 解码后单次响应序列化预算", examples=[8388608])
+    MCP_RESULT_PREVIEW_BYTES: int = Field(default=8192, ge=1024, le=32768, description="MCP 模型可见预览正文预算，不包含有界元数据", examples=[8192])
+    MCP_RESULT_MAX_PER_RUN: int = Field(default=20, ge=1, le=100, description="单 Run 可保存的大结果响应数量", examples=[20])
+    MCP_SESSION_IDLE_SECONDS: int = Field(default=300, ge=5, le=3600, description="Run MCP 会话空闲时限，包含审批等待")
+    MCP_SESSION_MAX_SECONDS: int = Field(default=3600, ge=10, le=86400, description="Run MCP 会话累计存活时限，含审批等待")
+    MCP_SESSION_MAX_PER_RUN: int = Field(default=8, ge=1, le=64, description="单 Run 同时拥有的 MCP 会话上限")
+    MCP_SESSION_MAX_PER_WORKER: int = Field(default=64, ge=1, le=1024, description="单 Worker MCP 会话资源上限")
     MCP_STDIO_PROFILES: dict[str, dict] = Field(
         default_factory=dict,
         description="管理员提供的 stdio 配置，键为配置名，值含固定镜像 image、command、args 和允许注入的 env_keys；无网络或宿主目录挂载",

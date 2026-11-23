@@ -19,3 +19,6 @@
   .artifact-preview-drawer .ant-drawer-body { padding: var(--yp-space-3); }
   .artifact-preview-document { padding: var(--yp-space-3); }
 }
+
+.tool-result-preview { display: flex; flex-direction: column; gap: var(--yp-space-3); min-width: 0; }
+.tool-result-fragment { max-height: 55vh; overflow: auto; padding: var(--yp-space-3); border: 1px solid var(--yp-color-border); border-radius: var(--yp-radius-md); background: var(--yp-color-surface-muted); }

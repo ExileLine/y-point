@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.core.enums import RecoveryPolicy, ScriptLanguage, ToolEffect, ToolKind, Visibility
+from app.core.enums import RecoveryPolicy, ScriptLanguage, ToolApprovalMode, ToolEffect, ToolKind, Visibility
 
 
 class _ToolDisplayNameIn(BaseModel):
@@ -77,9 +77,15 @@ class ToolCreateIn(_ToolDisplayNameIn):
     mcp_tool_name: str | None = Field(default=None, max_length=128, description="远端 MCP 工具名", examples=["search"])
     mcp_bearer_token: str | None = Field(default=None, description="MCP Bearer 凭据，仅写入时接收", examples=["token-value"])
     share_credentials: bool = Field(default=False, description="公开 MCP 工具时明确允许他人使用该凭据", examples=[False])
-    requires_approval: bool = Field(default=False, strict=True, description="工具调用前是否需要人工审批，默认不需要", examples=[False])
-    effect: ToolEffect | None = Field(default=None, description="MCP 读写属性；远端未提供声明时仅管理员可确认只读", examples=["read"])
-    recovery_policy: RecoveryPolicy | None = Field(default=None, description="恢复策略，外部写需配置可核对的幂等契约", examples=["idempotent"])
+    requires_approval: bool = Field(default=False, strict=True, description="兼容审批开关；MCP 写操作仍受有效审批策略约束", examples=[False])
+    approval_mode: ToolApprovalMode = Field(default=ToolApprovalMode.INHERIT, description="MCP 工具审批覆盖；inherit 沿用连接默认", examples=["inherit"])
+    read_only_reason: str | None = Field(
+        default=None, min_length=1, max_length=512, description="私有未知 MCP 的只读确认理由，执行定义变化需重确认", examples=["仅查询天气，不修改数据"]
+    )
+    effect: ToolEffect | None = Field(default=None, description="MCP 读写属性；私有未知工具可由所有者附理由确认只读", examples=["read"])
+    recovery_policy: RecoveryPolicy | None = Field(
+        default=None, description="恢复策略；普通写可选 manual，声明 idempotent 则需验收幂等契约", examples=["idempotent"]
+    )
     idempotency_key_field: str | None = Field(
         default=None,
         min_length=1,
@@ -124,7 +130,11 @@ class ToolUpdateIn(_ToolDisplayNameIn):
     mcp_bearer_token: str | None = Field(default=None, description="替换 MCP Bearer 凭据，留空时保留", examples=["new-token"])
     share_credentials: bool | None = Field(default=None, description="公开时是否授权共享凭据", examples=[True])
     clear_mcp_credentials: bool = Field(default=False, description="清除新版本凭据并撤销历史凭据版本，与替换密钥互斥", examples=[True])
-    requires_approval: bool | None = Field(default=None, strict=True, description="新版工具调用前是否需要审批；省略时保留原设置", examples=[False])
+    requires_approval: bool | None = Field(default=None, strict=True, description="兼容审批开关；省略保留，关闭不绕过写操作及部署约束", examples=[False])
+    approval_mode: ToolApprovalMode | None = Field(default=None, description="新版 MCP 审批覆盖；inherit 恢复继承连接", examples=["writes"])
+    read_only_reason: str | None = Field(
+        default=None, min_length=1, max_length=512, description="重新确认未知私有 MCP 为只读的理由", examples=["已核对服务代码，仅查询天气"]
+    )
     effect: ToolEffect | None = Field(default=None, description="新版 MCP 读写属性", examples=["read"])
     recovery_policy: RecoveryPolicy | None = Field(default=None, description="新版调用恢复策略", examples=["idempotent"])
     idempotency_key_field: str | None = Field(default=None, min_length=1, max_length=128, description="远端幂等键字符串参数名", examples=["request_id"])

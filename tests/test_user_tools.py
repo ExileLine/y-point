@@ -298,16 +298,33 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pyte
                             item = UserTool(owner_id=2, name=f"bulk_tool_{index}", description="批量绑定工具", kind="script", visibility="private")
                             db.add(item)
                             await db.flush()
-                            db.add(UserToolVersion(tool_id=item.id, version=1, content_hash="b" * 64, input_schema=_schema(), effect="read", requires_approval=False, verified=True, source_code="print('{}')"))
+                            db.add(
+                                UserToolVersion(
+                                    tool_id=item.id,
+                                    version=1,
+                                    content_hash="b" * 64,
+                                    input_schema=_schema(),
+                                    effect="read",
+                                    requires_approval=False,
+                                    verified=True,
+                                    source_code="print('{}')",
+                                )
+                            )
                             tool_ids.append(item.id)
                     bulk = await client.post("/api/v1/agents", headers=other, json={"name": "Many Tools", "default_model_id": 5, "tool_ids": tool_ids})
                     assert bulk.status_code == 201, bulk.text
                     assert set(bulk.json()["data"]["tool_ids"]) == set(tool_ids)
                     agent_id = agent.json()["data"]["id"]
-                    updated = await client.put(f"/api/v1/agents/{agent_id}", headers=other, json={"expected_version": agent.json()["data"]["version"], "tool_ids": tool_ids})
+                    updated = await client.put(
+                        f"/api/v1/agents/{agent_id}", headers=other, json={"expected_version": agent.json()["data"]["version"], "tool_ids": tool_ids}
+                    )
                     assert updated.status_code == 200, updated.text
                     assert set(updated.json()["data"]["tool_ids"]) == set(tool_ids)
-                    repeated = await client.put(f"/api/v1/agents/{agent_id}", headers=other, json={"expected_version": updated.json()["data"]["version"], "tool_ids": [*tool_ids, tool_ids[0]]})
+                    repeated = await client.put(
+                        f"/api/v1/agents/{agent_id}",
+                        headers=other,
+                        json={"expected_version": updated.json()["data"]["version"], "tool_ids": [*tool_ids, tool_ids[0]]},
+                    )
                     assert repeated.status_code == 400, repeated.text
                     async with sessions.begin() as db:
                         bulk_run = await create_run(db, 2, agent_id=agent_id, model_id=5, input_text="检查完整工具列表")
@@ -317,7 +334,9 @@ def test_private_public_tool_and_agent_binding(tmp_path: Path, monkeypatch: pyte
                         snapshots = (await db.scalars(select(RunTool).where(RunTool.run_id == bulk_run.id))).all()
                         assert {row.tool_id for row in snapshots} == set(tool_ids)
                         resolved, _ = await make_worker_tool_resolver(sessions)(db, bulk_run)
-                        assert {tool.name for tool in resolved if tool.name.startswith("user_tool_")} == {f"user_tool_{item_id}_bulk_tool_{index}" for index, item_id in enumerate(tool_ids)}
+                        assert {tool.name for tool in resolved if tool.name.startswith("user_tool_")} == {
+                            f"user_tool_{item_id}_bulk_tool_{index}" for index, item_id in enumerate(tool_ids)
+                        }
                     changed = await client.put(
                         f"/api/v1/tools/{tool_id}",
                         headers=owner,
@@ -493,6 +512,7 @@ def test_public_mcp_without_credentials_can_be_invoked(tmp_path: Path, monkeypat
                                 "required": ["repoName"],
                             },
                             effect="read",
+                            effect_source="remote_read",
                             requires_approval=requires_approval,
                             verified=True,
                             mcp_url="https://mcp.deepwiki.com/mcp",
@@ -693,8 +713,9 @@ def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(get_config(), "MCP_CONNECT_TIMEOUT_SECONDS", 4)
 
     @asynccontextmanager
-    async def fake_stream(url, *, http_client):
+    async def fake_stream(url, *, http_client, terminate_on_close=True):
         """模拟仅接受新版 SDK 参数的连接。"""
+        assert terminate_on_close is False
         assert url == "https://mcp.example.com/mcp"
         assert not http_client.is_closed
         assert http_client.headers["Authorization"] == "Bearer test-token"
@@ -704,7 +725,7 @@ def test_mcp_modern_client_lifecycle_and_timeout(monkeypatch: pytest.MonkeyPatch
         assert isinstance(http_client._transport, _PinnedMcpTransport)
         assert http_client._transport.address == "1.1.1.1"
         seen.append(http_client)
-        yield "read", "write", None
+        yield "read", "write", lambda: None
 
     monkeypatch.setattr(mcp_tools, "validate_mcp_url", lambda url: "1.1.1.1")
     monkeypatch.setattr(mcp_tools, "streamable_http_client", fake_stream)

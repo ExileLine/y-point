@@ -40,4 +40,6 @@ class Artifact(CustomBaseModel):
     state: Mapped[str] = mapped_column(String(16), nullable=False, comment="文件状态：pending、ready 或 deleted")
     expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="文件到期时间")
 
+    tool_result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True, comment="MCP 单次响应的脱敏结果范围与调用来源")
+
     template_source: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="生成报告固定的 Skill 与模板来源快照")

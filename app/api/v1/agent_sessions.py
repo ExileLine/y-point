@@ -118,6 +118,7 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
         or message is None
         or message.content != body.input_text
         or run.publish_answer_artifact != body.publish_answer_artifact
+        or run.require_mcp_approval != body.require_mcp_approval
         or saved_artifacts != body.artifact_ids
         or saved_context != set(body.context_artifact_ids)
     ):
@@ -421,6 +422,7 @@ async def create_session_run(
         input_text=body.input_text,
         request_key=body.request_key,
         publish_answer_artifact=body.publish_answer_artifact,
+        require_mcp_approval=body.require_mcp_approval,
         agent_config_version=agent.version,
         agent_system_prompt=agent.system_prompt,
         agent_temperature=agent.temperature,

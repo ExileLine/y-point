@@ -21,6 +21,7 @@ from app.models.provider_connection import ProviderConnection
 from app.services.model_availability import model_availability_notice
 from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.models.skill import AgentSkill
+from app.models.mcp_connection import AgentMcpTool
 from app.models.tool import AgentTool
 from app.schemas.agent_session import SessionModelOptionOut
 from app.services.runtime_adapter import CONTEXT_OVERHEAD_TOKENS, MIN_CONTEXT_INPUT_TOKENS
@@ -61,7 +62,7 @@ async def effective_session_model(db: AsyncSession, session: AgentSession, agent
 
 async def requires_tools(db: AsyncSession, agent_id: int) -> bool:
     """配置了 Tool、Skill 或知识库的 Agent 要求已验证工具能力。"""
-    for binding in (AgentTool, AgentSkill, AgentKnowledgeBase):
+    for binding in (AgentTool, AgentMcpTool, AgentSkill, AgentKnowledgeBase):
         if await db.scalar(select(binding.id).where(binding.agent_id == agent_id).limit(1)) is not None:
             return True
     return False
@@ -121,7 +122,9 @@ async def session_model_options(db: AsyncSession, agent: AgentConfig) -> list[Se
     needs_tools = await requires_tools(db, agent.id)
     result = []
     for model, provider in rows:
-        if ModelCapability.TEXT not in (model.verified_capabilities or []) and not (model.availability_failure and ModelCapability.TEXT in (model.capabilities or [])):
+        if ModelCapability.TEXT not in (model.verified_capabilities or []) and not (
+            model.availability_failure and ModelCapability.TEXT in (model.capabilities or [])
+        ):
             continue
         issue = model_issue(model, provider, agent, needs_tools)
         result.append(

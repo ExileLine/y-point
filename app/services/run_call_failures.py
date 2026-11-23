@@ -14,8 +14,10 @@ from langchain_core.tools import ToolException
 from app.core.enums import RunCallFailure, ToolFeedbackFailure
 from app.services.script_sandbox import SandboxConfigurationError
 from app.services.tool_arguments import ScriptInputToolError, ToolArgumentsError
+from app.services.tool_delivery import request_not_sent
 
 FAILURE_MESSAGES = {
+    RunCallFailure.USER_REJECTED: "用户拒绝了本次操作，工具未执行；已完成的操作不会回滚。",
     RunCallFailure.RESULT_UNKNOWN: "外部写入的结果尚未确认，请先核实实际结果，再决定后续操作。",
     RunCallFailure.TIMEOUT: "调用超过单次执行时限，请检查工具或 MCP 的响应时间与超时设置。",
     RunCallFailure.INVALID_ARGUMENTS: "调用参数不符合工具输入规范，工具未执行；模型可修正参数后再次调用。",
@@ -30,7 +32,7 @@ FAILURE_MESSAGES = {
     RunCallFailure.SCRIPT_FAILED: "脚本进程执行失败，请检查脚本逻辑及所需依赖。",
     RunCallFailure.INVALID_OUTPUT: "脚本返回内容不是有效 JSON，请检查脚本的标准输出格式。",
     RunCallFailure.RESPONSE_LIMIT: "工具返回内容超过允许的大小，请缩小查询范围或减少输出。",
-    RunCallFailure.TOOL_CHANGED: "MCP 工具结构已变化，请更新并发布工具版本后重新提交。",
+    RunCallFailure.TOOL_CHANGED: "远端 MCP 工具已移除或定义发生变化，请同步发布并确认 Agent 工具版本更新后重新提交。",
     RunCallFailure.EXECUTION_ERROR: "工具执行失败，未提供可安全展示的具体原因，请检查工具配置或联系维护者。",
     RunCallFailure.INTERRUPTED: "调用执行被中断，无法确认最终执行结果，请核实后再决定是否重新提交。",
 }
@@ -61,6 +63,8 @@ def tool_result_failure(content: object) -> RunCallFailure:
 
 def tool_exception_failure(error: BaseException) -> RunCallFailure:
     """按异常类型生成原因码，任务组包装只在原因一致时解包。"""
+    if request_not_sent(error) and isinstance(error.__cause__, Exception):
+        return tool_exception_failure(error.__cause__)
     if isinstance(error, BaseExceptionGroup):
         reasons = {tool_exception_failure(item) for item in error.exceptions}
         return next(iter(reasons)) if len(reasons) == 1 else RunCallFailure.EXECUTION_ERROR

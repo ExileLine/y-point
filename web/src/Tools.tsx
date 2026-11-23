@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
-import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Tabs, Tag, Typography, message } from "antd";
+import { useResourceQuery } from "./hooks/useResourceQuery";
+import { callabilityNotice, ToolCallabilityNotice, ToolCallabilityTag } from "./components/ToolCallability";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Drawer, Empty, Input, Modal, Popconfirm, Segmented, Select, Space, Spin, Switch, Tabs, Tag, Typography, message } from "antd";
 import { Code2, Plug, Wrench, FlaskConical, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import {
   createUserTool, deleteUserTool, discoverMcpTools, toolDisplayName, getUserTool, listToolCatalog, testUserTool, updateUserTool, retryToolEnvironment,
-  type DiscoveredTool, type ToolCatalog, type ToolDraft, type UserTool,
+  type DiscoveredTool, type ToolCatalog, type ToolDraft, type ToolApprovalMode, type UserTool,
 } from "./api";
 
 import McpConnections from "./McpConnections";
@@ -32,13 +34,18 @@ type Editor = {
   bearerToken: string;
   shareCredentials: boolean;
   requiresApproval: boolean;
+  approvalMode: ToolApprovalMode;
+  confirmReadOnly: boolean;
+  readOnlyReason: string;
+  recoveryPolicy: "manual" | "idempotent";
+  idempotencyKey: string;
 };
 
 function blankEditor(): Editor {
   return {
     item: null, kind: "script", displayName: "", description: "", visibility: "private", enabled: true,
     schema: defaultSchema, language: "python", source: defaultSource, requirements: "",
-    url: "", remoteName: "", bearerToken: "", shareCredentials: false, requiresApproval: false,
+    url: "", remoteName: "", bearerToken: "", shareCredentials: false, requiresApproval: false, approvalMode: "inherit", confirmReadOnly: false, readOnlyReason: "", recoveryPolicy: "manual", idempotencyKey: "",
   };
 }
 
@@ -48,17 +55,24 @@ function errorText(error: unknown): string {
 
 export default function Tools({ userId }: { userId: number }) {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
-  const [connections, setConnections] = useState<McpConnection[]>([]);
-  const [connectionError, setConnectionError] = useState("");
-  const [catalog, setCatalog] = useState<ToolCatalog>(emptyCatalog);
+
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState("all");
   const [scope, setScope] = useState("all");
   const [editorError, setEditorError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+
   const [view, setView] = useState("user");
   const [editor, setEditor] = useState<Editor | null>(null);
+  const { data: catalog, error, loading, refresh: reload } = useResourceQuery<ToolCatalog>(listToolCatalog, emptyCatalog);
+  const { data: connections, error: connectionError, loading: connectionLoading, refresh: reloadConnections } = useResourceQuery<McpConnection[]>(listMcpConnections, [], editor?.kind === "mcp");
+  const [detailTarget, setDetailTarget] = useState<UserTool | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [statusTool, setStatusTool] = useState<UserTool | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState("");
+  const detailSequence = useRef(0);
+  useEffect(() => () => { detailSequence.current += 1; }, []);
   const [saving, setSaving] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredTool[]>([]);
   const [discovering, setDiscovering] = useState(false);
@@ -67,20 +81,10 @@ export default function Tools({ userId }: { userId: number }) {
   const [testArgs, setTestArgs] = useState("{}");
   const [testResult, setTestResult] = useState<string | null>(null);
 
-  async function reload() {
-    setLoading(true);
-    try { setCatalog(await listToolCatalog()); setError(""); }
-    catch (failure) { setError(errorText(failure)); }
-    finally { setLoading(false); }
-  }
-
-  useEffect(() => { void reload(); }, []);
-  async function reloadConnections() {
-    try { setConnections(await listMcpConnections()); setConnectionError(""); }
-    catch (failure) { setConnectionError(errorText(failure)); }
-  }
-  useEffect(() => { if (editor?.kind === "mcp") void reloadConnections(); }, [editor?.kind]);
-
+  const selectedRemote = discovered.find(item => item.name === editor?.remoteName);
+  const editingSameRemote = editor?.remoteName === editor?.item?.mcp_tool_name && editor?.connectionId === (editor?.item?.mcp_connection_id || undefined);
+  const remoteReadHint = selectedRemote ? selectedRemote.read_only : editingSameRemote && editor?.item?.effect_source === "remote_read" ? true
+    : editingSameRemote && editor?.item?.effect_source === "remote_write" ? false : null;
   const environmentState = editor?.item?.environment?.state;
   const environmentPending = environmentState === "pending" || environmentState === "building";
   useEffect(() => {
@@ -91,6 +95,7 @@ export default function Tools({ userId }: { userId: number }) {
     const timer = window.setInterval(() => {
       void getUserTool(id).then((full) => {
         if (!active || full.current_version !== version) return;
+        setStatusTool(full);
         setEditor((current) => current?.item?.id === id && current.item.current_version === version ? { ...current, item: full } : current);
       }).catch(() => { /* 单次轮询失败交由下一次重试，保留用户未保存内容。 */ });
     }, 2000);
@@ -119,6 +124,7 @@ export default function Tools({ userId }: { userId: number }) {
     setRetrying(true);
     try {
       const full = await retryToolEnvironment(editor.item.id, editor.item.current_version);
+      setStatusTool(full);
       update({ item: full, enabled: full.enabled, visibility: full.visibility });
       setTestResult(null);
       await reload();
@@ -128,12 +134,15 @@ export default function Tools({ userId }: { userId: number }) {
   }
 
   async function openEditor(item?: UserTool) {
-    setEditorError("");
-    setDiscovered([]);
-    setTestResult(null);
+    const request = ++detailSequence.current;
+    setEditorError(""); setDetailError(""); setStatusError(""); setStatusTool(null); setStatusLoading(false);
+    setDiscovered([]); setTestResult(null); setDetailTarget(item || null);
+    setEditor(null); setDetailLoading(Boolean(item));
     if (!item) { setEditor(blankEditor()); return; }
     try {
       const full = await getUserTool(item.id);
+      if (request !== detailSequence.current) return;
+      setStatusTool(full);
       setEditor({
         item: full, kind: full.kind, displayName: toolDisplayName(full), description: full.description,
         visibility: full.visibility, enabled: full.enabled,
@@ -142,8 +151,28 @@ export default function Tools({ userId }: { userId: number }) {
         source: full.source_code || "", url: full.mcp_url || "", remoteName: full.mcp_tool_name || "",
         connectionId: full.mcp_connection_id || undefined,
         bearerToken: "", shareCredentials: Boolean(full.share_credentials), requiresApproval: Boolean(full.requires_approval),
+        approvalMode: full.approval_mode || (full.requires_approval ? "always" : "inherit"),
+        confirmReadOnly: full.effect_source === "owner_read", readOnlyReason: "",
+        recoveryPolicy: full.recovery_policy === "idempotent" ? "idempotent" : "manual", idempotencyKey: full.idempotency_key_field || "",
       });
-    } catch (failure) { message.error(errorText(failure)); }
+    } catch (failure) { if (request === detailSequence.current) setDetailError(errorText(failure)); }
+    finally { if (request === detailSequence.current) setDetailLoading(false); }
+  }
+
+  function closeEditor() {
+    detailSequence.current += 1;
+    setEditor(null); setDetailTarget(null); setDetailLoading(false);
+  }
+
+  async function refreshPublished() {
+    if (!editor?.item) return;
+    const request = ++detailSequence.current;
+    setStatusLoading(true); setStatusError("");
+    try {
+      const full = await getUserTool(editor.item.id);
+      if (request === detailSequence.current) setStatusTool(full);
+    } catch (failure) { if (request === detailSequence.current) setStatusError(errorText(failure)); }
+    finally { if (request === detailSequence.current) setStatusLoading(false); }
   }
 
   function update(change: Partial<Editor>) {
@@ -166,7 +195,7 @@ export default function Tools({ userId }: { userId: number }) {
     setEditor(current => ({
       ...(current || blankEditor()), kind: "mcp", connectionId: connection.id, remoteName: tool.name,
       displayName: current?.displayName || tool.name, description: current?.description || tool.description.slice(0, 1024) || `调用 ${tool.name}`,
-      url: "", bearerToken: "", schema: JSON.stringify(tool.input_schema, null, 2),
+      url: "", bearerToken: "", schema: JSON.stringify(tool.input_schema, null, 2), confirmReadOnly: false, readOnlyReason: "", recoveryPolicy: "manual", idempotencyKey: "",
     }));
     setDiscovered([tool]); setEditorError(""); setTestResult(null); setConnectionsOpen(false);
     void reloadConnections();
@@ -194,9 +223,9 @@ export default function Tools({ userId }: { userId: number }) {
       const draft: ToolDraft = {
         display_name: editor.displayName.trim(), description: editor.description.trim(), kind: editor.kind,
         visibility: editor.kind === "script" && !editor.item ? "private" : editor.visibility,
-        requires_approval: editor.requiresApproval,
       };
       if (editor.kind === "script") {
+        draft.requires_approval = editor.requiresApproval;
         draft.input_schema = JSON.parse(editor.schema) as Record<string, unknown>;
         draft.script_language = editor.language;
         draft.source_code = editor.source;
@@ -206,6 +235,13 @@ export default function Tools({ userId }: { userId: number }) {
         else if (editor.item) draft.mcp_url = editor.url.trim();
         else throw new Error("请先选择 MCP 连接");
         draft.mcp_tool_name = editor.remoteName;
+        draft.approval_mode = editor.approvalMode;
+        draft.recovery_policy = editor.recoveryPolicy;
+        if (editor.recoveryPolicy === "idempotent") draft.idempotency_key_field = editor.idempotencyKey.trim();
+        if (editor.confirmReadOnly) {
+          draft.effect = "read";
+          if (editor.readOnlyReason.trim()) draft.read_only_reason = editor.readOnlyReason.trim();
+        } else if (editor.item?.effect_source === "owner_read") draft.effect = "write";
         if (!editor.connectionId && editor.bearerToken) draft.mcp_bearer_token = editor.bearerToken;
         draft.share_credentials = editor.shareCredentials;
       }
@@ -219,6 +255,8 @@ export default function Tools({ userId }: { userId: number }) {
         saved = await createUserTool(draft);
         message.success("Tool 已保存");
       }
+      setStatusTool(saved);
+      if (saved.kind !== "script") setDetailTarget(null);
       setEditor(saved.kind === "script" ? {
         ...editor, item: saved, visibility: saved.visibility, enabled: saved.enabled,
         requirements: (saved.requirements || []).join("\n"),
@@ -246,6 +284,7 @@ export default function Tools({ userId }: { userId: number }) {
       const result = await testUserTool(editor.item.id, args);
       setTestResult(result.result);
       const full = await getUserTool(editor.item.id);
+      setStatusTool(full);
       update({ item: full, enabled: full.enabled, visibility: full.visibility });
       await reload();
     } catch (failure) { message.error(failure instanceof SyntaxError ? "试运行参数不是有效 JSON" : errorText(failure)); }
@@ -257,13 +296,14 @@ export default function Tools({ userId }: { userId: number }) {
   const builtins = catalog.builtin.filter((item) => `${item.model_name} ${item.description}`.toLowerCase().includes(query.trim().toLowerCase()));
   const toolIcon = (item: UserTool) => item.kind === "mcp" ? <Plug size={20} /> : <Code2 size={20} />;
   const tags = (item: UserTool) => <><Tag>{item.visibility === "public" ? "公开" : "私有"}</Tag>
-    <Tag color={item.enabled ? "success" : item.kind === "script" && !item.verified ? "warning" : "default"}>{item.enabled ? "已启用" : item.kind === "script" && !item.verified ? "待试运行" : "已停用"}</Tag></>;
+    <Tag color={item.enabled ? "success" : item.kind === "script" && !item.verified ? "warning" : "default"}>{item.enabled ? "已启用" : item.kind === "script" && !item.verified ? "待试运行" : "已停用"}</Tag>
+    <ToolCallabilityTag value={item.callability} checkedAt={item.callability_checked_at} /></>;
   const actions = (item: UserTool) => item.owner_id === userId ? <Space wrap size="small">
     <Button type="text" icon={<Pencil size={16} />} aria-label="编辑" onClick={() => void openEditor(item)}>编辑</Button>
     <Popconfirm title="删除 Tool？" description="删除后将无法继续调用此工具。" onConfirm={async () => { try { await deleteUserTool(item.id); await reload(); } catch (failure) { message.error(errorText(failure)); } }}>
       <Button type="text" danger icon={<Trash2 size={16} />} aria-label="删除">删除</Button>
     </Popconfirm>
-  </Space> : <span className="resource-muted">他人公开 · 只读</span>;
+  </Space> : <span className="resource-muted">他人公开 · 不可编辑</span>;
   return <div className="tools-page resource-page">
     <PageHeader title="Tool" description="连接脚本与 MCP 服务，让 Agent 安全地执行操作。" actions={<Space wrap><Button icon={<Plug size={16} />} onClick={() => setConnectionsOpen(true)}>MCP 连接</Button><Button type="primary" icon={<Plus size={16} />} onClick={() => void openEditor()}>新建 Tool</Button></Space>} />
     <section className="resource-surface" aria-label="Tool 列表">
@@ -287,12 +327,22 @@ export default function Tools({ userId }: { userId: number }) {
         : <ResourceCollection rowKey="model_name" items={builtins} loading={loading} empty={<Empty description="没有匹配的内置工具" />}
           columns={[{ title: "名称", dataIndex: "model_name" }, { title: "用途", dataIndex: "description" }]}
           renderCard={(item) => <ResourceCard icon={<Wrench size={20} />} title={item.model_name} description={item.description} tags={<Tag>系统内置</Tag>} />} />)}
-      <p className="resource-note">脚本保存后需通过试运行才能启用；Python 依赖环境的准备进度可在编辑面板查看。</p>
+      <p className="resource-note">{callabilityNotice}{(error || loading) && " 当前目录正在核对或查询失败，已显示结果可能过期。"}脚本保存后需通过试运行才能启用。</p>
     </section>
     <McpConnections open={connectionsOpen} onClose={() => setConnectionsOpen(false)} onChanged={() => void reloadConnections()} onSelectTool={selectConnectionTool} selectLabel={editor ? "用于当前 Tool" : "添加为 Tool"} />
-    <Drawer rootClassName="resource-editor" title={editor?.item ? "编辑 Tool" : "新建 Tool"} open={Boolean(editor)} onClose={() => { if (!saving && !testing && !discovering && !retrying) setEditor(null); }}
-      width="min(100vw, var(--yp-editor-width))" extra={<Button type="primary" loading={saving} onClick={() => void save()}>保存</Button>}>
+    <Drawer rootClassName="resource-editor" title={editor?.item || detailTarget ? "编辑 Tool" : "新建 Tool"} open={Boolean(editor || detailTarget)} onClose={() => { if (!saving && !testing && !discovering && !retrying) closeEditor(); }}
+      width="min(100vw, var(--yp-editor-width))" extra={<Button type="primary" loading={saving} disabled={!editor || detailLoading} onClick={() => void save()}>保存</Button>}>
+      {detailLoading && <Space><Spin /><Typography.Text>正在加载工具详情与状态…</Typography.Text></Space>}
+      {detailError && <Alert type="error" showIcon message={`工具详情加载失败：${detailError}`} action={<Button onClick={() => void openEditor(detailTarget || undefined)}>重试详情</Button>} />}
       {editor && <Space direction="vertical" size="middle" className="resource-full-width">
+        {editor.item ? <>
+          <Button loading={statusLoading} disabled={saving || testing || retrying} onClick={() => void refreshPublished()}>刷新发布状态</Button>
+          {statusError && <Alert type="warning" showIcon message={`状态查询失败：${statusError}`} description="编辑草稿及上次判断已保留，状态可能过期；请重试刷新发布状态。" />}
+          {statusLoading && <Typography.Text type="secondary">正在重新核对发布状态，上次结果可能过期…</Typography.Text>}
+          <ToolCallabilityNotice value={(statusTool || editor.item).callability} version={(statusTool || editor.item).current_version}
+            connectionVersion={(statusTool || editor.item).mcp_connection_version} checkedAt={(statusTool || editor.item).callability_checked_at} />
+          {statusTool && statusTool.current_version !== editor.item.current_version && <Alert type="warning" showIcon message={`发布版本已变为 v${statusTool.current_version}，当前草稿基于 v${editor.item.current_version}`} description="草稿已保留。保存仍使用原始版本检查冲突，请复制修改后重新打开详情核对。" />}
+        </> : editor.kind === "mcp" && <Alert type="info" showIcon message="保存发布后生成可调用状态" description={callabilityNotice} />}
         {editorError && <Alert type="error" showIcon message={editorError} description="输入内容已保留，请检查后重新保存。" />}
         <Segmented aria-label="工具类型" block value={editor.kind} onChange={(kind) => update({ kind: kind as Editor["kind"] })} disabled={Boolean(editor.item)}
           options={[{ label: "脚本", value: "script" }, { label: "MCP", value: "mcp" }]} />
@@ -341,7 +391,7 @@ export default function Tools({ userId }: { userId: number }) {
           </>}
         </> : <>
           {connectionError && <Alert type="error" showIcon message={connectionError} action={<Button onClick={() => void reloadConnections()}>重试加载连接</Button>} />}
-          <label>MCP 连接<Select aria-label="Tool MCP 连接" style={{ width: "100%" }} value={editor.connectionId}
+          <label>MCP 连接<Select aria-label="Tool MCP 连接" loading={connectionLoading} disabled={connectionLoading || Boolean(connectionError)} style={{ width: "100%" }} value={editor.connectionId}
             onChange={connectionId => { update({ connectionId, remoteName: "" }); setDiscovered([]); }}
             options={connections.filter(item => item.enabled).map(item => ({ value: item.id, label: `${item.name} · ${item.transport} · v${item.version}` }))} placeholder="选择已保存的连接" /></label>
           <Button onClick={() => setConnectionsOpen(true)}>管理 MCP 连接</Button>
@@ -356,8 +406,25 @@ export default function Tools({ userId }: { userId: number }) {
           <Typography.Text type="secondary">按 MCP 服务发现的原始函数名调用，修改显示名称不会改变此函数名。</Typography.Text>
           {!editor.connectionId && editor.visibility === "public" && <label className="resource-switch-row">允许其他用户使用此连接凭据<Switch aria-label="共享连接凭据" checked={editor.shareCredentials} onChange={(shareCredentials) => update({ shareCredentials })} /></label>}
         </>}
-        <label className="resource-switch-row">调用前需要审批<Switch aria-label="调用前需要审批" checked={editor.requiresApproval} onChange={(requiresApproval) => update({ requiresApproval })} /></label>
-        <Typography.Text type="secondary">默认关闭，Agent 可直接调用。开启后，每次调用需在会话中手动确认。保存后下一轮对话生效；已开始的轮次保持原设置。</Typography.Text>
+        {editor.kind === "script" ? <>
+          <label className="resource-switch-row">调用前需要审批<Switch aria-label="调用前需要审批" checked={editor.requiresApproval} onChange={(requiresApproval) => update({ requiresApproval })} /></label>
+          <Typography.Text type="secondary">开启后，每次调用需在会话中手动确认。保存后下一轮对话生效。</Typography.Text>
+        </> : <>
+          <label>工具审批策略<Select aria-label="工具审批策略" style={{ width: "100%" }} value={editor.approvalMode} onChange={approvalMode => update({ approvalMode })}
+            options={[{ value: "inherit", label: "继承连接默认" }, { value: "writes", label: "写入和未知操作需审批" }, { value: "always", label: "每次调用均审批" }, { value: "never", label: "不额外审批（仍受平台约束）" }]} /></label>
+          <Typography.Text type="secondary">普通非幂等写始终需审批，幂等验收不自动免审批；使用者及部署可以进一步收紧。策略收紧会停止原先免审批的相关运行。</Typography.Text>
+          {(remoteReadHint == null) && <>
+            <label className="resource-switch-row">确认未知工具为只读<Switch aria-label="确认未知工具为只读" checked={editor.confirmReadOnly} onChange={confirmReadOnly => update({ confirmReadOnly })} /></label>
+            {editor.confirmReadOnly && <label>只读确认理由<Input.TextArea aria-label="只读确认理由" maxLength={512} value={editor.readOnlyReason}
+              placeholder={editor.item?.read_confirmation ? "执行定义未变化时留空保留已有确认；变化后请重新说明" : "说明为何确定此私有工具仅查询，不修改数据"} onChange={event => update({ readOnlyReason: event.target.value })} /></label>}
+          </>}
+          {!editor.confirmReadOnly && remoteReadHint !== true && <>
+            <label>写操作恢复策略<Select aria-label="写操作恢复策略" value={editor.recoveryPolicy} style={{ width: "100%" }} onChange={recoveryPolicy => update({ recoveryPolicy })}
+              options={[{ value: "manual", label: "manual：结果未知时人工核对" }, { value: "idempotent", label: "idempotent：使用已验收的幂等契约" }]} /></label>
+            {editor.recoveryPolicy === "idempotent" && <label>幂等键参数<Input aria-label="幂等键参数" value={editor.idempotencyKey} onChange={event => update({ idempotencyKey: event.target.value })} /></label>}
+          </>}
+          <Alert type="info" showIcon message="MCP 注解是远端提示，缺少声明不代表已证实写入。只读确认绑定执行定义，Schema 或执行配置变化后需重新确认。" />
+        </>}
       </Space>}
     </Drawer>
     <Modal title="试运行结果" open={testResult !== null} footer={<Button onClick={() => setTestResult(null)}>关闭</Button>}

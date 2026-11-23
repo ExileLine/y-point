@@ -54,6 +54,7 @@ async def _owned_artifact(db: AsyncSession, artifact_id: str, owner_id: int) -> 
         artifact is None
         or artifact.owner_id != owner_id
         or artifact.state != ArtifactState.READY
+        or artifact.status != 1
         or artifact.is_deleted != 0
         or artifact.expires_at is not None
         and artifact.expires_at <= shanghai_now(naive=True)
@@ -167,6 +168,7 @@ async def list_run_artifacts(run_id: str, actor: Admin = Depends(get_current_adm
             Artifact.owner_id == actor.id,
             Artifact.source == ArtifactOrigin.GENERATED,
             Artifact.state == ArtifactState.READY,
+            Artifact.status == 1,
             Artifact.is_deleted == 0,
             (Artifact.expires_at.is_(None) | (Artifact.expires_at > shanghai_now(naive=True))),
         )
@@ -260,3 +262,22 @@ async def delete_artifact(artifact_id: str, actor: Admin = Depends(get_current_a
             "id": artifact_id,
         },
     )
+
+
+@router.get("/{artifact_id}/result-page", summary="分段读取私有 MCP 结果快照")
+async def read_tool_result_page(
+    artifact_id: str,
+    offset: int = Query(default=0, ge=0, description="已保存 JSON 的 Unicode 字符偏移", examples=[0]),
+    expected_sha256: str = Query(min_length=64, max_length=64, description="结果引用中的固定 SHA-256", examples=["a" * 64]),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """每页重验所有者、保留期限及摘要，不访问远端也不公开存储键。"""
+    from app.services.mcp_results import read_result_page
+
+    await _owned_artifact(db, artifact_id, actor.id)
+    try:
+        page = await read_result_page(db, artifact_id, actor.id, offset=offset, expected_sha256=expected_sha256)
+    except ValueError:
+        raise CustomException(status_code=409, custom_code=10003, detail="结果不可读取、摘要不符或偏移无效") from None
+    return api_response(data=page, is_pop=False)

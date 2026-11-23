@@ -54,6 +54,7 @@ async def dispatch_next_run(
     timeout_seconds: float | None = None,
     lease_seconds: int = 30,
     poll_seconds: float = 5,
+    mcp_worker_id: str | None = None,
 ) -> AgentRun | None:
     """读取最早排队或可安全恢复的运行；竞争失败由下一轮处理。"""
     async with sessions() as db:
@@ -64,11 +65,14 @@ async def dispatch_next_run(
                 .where(
                     RunApproval.run_id == AgentRun.id,
                     RunApproval.checkpoint_id == AgentRun.checkpoint_id,
-                    RunApproval.state == ApprovalState.APPROVED,
+                    RunApproval.state.in_((ApprovalState.APPROVED, ApprovalState.RESOLVED)),
                 )
                 .exists()
             )
             eligible = or_(eligible, and_(AgentRun.state == RunState.WAITING_FOR_APPROVAL, approved))
+        eligible = and_(
+            eligible, or_(AgentRun.mcp_worker_id.is_(None), AgentRun.mcp_worker_id == mcp_worker_id) if mcp_worker_id else AgentRun.mcp_worker_id.is_(None)
+        )
         statement = select(AgentRun.id, AgentRun.state).where(eligible).order_by(AgentRun.create_time, AgentRun.id).limit(1)
         candidate = (await db.execute(statement)).first()
     if candidate is None:
@@ -85,6 +89,7 @@ async def dispatch_next_run(
             timeout_seconds=timeout_seconds,
             lease_seconds=lease_seconds,
             poll_seconds=poll_seconds,
+            mcp_worker_id=mcp_worker_id,
         )
     except RunConflictError:
         return None

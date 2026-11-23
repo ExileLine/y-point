@@ -14,7 +14,8 @@ from app.core.custom_exception import CustomException
 from app.core.enums import McpTransport, RunState, Visibility
 from app.models.mcp_connection import McpConnection
 from app.models.tool import RunTool, UserTool, UserToolVersion
-from app.services.provider_credentials import encrypt_credentials
+from app.services.provider_credentials import decrypt_credentials, encrypt_credentials
+from app.services.mcp_auth import auth_config, http_credentials
 
 
 def stdio_profiles() -> dict[str, dict]:
@@ -41,7 +42,7 @@ def stdio_profiles() -> dict[str, dict]:
     return profiles
 
 
-def connection_config(data: dict) -> dict:
+def connection_config(data: dict, previous: McpConnection | None = None) -> dict:
     """校验互斥字段，发布不含凭据的完整传输快照。"""
     from app.services.user_tools import validate_mcp_url
 
@@ -49,12 +50,27 @@ def connection_config(data: dict) -> dict:
         if not data.get("url") or data.get("stdio_profile") or data.get("args") or data.get("env"):
             raise ValueError("HTTP 连接需要 URL，不能填写 stdio 配置、参数或环境变量")
         validate_mcp_url(data["url"])
+        if (
+            previous
+            and previous.config["transport"] == McpTransport.STREAMABLE_HTTP
+            and "auth_type" not in previous.config
+            and not any(key in data for key in ("auth_type", "api_key", "api_key_header", "headers", "sensitive_headers"))
+        ):
+            return {
+                "transport": McpTransport.STREAMABLE_HTTP,
+                "url": data["url"],
+            }
+        old_config = dict(previous.config) if previous and previous.config["transport"] == McpTransport.STREAMABLE_HTTP else {}
+        if old_config and "auth_type" not in old_config:
+            old_key, _ = decrypt_credentials(previous.encrypted_credentials)
+            old_config["auth_type"] = "bearer" if old_key else "none"
         return {
             "transport": McpTransport.STREAMABLE_HTTP,
             "url": data["url"],
+            **auth_config(data, old_config),
         }
-    if data.get("url") or data.get("bearer_token"):
-        raise ValueError("stdio 连接不能填写 HTTP 地址或 Bearer 凭据")
+    if any(data.get(key) for key in ("url", "bearer_token", "api_key", "auth_type", "api_key_header", "headers", "sensitive_headers")):
+        raise ValueError("stdio 连接不能填写 HTTP 地址、鉴权或 Headers")
     profile = stdio_profiles().get(data.get("stdio_profile"))
     if profile is None:
         raise ValueError("stdio 启动配置不存在，请由管理员先配置固定镜像和命令")
@@ -78,6 +94,10 @@ def connection_config(data: dict) -> dict:
 
 def credentials_for(data: dict, previous: McpConnection | None = None) -> str | None:
     """凭据只加密写入；同传输的空值保留，显式清除或替换会触发撤销。"""
+    if data["transport"] == McpTransport.STREAMABLE_HTTP:
+        config = connection_config(data, previous)
+        same_transport = previous and previous.config["transport"] == McpTransport.STREAMABLE_HTTP
+        return http_credentials(data, config, previous.encrypted_credentials if same_transport else None, previous.config if same_transport else None)
     if data.get("clear_credentials"):
         if data.get("bearer_token") or data.get("env"):
             raise ValueError("清除凭据与替换凭据不能同时提交")
@@ -91,12 +111,21 @@ def credentials_for(data: dict, previous: McpConnection | None = None) -> str | 
 
 def connection_output(item: McpConnection) -> dict:
     """仅向所有者返回公开连接配置和凭据存在标记。"""
+    token, secret_headers = decrypt_credentials(item.encrypted_credentials)
+    http = item.config["transport"] == McpTransport.STREAMABLE_HTTP
     return {
         "id": item.id,
         "name": item.name,
         "version": item.version,
         "enabled": item.enabled,
+        "approval_mode": item.approval_mode,
         "transport": item.config["transport"],
+        "auth_type": item.config.get("auth_type", "bearer" if http and token else "none"),
+        "api_key_header": item.config.get("api_key_header"),
+        "header_names": sorted((item.config.get("headers") or {}).keys()),
+        "sensitive_header_names": sorted(secret_headers) if http else [],
+        "has_auth_key": bool(token) if http else False,
+        "config_revoked_through": item.config_revoked_through or 0,
         "url": item.config.get("url"),
         "stdio_profile": item.config.get("stdio_profile"),
         "args": item.config.get("user_args", []),
@@ -125,6 +154,7 @@ async def bind_connection(db: AsyncSession, fields: dict, owner_id: int) -> None
     fields.update(
         {
             "mcp_connection_version": item.version,
+            "connection_approval_mode": item.approval_mode,
             "mcp_config": dict(item.config),
             "mcp_url": item.config.get("url"),
             "encrypted_credentials": item.encrypted_credentials,
@@ -137,17 +167,18 @@ async def require_connection(db: AsyncSession, tool: UserTool, version: UserTool
     """旧版执行快照仍受当前连接停用、删除、密钥撤销和共享策略限制。"""
     if version.mcp_connection_id is None:
         return
+    from app.services.mcp_access import can_borrow_credentials
+
     item = await db.get(McpConnection, version.mcp_connection_id)
     if (
         item is None
         or item.is_deleted != 0
         or not item.enabled
         or item.owner_id != tool.owner_id
+        or (version.mcp_connection_version or 0) <= (item.config_revoked_through or 0)
         or version.encrypted_credentials
         and (version.mcp_connection_version or 0) <= item.credentials_revoked_through
-        or actor_id != tool.owner_id
-        and version.encrypted_credentials
-        and not item.share_credentials
+        or not await can_borrow_credentials(db, tool, version, actor_id)
     ):
         raise CustomException(status_code=409, custom_code=10005, detail="MCP 连接授权或凭据版本已失效")
 

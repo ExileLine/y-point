@@ -25,6 +25,46 @@ class McpTransport(StrEnum):
     STDIO = "stdio"
 
 
+class McpAuthType(StrEnum):
+    """HTTP MCP 鉴权方式。"""
+
+    NONE = "none"
+    BEARER = "bearer"
+    API_KEY = "api_key"
+
+
+class McpSyncState(StrEnum):
+    """远端发现相对本地发布版本的变化。"""
+
+    ADDED = "added"
+    CHANGED = "changed"
+    REMOVED = "removed"
+    UNCHANGED = "unchanged"
+
+
+class McpSyncAction(StrEnum):
+    """用户确认后的工具同步动作。"""
+
+    PUBLISH = "publish"
+    DISABLE = "disable"
+
+
+class McpOperationKind(StrEnum):
+    """幂等操作回执的命名空间。"""
+
+    CONNECTION_SYNC = "connection_sync"
+    AGENT_UPGRADE = "agent_upgrade"
+
+
+class McpOperationStatus(StrEnum):
+    """MCP 批量操作中单项确认的结果。"""
+
+    PUBLISHED = "published"
+    DISABLED = "disabled"
+    FAILED = "failed"
+    UPGRADED = "upgraded"
+
+
 class ScriptLanguage(StrEnum):
     """沙箱支持的脚本语言。"""
 
@@ -44,6 +84,49 @@ class ToolEffect(StrEnum):
 
     READ = "read"
     WRITE = "write"
+
+
+class ToolApprovalMode(StrEnum):
+    """MCP 所有者的审批默认或工具覆盖方式。"""
+
+    INHERIT = "inherit"
+    WRITES = "writes"
+    ALWAYS = "always"
+    NEVER = "never"
+
+
+class ToolEffectSource(StrEnum):
+    """MCP 读写判断的证据来源，未知不等于已证实写入。"""
+
+    REMOTE_READ = "remote_read"
+    REMOTE_WRITE = "remote_write"
+    OWNER_READ = "owner_read"
+    OWNER_WRITE = "owner_write"
+    UNKNOWN = "unknown"
+    LEGACY = "legacy"
+
+
+class ToolCallability(StrEnum):
+    """当前使用者基于配置和权限的可调用状态。"""
+
+    DIRECT = "direct"
+    APPROVAL_REQUIRED = "approval_required"
+    BLOCKED = "blocked"
+
+
+class ToolBlockReason(StrEnum):
+    """工具元数据预检的稳定阻断原因。"""
+
+    ACCESS_DENIED = "access_denied"
+    DISABLED = "disabled"
+    VERSION_UNAVAILABLE = "version_unavailable"
+    UNVERIFIED = "unverified"
+    CREDENTIALS_REVOKED = "credentials_revoked"
+    CREDENTIALS_NOT_SHARED = "credentials_not_shared"
+    CONNECTION_UNAVAILABLE = "connection_unavailable"
+    CONNECTION_DISABLED = "connection_disabled"
+    ENVIRONMENT_NOT_READY = "environment_not_ready"
+    IDEMPOTENCY_UNVERIFIED = "idempotency_unverified"
 
 
 class RecoveryPolicy(StrEnum):
@@ -94,6 +177,7 @@ class ApprovalState(StrEnum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
+    RESOLVED = "resolved"
 
 
 class ApprovalDecision(StrEnum):
@@ -101,6 +185,9 @@ class ApprovalDecision(StrEnum):
 
     APPROVE = "approve"
     REJECT = "reject"
+    REJECT_CONTINUE = "reject_continue"
+    STOP = "stop"
+    RESOLVE = "resolve"
 
 
 class ArtifactState(StrEnum):
@@ -192,6 +279,7 @@ class RunRuntimeFailureReason(StrEnum):
     GRAPH_STEP_LIMIT = "graph_step_limit_exceeded"
     TOOL_CAPACITY = "tool_capacity_exceeded"
     TOOL = "tool_error"
+    MCP_SESSION_LOST = "mcp_session_lost"
 
 
 class RunModelFailureReason(StrEnum):
@@ -300,6 +388,7 @@ class RunCallFailure(StrEnum):
     SCRIPT_FAILED = "script_failed"
     INVALID_OUTPUT = "invalid_output"
     RESPONSE_LIMIT = "response_limit"
+    USER_REJECTED = "user_rejected"
     TOOL_CHANGED = "tool_changed"
     EXECUTION_ERROR = "execution_error"
     RESULT_UNKNOWN = "external_result_unknown"
@@ -476,3 +565,24 @@ class SkillFileKind(StrEnum):
     SCHEMA = "schema"
     ASSET = "asset"
     TEXT = "text"
+
+
+class ToolResultDelivery(StrEnum):
+    """成功业务响应的交付状态，不替代远端操作状态。"""
+
+    STORED = "stored"
+    UNAVAILABLE = "unavailable"
+
+
+class ContextBudgetScope(StrEnum):
+    """区分已构造的完整请求与提前拒绝时仅有的当前输入下限。"""
+
+    COMPLETE_REQUEST = "complete_request"
+    CURRENT_INPUT_LOWER_BOUND = "current_input_lower_bound"
+
+
+class McpToolSchemaMode(StrEnum):
+    """MCP Schema 的模型暴露方式；动态模式仍使用普通函数调用。"""
+
+    STATIC = "static"
+    DYNAMIC = "dynamic"

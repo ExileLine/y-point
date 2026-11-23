@@ -447,8 +447,9 @@ async def stage_generated_artifact(
     root: Path,
     *,
     template_source: dict | None = None,
+    tool_result: dict | None = None,
 ) -> Artifact:
-    """幂等暂存已生成文件；Run 完成前不公开下载。"""
+    """幂等暂存生成文件；有成功响应证据的 MCP 结果立即私有发布，不依赖最终回答成功。"""
     suffix = Path(filename).suffix.lower()
     if suffix not in MEDIA_TYPES | GENERATED_TEXT_MEDIA_TYPES or len(filename) > 120:
         raise ArtifactValidationError("生成文件格式不支持或文件名超过 120 字符")
@@ -463,9 +464,16 @@ async def stage_generated_artifact(
         async with sessions() as db:
             return await db.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.publication_key == publication_key))
 
+    target_state = ArtifactState.READY if tool_result is not None else ArtifactState.PENDING
     existing = await existing_artifact()
     if existing is not None:
-        if existing.sha256 != digest or existing.filename != filename or existing.state != ArtifactState.PENDING or existing.template_source != template_source:
+        if (
+            existing.sha256 != digest
+            or existing.filename != filename
+            or existing.state != target_state
+            or existing.template_source != template_source
+            or existing.tool_result != tool_result
+        ):
             raise ArtifactValidationError("同名生成文件内容冲突")
         return existing
 
@@ -485,7 +493,7 @@ async def stage_generated_artifact(
         else:
             os.replace(temporary, storage_path(root, key))
         async with sessions.begin() as db:
-            run = await db.get(AgentRun, run_id)
+            run = await db.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
             now = shanghai_now(naive=True)
             if (
                 run is None
@@ -503,8 +511,12 @@ async def stage_generated_artifact(
                     Artifact.state == ArtifactState.PENDING,
                 ),
             )
-            if count >= MAX_FILES:
+            if tool_result is None and count >= MAX_FILES:
                 raise ArtifactValidationError("单轮生成文件超过数量限制")
+            if tool_result is not None:
+                count = await db.scalar(select(func.count(Artifact.id)).where(Artifact.run_id == run_id, Artifact.tool_result.is_not(None)))
+                if count >= get_config().MCP_RESULT_MAX_PER_RUN or get_config().ARTIFACT_RETENTION_DAYS < 1:
+                    raise ArtifactValidationError("本轮结果数量或保留期限配置不允许继续保存")
             await enforce_owner_quota(db, owner_id, add_count=1, add_bytes=len(data))
             reads = (
                 await db.scalars(
@@ -525,14 +537,41 @@ async def stage_generated_artifact(
                 sha256=digest,
                 storage_key=key,
                 template_source=template_source,
+                tool_result=tool_result,
                 source=ArtifactOrigin.GENERATED,
-                state=ArtifactState.PENDING,
-                expires_at=now + timedelta(hours=1),
+                state=target_state,
+                expires_at=now + (timedelta(days=get_config().ARTIFACT_RETENTION_DAYS) if tool_result is not None else timedelta(hours=1)),
                 is_deleted=0,
                 status=1,
             )
             db.add(artifact)
             await db.flush()
+            if tool_result is not None:
+                # 行锁保护生产数据库的数量预算；版本竞争也约束 SQLite 和并行心跳。
+                updated = await db.execute(
+                    update(AgentRun)
+                    .where(
+                        AgentRun.id == run_id,
+                        AgentRun.state == RunState.RUNNING,
+                        AgentRun.lease_token == lease_token,
+                        AgentRun.version == run.version,
+                        AgentRun.lease_expires_at > shanghai_now(naive=True),
+                    )
+                    .values(version=run.version + 1, event_seq=run.event_seq + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                if updated.rowcount != 1:
+                    raise ArtifactValidationError("运行或结果发布竞争，完整响应尚未发布")
+                db.add(
+                    AgentRunEvent(
+                        run_id=run_id,
+                        sequence=run.event_seq + 1,
+                        protocol_version=1,
+                        event_type=RunEventType.ARTIFACT_PUBLISHED,
+                        state=RunState.RUNNING,
+                        artifact_id=artifact.id,
+                    )
+                )
             db.add_all(
                 [
                     ArtifactSource(target_artifact_id=artifact.id, source_artifact_id=source_id, run_id=run_id, owner_id=owner_id, position=position)
@@ -547,8 +586,9 @@ async def stage_generated_artifact(
             existing is not None
             and existing.sha256 == digest
             and existing.filename == filename
-            and existing.state == ArtifactState.PENDING
+            and existing.state == target_state
             and existing.template_source == template_source
+            and existing.tool_result == tool_result
         ):
             return existing
         raise ArtifactValidationError("同名生成文件内容冲突") from None

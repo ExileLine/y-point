@@ -1,3 +1,4 @@
+import ToolResultPreview from "./ToolResultPreview";
 import { useEffect, useState } from "react";
 import { Alert, Button, Drawer, Empty, Spin, Tabs, Tooltip } from "antd";
 import { Download } from "lucide-react";
@@ -49,6 +50,7 @@ export default function ArtifactPreview({ file, onClose, onDownload, downloading
     const controller = new AbortController();
     let active = true;
     setPreview(null); setError(""); setLoading(true);
+    if (file.tool_result) { setLoading(false); return; }
     if (!file.available) { setError("文件已不可用，请关闭预览。"); setLoading(false); return; }
     void getArtifactPreview(file.artifact_id, controller.signal).then(result => {
       if (active) setPreview(result);
@@ -56,12 +58,12 @@ export default function ArtifactPreview({ file, onClose, onDownload, downloading
       if (active) setError(failure instanceof Error ? failure.message : "预览加载失败");
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [file.artifact_id, file.available, revision]);
+  }, [file.artifact_id, file.available, file.tool_result, revision]);
   return <Drawer open title="文件预览" width="min(100vw, 960px)" rootClassName="artifact-preview-drawer" onClose={onClose}
     extra={<Tooltip title="下载原件" trigger={["hover", "focus"]}><Button type="text" className="artifact-preview-download" aria-label="下载原件"
       icon={<Download size={18} />} loading={downloading} disabled={!file.available} onClick={onDownload} /></Tooltip>}>
     <div className="artifact-preview-heading"><strong>{preview?.filename || file.filename}</strong><span>只读内容预览</span></div>
-    {loading ? <div className="artifact-preview-loading" role="status"><Spin /><span>正在加载预览…</span></div> : error ?
+    {file.tool_result ? <ToolResultPreview file={file} /> : loading ? <div className="artifact-preview-loading" role="status"><Spin /><span>正在加载预览…</span></div> : error ?
       <Alert type="error" showIcon message="无法预览文件" description={error} action={<Button size="small" onClick={() => setRevision(value => value + 1)}>重试</Button>} /> : preview && <>
         {preview.notice && <Alert type="info" showIcon message={preview.notice} />}
         {preview.truncated && <Alert type="warning" showIcon message="内容较长，仅展示部分预览；请下载原件查看完整内容。" />}

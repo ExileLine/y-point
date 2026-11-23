@@ -1,7 +1,7 @@
 import { modelAccessFailures } from "./model-failures";
 import type { RunAgentInput } from "@ag-ui/core";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import { Archive, ArrowDown, ArrowLeft, Bot, MessageSquareText, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, SendHorizontal, Square, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -17,6 +17,7 @@ import ChatAttachments, { type ChatFile } from "./components/ChatAttachments";
 import RunActivity, { HistoricalRunActivity } from "./components/RunActivity";
 import { emptyProcess, observeProcess, processAnswer, reduceProcess, type ProcessState } from "./ag-ui";
 import StreamingMessage from "./components/StreamingMessage";
+import RunToolResults from "./components/RunToolResults";
 import RunMetrics from "./components/RunMetrics";
 import RunApproval from "./components/RunApproval";
 import SessionMetrics from "./components/SessionMetrics";
@@ -32,6 +33,7 @@ const stateLabels: Record<string, string> = {
 };
 const failureLabels: Record<string, string> = {
   approval_rejected: "你已拒绝本次工具调用，本轮运行已取消",
+  mcp_session_lost: "MCP 会话已丢失或过期，浏览器等业务状态无法恢复。请核实此前操作结果，再发起新任务。",
   approval_expired: "工具审批已过期，请重新发起请求",
   provider_timeout: "模型供应商响应超时，可稍后重新发送；持续超时请检查供应商超时设置或切换模型",
   model_execution_timeout: "本次模型调用超时，可调整智能体的单次模型超时或切换模型后重试",
@@ -134,6 +136,7 @@ export default function Sessions() {
   const [process, setProcess] = useState<{ runId: string; state: ProcessState } | null>(null);
   const streamCache = useRef<{ runId: string; text: string } | null>(null);
   const [composer, setComposer] = useState("");
+  const [requireMcpApproval, setRequireMcpApproval] = useState(false);
   const [chatFiles, setChatFiles] = useState<Record<string, ChatFile[]>>({});
   const files = selected ? chatFiles[selected.id] || [] : [];
   const attachmentPending = files.some(item => item.state !== "ready");
@@ -550,7 +553,7 @@ export default function Sessions() {
       if (!next) {
         const props = {
           model_id: selected.model_id ?? undefined,
-          expected_session_version: selected.version, publish_answer_artifact: false,
+          expected_session_version: selected.version, publish_answer_artifact: false, require_mcp_approval: requireMcpApproval,
           artifact_ids: files.flatMap(item => item.artifact ? [item.artifact.id] : []),
           context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []),
         };
@@ -594,18 +597,18 @@ export default function Sessions() {
     }
   }
 
-  async function resumeRun(approvalId: string, decision: "approve" | "reject") {
+  async function resumeRun(approvalId: string, decision: import("./api").ApprovalDecision, decisions?: import("./api").ApprovalActionDecision[]) {
     if (!selected || !activeRun) return;
     const targetSessionId = selected.id;
     const existing = pendingResume.current;
     let input: RunAgentInput;
     if (existing?.threadId === targetSessionId && existing.resume?.[0]?.interruptId === approvalId
-      && existing.resume[0].payload?.decision === decision) input = existing;
+      && existing.resume[0].payload?.decision === decision && JSON.stringify(existing.resume[0].payload?.decisions) === JSON.stringify(decisions)) input = existing;
     else {
       const thread = await getAgUiThread(agentId, targetSessionId);
       input = {
         threadId: targetSessionId, runId: createClientId(), protocolVersion: "1.0", tools: [], context: [],
-        messages: thread.messages, resume: [{ interruptId: approvalId, status: "resolved", payload: { decision } }],
+        messages: thread.messages, resume: [{ interruptId: approvalId, status: "resolved", payload: { decision, ...(decisions ? { decisions } : {}) } }],
       };
     }
     if (currentSessionId.current !== targetSessionId) return;
@@ -693,6 +696,7 @@ export default function Sessions() {
               setActiveRun(terminalStates.has(updated.state) ? null : updated);
               if (terminalStates.has(updated.state)) { setMessageRevision(value => value + 1); setRevision(value => value + 1); }
             }} />}
+            {currentRun?.context_budget && !messages.some(item => item.role === "assistant" && item.run_id === currentRun.id) && <RunToolResults runId={currentRun.id} active={Boolean(activeRun)} />}
             {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
             {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
             </div>
@@ -714,6 +718,8 @@ export default function Sessions() {
               {modelsError && <Tooltip title={modelsError}><Button size="small" onClick={() => setModelsRevision(value => value + 1)}>重试模型目录</Button></Tooltip>}
             </div>
             {selectedModelIssue && <Alert className="sessions-alert" type="error" showIcon message={`${selectedModelIssue.display_name} 暂不可用`} description={selectedModelIssue.notice || "请管理员检查模型部署和授权，并测试文本调用。"} action={<Button size="small" loading={modelsLoading} onClick={() => setModelsRevision(value => value + 1)}>刷新模型状态</Button>} />}
+            <label className="resource-switch-row">本轮全部 MCP 调用需审批<Switch aria-label="本轮全部 MCP 调用需审批" size="small" checked={requireMcpApproval}
+              disabled={!canSend || Boolean(pendingDraft)} onChange={setRequireMcpApproval} /></label>
             <ChatAttachments key={selected.id} items={files} disabled={!canSend} onChange={update => {
               const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
             }} />

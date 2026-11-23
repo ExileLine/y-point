@@ -40,7 +40,8 @@ const shared = {
   enabled: true,
   owner_id: 7,
 };
-const toolOptions = Array.from({ length: 20 }, (_, index) => ({ id: 31 + index, owner_id: 1, name: `tool_${index}`, display_name: index === 0 ? "天气查询 Weather" : `批量工具 ${index}`, model_name: `user_tool_${31 + index}_tool_${index}`, description: index === 0 ? "查询实时天气" : "批量绑定验证", kind: "mcp", visibility: "private", enabled: true, current_version: 1 }));
+const toolOptions = Array.from({ length: 20 }, (_, index) => ({ id: 31 + index, owner_id: 1, name: `tool_${index}`, display_name: index === 0 ? "天气查询 Weather" : `批量工具 ${index}`, model_name: `user_tool_${31 + index}_tool_${index}`, description: index === 0 ? "查询实时天气" : "批量绑定验证", kind: "mcp", visibility: "private", enabled: true, current_version: 1, callability: { status: index % 2 ? "approval_required" : "direct", message: index % 2 ? "审批后可调用" : "可直接调用", reason: null, action: null, policy: null } }));
+const blockedTool = { ...toolOptions[0], id: 91, name: "blocked_tool", display_name: "凭据已撤销工具", callability: { status: "blocked", reason: "credentials_revoked", message: "此工具版本的凭据已撤销", action: "替换凭据并重新发布工具", policy: null } };
 const models = [{ id: 1, display_name: "主要模型", context_window: 8192 }];
 const envelope = (data) => ({ code: 200, message: "操作成功", data });
 
@@ -57,6 +58,7 @@ async function withFixture(page, role) {
   await page.route("**/api/v1/**", (route) => {
     const { pathname } = new URL(route.request().url());
     const method = route.request().method();
+    if (pathname === "/api/v1/mcp-connections/catalog") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope([])) });
     if (method === "POST" && pathname === "/api/v1/agents") {
       lastCreate = JSON.parse(route.request().postData() || "{}");
       return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ code: 201, message: "创建成功", data: { ...owned, ...lastCreate, id: 12, version: 1 } }) });
@@ -80,7 +82,7 @@ async function withFixture(page, role) {
       lastDelete = pathname;
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope(null)) });
     }
-    if (pathname === "/api/v1/tools/catalog") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ builtin: [], user_tools: toolOptions })) });
+    if (pathname === "/api/v1/tools/catalog") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ builtin: [], user_tools: [...toolOptions, blockedTool] })) });
     if (pathname === "/api/v1/skills") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope([])) });
     if (pathname === "/api/v1/agents/runtime-limits") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(envelope({ default_max_output_tokens: 4096, max_output_tokens: 1000000, default_model_timeout_seconds: null, max_model_timeout_seconds: 3600, default_tool_timeout_seconds: 120, max_tool_timeout_seconds: 3600, recursion_limit: 9999, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 120, script_execution_timeout_seconds: 120 })) });
     const data = pathname === "/api/v1/auth/me" ? { id: 1, username: "tester", nickname: "测试用户", role }
@@ -136,9 +138,14 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
     const toolSelect = page.locator(".ant-form-item").filter({ has: page.locator("#tool_ids") }).locator(".ant-select");
     await toolSelect.click();
+    await toolSelect.locator("input").fill(blockedTool.display_name);
+    const blockedOption = page.locator(".ant-select-dropdown:visible .ant-select-item-option").filter({ hasText: blockedTool.display_name });
+    await blockedOption.waitFor();
+    assert.match(await blockedOption.getAttribute("class") || "", /ant-select-item-option-disabled/, "当前阻断工具不可选择");
+    await blockedOption.getByText(blockedTool.callability.message, { exact: false }).waitFor();
     for (const tool of toolOptions) {
       await toolSelect.locator("input").fill(tool.display_name);
-      await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText(`${tool.display_name} · ${tool.description}`, { exact: true }).click();
+      await page.locator(".ant-select-dropdown:visible .ant-select-item-option-content").getByText(`${tool.display_name} · 当前发布 v${tool.current_version} · ${tool.callability.message} · ${tool.description}`, { exact: true }).click();
     }
     await page.getByRole("textbox", { name: "名称" }).click();
     await page.getByRole("textbox", { name: "名称" }).fill("需求分析助手新版");

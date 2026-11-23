@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+import pytest
 from jsonschema import Draft202012Validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -304,7 +305,8 @@ def test_snapshot_paging_and_stream_replay(tmp_path: Path) -> None:
     asyncio.run(exercise())
 
 
-def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("decision", ["approve", "reject_continue", "resolve"])
+def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkeypatch, decision: str) -> None:
     """标准入口提交、审批续跑及幂等历史校验都复用正式业务事务。"""
 
     async def exercise() -> None:
@@ -329,6 +331,7 @@ def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkey
                                 {
                                     "name": "write_report",
                                     "arguments_hash": "a" * 64,
+                                    "action_id": "bound-write-action",
                                 },
                             ],
                         )
@@ -352,6 +355,9 @@ def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkey
                 "threadId": "session",
                 "runId": "client-run-1",
                 "protocolVersion": "1.0",
+                "forwardedProps": {
+                    "require_mcp_approval": True,
+                },
                 "messages": [
                     {
                         "id": "client-user-1",
@@ -368,6 +374,20 @@ def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkey
             interrupt = first_events[-1]["outcome"]["interrupts"][0]["id"]
             retry = await client.post(endpoint, headers=headers, json=body)
             assert retry.status_code == 200 and submitted[0] == submitted[1]
+            async with sessions() as db:
+                fixed = await db.get(AgentRun, submitted[0])
+                assert fixed.require_mcp_approval is True
+            mismatched = await client.post(
+                endpoint,
+                headers=headers,
+                json={
+                    **body,
+                    "forwardedProps": {
+                        "require_mcp_approval": False,
+                    },
+                },
+            )
+            assert mismatched.status_code == 409
             history = (await client.get(f"{endpoint}/threads/session", headers=headers)).json()["data"]["messages"]
             assert history[0]["id"] == "client-user-1"
             resumed = await client.post(
@@ -382,7 +402,8 @@ def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkey
                             "interruptId": interrupt,
                             "status": "resolved",
                             "payload": {
-                                "decision": "approve",
+                                "decision": decision,
+                                **({"decisions": [{"action_id": "bound-write-action", "decision": "reject"}]} if decision == "resolve" else {}),
                             },
                         },
                     ],
@@ -396,7 +417,7 @@ def test_standard_post_and_resume_preserve_public_history(tmp_path: Path, monkey
                 VALIDATOR.validate(event)
             final_history = (await client.get(f"{endpoint}/threads/session", headers=headers)).json()["data"]["messages"]
             final_id = next(event["value"]["messageId"] for event in resumed_events if event["type"] == "CUSTOM" and event["name"] == "y-point.answer")
-            assert next(message for message in final_history if message["id"] == final_id)["content"] == "审批后完成"
+            assert next(message for message in final_history if message["id"] == final_id)["content"].startswith("审批后完成")
             invalid = await client.post(
                 endpoint,
                 headers=headers,

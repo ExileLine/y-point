@@ -6,6 +6,7 @@
 """在固定镜像容器中运行 MCP stdio，限制消息和日志并回收进程。"""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -134,6 +135,24 @@ async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
             except Exception:
                 await report_failure("MCP stdio 消息无效或超过接收上限")
 
+        write_lock = asyncio.Lock()
+
+        async def cancel_remote(request_id, protocol_version):
+            """在关闭管道前直接写入并排空取消通知，避免消息只停留在 SDK 本地队列。"""
+            data = (
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/cancelled",
+                        "params": {"requestId": request_id, "reason": "Client cancelled or timed out"},
+                    }
+                ).encode()
+                + b"\n"
+            )
+            async with write_lock:
+                process.stdin.write(data)
+                await process.stdin.drain()
+
         async def write_messages() -> None:
             """按 MCP 换行分帧写入，防止超大请求和无法结束的管道写入。"""
             async with send_reader:
@@ -143,8 +162,9 @@ async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
                         await report_failure("MCP stdio 请求超过字节上限")
                         return
                     try:
-                        process.stdin.write(data)
-                        await process.stdin.drain()
+                        async with write_lock:
+                            process.stdin.write(data)
+                            await process.stdin.drain()
                     except (BrokenPipeError, ConnectionResetError):
                         await report_failure("MCP stdio 进程已退出")
                         return
@@ -188,7 +208,7 @@ async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
             await send_reader.aclose()
 
         try:
-            yield receive, send, None
+            yield receive, send, cancel_remote
             if failure:
                 raise ValueError(failure[0])
         finally:

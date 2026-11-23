@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_config
 from app.schemas.runtime_limits import RuntimeLimitsOut
+from app.schemas.mcp_connection import AgentToolUpgradeIn
 from app.services.artifact_store import MAX_FILES
 from app.core.enums import ModelCapability, ModelThinkingMode
 from app.core.custom_exception import CustomException
@@ -21,6 +22,8 @@ from app.core.response import api_response
 from app.core.security import get_current_admin
 from app.db.session import get_db_session
 from app.models.admin import Admin
+from app.models.mcp_connection import AgentMcpTool
+from app.services.agent_mcp import connection_bindings, connection_selection_output, validate_binding_versions, validate_connection_selection
 from app.models.agent_config import AgentConfig
 from app.models.agent_run import AgentRun
 from app.models.agent_share import AgentShare
@@ -76,7 +79,8 @@ async def _agent_data(db: AsyncSession, agent: AgentConfig) -> dict:
     """输出配置与明确固定的 Skill 关联。"""
     data = AgentOut.model_validate(agent).model_dump(mode="json")
     data["skill_ids"] = [row.skill_id for row in await agent_skill_rows(db, agent.id)]
-    data["tool_ids"] = [row.tool_id for row in await agent_tool_rows(db, agent.id)]
+    data["tool_ids"] = [row.tool_id for row in await agent_tool_rows(db, agent.id, direct_only=True)]
+    data["mcp_connections"] = await connection_selection_output(db, agent.id)
     data["knowledge_base_ids"] = await agent_knowledge_ids(db, agent.id)
     return data
 
@@ -137,15 +141,21 @@ async def create_agent(body: AgentCreateIn, actor: Admin = Depends(get_current_a
     _check_cost_pricing(model, body.max_estimated_cost)
     skills = await selected_skills(db, body.skill_ids, actor.id)
     tools = await selected_tools(db, body.tool_ids, actor.id)
-    await check_agent_dependencies(db, skills, tools)
+    grouped = await validate_connection_selection(db, [group.model_dump() for group in body.mcp_connections], actor.id)
+    validate_binding_versions({tool.id: tool.current_version for tool in tools}, grouped)
+    grouped_tools = list(await db.scalars(select(UserTool).where(UserTool.id.in_([row["tool_id"] for row in grouped]))))
+    await check_agent_dependencies(db, skills, list({tool.id: tool for tool in tools + grouped_tools}.values()))
     knowledge = await selected_knowledge_bases(db, body.knowledge_base_ids, actor.id)
-    if (tools or knowledge) and ModelCapability.TOOLS not in (model.verified_capabilities or []):
+    if (tools or grouped or knowledge) and ModelCapability.TOOLS not in (model.verified_capabilities or []):
         raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
-    agent = AgentConfig(owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids", "knowledge_base_ids"}), version=1, is_deleted=0, status=1)
+    agent = AgentConfig(
+        owner_id=actor.id, **body.model_dump(exclude={"skill_ids", "tool_ids", "mcp_connections", "knowledge_base_ids"}), version=1, is_deleted=0, status=1
+    )
     db.add(agent)
     await db.flush()
     db.add_all([AgentSkill(agent_id=agent.id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in skills])
     db.add_all([AgentTool(agent_id=agent.id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1) for item in tools])
+    db.add_all([AgentMcpTool(agent_id=agent.id, **row, is_deleted=0, status=1) for row in grouped])
     db.add_all([AgentKnowledgeBase(agent_id=agent.id, knowledge_base_id=item.id) for item in knowledge])
     audit(db, "agent.created", actor_id=actor.id, target_id=agent.id)
     await db.commit()
@@ -293,6 +303,11 @@ async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depend
         raise CustomException(status_code=400, custom_code=10005, detail="知识库列表不能为空")
     requested_skill_ids = changes.pop("skill_ids", None)
     selected = await selected_skills(db, requested_skill_ids, actor.id) if requested_skill_ids is not None else None
+    requested_groups = changes.pop("mcp_connections", None)
+    if requested_groups is None and "mcp_connections" in body.model_fields_set:
+        raise CustomException(status_code=400, custom_code=10005, detail="连接选择不能为 null，请用空列表清除")
+    existing_groups = await connection_bindings(db, agent_id)
+    grouped = await validate_connection_selection(db, requested_groups, actor.id, existing=existing_groups) if requested_groups is not None else None
     requested_tool_ids = changes.pop("tool_ids", None)
     selected_user_tools = await selected_tools(db, requested_tool_ids, actor.id) if requested_tool_ids is not None else None
     if requested_skill_ids is None and "skill_ids" in body.model_fields_set:
@@ -319,20 +334,29 @@ async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depend
             changes.get("thinking_mode", agent.thinking_mode),
         )
         _check_cost_pricing(model, changes.get("max_estimated_cost", agent.max_estimated_cost))
-    linked_tools = selected_user_tools if selected_user_tools is not None else await agent_tool_rows(db, agent_id)
-    linked_skills = selected if selected is not None else await agent_skill_rows(db, agent_id)
-    dependency_tools = (
-        list(await db.scalars(select(UserTool).where(UserTool.id.in_([row.tool_id for row in linked_tools]))))
-        if selected_user_tools is None
-        else selected_user_tools
+    pinned_direct = {row.tool_id: row.tool_version for row in await agent_tool_rows(db, agent_id, direct_only=True)}
+    pinned_all = {row.tool_id: row.tool_version for row in await agent_tool_rows(db, agent_id)}
+    direct_versions = (
+        {item.id: pinned_all.get(item.id, item.current_version) for item in selected_user_tools} if selected_user_tools is not None else pinned_direct
     )
-    await check_agent_dependencies(db, linked_skills, dependency_tools)
+    if grouped is not None:
+        from app.services.agent_mcp import binding_conflict
+
+        for row in grouped:
+            if row["tool_id"] in pinned_all and pinned_all[row["tool_id"]] != row["tool_version"]:
+                raise binding_conflict(row["tool_id"])
+    selected_groups = grouped if grouped is not None else existing_groups
+    validate_binding_versions(direct_versions, selected_groups)
+    linked_ids = set(direct_versions) | {row["tool_id"] if isinstance(row, dict) else row.tool_id for row in selected_groups}
+    linked_tools = list(await db.scalars(select(UserTool).where(UserTool.id.in_(linked_ids))))
+    linked_skills = selected if selected is not None else await agent_skill_rows(db, agent_id)
+    await check_agent_dependencies(db, linked_skills, linked_tools)
     linked_knowledge = knowledge if knowledge is not None else await agent_knowledge_ids(db, agent_id)
     if linked_tools or linked_knowledge:
         current_model = await db.get(ModelCatalog, changes.get("default_model_id", agent.default_model_id))
         if current_model is None or ModelCapability.TOOLS not in (current_model.verified_capabilities or []):
             raise CustomException(status_code=409, custom_code=10005, detail="默认模型尚未通过工具调用能力验证")
-    if changes or selected is not None or selected_user_tools is not None or knowledge is not None:
+    if changes or selected is not None or selected_user_tools is not None or grouped is not None or knowledge is not None:
         result = await db.execute(
             update(AgentConfig)
             .where(
@@ -351,10 +375,18 @@ async def update_agent(agent_id: int, body: AgentUpdateIn, actor: Admin = Depend
             await db.execute(delete(AgentSkill).where(AgentSkill.agent_id == agent_id))
             db.add_all([AgentSkill(agent_id=agent_id, skill_id=item.id, skill_version=item.current_version, is_deleted=0, status=1) for item in selected])
         if selected_user_tools is not None:
+            # 保留仍被选择的固定版本；升级须通过显式差异确认入口。
+            pinned = pinned_all
             await db.execute(delete(AgentTool).where(AgentTool.agent_id == agent_id))
             db.add_all(
-                [AgentTool(agent_id=agent_id, tool_id=item.id, tool_version=item.current_version, is_deleted=0, status=1) for item in selected_user_tools],
+                [
+                    AgentTool(agent_id=agent_id, tool_id=item.id, tool_version=pinned.get(item.id, item.current_version), is_deleted=0, status=1)
+                    for item in selected_user_tools
+                ],
             )
+        if grouped is not None:
+            await db.execute(delete(AgentMcpTool).where(AgentMcpTool.agent_id == agent_id))
+            db.add_all([AgentMcpTool(agent_id=agent_id, **row, is_deleted=0, status=1) for row in grouped])
         if knowledge is not None:
             await db.execute(delete(AgentKnowledgeBase).where(AgentKnowledgeBase.agent_id == agent_id))
             db.add_all([AgentKnowledgeBase(agent_id=agent_id, knowledge_base_id=item.id) for item in knowledge])
@@ -396,3 +428,38 @@ async def delete_agent(agent_id: int, actor: Admin = Depends(get_current_admin),
     audit(db, "agent.deleted", actor_id=actor.id, target_id=agent_id)
     await db.commit()
     return api_response(message="智能体已删除")
+
+
+@router.get("/{agent_id}/tool-upgrades", summary="预览 Agent 工具版本升级")
+async def preview_tool_upgrades(agent_id: int, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """仅所有者可预览，展示已授权工具的 Schema 与审批变化。"""
+    from app.services.mcp_sync import agent_upgrade_preview
+
+    agent = await _owned_agent(db, agent_id, actor.id)
+    return api_response(data=await agent_upgrade_preview(db, agent), is_pop=False)
+
+
+@router.post("/{agent_id}/tool-upgrades", summary="确认并升级选定 Agent 工具版本")
+async def confirm_tool_upgrades(
+    agent_id: int, body: "AgentToolUpgradeIn", actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)
+):
+    """使用 Agent 期望版本和幂等回执，旧 Run 仍保留原工具版本。"""
+    from app.core.enums import McpOperationKind
+    from app.services.mcp_sync import apply_agent_upgrades, replay_operation
+
+    agent = await _owned_agent(db, agent_id, actor.id)
+    replay = await replay_operation(db, actor.id, McpOperationKind.AGENT_UPGRADE, agent_id, body)
+    if replay is not None:
+        return api_response(data=replay, is_pop=False)
+    try:
+        result = await apply_agent_upgrades(db, agent, body)
+        await db.commit()
+    except (IntegrityError, CustomException) as exc:
+        await db.rollback()
+        replay = await replay_operation(db, actor.id, McpOperationKind.AGENT_UPGRADE, agent_id, body)
+        if replay is not None:
+            return api_response(data=replay, is_pop=False)
+        if isinstance(exc, CustomException):
+            raise
+        raise CustomException(status_code=409, custom_code=10005, detail="升级发生并发变化，请重新预览") from None
+    return api_response(data=result, is_pop=False)

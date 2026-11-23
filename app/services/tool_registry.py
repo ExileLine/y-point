@@ -20,7 +20,7 @@ from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.agent_access import can_access_run_agent
 
-RESERVED_TOOL_NAMES = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos"})
+RESERVED_TOOL_NAMES = frozenset({"ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute", "task", "write_todos", "tool_search"})
 
 
 @dataclass(frozen=True)

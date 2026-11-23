@@ -39,6 +39,7 @@ export type Agent = {
   version: number;
   skill_ids: number[];
   tool_ids: number[];
+  mcp_connections?: AgentMcpConnection[];
   knowledge_base_ids: number[];
   update_time: string;
 };
@@ -290,6 +291,7 @@ export type AgentDraft = {
   enabled: boolean;
   skill_ids?: number[];
   tool_ids?: number[];
+  mcp_connections?: AgentMcpConnection[];
   knowledge_base_ids?: number[];
 };
 
@@ -299,6 +301,11 @@ export type ToolEnvironment = {
   message: string | null;
   locked_requirements: { name: string; version: string; sha256: string }[];
 };
+export type ToolApprovalMode = "inherit" | "writes" | "always" | "never";
+export type ToolCallability = {
+  status: "direct" | "approval_required" | "blocked"; reason: string | null; message: string; action: string | null;
+  policy: { tool_policy_version?: number; connection_policy_version?: number | null; mode: string; source: string; requires_approval: boolean; constraints: string[] } | null;
+};
 export type UserTool = {
   id: number; owner_id: number; name: string; display_name?: string; model_name: string; description: string;
   kind: "script" | "mcp"; visibility: "private" | "public"; enabled: boolean; current_version: number;
@@ -307,6 +314,9 @@ export type UserTool = {
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
   has_credentials?: boolean; share_credentials?: boolean; requires_approval?: boolean;
   verified?: boolean; requirements?: string[]; environment?: ToolEnvironment;
+  approval_mode?: ToolApprovalMode; effect?: "read" | "write"; effect_source?: string; callability?: ToolCallability; callability_checked_at?: string;
+  recovery_policy?: "safe" | "manual" | "idempotent"; idempotency_key_field?: string | null;
+  read_confirmation?: { reason: string; definition_hash: string } | null;
 };
 export const toolDisplayName = (tool: UserTool): string => tool.display_name || tool.name;
 export type ToolDraft = {
@@ -315,12 +325,14 @@ export type ToolDraft = {
   mcp_connection_id?: number | null;
   source_code?: string | null; mcp_url?: string | null; mcp_tool_name?: string | null;
   mcp_bearer_token?: string; share_credentials?: boolean; requires_approval?: boolean; requirements?: string[];
+  approval_mode?: ToolApprovalMode; effect?: "read" | "write"; read_only_reason?: string;
+  recovery_policy?: "manual" | "idempotent"; idempotency_key_field?: string;
 };
 export type ToolCatalog = {
   builtin: { model_name: string; description: string; kind: "builtin"; visibility: "builtin" }[];
   user_tools: UserTool[];
 };
-export type DiscoveredTool = { name: string; description: string; input_schema: Record<string, unknown> };
+export type DiscoveredTool = { name: string; description: string; input_schema: Record<string, unknown>; read_only?: boolean | null; annotations?: Record<string, unknown> };
 export const listToolCatalog = (): Promise<ToolCatalog> => request("/tools/catalog");
 export const getUserTool = (id: number): Promise<UserTool> => request(`/tools/${id}`);
 export const createUserTool = (draft: ToolDraft): Promise<UserTool> => request("/tools", { method: "POST", body: JSON.stringify(draft) });
@@ -338,13 +350,15 @@ export const discoverMcpTools = (url: string, bearerToken?: string): Promise<Dis
   request("/tools/mcp/discover", { method: "POST", body: JSON.stringify({ url, bearer_token: bearerToken || null }) });
 
 export type McpConnection = {
+  auth_type?: "none" | "bearer" | "api_key"; api_key_header?: string | null; header_names?: string[]; sensitive_header_names?: string[]; has_auth_key?: boolean; config_revoked_through?: number;
   id: number; name: string; version: number; transport: "streamable_http" | "stdio";
   url: string | null; stdio_profile: string | null; args: string[]; enabled: boolean;
-  has_credentials: boolean; share_credentials: boolean; credentials_revoked_through: number;
+  has_credentials: boolean; share_credentials: boolean; credentials_revoked_through: number; approval_mode?: Exclude<ToolApprovalMode, "inherit">;
 };
 export type McpConnectionDraft = {
+  auth_type?: "none" | "bearer" | "api_key"; api_key?: string; api_key_header?: string; headers?: Record<string, string>; sensitive_headers?: Record<string, string | null>;
   name: string; transport: "streamable_http" | "stdio"; url?: string; stdio_profile?: string;
-  args?: string[]; env?: Record<string, string>; bearer_token?: string; share_credentials: boolean; enabled: boolean;
+  args?: string[]; env?: Record<string, string>; bearer_token?: string; share_credentials: boolean; enabled: boolean; approval_mode?: Exclude<ToolApprovalMode, "inherit">;
 };
 export const listMcpConnections = (): Promise<McpConnection[]> => request("/mcp-connections");
 export const listMcpStdioProfiles = (): Promise<{ name: string; env_keys: string[] }[]> => request("/mcp-connections/stdio-profiles");
@@ -466,7 +480,7 @@ export type ArtifactPreview = {
 export const getArtifactPreview = (artifactId: string, signal?: AbortSignal): Promise<ArtifactPreview> =>
   request(`/artifacts/${encodeURIComponent(artifactId)}/preview`, { signal, cache: "no-store" });
 
-export type MessageArtifact = { byte_size?: number; artifact_id: string; filename: string; available: boolean; included_in_context?: boolean; template_source?: { skill_id: number; skill_name?: string; skill_version: number; template_name?: string } | null };
+export type MessageArtifact = { tool_result?: ToolResultSource | null; sha256?: string; byte_size?: number; artifact_id: string; filename: string; available: boolean; included_in_context?: boolean; template_source?: { skill_id: number; skill_name?: string; skill_version: number; template_name?: string } | null };
 export type RunCall = {
   call_id: string;
   kind: "skill" | "tool" | "knowledge" | "mcp";
@@ -483,7 +497,7 @@ export type SessionMetrics = {
   run_count: number; active_run_count: number; elapsed_ms: number; total_tokens: number | null;
   missing_duration_runs: number; calculated_at: string;
 };
-export type RunMetrics = { elapsed_ms: number | null; total_tokens: number | null };
+export type RunMetrics = { context_budget?: ContextBudget | null; elapsed_ms: number | null; total_tokens: number | null };
 export type SessionModelOption = {
   id: number; display_name: string; provider_name: string; verified_capabilities: string[];
   context_window: number | null; selectable: boolean; reason: string | null; notice: string | null;
@@ -506,10 +520,13 @@ export type SessionMessage = {
   failure_code?: string | null;
   metrics?: RunMetrics | null;
 };
-export type SessionRun = { publish_answer_artifact?: boolean; agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type SessionRun = { context_budget?: ContextBudget | null; publish_answer_artifact?: boolean; agent_knowledge_mode?: KnowledgeAnswerMode; reported_total_tokens?: number; model_id?: number | null; id: string; session_id: string; agent_id: number; state: string; failure_code: string | null; create_time: string; update_time: string };
+export type ApprovalDecision = "approve" | "reject" | "reject_continue" | "stop" | "resolve";
+export type ApprovalActionDecision = { action_id: string; decision: "approve" | "reject" };
 export type RunApproval = {
-  id: string; run_id: string; state: "pending" | "approved" | "rejected" | "expired" | "cancelled";
-  actions: { name: string; arguments_hash: string; resource_id?: string | null; resource_name?: string | null }[];
+  id: string; run_id: string; state: "pending" | "approved" | "rejected" | "expired" | "cancelled" | "resolved";
+  decision?: ApprovalDecision | null; decisions?: string[] | null;
+  actions: { name: string; arguments_hash: string; action_id?: string | null; preview?: Record<string, string | number> | null; resource_id?: string | null; resource_name?: string | null }[];
   expires_at: string; decided_at: string | null;
 };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
@@ -632,3 +649,49 @@ export async function exportSkillVersion(id: number, version: number): Promise<v
 export const testSkillScript = (id: number, revision: number, path: string, args: Record<string, unknown>, prepare = false): Promise<{ path: string; verified: boolean; result?: string; environment?: { state: string; message?: string | null } }> => request(`/skills/${id}/draft/scripts/${prepare ? "prepare" : "test"}`, { method: "POST", body: JSON.stringify({ expected_revision: revision, path, arguments: args }) });
 
 export const previewSkillFile = (id: number, path: string, version?: number): Promise<ArtifactPreview> => request(`/skills/${id}/files/preview?${new URLSearchParams({ path, ...(version === undefined ? {} : { version: String(version) }) })}`);
+
+
+export type McpSyncRow = {
+  tool_id: number | null; remote_name: string; display_name: string; current_version: number | null;
+  state: "added" | "changed" | "removed" | "unchanged"; changes: string[]; schema: unknown; previous_schema: unknown;
+  annotations: Record<string, unknown>; previous_annotations: Record<string, unknown>;
+  requires_read_confirmation: boolean; requires_idempotency_verification: boolean; approval_mode: string;
+};
+export type McpSyncPreview = { connection_id: number; connection_version: number; preview_hash: string; items: McpSyncRow[] };
+export type McpSyncSelection = { remote_name: string; tool_id: number | null; expected_version: number | null; action: "publish" | "disable";
+  read_only_reason?: string; effect?: "write"; recovery_policy?: "manual" };
+export type McpSyncRequest = { request_id: string; expected_version: number; preview_hash: string; selections: McpSyncSelection[] };
+export type McpBatchResult = { request_id: string; agent_version?: number; items: { tool_id: number | null; remote_name?: string; version?: number; status: string; message?: string }[] };
+export type AgentToolUpgradeRow = { tool_id: number; display_name: string; model_name: string | null; current_version: number; target_version: number;
+  changed: boolean; changes: string[]; previous_schema: unknown; schema: unknown; callability: ToolCallability; requires_read_confirmation: boolean };
+export type AgentToolUpgradePreview = { agent_id: number; agent_version: number; preview_hash: string; items: AgentToolUpgradeRow[] };
+export type AgentToolUpgradeRequest = { request_id: string; expected_version: number; preview_hash: string;
+  selections: { tool_id: number; expected_version: number; target_version: number }[] };
+export const previewMcpSync = (id: number): Promise<McpSyncPreview> => request(`/mcp-connections/${id}/sync-preview`, { method: "POST" });
+export const applyMcpSync = (id: number, body: McpSyncRequest): Promise<McpBatchResult> => request(`/mcp-connections/${id}/sync`, { method: "POST", body: JSON.stringify(body) });
+export const previewAgentToolUpgrades = (id: number): Promise<AgentToolUpgradePreview> => request(`/agents/${id}/tool-upgrades`);
+export const applyAgentToolUpgrades = (id: number, body: AgentToolUpgradeRequest): Promise<McpBatchResult> => request(`/agents/${id}/tool-upgrades`, { method: "POST", body: JSON.stringify(body) });
+
+export type AgentMcpConnection = { connection_id: number; tools: { tool_id: number; tool_version: number }[] };
+export type McpConnectionSummary = { version?: number; share_version?: number | null; callability_checked_at?: string; id: number; name: string; owner_id: number; enabled: boolean; can_edit: boolean; allow_credentials: boolean;
+  tools: { tool_id: number; display_name: string; model_name: string; tool_version: number; mcp_connection_version?: number | null; callability_checked_at?: string; callability: ToolCallability }[] };
+export type McpConnectionShare = { user_id: number; username: string; version: number; tool_ids: number[]; allow_credentials: boolean };
+export const listMcpConnectionCatalog = (): Promise<McpConnectionSummary[]> => request("/mcp-connections/catalog");
+export const listMcpConnectionShares = (id: number): Promise<McpConnectionShare[]> => request(`/mcp-connections/${id}/shares`);
+export const saveMcpConnectionShare = (id: number, userId: number, body: { expected_version: number; tool_ids: number[]; allow_credentials: boolean }): Promise<McpConnectionShare> =>
+  request(`/mcp-connections/${id}/shares/${userId}`, { method: "PUT", body: JSON.stringify(body) });
+export const revokeMcpConnectionShare = (id: number, share: McpConnectionShare): Promise<void> =>
+  request(`/mcp-connections/${id}/shares/${share.user_id}?expected_version=${share.version}`, { method: "DELETE" });
+
+export type ContextBudget = {
+  tool_loading?: { mode: "dynamic"; available_mcp_tools: number; loaded_mcp_tools: number };
+  estimator: string; scope?: "complete_request" | "current_input_lower_bound"; estimated_input_tokens: number; serialized_input_bytes: number;
+  context_window: number | null; output_reserve_tokens: number | null; input_limit_tokens: number | null;
+  fits: boolean | null; components: Record<string, { bytes: number; tokens: number }>; notice: string; suggestions: string[];
+};
+export type ToolResultSource = { tool_name: string; call_id: string; scope: string; received_complete: boolean; remote_dataset_complete: boolean | null; redacted: boolean };
+export type ToolResultPage = { artifact_id: string; sha256: string; offset: number; end_offset: number; next_offset: number | null;
+  total_characters: number; saved_bytes: number; text_fragment: string; fragment_format: string; complete: boolean; notice: string; source: ToolResultSource };
+export const getToolResultPage = (id: string, sha256: string, offset = 0, signal?: AbortSignal): Promise<ToolResultPage> =>
+  request(`/artifacts/${encodeURIComponent(id)}/result-page?${new URLSearchParams({ expected_sha256: sha256, offset: String(offset) })}`, { signal });
+export const listRunArtifacts = (id: string): Promise<(MessageArtifact & { id: string; sha256: string })[]> => request(`/artifacts?run_id=${encodeURIComponent(id)}`);

@@ -22,6 +22,7 @@ const server = createServer(async (req, res) => {
   assert.equal(body.protocolVersion, '1.0');
   assert.equal(body.forwardedProps.expected_session_version, 1);
   assert.equal(body.forwardedProps.model_id, 4);
+  assert.equal(body.forwardedProps.require_mcp_approval, state.requireMcpApproval);
   assert.deepEqual(body.tools, []);
   assert.deepEqual(body.context, []);
   const user = body.messages.at(-1);
@@ -104,6 +105,8 @@ try {
     });
     await page.goto(`${base}/agents/11/sessions/submit`);
     await page.getByText('此前的回答', { exact: true }).waitFor();
+    state.requireMcpApproval = width < 768;
+    if (state.requireMcpApproval) await page.getByRole('switch', { name: '本轮全部 MCP 调用需审批', exact: true }).click();
     await page.getByRole('textbox', { name: '消息内容' }).fill('请使用规范接口发送');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByText('标准 POST 的中文流式回答。', { exact: true }).waitFor();

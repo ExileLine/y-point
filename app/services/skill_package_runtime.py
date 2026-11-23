@@ -11,10 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_exception import CustomException
-from app.core.enums import Visibility
+from app.core.enums import ToolCallability, Visibility
 from app.models.skill import AgentSkill, RunSkill, Skill, SkillVersion
 from app.models.skill_package import SkillScript
-from app.models.tool import AgentTool, RunTool, UserTool, UserToolVersion
+from app.models.tool import RunTool, UserTool, UserToolVersion
 from app.services.skill_packages import execution_config, read_resource
 from app.services.user_tools import model_tool_name
 
@@ -43,30 +43,20 @@ async def check_agent_dependencies(db: AsyncSession, skills: list, tools: list[U
 
 async def snapshot_skill_scripts(db: AsyncSession, run_id: str, agent_id: int, actor_id: int, skills: list[AgentSkill]) -> None:
     """在创建 Run 的事务中固定包内脚本，检查本轮外部依赖实际可调用。"""
-    tools = list(
-        await db.scalars(
-            select(UserTool)
-            .join(AgentTool, AgentTool.tool_id == UserTool.id)
-            .where(
-                AgentTool.agent_id == agent_id,
-                UserTool.is_deleted == 0,
-                UserTool.enabled.is_(True),
-                UserTool.skill_id.is_(None),
-                (UserTool.owner_id == actor_id) | (UserTool.visibility == Visibility.PUBLIC),
-            ),
-        ),
-    )
-    verified_tools = []
-    for tool in tools:
-        link = await db.scalar(select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool.id))
-        fixed = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == link.tool_version))
-        if fixed is not None and fixed.verified:
-            from app.services.user_tools import _credentials_shared
+    from app.services.user_tools import agent_tool_rows
+    from app.services.mcp_policy import tool_callability
 
-            if fixed.encrypted_credentials and (
-                fixed.version <= (tool.credentials_revoked_through or 0) or tool.owner_id != actor_id and not await _credentials_shared(db, tool)
-            ):
-                continue
+    links = await agent_tool_rows(db, agent_id)
+    tools = list(await db.scalars(select(UserTool).where(UserTool.id.in_([row.tool_id for row in links]), UserTool.skill_id.is_(None))))
+    by_id = {tool.id: tool for tool in tools}
+    verified_tools = []
+    for link in links:
+        tool = by_id.get(link.tool_id)
+        if tool is None:
+            continue
+        fixed = await db.scalar(select(UserToolVersion).where(UserToolVersion.tool_id == tool.id, UserToolVersion.version == link.tool_version))
+        decision = await tool_callability(db, tool, fixed, actor_id)
+        if decision["status"] != ToolCallability.BLOCKED:
             verified_tools.append(tool)
     versions = []
     for row in skills:

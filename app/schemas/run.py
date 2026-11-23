@@ -27,6 +27,7 @@ from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenc
 class RunMetricsOut(BaseModel):
     """本轮提交到终态的耗时及上游累计已报告用量。"""
 
+    context_budget: dict | None = Field(default=None, description="最后完整模型请求的脱敏预算分解", examples=[None])
     elapsed_ms: int | None = Field(default=None, ge=0, description="从提交到终态的毫秒数，包含排队和审批；运行中为空", examples=[12340])
     total_tokens: int | None = Field(default=None, ge=0, description="累计已报告 Token，可能不含失败请求或缺失用量的调用；未知时为空", examples=[1250])
 
@@ -54,11 +55,13 @@ class RunOut(BaseModel):
     max_estimated_cost: Decimal | None = Field(description="本次运行估算成本上限", examples=["0.010000"])
     estimated_cost: Decimal = Field(description="启用成本预算时累计的估算成本", examples=["0.000250000000"])
     cost_currency: str | None = Field(description="成本预算的价格币种", examples=["USD"])
+    require_mcp_approval: bool = Field(default=False, description="本轮使用者是否要求全部 MCP 调用审批", examples=[False])
     max_tool_calls: int | None = Field(description="本次运行的工具调用次数上限", examples=[5])
     tool_call_count: int = Field(description="本次运行已开始的工具调用次数", examples=[2])
     thread_id: str = Field(description="检查点线程 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     state: RunState = Field(description="运行状态", examples=["queued"])
     event_seq: int = Field(description="最新事件序号", examples=[1])
+    context_budget: dict | None = Field(default=None, description="最后模型请求的近似 Token、字节及组件占用分解，不含正文", examples=[None])
     failure_code: str | None = Field(description="脱敏故障类别", examples=["model_error"])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-22T22:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-22T22:00:00"])
@@ -92,6 +95,8 @@ class RunMessageOut(BaseModel):
 class ApprovalActionOut(BaseModel):
     name: str = Field(description="待审批工具名称", examples=["web_search"])
     arguments_hash: str = Field(description="工具参数的服务端 HMAC-SHA256 摘要", examples=["a" * 64])
+    action_id: str | None = Field(default=None, description="绑定检查点、调用、参数及版本的动作 ID")
+    preview: dict | None = Field(default=None, description="经白名单脱敏的目标与数量预览，省略敏感及自由文本参数")
     resource_id: str | None = Field(default=None, description="可安全展示的目标文件 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
     resource_name: str | None = Field(default=None, description="当前仍归属审批人的目标文件名", examples=["notes.txt"])
 
@@ -113,6 +118,8 @@ class ApprovalOut(BaseModel):
         ],
     )
     state: ApprovalState = Field(description="审批状态", examples=["pending"])
+    decision: str | None = Field(default=None, description="显式审批动作，旧版 reject 仍停止整个任务")
+    decisions: list[str] | None = Field(default=None, description="按展示顺序持久化的逐项决定")
     expires_at: datetime = Field(description="审批到期时间", examples=["2026-10-22T23:00:00"])
     decided_at: datetime | None = Field(description="审批决定时间", examples=["2026-10-22T22:30:00"])
 

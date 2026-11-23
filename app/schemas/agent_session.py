@@ -74,6 +74,7 @@ class SessionRunCreateIn(BaseModel):
     expected_session_version: int | None = Field(default=None, ge=1, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1])
     input_text: str = Field(min_length=1, max_length=32768, description="本轮用户输入", examples=["请总结需求"])
     request_key: str = Field(min_length=1, max_length=128, description="本轮提交幂等键", examples=["session-001"])
+    require_mcp_approval: bool = Field(default=False, strict=True, description="本轮要求所有 MCP 工具审批，只能收紧所有者策略", examples=[True])
     publish_answer_artifact: bool = Field(default=False, description="是否将本轮最终回答发布为可下载的 TXT 产物", examples=[False])
     artifact_ids: list[ArtifactId] = Field(
         default_factory=list,

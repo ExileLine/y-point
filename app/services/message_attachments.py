@@ -283,6 +283,14 @@ async def load_message_artifacts(db: AsyncSession, owner_id: int, assistant_mess
                 "context_artifact_ids": context_by_run.get(item.run_id, []),
                 "read_source_artifact_ids": read_sources.get(item.id, []),
                 "template_source": item.template_source,
+                **(
+                    {
+                        "tool_result": item.tool_result,
+                        "sha256": item.sha256,
+                    }
+                    if item.tool_result is not None
+                    else {}
+                ),
                 "available": item.state == ArtifactState.READY
                 and item.is_deleted == 0
                 and item.status == 1

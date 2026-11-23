@@ -141,6 +141,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                         mcp_url="https://example.invalid/mcp" if kind == "mcp" else None,
                         mcp_tool_name="review" if kind == "mcp" else None,
                         requires_approval=False,
+                        approval_mode="never" if kind == "mcp" else None,
                         verified=True,
                         script_language="python",
                         source_code="print('{}')",
@@ -206,7 +207,7 @@ def test_missing_script_fields_can_be_repaired_in_same_run(tmp_path: Path, monke
                     ("failed", "invalid_tool_arguments"),
                     (
                         ("unknown" if kind == "mcp" else "failed") if execution_fails else "completed",
-                        "execution_error" if execution_fails else None,
+                        ("external_result_unknown" if kind == "mcp" else "execution_error") if execution_fails else None,
                     ),
                 ]
                 events = list(await db.scalars(select(AgentRunEvent.event_type).where(AgentRunEvent.run_id == run.id)))

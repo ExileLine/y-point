@@ -63,7 +63,9 @@ async def load_run_presentation(db: AsyncSession, owner_id: int, run_ids: list[s
             "partial_content": "".join(text_parts.get(run.id, [])),
             "run_state": run.state,
             "failure_code": run.failure_code,
-            "metrics": RunMetricsOut(elapsed_ms=elapsed, total_tokens=run.reported_total_tokens or None).model_dump(mode="json"),
+            "metrics": RunMetricsOut(elapsed_ms=elapsed, total_tokens=run.reported_total_tokens or None, context_budget=run.context_budget).model_dump(
+                mode="json", exclude={"context_budget"} if run.context_budget is None else None
+            ),
         }
     return result
 

@@ -51,6 +51,10 @@ class UserToolVersion(CustomBaseModel):
     input_schema: Mapped[dict] = mapped_column(JSON, nullable=False, comment="工具输入 JSON Schema")
     effect: Mapped[str] = mapped_column(String(16), nullable=False, comment="只读或外部写入")
     recovery_policy: Mapped[str] = mapped_column(String(24), nullable=False, default=RecoveryPolicy.MANUAL, comment="调用恢复策略")
+    approval_mode: Mapped[str | None] = mapped_column(String(16), nullable=True, comment="工具审批覆盖，空值兼容历史布尔设置")
+    effect_source: Mapped[str | None] = mapped_column(String(24), nullable=True, comment="MCP 读写判断的证据来源")
+    mcp_annotations: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="发布时远端显式提供的 MCP 工具提示")
+    read_confirmation: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="所有者只读确认及绑定执行定义摘要")
     idempotency_key_field: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="远端幂等键参数名")
     write_contract_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="外部写恢复契约是否经管理员验收")
     write_contract_evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="外部写恢复验收证据引用摘要")
@@ -106,8 +110,11 @@ class RunTool(CustomBaseModel):
     run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True, comment="运行 ID")
     tool_id: Mapped[int] = mapped_column(Integer, nullable=False, comment="Tool ID")
     tool_version: Mapped[int] = mapped_column(Integer, nullable=False, comment="运行固定版本号")
+    mcp_connection_id: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="按连接展开的授权来源，空值兼容直接绑定")
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, comment="运行固定执行定义摘要")
     requires_approval: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="提交时审批设置快照，空值沿用历史工具版本")
+
+    approval_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="提交时有效审批方式及来源快照")
 
 
 class ToolInvocation(CustomBaseModel):

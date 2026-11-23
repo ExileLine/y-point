@@ -36,6 +36,7 @@ class ArtifactOut(BaseModel):
         description="生成前成功读取的旧产物 ID；不证明实际引用",
         examples=[["550e8400-e29b-41d4-a716-446655440001"]],
     )
+    tool_result: dict | None = Field(default=None, description="脱敏 MCP 响应的保存范围、调用来源与完整性说明", examples=[None])
     template_source: dict | None = Field(default=None, description="报告使用的 Skill 版本及模板摘要，不含存储路径", examples=[None])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-23T15:00:00"])
 
@@ -54,6 +55,8 @@ class ArtifactReferenceOut(BaseModel):
 class GeneratedArtifactReferenceOut(BaseModel):
     """助手消息关联的生成产物；下载仍需逐次授权。"""
 
+    sha256: str | None = Field(default=None, description="结果快照摘要，用于固定分页内容", examples=[None])
+    tool_result: dict | None = Field(default=None, description="脱敏 MCP 响应的保存范围、调用来源与完整性说明", examples=[None])
     template_source: dict | None = Field(default=None, description="报告使用的固定 Skill 版本及模板摘要", examples=[None])
 
     artifact_id: str = Field(description="生成产物 ID", examples=["550e8400-e29b-41d4-a716-446655440000"])
