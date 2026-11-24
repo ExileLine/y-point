@@ -558,10 +558,9 @@ export default function Sessions() {
           context_artifact_ids: files.flatMap(item => item.context && item.artifact ? [item.artifact.id] : []),
         };
         if (props.artifact_ids.length) await checkSessionAttachments(agentId, targetSessionId, props);
-        const thread = await getAgUiThread(agentId, targetSessionId);
         next = {
           threadId: targetSessionId, runId: createClientId(), protocolVersion: "1.0", tools: [], context: [],
-          messages: [...thread.messages, { id: createClientId(), role: "user", content: text }], forwardedProps: props,
+          messages: [{ id: createClientId(), role: "user", content: text }], forwardedProps: props,
         };
       }
       if (currentSessionId.current !== targetSessionId) return;
@@ -581,6 +580,11 @@ export default function Sessions() {
       if (currentSessionId.current !== targetSessionId) return;
       setRunError(errorText(failure));
       if (failure instanceof ApiError && failure.status === 409) {
+        const reason = failure.data && typeof failure.data === "object" && "reason" in failure.data ? failure.data.reason : undefined;
+        if (reason === "session_version_changed" || reason === "session_model_changed" || reason === "submission_conflict") {
+          setRunError(`${errorText(failure)}；已保留输入，请确认会话最新状态后重新发送`);
+          setMessageRevision(value => value + 1);
+        }
         setPendingDraft(null);
         listSessionRuns(agentId, targetSessionId).then(result => {
           if (currentSessionId.current !== targetSessionId) return;

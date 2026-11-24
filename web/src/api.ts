@@ -118,7 +118,7 @@ export type CapabilityTestResult = { capability: string; result: ProbeResult; ve
 type Tokens = { access_token: string; refresh_token: string; expires_in: number };
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public code?: number) {
+  constructor(message: string, public status: number, public code?: number, public data?: unknown) {
     super(message);
     this.name = "ApiError";
   }
@@ -151,7 +151,7 @@ async function readResponse<T>(response: Response): Promise<T> {
     throw new ApiError("服务端返回了无法读取的响应", response.status);
   }
   if (!response.ok || payload.code >= 400) {
-    throw new ApiError(payload.message || "请求失败", response.status, payload.code);
+    throw new ApiError(payload.message || "请求失败", response.status, payload.code, payload.data);
   }
   return payload.data;
 }

@@ -16,7 +16,7 @@ const server = createServer(async (req, res) => {
   for await (const chunk of req) text += chunk;
   const body = JSON.parse(text);
   state.submitted.push(body);
-  assert.deepEqual(body.messages.slice(0, -1), state.history.messages);
+  assert.equal(body.messages.length, 1, "version submission sends only the new user message");
   assert.equal(body.messages.at(-1).role, 'user');
   assert.ok(body.messages.at(-1).id && body.runId);
   assert.equal(body.protocolVersion, '1.0');
@@ -108,16 +108,20 @@ try {
     state.requireMcpApproval = width < 768;
     if (state.requireMcpApproval) await page.getByRole('switch', { name: '本轮全部 MCP 调用需审批', exact: true }).click();
     await page.getByRole('textbox', { name: '消息内容' }).fill('请使用规范接口发送');
+    const sendStart = calls.length;
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await page.getByText('标准 POST 的中文流式回答。', { exact: true }).waitFor();
     assert.equal(state.submitted.length, 1);
+    const postIndex = calls.findIndex((call, index) => index >= sendStart && call.method === 'POST' && call.path.endsWith('/agents/11/ag-ui'));
+    assert.ok(postIndex >= sendStart);
+    assert.ok(!calls.slice(sendStart, postIndex).some(call => call.path.endsWith('/ag-ui/threads/submit')), 'sending does not fetch history before POST');
     assert.ok(!calls.some(call => /\/runs\/run-post\/(ag-ui\/snapshot|stream|stream-ticket)$/.test(call.path)), 'new run consumes POST without a duplicate GET subscription');
     assert.ok(!calls.some(call => /\/sessions\/[^/]+\/messages$/.test(call.path) || call.method === 'POST' && /\/sessions\/[^/]+\/runs$/.test(call.path)));
     finish();
     await page.locator('[data-message-id="4"]').waitFor();
     assert.equal(await page.locator('[data-message-id="4"] .session-message-content').innerText(), '标准 POST 的中文流式回答。');
     assert.deepEqual(errors, []);
-    console.log(`${width}: full protocol history, stable input IDs, real POST SSE and no duplicate GET observer passed`);
+    console.log(`${width}: version-only submission without history fetch, stable input IDs, real POST SSE and no duplicate GET observer passed`);
     await context.close();
   }
 } finally {

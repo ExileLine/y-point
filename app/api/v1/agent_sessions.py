@@ -14,7 +14,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, ModelCapability, RunState, SessionModelReason
+from app.core.enums import ArtifactOrigin, ArtifactState, MessageRole, ModelCapability, RunState, SessionModelReason, SessionSubmissionReason
 from app.api.v1.agents import _check_cost_pricing
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
@@ -122,7 +122,14 @@ async def _matching_retry(db: AsyncSession, owner_id: int, session_id: str, body
         or saved_artifacts != body.artifact_ids
         or saved_context != set(body.context_artifact_ids)
     ):
-        raise CustomException(status_code=409, custom_code=10005, detail="同一提交键的会话、模型、输入、附件或产物设置不一致")
+        raise CustomException(
+            status_code=409,
+            custom_code=10005,
+            detail="同一提交键的会话、模型、输入、附件或产物设置不一致",
+            data={
+                "reason": SessionSubmissionReason.REQUEST_CONFLICT,
+            },
+        )
     return run
 
 
@@ -253,7 +260,7 @@ async def update_session(
     if any(value is None for value in changes.values()):
         raise CustomException(status_code=400, custom_code=10006, detail="会话标题、归档状态和模型不能为空")
     if session.version != body.expected_version:
-        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
+        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试", version=session.version)
     if "model_id" in changes:
         await _ensure_idle(db, session)
         if session.archived or changes.get("archived") is True or agent.is_deleted != 0 or not agent.enabled:
@@ -279,7 +286,7 @@ async def update_session(
         )
         if result.rowcount != 1:
             await db.rollback()
-            raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
+            raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试", version=session.version)
         audit(db, "session.updated", actor_id=actor.id, target_id=agent_id, subject=session_id)
         await db.commit()
         await db.refresh(session)
@@ -385,10 +392,10 @@ async def create_session_run(
         raise CustomException(status_code=409, custom_code=10005, detail="会话或智能体不可用")
     await _ensure_idle(db, session)
     if body.expected_session_version is not None and session.version != body.expected_session_version:
-        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试")
+        raise session_model_conflict(SessionModelReason.VERSION, "会话版本已变化，请刷新后重试", version=session.version)
     model_id = await effective_session_model(db, session, agent)
     if body.model_id is not None and body.model_id != model_id:
-        raise session_model_conflict(SessionModelReason.SELECTION, "会话模型已变化，请刷新后重试")
+        raise session_model_conflict(SessionModelReason.SELECTION, "会话模型已变化，请刷新后重试", version=session.version)
     model = await validate_session_model(db, agent, model_id)
     _check_cost_pricing(model, agent.max_estimated_cost)
     previous_model_id = await db.scalar(
@@ -484,7 +491,21 @@ async def create_session_run(
             # 回滚使身份对象也过期，恢复后交给流入口继续执行授权检查。
             await db.refresh(actor)
             return existing
-        raise CustomException(status_code=409, custom_code=10005, detail="会话运行提交冲突") from None
+        current_version = await db.scalar(select(AgentSession.version).where(AgentSession.id == session_id, AgentSession.owner_id == owner_id))
+        reason = (
+            SessionModelReason.VERSION
+            if body.expected_session_version is not None and current_version != body.expected_session_version
+            else SessionSubmissionReason.SUBMISSION_CONFLICT
+        )
+        raise CustomException(
+            status_code=409,
+            custom_code=10005,
+            detail="会话运行提交冲突，请刷新后重试",
+            data={
+                "reason": reason,
+                "version": current_version,
+            },
+        ) from None
     return run
 
 
@@ -520,12 +541,7 @@ async def get_session_metrics(agent_id: int, session_id: str, actor: Admin = Dep
     return response
 
 
-async def load_session_message_details(
-    db: AsyncSession,
-    agent_id: int,
-    session_id: str,
-    owner_id: int,
-) -> dict:
+async def load_session_message_details(db: AsyncSession, agent_id: int, session_id: str, owner_id: int) -> dict:
     """为协议消息补充授权后的文件、模型和交付信息，不另行提供正文历史。"""
     statement = (
         select(AgentRunMessage)

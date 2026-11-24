@@ -32,6 +32,7 @@
     "verify:knowledge-pdf": "node scripts/verify-knowledge-pdf.mjs",
     "verify:ag-ui": "node scripts/verify-ag-ui.mjs",
     "verify:ag-ui-submit": "node scripts/verify-ag-ui-submit.mjs",
+    "verify:ag-ui-version": "node scripts/verify-ag-ui-version.mjs",
     "verify:mcp-sharing": "node scripts/verify-mcp-sharing.mjs",
     "verify:mcp-sync": "node scripts/verify-mcp-sync.mjs",
     "verify:mcp": "node scripts/verify-mcp-connections.mjs",

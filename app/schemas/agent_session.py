@@ -71,7 +71,7 @@ class SessionRunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_id: int | None = Field(default=None, gt=0, description="预期会话模型；只校验选择，切换请使用修改会话接口", examples=[1])
-    expected_session_version: int | None = Field(default=None, ge=1, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1])
+    expected_session_version: int | None = Field(default=None, ge=1, strict=True, description="提交时读取的会话版本；幂等重试优先返回原运行", examples=[1])
     input_text: str = Field(min_length=1, max_length=32768, description="本轮用户输入", examples=["请总结需求"])
     request_key: str = Field(min_length=1, max_length=128, description="本轮提交幂等键", examples=["session-001"])
     require_mcp_approval: bool = Field(default=False, strict=True, description="本轮要求所有 MCP 工具审批，只能收紧所有者策略", examples=[True])
@@ -120,7 +120,9 @@ class SessionMessageOut(BaseModel):
     content: str = Field(description="消息正文", examples=["已整理需求"])
     reasoning_content: str = Field(default="", description="本轮模型显式公开的思考文本，按事件顺序恢复；旧轮次可能为空", examples=["先核对输入资料。"])
     partial_content: str = Field(
-        default="", description="失败、超时或取消前已公开的正文；仅展示，不作为完成回答或后续模型上下文", examples=["已检查第一节，尚未完成。"]
+        default="",
+        description="失败、超时或取消前已公开的正文；仅展示，不作为完成回答或后续模型上下文",
+        examples=["已检查第一节，尚未完成。"],
     )
     run_state: RunState | None = Field(default=None, description="消息所属轮次的当前状态，用于标识未完成内容", examples=["failed"])
     failure_code: str | None = Field(default=None, description="消息所属轮次的脱敏故障类别", examples=["model_output_limit_exceeded"])

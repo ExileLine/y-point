@@ -24,13 +24,18 @@ def test_budget_results_migration_roundtrip(tmp_path):
     def migrate(*args, success=True):
         """运行真实 Alembic 命令，不连接业务库。"""
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", *args], cwd=Path(__file__).resolve().parents[1], env=environment, capture_output=True, text=True, timeout=60
+            [sys.executable, "-m", "alembic", *args],
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert (result.returncode == 0) == success, result.stdout + result.stderr
         return result
 
     migrate("upgrade", "065")
-    migrate("upgrade", "066")
+    migrate("upgrade", "head")
     migrate("check")
     with sqlite3.connect(database) as db:
         db.execute(
@@ -40,7 +45,7 @@ def test_budget_results_migration_roundtrip(tmp_path):
         )
         assert db.execute("SELECT tool_result FROM yp_artifact").fetchone() == (None,)
     migrate("downgrade", "065")
-    migrate("upgrade", "066")
+    migrate("upgrade", "head")
     with sqlite3.connect(database) as db:
         db.execute('UPDATE yp_artifact SET tool_result = \'{"scope":"single_response_redacted"}\'')
     result = migrate("downgrade", "065", success=False)
@@ -48,4 +53,5 @@ def test_budget_results_migration_roundtrip(tmp_path):
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("066",)
         db.execute("UPDATE yp_artifact SET tool_result=NULL")
+    migrate("upgrade", "head")
     migrate("check")

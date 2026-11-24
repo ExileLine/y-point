@@ -304,6 +304,21 @@ class ModelOutputLimitReason(StrEnum):
     MAX_OUTPUT_TOKENS = "max_output_tokens"
 
 
+class SessionSubmissionReason(StrEnum):
+    """会话提交在幂等校验和并发写入时的冲突原因。"""
+
+    REQUEST_CONFLICT = "request_conflict"
+    SUBMISSION_CONFLICT = "submission_conflict"
+
+
+class AgUiConflictReason(StrEnum):
+    """AG-UI 协议输入与服务器公开历史的冲突原因。"""
+
+    PROTOCOL_INPUT = "protocol_input"
+    HISTORY_MISMATCH = "history_mismatch"
+    MESSAGE_ID_CONFLICT = "message_id_conflict"
+
+
 class SessionModelReason(StrEnum):
     """会话模型选择失败的机器可读原因。"""
 

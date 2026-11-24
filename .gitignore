@@ -260,3 +260,4 @@ __marimo__/
 
 # Docker 部署的私有配置、证书与隔离数据
 /.deployment/
+/y-point-backend-coding-standards.md

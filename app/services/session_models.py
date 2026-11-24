@@ -30,16 +30,14 @@ MAX_HANDOFF_TURNS = 100
 MAX_HANDOFF_CHARACTERS = 262144
 
 
-def session_model_conflict(reason: SessionModelReason, detail: str) -> CustomException:
+def session_model_conflict(reason: SessionModelReason, detail: str, *, version: int | None = None) -> CustomException:
     """构造前端可按原因码处理的模型选择冲突。"""
-    return CustomException(
-        status_code=409,
-        custom_code=10005,
-        detail=detail,
-        data={
-            "reason": reason,
-        },
-    )
+    data = {
+        "reason": reason,
+    }
+    if version is not None:
+        data["version"] = version
+    return CustomException(status_code=409, custom_code=10005, detail=detail, data=data)
 
 
 async def effective_session_model(db: AsyncSession, session: AgentSession, agent: AgentConfig) -> int:

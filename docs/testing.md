@@ -192,3 +192,25 @@ WEB_BASE_URL=http://127.0.0.1:5179 AGENT_SCREENSHOT_DIR=/tmp/ypoint-mcp07-screen
 ```
 
 状态刷新不修改草稿的基准版本，不将当前发布版本的预检套用到旧绑定。截图检查桌面/手机布局；Ruff、Python 格式、脚本语法和改动空白检查通过。本次无需新迁移；未对业务库执行 062—066。目标环境配置与迁移状态的只读核对见 [验收矩阵](mcp-acceptance.md#mcp-07-补齐后的环境核对)，不代替真实前后端账号、供应商、Docker/S3 或第三方业务验收。
+
+
+## AG-UI Issue #2：版本提交与公开历史缓存
+
+```bash
+uv run pytest -q tests/test_ag_ui.py tests/test_ag_ui_version_history.py tests/test_ag_ui_history_migration.py tests/test_agent_sessions.py tests/test_session_models.py tests/test_mcp_results_migration.py
+npm --prefix web run build
+WEB_BASE_URL=http://127.0.0.1:5173 npm --prefix web run verify:ag-ui-submit
+WEB_BASE_URL=http://127.0.0.1:5173 npm --prefix web run verify:ag-ui-version
+WEB_BASE_URL=http://127.0.0.1:5173 npm --prefix web run verify:session-models
+WEB_BASE_URL=http://127.0.0.1:5173 npm --prefix web run verify:approvals
+```
+
+测试使用独立 SQLite、真实 ASGI HTTP/登录/数据库事务与正式协议投影；Worker 输出由受控执行代替，不调用真实模型或外部工具。覆盖无历史重建的版本提交、原请求跨后续轮重试、非法版本、旧模式与 null、历史消息 ID 冲突、并发版本竞争、跨用户拒绝、终态缓存复用与失效、早期审批截面和 067 升降级。
+
+多轮夹具包含 12 个 Run、240 个文本事件，以「首次投影 12 次，跨数据库会话热读取投影 0 次，公开历史完全相同」验证缓存收益；不以机器相关的毫秒阈值判定正确性。缓存仍需读取完整消息和其他展示元数据，不承诺历史接口恒定耗时。
+
+前端 `verify:ag-ui-submit` 在桌面/手机验证仅发送新消息、POST 前不读取历史、真实 POST SSE 及无重复 GET 观察；`verify:ag-ui-version` 验证网络失败复用原请求身份、版本冲突保留草稿且不自动重发、手动重发使用刷新后的版本和新请求身份。浏览器接口受控，不代表真实模型生成效果。
+
+2026-11-24 本机结果：上述六文件后端综合回归 **55 passed**；前端 TypeScript 和生产构建通过，保留既有 >500 kB 包体提示。`verify:ag-ui-submit`、`verify:ag-ui-version` 桌面/手机通过；`verify:session-models` **59 项断言**、`verify:ag-ui` **26 项断言**及 `verify:approvals` 回归通过。Ruff、格式、脚本语法和变更空白检查通过。
+
+本地 SQLite 已在无活动运行时备份并从 066 升级至 **067**；Alembic 结构检查、SQLite 完整性检查通过，升级前原有 57 张表的记录数保持不变。API/Worker 健康与前端返回 200，备份保存在被忽略的 `.run-private/backups/`，仅本机使用。不据此声称 MySQL/PostgreSQL 迁移、真实模型生成效果或目标部署延迟已验证。未提交/推送 Git 或修改 Issue。
