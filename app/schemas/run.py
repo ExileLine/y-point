@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 from app.core.enums import (
+    SessionApprovalScope,
     KnowledgeAnswerMode,
     ModelThinkingMode,
     ApprovalState,
@@ -120,6 +121,12 @@ class ApprovalOut(BaseModel):
     state: ApprovalState = Field(description="审批状态", examples=["pending"])
     decision: str | None = Field(default=None, description="显式审批动作，旧版 reject 仍停止整个任务")
     decisions: list[str] | None = Field(default=None, description="按展示顺序持久化的逐项决定")
+    scope: SessionApprovalScope = Field(default=SessionApprovalScope.ONCE, description="本次决定附带的会话放行范围", examples=["once"])
+    allowed_scopes: list[SessionApprovalScope] = Field(
+        default_factory=lambda: [SessionApprovalScope.ONCE],
+        description="当前审批可选择的会话范围，强制约束不可覆盖",
+        examples=[["once"]],
+    )
     expires_at: datetime = Field(description="审批到期时间", examples=["2026-10-22T23:00:00"])
     decided_at: datetime | None = Field(description="审批决定时间", examples=["2026-10-22T22:30:00"])
 

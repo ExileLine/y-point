@@ -411,8 +411,8 @@ export default function Tools({ userId }: { userId: number }) {
           <Typography.Text type="secondary">开启后，每次调用需在会话中手动确认。保存后下一轮对话生效。</Typography.Text>
         </> : <>
           <label>工具审批策略<Select aria-label="工具审批策略" style={{ width: "100%" }} value={editor.approvalMode} onChange={approvalMode => update({ approvalMode })}
-            options={[{ value: "inherit", label: "继承连接默认" }, { value: "writes", label: "写入和未知操作需审批" }, { value: "always", label: "每次调用均审批" }, { value: "never", label: "不额外审批（仍受平台约束）" }]} /></label>
-          <Typography.Text type="secondary">普通非幂等写始终需审批，幂等验收不自动免审批；使用者及部署可以进一步收紧。策略收紧会停止原先免审批的相关运行。</Typography.Text>
+            options={[{ value: "inherit", label: "继承连接默认" }, { value: "writes", label: "写入和未知操作需审批" }, { value: "always", label: "每次调用均审批" }, { value: "never", label: "无需审批（强制约束除外）" }]} /></label>
+          <Typography.Text type="secondary">无需审批允许所有者直接调用普通写工具；幂等契约仅用于恢复。部署、本轮要求及他人使用可强制审批；策略收紧会停止原先免审批的相关运行。</Typography.Text>
           {(remoteReadHint == null) && <>
             <label className="resource-switch-row">确认未知工具为只读<Switch aria-label="确认未知工具为只读" checked={editor.confirmReadOnly} onChange={confirmReadOnly => update({ confirmReadOnly })} /></label>
             {editor.confirmReadOnly && <label>只读确认理由<Input.TextArea aria-label="只读确认理由" maxLength={512} value={editor.readOnlyReason}

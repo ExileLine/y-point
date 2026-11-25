@@ -209,7 +209,9 @@ class BaseConfig(BaseSettings):
 
     # MCP配置参数
     MCP_TOOL_SCHEMA_MODE: McpToolSchemaMode = Field(
-        default=McpToolSchemaMode.STATIC, description="MCP Schema 加载模式：static 全量，dynamic 搜索后按需加载", examples=["static", "dynamic"]
+        default=McpToolSchemaMode.STATIC,
+        description="MCP Schema 加载模式：static 全量，dynamic 搜索后按需加载",
+        examples=["static", "dynamic"],
     )
     MCP_CONNECT_TIMEOUT_SECONDS: int = Field(default=10, gt=0, description="MCP HTTP 建连、写入及连接池等待超时秒数", examples=[10])
     MCP_DISCOVERY_TIMEOUT_SECONDS: int = Field(default=15, gt=0, description="单次 MCP 发现总时限，含握手及分页", examples=[15])
@@ -239,6 +241,7 @@ class BaseConfig(BaseSettings):
             }
         ],
     )
+    MCP_SESSION_ALLOW_ALL: bool = Field(default=True, description="允许用户在审批时授权本会话当前已选 MCP 工具集合", examples=[True])
 
     # 知识库配置参数
     KNOWLEDGE_VECTOR_BACKEND: KnowledgeVectorBackend = Field(

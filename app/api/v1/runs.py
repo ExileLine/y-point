@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import ArtifactState, RunState
+from app.core.enums import ArtifactState, RunState, SessionApprovalScope
 from app.core.custom_exception import CustomException
 from app.core.response import api_response
 from app.core.config import get_config
@@ -68,6 +68,15 @@ def _run_data(run) -> dict:
 async def _approval_data(db: AsyncSession, approval: object, owner_id: int) -> dict:
     """仅为当前所有者补充仍可访问的审批目标文件名。"""
     data = ApprovalOut.model_validate(approval).model_dump(mode="json")
+    from app.services.session_approval import prepare_session_grant
+
+    run = await get_owned_run(db, approval.run_id, owner_id)
+    for scope in (SessionApprovalScope.TOOL, SessionApprovalScope.ALL):
+        try:
+            await prepare_session_grant(db, run, approval, scope)
+        except ValueError:
+            continue
+        data["allowed_scopes"].append(scope)
     for action in data["actions"]:
         resource_id = action.get("resource_id")
         if resource_id is None:

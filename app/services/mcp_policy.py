@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_config
 from app.core.enums import (
     RecoveryPolicy,
+    McpApprovalConstraint,
     RunState,
     ToolApprovalMode,
     ToolBlockReason,
@@ -60,18 +61,18 @@ def approval_policy(
     readonly = version.effect == ToolEffect.READ
     required = mode == ToolApprovalMode.ALWAYS or mode == ToolApprovalMode.WRITES and not readonly
     constraints = []
-    if not readonly and not (version.recovery_policy == RecoveryPolicy.IDEMPOTENT and version.idempotency_key_field and version.write_contract_verified):
+    if actor_id != tool.owner_id and not readonly:
         required = True
-        constraints.append("non_idempotent_write")
+        constraints.append(McpApprovalConstraint.UNTRUSTED_TOOL)
     if actor_id != tool.owner_id and readonly and version.effect_source != ToolEffectSource.REMOTE_READ:
         required = True
-        constraints.append("untrusted_read_declaration")
+        constraints.append(McpApprovalConstraint.UNTRUSTED_READ)
     if require_all:
         required = True
-        constraints.append("caller_requires_approval")
+        constraints.append(McpApprovalConstraint.CALLER)
     if get_config().MCP_FORCE_APPROVAL:
         required = True
-        constraints.append("deployment_requires_approval")
+        constraints.append(McpApprovalConstraint.DEPLOYMENT)
     return {
         "schema_version": 1,
         "mode": mode,
@@ -138,7 +139,7 @@ async def tool_callability(
             return blocked(ToolBlockReason.CREDENTIALS_REVOKED, "连接凭据已轮换，此版本已撤销", "使用新凭据重新发布工具")
     if tool.kind == ToolKind.MCP and version.effect != ToolEffect.READ and version.recovery_policy == RecoveryPolicy.IDEMPOTENT:
         if not version.idempotency_key_field or not version.write_contract_verified:
-            return blocked(ToolBlockReason.IDEMPOTENCY_UNVERIFIED, "声明的幂等恢复契约尚未验收", "完成契约验收，或改用需审批的 manual 策略")
+            return blocked(ToolBlockReason.IDEMPOTENCY_UNVERIFIED, "声明的幂等恢复契约尚未验收", "完成契约验收，或改用 manual 恢复策略")
     if tool.kind == ToolKind.SCRIPT and version.requirements and version.environment_state != ToolEnvironmentState.READY:
         return blocked(ToolBlockReason.ENVIRONMENT_NOT_READY, "脚本依赖环境未就绪", "查看依赖准备进度或重试")
     policy = approval_policy(tool, version, actor_id, connection=connection, policy_version=policy_version, require_all=require_all)

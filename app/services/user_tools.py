@@ -135,8 +135,6 @@ def validate_tool_definition(kind: str, name: str, fields: dict) -> tuple[str, s
             if fields.get("approval_mode") is None and fields.get("requires_approval"):
                 mode = ToolApprovalMode.ALWAYS
         approval = mode == ToolApprovalMode.ALWAYS or mode == ToolApprovalMode.WRITES and effect != ToolEffect.READ
-        if effect != ToolEffect.READ and not (fields.get("recovery_policy") == RecoveryPolicy.IDEMPOTENT and fields.get("write_contract_verified")):
-            approval = True
         policy = fields.get("recovery_policy") or (RecoveryPolicy.SAFE if effect == ToolEffect.READ else RecoveryPolicy.MANUAL)
         key = fields.get("idempotency_key_field")
         if effect == ToolEffect.READ and policy != RecoveryPolicy.SAFE:

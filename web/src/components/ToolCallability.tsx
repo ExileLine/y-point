@@ -8,8 +8,8 @@ import type { ToolCallability } from "../api";
 
 export const callabilityNotice = "这是配置与权限预检，不代表远端实时在线；提交任务及实际调用前仍会重新核对权限。";
 const sources: Record<string, string> = { tool: "工具", connection: "连接", default: "默认", invalid_policy: "保守回退" };
-const modes: Record<string, string> = { always: "每次审批", writes: "写入及未知操作审批", never: "不额外审批" };
-const constraints: Record<string, string> = { non_idempotent_write: "非幂等写入", untrusted_read_declaration: "所有者只读确认需使用者审批", caller_requires_approval: "使用者要求审批", deployment_requires_approval: "部署要求审批" };
+const modes: Record<string, string> = { always: "每次审批", writes: "写入及未知操作审批", never: "无需审批" };
+const constraints: Record<string, string> = { untrusted_shared_tool: "他人使用写工具需审批", untrusted_read_declaration: "所有者只读确认需使用者审批", caller_requires_approval: "使用者要求审批", deployment_requires_approval: "部署要求审批" };
 
 /** 统一生成工具目录与选择器的状态、修复动作及策略摘要。 */
 export function callabilityText(value?: ToolCallability, includeMessage = true): string {

@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.enums import SessionApprovalScope
 from app.models.base import CustomBaseModel, ShanghaiDateTime
 
 
@@ -36,3 +37,10 @@ class RunApproval(CustomBaseModel):
     expires_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="审批到期时间")
     decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="作出审批决定的用户 ID")
     decided_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="审批决定时间")
+    scope: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=SessionApprovalScope.ONCE,
+        server_default=SessionApprovalScope.ONCE,
+        comment="本次决定附带的会话放行范围",
+    )

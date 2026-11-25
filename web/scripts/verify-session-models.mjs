@@ -1,4 +1,4 @@
-import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
+import { emptySessionApprovalPolicy, agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -28,6 +28,7 @@ async function fixture(page) {
     const body = req.postData() ? req.postDataJSON() : null;
     calls.push({ path, method, body });
     const send = (data, status = 200, detail = '') => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status === 409 ? 10005 : status, message: detail || '操作成功', data: agUiData(path, data) }) });
+    if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
     if (path === '/api/v1/agents/runtime-limits') return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 });
     if (path === '/api/v1/auth/me') return send({ id: 1, username: 'tester', role: 'user' });

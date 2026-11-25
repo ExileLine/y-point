@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.agent_sessions import _session, create_session_run, load_session_message_details
 from app.api.v1.runs import _owned_run, build_run_stream
 from app.core.custom_exception import CustomException
-from app.core.enums import AgUiConflictReason, ApprovalState, MessageRole, SessionSubmissionReason
+from app.core.enums import SessionApprovalScope, AgUiConflictReason, ApprovalState, MessageRole, SessionSubmissionReason
 from app.core.response import api_response
 from app.core.security import get_current_admin
 from app.db.session import get_db_session
@@ -27,6 +27,7 @@ from app.schemas.agent_session import SessionRunCreateIn
 from app.services.ag_ui_projection import load_projection
 from app.services.ag_ui_history import public_history, public_message_id_exists
 from app.services.run_manager import RunConflictError, decide_approval
+from app.services.session_approval import session_policy_output
 
 router = APIRouter(prefix="/agents/{agent_id}/ag-ui", tags=["ag-ui"])
 
@@ -87,6 +88,7 @@ async def capabilities(agent_id: int, actor: Admin = Depends(get_current_admin),
                     },
                     "tools": "server-authorized-display-only",
                     "recovery": "durable-snapshot-and-wire-cursor",
+                    "approvalScopes": list(SessionApprovalScope),
                     "clientTools": False,
                     "clientState": False,
                     "clientContext": False,
@@ -105,6 +107,7 @@ async def thread_history(agent_id: int, session_id: str, actor: Admin = Depends(
         data={
             "threadId": session.id,
             "version": session.version,
+            "approvalPolicy": session_policy_output(session),
             "messages": await public_history(db, session.id, actor.id),
             "messageDetails": await load_session_message_details(db, agent_id, session.id, actor.id),
         },
@@ -219,11 +222,15 @@ async def resume_agent(agent_id: int, body: RunAgentInput, request: Request, act
     ):
         raise protocol_conflict("恢复历史与服务器公开历史不一致", reason=AgUiConflictReason.HISTORY_MISMATCH)
     payload = entry.payload or {}
-    if not isinstance(payload, dict) or set(payload) - {"decision", "decisions"}:
-        raise protocol_conflict("审批 payload 只接受 decision 与逐项 decisions")
+    if not isinstance(payload, dict) or set(payload) - {"decision", "decisions", "scope"}:
+        raise protocol_conflict("审批 payload 只接受 decision、逐项 decisions 与会话 scope")
     decision = "reject" if entry.status == "cancelled" else payload.get("decision")
     if decision not in ("approve", "reject", "reject_continue", "stop", "resolve"):
         raise protocol_conflict("恢复时必须明确审批决定")
+    try:
+        scope = SessionApprovalScope(payload.get("scope", SessionApprovalScope.ONCE))
+    except (ValueError, TypeError):
+        raise protocol_conflict("无效的会话放行范围") from None
     projection, frames = await load_projection(db, run)
     if (
         body.run_id == run.ag_ui_run_id
@@ -246,7 +253,7 @@ async def resume_agent(agent_id: int, body: RunAgentInput, request: Request, act
     pending = approval.state == ApprovalState.PENDING
     if pending or approval.ag_ui_run_id == body.run_id:
         try:
-            await decide_approval(db, run.id, actor.id, decision, expected_approval_id=approval.id, decisions=payload.get("decisions"))
+            await decide_approval(db, run.id, actor.id, decision, expected_approval_id=approval.id, decisions=payload.get("decisions"), scope=scope)
         except (RunConflictError, ValueError):
             raise protocol_conflict("审批已变化或逐项决定无效，请刷新后重试") from None
         approval.ag_ui_run_id = body.run_id

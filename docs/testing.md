@@ -214,3 +214,16 @@ WEB_BASE_URL=http://127.0.0.1:5173 npm --prefix web run verify:approvals
 2026-11-24 本机结果：上述六文件后端综合回归 **55 passed**；前端 TypeScript 和生产构建通过，保留既有 >500 kB 包体提示。`verify:ag-ui-submit`、`verify:ag-ui-version` 桌面/手机通过；`verify:session-models` **59 项断言**、`verify:ag-ui` **26 项断言**及 `verify:approvals` 回归通过。Ruff、格式、脚本语法和变更空白检查通过。
 
 本地 SQLite 已在无活动运行时备份并从 066 升级至 **067**；Alembic 结构检查、SQLite 完整性检查通过，升级前原有 57 张表的记录数保持不变。API/Worker 健康与前端返回 200，备份保存在被忽略的 `.run-private/backups/`，仅本机使用。不据此声称 MySQL/PostgreSQL 迁移、真实模型生成效果或目标部署延迟已验证。未提交/推送 Git 或修改 Issue。
+
+## MCP 会话放行回归（Issue #6）
+
+```bash
+uv run pytest -q tests/test_mcp_policy.py tests/test_mcp_execution_policy.py tests/test_mcp_session_approval.py tests/test_mcp_session_approval_migration.py tests/test_mcp_approval_continue.py tests/test_ag_ui.py
+npm --prefix web run verify:approvals
+```
+
+新增场景使用隔离数据库、真实 HTTP 与本地检查点，覆盖 never 普通写直接执行及结果未知、tool/all 范围的同轮和后续轮次、审批范围幂等、强制约束、他人使用、连接变化、版本化撤销和跨用户隔离。单工具撤销后保留其他工具放行；模型响应期间撤销时，执行前复核阻止尚未执行的自动放行。迁移测试验证 067 → 068 → 067 → 068，检查历史会话和审批结论保持不变。浏览器脚本覆盖桌面/移动端的放行按钮、策略刷新及撤销，不代表真实第三方 MCP 或模型联调。
+
+2026-11-25 验证：覆盖 MCP、运行执行器、运行管理、AG-UI、会话及工具模块的扩大回归为 **375 passed、9 skipped**，保留既有发现 API 弃用警告。新增会话放行专项连同新旧迁移回归最后复验为 **18 passed**；该结果与扩大回归存在重叠，不累加统计。本地业务库未应用 068，迁移只在临时测试数据库执行。
+
+前端最后复验通过：`verify:approvals`、`verify:tool-approvals`、`verify:callability`、`verify:ag-ui-version`，以及补齐策略查询夹具后的 `verify:ag-ui-submit`、`verify:session-models`、`verify:ag-ui`、`verify:sessions`、`verify:chat`、`verify:chat-uploads`、`verify:chat-activity`、`verify:calls`、`verify:knowledge`、`verify:partial-output`、`verify:previews`、`verify:artifacts`。TypeScript 与 Vite 生产构建通过，保留既有大体积产物提示；以上均为受控 API 或本机 SSE 服务。

@@ -179,3 +179,7 @@
 .context-budget-notice { margin: var(--yp-space-3) 0; max-width: 100%; overflow-wrap: anywhere; color: var(--yp-color-text-secondary); font-size: var(--yp-font-size-sm); }
 .context-budget-notice > summary { cursor: pointer; min-height: var(--yp-touch-target); align-content: center; }
 .context-budget-notice .ant-alert { margin: var(--yp-space-2) 0; }
+
+.session-approval-policy { margin-block: 8px; max-width: 100%; overflow-wrap: anywhere; }
+.session-approval-policy summary { cursor: pointer; padding-block: 10px; }
+.session-approval-policy button { min-height: 40px; }

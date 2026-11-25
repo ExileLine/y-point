@@ -136,8 +136,8 @@ export default function McpConnections({ open, onClose, onChanged, onSelectTool,
         </>}
         {draft.item && <label className="resource-switch-row">清除凭据并撤销历史版本<Switch aria-label="清除连接凭据" checked={draft.clear} onChange={clear => update({ clear })} /></label>}
         <label>默认审批策略<Select aria-label="连接默认审批策略" style={{ width: "100%" }} value={draft.approvalMode}
-          onChange={approvalMode => update({ approvalMode })} options={[{ value: "writes", label: "写入和未知操作需审批（默认）" }, { value: "always", label: "每次调用均审批" }, { value: "never", label: "不额外审批（仍受平台约束）" }]} /></label>
-        <Typography.Text type="secondary">普通非幂等写始终需要审批；工具可覆盖默认，使用者和部署可进一步收紧。收紧策略会停止原先免审批的相关运行。</Typography.Text>
+          onChange={approvalMode => update({ approvalMode })} options={[{ value: "writes", label: "写入和未知操作需审批（默认）" }, { value: "always", label: "每次调用均审批" }, { value: "never", label: "无需审批（强制约束除外）" }]} /></label>
+        <Typography.Text type="secondary">审批以工具覆盖或连接默认配置为准，幂等契约仅用于恢复。部署、本轮要求及他人使用可强制审批；收紧策略会停止原先免审批的相关运行。</Typography.Text>
         <label className="resource-switch-row">允许公开工具使用连接凭据<Switch aria-label="共享 MCP 连接凭据" checked={draft.shared} onChange={shared => update({ shared })} /></label>
         <label className="resource-switch-row">启用连接<Switch aria-label="启用 MCP 连接" checked={draft.enabled} onChange={enabled => update({ enabled })} /></label>
       </Space>}

@@ -1,4 +1,4 @@
-import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
+import { emptySessionApprovalPolicy, agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -32,6 +32,7 @@ async function fixture(page) {
   await page.route('**/api/v1/**', async route => {
     const req = route.request(), url = new URL(req.url()), path = url.pathname; paths.push(path);
     let data;
+    if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
     if (path === '/api/v1/agents/runtime-limits') data = { upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 };
     else if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
     else if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 2, active_run_count: 0, elapsed_ms: 12340, total_tokens: 1250, missing_duration_runs: 0, calculated_at: now };

@@ -43,6 +43,7 @@ from app.schemas.agent_session import (
 )
 from app.schemas.run import RunOut
 from app.services.identity import audit
+from app.services.session_approval import revoke_session_grants, session_policy_output
 from app.services.attachment_text import CONTEXT_MEDIA_TYPES
 from app.services.message_attachments import (
     IMAGE_CONTEXT_MEDIA_TYPES,
@@ -89,7 +90,9 @@ async def _session(db: AsyncSession, agent_id: int, session_id: str, owner_id: i
 
 async def _session_out(db: AsyncSession, session: AgentSession) -> SessionOut:
     """为迁移前遗留空值返回有效模型，不在只读接口中修改会话。"""
-    result = SessionOut.model_validate(session)
+    data = {name: getattr(session, name) for name in SessionOut.model_fields if name != "approval_policy"}
+    data["approval_policy"] = session_policy_output(session)
+    result = SessionOut.model_validate(data)
     if result.model_id is None:
         agent = await db.get(AgentConfig, session.agent_id)
         result.model_id = await effective_session_model(db, session, agent)
@@ -166,6 +169,31 @@ async def _ensure_idle(db: AsyncSession, session: AgentSession) -> None:
     active = await db.scalar(select(AgentRun.id).where(AgentRun.session_id == session.id, AgentRun.state.not_in(TERMINAL_STATES)).limit(1))
     if active is not None:
         raise session_model_conflict(SessionModelReason.BUSY, "会话仍有未结束的运行，请等待本轮结束后操作")
+
+
+@router.get("/{session_id}/approval-policy", summary="读取当前会话 MCP 放行策略")
+async def get_session_approval_policy(agent_id: int, session_id: str, actor: Admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db_session)):
+    """仅向仍有 Agent 使用权的会话所有者返回放行摘要。"""
+    session = await _session(db, agent_id, session_id, actor.id)
+    response = api_response(data=session_policy_output(session))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.delete("/{session_id}/approval-policy", summary="撤销当前会话全部或指定 MCP 工具的放行")
+async def delete_session_approval_policy(
+    agent_id: int,
+    session_id: str,
+    expected_version: int = Query(ge=1, description="读取到的会话放行策略版本"),
+    tool_id: int | None = Query(default=None, gt=0, description="仅撤销一个工具；省略表示撤销全部"),
+    actor: Admin = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """使用独立策略版本防止并发撤销覆盖新授权，后续调用执行前会重新核验。"""
+    session = await _session(db, agent_id, session_id, actor.id)
+    await revoke_session_grants(db, session, expected_version, tool_id)
+    await db.commit()
+    return api_response(data=session_policy_output(session))
 
 
 @router.post("", summary="创建智能体会话")

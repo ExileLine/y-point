@@ -86,6 +86,31 @@ class ToolEffect(StrEnum):
     WRITE = "write"
 
 
+class SessionApprovalScope(StrEnum):
+    """一次审批决定附带的会话放行范围。"""
+
+    ONCE = "once"
+    TOOL = "tool"
+    ALL = "all"
+
+
+class SessionApprovalMode(StrEnum):
+    """会话内已确认工具集合的放行方式。"""
+
+    ASK = "ask"
+    ALLOW_TOOLS = "allow_tools"
+    ALLOW_ALL = "allow_all"
+
+
+class McpApprovalConstraint(StrEnum):
+    """不可被会话放行覆盖的 MCP 审批约束。"""
+
+    UNTRUSTED_TOOL = "untrusted_shared_tool"
+    UNTRUSTED_READ = "untrusted_read_declaration"
+    CALLER = "caller_requires_approval"
+    DEPLOYMENT = "deployment_requires_approval"
+
+
 class ToolApprovalMode(StrEnum):
     """MCP 所有者的审批默认或工具覆盖方式。"""
 
@@ -375,6 +400,8 @@ class RunCallStatus(StrEnum):
 class RunEventType(StrEnum):
     """平台公开运行事件类型。"""
 
+    APPROVAL_POLICY_CHANGED = "approval_policy_changed"
+    MCP_APPROVAL_ALLOWED = "mcp_approval_allowed"
     STATE = "state"
     TEXT_DELTA = "text_delta"
     REASONING_DELTA = "reasoning_delta"

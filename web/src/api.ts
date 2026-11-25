@@ -455,6 +455,12 @@ export const grantAgentShare = (agentId: number, userId: number): Promise<AgentS
 export const revokeAgentShare = (agentId: number, userId: number): Promise<void> => request(`/agents/${agentId}/shares/${userId}`, { method: "DELETE" });
 export const deleteAgent = (agentId: number): Promise<void> => request(`/agents/${agentId}`, { method: "DELETE" });
 
+export type SessionApprovalScope = "once" | "tool" | "all";
+export type SessionApprovalPolicy = {
+  mode: "ask" | "allow_tools" | "allow_all"; version: number;
+  tools: { tool_id: number; tool_version: number; name: string }[];
+  allow_all_available: boolean; force_approval: boolean;
+};
 export type AgentSession = {
   id: string;
   agent_id: number;
@@ -462,6 +468,7 @@ export type AgentSession = {
   model_id: number | null;
   title: string;
   archived: boolean;
+  approval_policy?: SessionApprovalPolicy;
   version: number;
   create_time: string;
   update_time: string;
@@ -526,6 +533,7 @@ export type ApprovalActionDecision = { action_id: string; decision: "approve" | 
 export type RunApproval = {
   id: string; run_id: string; state: "pending" | "approved" | "rejected" | "expired" | "cancelled" | "resolved";
   decision?: ApprovalDecision | null; decisions?: string[] | null;
+  scope?: SessionApprovalScope; allowed_scopes?: SessionApprovalScope[];
   actions: { name: string; arguments_hash: string; action_id?: string | null; preview?: Record<string, string | number> | null; resource_id?: string | null; resource_name?: string | null }[];
   expires_at: string; decided_at: string | null;
 };
@@ -545,12 +553,14 @@ export const getAgentSession = (agentId: number, sessionId: string): Promise<Age
 export const listSessionModels = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionModelOption[]> =>
   request(`${sessionPath(agentId, sessionId)}/models`, { signal });
 export const updateAgentSession = (agentId: number, session: AgentSession, changes: { title?: string; archived?: boolean; model_id?: number }): Promise<AgentSession> => request(sessionPath(agentId, session.id), { method: "PUT", body: JSON.stringify({ ...changes, expected_version: session.version }) });
+export const getSessionApprovalPolicy = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionApprovalPolicy> => request(`${sessionPath(agentId, sessionId)}/approval-policy`, { signal });
+export const revokeSessionApprovalPolicy = (agentId: number, sessionId: string, version: number, toolId?: number): Promise<SessionApprovalPolicy> => request(`${sessionPath(agentId, sessionId)}/approval-policy?expected_version=${version}${toolId ? `&tool_id=${toolId}` : ""}`, { method: "DELETE" });
 export const deleteAgentSession = (agentId: number, sessionId: string): Promise<void> => request(sessionPath(agentId, sessionId), { method: "DELETE" });
 export const getSessionMetrics = (agentId: number, sessionId: string, signal?: AbortSignal): Promise<SessionMetrics> =>
   request(`${sessionPath(agentId, sessionId)}/metrics`, { signal });
 export const listSessionRuns = (agentId: number, sessionId: string): Promise<SessionRunPage> => request(`${sessionPath(agentId, sessionId)}/runs?page=1&page_size=20`);
 export type AgUiThread = {
-  threadId: string; version: number; messages: Message[];
+  threadId: string; version: number; messages: Message[]; approvalPolicy?: SessionApprovalPolicy;
   messageDetails: Record<string, Omit<SessionMessage, "content" | "role">>;
 };
 export type AgUiStream = { runId: string; after: number; response: Response };

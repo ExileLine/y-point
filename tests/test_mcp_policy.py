@@ -37,7 +37,7 @@ from app.services.tool_delivery import ToolNotSentError
         ("read", "remote_read", "always", "inherit", 1, False, False, True),
         ("read", "remote_read", "always", "writes", 1, False, False, False),
         ("read", "remote_read", "never", "always", 1, False, False, True),
-        ("write", "remote_write", "never", "never", 1, False, False, True),
+        ("write", "remote_write", "never", "never", 1, False, False, False),
         ("write", "unknown", "writes", "inherit", 1, False, False, True),
         ("write", "remote_write", "writes", "inherit", 1, True, False, True),
         ("write", "remote_write", "always", "never", 1, True, False, False),
@@ -47,10 +47,13 @@ from app.services.tool_delivery import ToolNotSentError
         ("read", "owner_read", "never", "never", 2, False, False, True),
         ("read", "remote_read", "writes", "inherit", 2, False, False, False),
         ("read", None, "writes", "inherit", 2, False, False, True),
+        ("write", "unknown", "never", "inherit", 1, False, False, False),
+        ("write", "unknown", "never", "inherit", 2, False, False, True),
+        ("write", "remote_write", "never", "never", 1, False, True, True),
     ],
 )
 def test_mcp_policy_decision_table(monkeypatch, effect, source, connection_mode, override, actor_id, verified, require_all, expected) -> None:
-    """覆盖所有者覆盖、使用者收紧和非幂等写的硬约束，幂等验收不自动免审批。"""
+    """覆盖所有者审批配置、共享使用与 Run 收紧，幂等恢复不覆盖审批方式。"""
     monkeypatch.setattr(get_config(), "MCP_FORCE_APPROVAL", False)
     tool = UserTool(id=1, owner_id=1, kind="mcp")
     version = UserToolVersion(

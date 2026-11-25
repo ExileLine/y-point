@@ -1,4 +1,4 @@
-import { agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
+import { emptySessionApprovalPolicy, agUiData, agUiPost, agUiFrames } from './ag-ui-fixtures.mjs';
 import { screenshotDirectory } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
@@ -40,6 +40,7 @@ async function fixture(page, opts = {}) {
     const body = req.headers()["content-type"]?.startsWith("application/json") && raw ? JSON.parse(raw) : null;
     calls.push({ path, method, body, raw, search: url.search, headers: req.headers() });
     const send = (data, status = 200, text = "操作成功") => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(envelope(agUiData(path, data), status, text)) });
+    if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) return send({ run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() });
     if (path === "/agents/runtime-limits") return send({ upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5, recursion_limit: 9999,
       mcp_connect_timeout_seconds: 10, mcp_discovery_timeout_seconds: 15, mcp_call_timeout_seconds: 120, knowledge_search_timeout_seconds: 60,

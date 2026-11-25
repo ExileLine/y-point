@@ -27,6 +27,7 @@ try {
         if (path.endsWith('/runtime-limits')) return send({ upload_max_bytes: 10485760, context_max_bytes: 10485760, max_files: 5 });
         if (path.endsWith('/sessions')) return send({ items: [session], total: 1, page: 1, page_size: 20 });
         if (path.endsWith('/sessions/version')) return send(session);
+        if (path.endsWith('/sessions/version/approval-policy')) return send({ mode: 'ask', version: 1, tools: [], allow_all_available: true, force_approval: false });
         if (path.endsWith('/models')) return send([]);
         if (path.endsWith('/metrics')) return send({ run_count: 1, active_run_count: 0, elapsed_ms: 0, total_tokens: null, missing_duration_runs: 0, calculated_at: now });
         if (path.endsWith('/version/runs')) return send({ items: run ? [run] : [], total: run ? 1 : 0, page: 1, page_size: 20 });

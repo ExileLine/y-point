@@ -115,6 +115,8 @@ Accept: text/event-stream
 }
 ```
 
+审批 payload 可增加 `scope`：省略或 `once` 仅批准本次；`tool` 批准当前同一 MCP 工具并保存会话放行；`all` 批准本次并保存本轮可授予的已选 MCP 工具集合。非 once 仅可与 approve 搭配，使用前读取审批接口的 `allowed_scopes`；部署、本轮及共享强制约束无法覆盖。服务器同时持久化审批 scope 与会话策略，重试时范围也必须相同。工具和连接版本变化不继承旧授权，线程快照的 `approvalPolicy` 提供脱敏摘要，查看与撤销接口见 [会话放行](tools.md#对话内放行与撤销)。
+
 上面的 `messages` 必须替换为中断时的完整公开历史。`decision` 支持 `approve`、`reject_continue`、`stop` 和 `resolve`；旧 `reject` 与 `status=cancelled` 仍停止整轮。`resolve` 必须按动作顺序携带完整 `decisions=[{action_id,decision}]`，每项为 `approve/reject/stop`，任一 stop 优先终止。恢复只接受一条 resume，不能改写参数，仍不接受 forwardedProps；新消息版本模式不改变审批恢复契约。服务器重新验证当前审批 ID 和归属，并将新协议 ID 与决定一起持久化；同一请求重试可重放对应的协议 attempt。工作台使用同一个 AG-UI POST 回答审批；新消息和审批恢复都固定原请求输入及身份后重试。
 
 ## 原生工作台的持久化观察扩展

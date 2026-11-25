@@ -5,7 +5,7 @@
 
 """私有 Agent 的对话会话、当前模型及执行线程。"""
 
-from sqlalchemy import Boolean, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import CustomBaseModel
@@ -30,3 +30,5 @@ class AgentSession(CustomBaseModel):
     title: Mapped[str] = mapped_column(String(128), nullable=False, comment="会话标题")
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否已归档")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, comment="会话并发更新版本号")
+    approval_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="会话批准的 MCP 工具身份与版本集合；空值表示逐次询问")
+    approval_policy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1", comment="会话审批放行策略并发版本")

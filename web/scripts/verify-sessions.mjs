@@ -1,4 +1,4 @@
-import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
+import { emptySessionApprovalPolicy, agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
@@ -31,6 +31,7 @@ function fixture(page, shared = false, options = {}) {
     calls.push({ path, method, body, search: url.search });
     let data = null;
     let status = 200;
+    if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
     if (/\/sessions\/[^/]+\/metrics$/.test(path)) data = { run_count: 0, active_run_count: 0, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: new Date().toISOString() };
     else if (/\/sessions\/[^/]+\/models$/.test(path)) data = [];
     else if (path.startsWith("/api/v1/runs/") && path.endsWith("/calls")) data = [];
@@ -263,7 +264,8 @@ try {
   await conflictPage.goto(`${baseURL}/agents/11/sessions/session-a`, { waitUntil: "networkidle" });
   await conflictPage.getByRole("textbox", { name: "消息内容" }).fill("使用新模型继续");
   await conflictPage.getByRole("button", { name: "发送" }).click();
-  await conflictPage.getByText("会话模型已变化，请刷新后重试", { exact: true }).waitFor();
+  await conflictPage.getByText("会话模型已变化，请刷新后重试；已保留输入，请确认会话最新状态后重新发送", { exact: true }).waitFor();
+  assert.equal(await conflictPage.getByRole("textbox", { name: "消息内容" }).inputValue(), "使用新模型继续");
   assert.equal(await conflictPage.getByRole("dialog").count(), 0);
   assert.equal(await conflictPage.getByRole("button", { name: "重试提交" }).count(), 0);
   console.log("model selection conflict: refresh and preserve draft passed");

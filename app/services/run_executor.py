@@ -75,6 +75,7 @@ from app.models.artifact import Artifact
 from app.models.model_call_record import ModelCallRecord
 from app.models.model_catalog import ModelCatalog
 from app.models.run_approval import RunApproval
+from app.services.session_approval import allowed_session_tools
 from app.services.run_approval_policy import approval_preview, bind_actions, denied_in_run, denied_tool_names
 from app.models.skill import RunSkill, Skill
 from app.models.skill_package import SkillScript
@@ -291,12 +292,16 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         model_timeout_seconds: int | None = None,
         model_usage: list[AIMessage] | None = None,
         deferred_tools: dict[str, BaseTool] | None = None,
+        session_allowed_names: set[str] | None = None,
+        approved_call_ids: set[str] | None = None,
     ) -> None:
         """固定当前运行的工具授权、计数与单次执行时限。"""
         config = get_config()
         self.tool_call_semaphore = asyncio.Semaphore(min(config.TOOL_CALL_RUN_LIMIT, config.TOOL_CALL_USER_LIMIT, config.TOOL_CALL_GLOBAL_LIMIT))
         self.allowed_names = frozenset(allowed_names)
         self.deferred_tools = deferred_tools or {}
+        self.session_allowed_names = session_allowed_names if session_allowed_names is not None else set()
+        self.approved_call_ids = approved_call_ids or set()
         self.sessions = sessions
         self.run_id = run_id
         self.lease_token = lease_token
@@ -330,6 +335,10 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
         )
         async with self.sessions() as db:
             denied_tools = await denied_tool_names(db, self.run_id, self.allowed_names)
+            current_run = await db.get(AgentRun, self.run_id)
+            allowed = await allowed_session_tools(db, current_run) if current_run else {}
+            self.session_allowed_names.clear()
+            self.session_allowed_names.update(allowed)
         selected = selected_mcp_tools(request.state, self.run_id)
         # 从固定全集恢复选择，保证摘要前后多次预算预检得到同一组 Schema。
         candidates = [tool for tool in request.tools if getattr(tool, "name", None) not in self.deferred_tools]
@@ -509,6 +518,25 @@ class AuthorizedToolsMiddleware(AgentMiddleware):
                 if matched is None:
                     raise PermissionError("Tool 未在本轮授权")
                 item, version = matched
+                if tool_name in self.session_allowed_names and request.tool_call["id"] not in self.approved_call_ids:
+                    allowed = await allowed_session_tools(db, run)
+                    if tool_name not in allowed:
+                        raise PermissionError("会话放行已撤销或策略已变化，请重新确认工具调用")
+                    from app.services.run_manager import _append_running_event
+
+                    await _append_running_event(
+                        db,
+                        run.id,
+                        self.lease_token,
+                        RunEventType.MCP_APPROVAL_ALLOWED,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        details={
+                            "tool_id": item.id,
+                            "tool_version": version.version,
+                            "source": "session",
+                        },
+                    )
                 display_name = tool_display_name(item)
                 call_kind = RunCallKind.MCP if item.kind == ToolKind.MCP else RunCallKind.TOOL
                 if item.skill_id is not None:
@@ -1005,6 +1033,7 @@ async def execute_text_run(
         approval = await db.scalar(select(RunApproval).where(RunApproval.run_id == run_id, RunApproval.checkpoint_id == run.checkpoint_id)) if resume else None
         denied_names = await denied_tool_names(db, run_id, (tool.name for tool in tools))
         original_calls = {action.get("call_id") for action in approval.actions} if approval is not None else set()
+        session_allowed_names = set(await allowed_session_tools(db, run))
         knowledge_scope = await load_knowledge_scope(db, run) if any(tool.name == "search_knowledge_base" for tool in tools) else ""
         catalog_model = await db.get(ModelCatalog, run.model_id) if run.model_id is not None else None
         if image_blocks and (catalog_model is None or ModelCapability.VISION not in (catalog_model.verified_capabilities or [])):
@@ -1141,7 +1170,11 @@ async def execute_text_run(
                     interrupt_on={
                         name: {
                             "allowed_decisions": ["approve", "reject"],
-                            "when": lambda request: request.tool_call["name"] not in denied_names or request.tool_call["id"] in original_calls,
+                            "when": lambda request: (
+                                request.tool_call["id"] in original_calls
+                                or request.tool_call["name"] not in denied_names
+                                and request.tool_call["name"] not in session_allowed_names
+                            ),
                         }
                         if enabled
                         else False
@@ -1164,6 +1197,8 @@ async def execute_text_run(
                             model_timeout_seconds=run.model_timeout_seconds,
                             model_usage=model_usage,
                             deferred_tools=deferred_tools,
+                            session_allowed_names=session_allowed_names,
+                            approved_call_ids=original_calls,
                         ),
                     ],
                     summarizer=summarize_history,
@@ -1259,7 +1294,9 @@ async def execute_text_run(
                             {
                                 "type": decision,
                                 **(
-                                    {"message": "用户拒绝了本次操作，工具未执行。继续整理已完成的结果；本轮禁止更换调用 ID、参数或等价工具绕过拒绝。"}
+                                    {
+                                        "message": "用户拒绝了本次操作，工具未执行。继续整理已完成的结果；本轮禁止更换调用 ID、参数或等价工具绕过拒绝。",
+                                    }
                                     if decision == "reject"
                                     else {}
                                 ),
@@ -1325,7 +1362,12 @@ async def execute_text_run(
                         actions = await bind_actions(db, run_id, checkpoint_id, actions)
                         mcp_pool = getattr(resolve_tools, "mcp_sessions", None)
                         await create_approval_request(
-                            db, run_id, lease_token, checkpoint_id, actions, ttl_seconds=mcp_pool.approval_ttl(run_id) if mcp_pool else 3600
+                            db,
+                            run_id,
+                            lease_token,
+                            checkpoint_id,
+                            actions,
+                            ttl_seconds=mcp_pool.approval_ttl(run_id) if mcp_pool else 3600,
                         )
                         _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
                         return await db.get(AgentRun, run_id)

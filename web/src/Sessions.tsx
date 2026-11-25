@@ -20,6 +20,7 @@ import StreamingMessage from "./components/StreamingMessage";
 import RunToolResults from "./components/RunToolResults";
 import RunMetrics from "./components/RunMetrics";
 import RunApproval from "./components/RunApproval";
+import SessionApprovalPolicy from "./components/SessionApprovalPolicy";
 import SessionMetrics from "./components/SessionMetrics";
 import RunKnowledgeEvidence from "./knowledge/RunKnowledgeEvidence";
 import { createClientId } from "./browser-compat";
@@ -601,18 +602,18 @@ export default function Sessions() {
     }
   }
 
-  async function resumeRun(approvalId: string, decision: import("./api").ApprovalDecision, decisions?: import("./api").ApprovalActionDecision[]) {
+  async function resumeRun(approvalId: string, decision: import("./api").ApprovalDecision, decisions?: import("./api").ApprovalActionDecision[], scope: import("./api").SessionApprovalScope = "once") {
     if (!selected || !activeRun) return;
     const targetSessionId = selected.id;
     const existing = pendingResume.current;
     let input: RunAgentInput;
     if (existing?.threadId === targetSessionId && existing.resume?.[0]?.interruptId === approvalId
-      && existing.resume[0].payload?.decision === decision && JSON.stringify(existing.resume[0].payload?.decisions) === JSON.stringify(decisions)) input = existing;
+      && existing.resume[0].payload?.decision === decision && (existing.resume[0].payload?.scope || "once") === scope && JSON.stringify(existing.resume[0].payload?.decisions) === JSON.stringify(decisions)) input = existing;
     else {
       const thread = await getAgUiThread(agentId, targetSessionId);
       input = {
         threadId: targetSessionId, runId: createClientId(), protocolVersion: "1.0", tools: [], context: [],
-        messages: thread.messages, resume: [{ interruptId: approvalId, status: "resolved", payload: { decision, ...(decisions ? { decisions } : {}) } }],
+        messages: thread.messages, resume: [{ interruptId: approvalId, status: "resolved", payload: { decision, ...(scope !== "once" ? { scope } : {}), ...(decisions ? { decisions } : {}) } }],
       };
     }
     if (currentSessionId.current !== targetSessionId) return;
@@ -724,6 +725,7 @@ export default function Sessions() {
             {selectedModelIssue && <Alert className="sessions-alert" type="error" showIcon message={`${selectedModelIssue.display_name} 暂不可用`} description={selectedModelIssue.notice || "请管理员检查模型部署和授权，并测试文本调用。"} action={<Button size="small" loading={modelsLoading} onClick={() => setModelsRevision(value => value + 1)}>刷新模型状态</Button>} />}
             <label className="resource-switch-row">本轮全部 MCP 调用需审批<Switch aria-label="本轮全部 MCP 调用需审批" size="small" checked={requireMcpApproval}
               disabled={!canSend || Boolean(pendingDraft)} onChange={setRequireMcpApproval} /></label>
+            <SessionApprovalPolicy key={`approval-policy:${selected.id}`} agentId={agentId} sessionId={selected.id} revision={activeRun?.state || lastRun?.state || ""} />
             <ChatAttachments key={selected.id} items={files} disabled={!canSend} onChange={update => {
               const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
             }} />

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { chromium } from 'playwright';
-import { agUiData, agUiFrames, agUiSnapshot, agUiSse } from './ag-ui-fixtures.mjs';
+import { emptySessionApprovalPolicy, agUiData, agUiFrames, agUiSnapshot, agUiSse } from './ag-ui-fixtures.mjs';
 
 const base = process.env.WEB_BASE_URL || 'http://127.0.0.1:5173';
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }) });
@@ -84,6 +84,7 @@ try {
       const request = route.request(), path = new URL(request.url()).pathname;
       calls.push({ path, method: request.method() });
       const send = data => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data }) });
+      if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
       if (path.endsWith('/auth/me')) return send({ id: 1, username: 'tester', role: 'user' });
       if (path === '/api/v1/agents/11') return send({ id: 11, name: '协议助手', enabled: true, default_model_id: 4 });
       if (path.endsWith('/runtime-limits')) return send({ upload_max_bytes: 10485760, context_max_bytes: 10485760, max_files: 5 });

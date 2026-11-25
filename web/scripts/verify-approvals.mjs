@@ -11,6 +11,8 @@ async function fixture(page, options = {}) {
   let run = { id: "run-approval", session_id: "session-a", agent_id: 11, state: options.live ? "running" : "waiting_for_approval", failure_code: null, create_time: now, update_time: now };
   let approval = { id: "approval-1", run_id: run.id, state: options.expired ? "expired" : "pending", actions: [{ name: "user_tool_22_mcp_docs_query", arguments_hash: "a".repeat(64), action_id: "action-one", preview: { order_id: "order-7", quantity: 2 }, resource_name: null }], expires_at: new Date(Date.now() + 3600000).toISOString(), decided_at: null };
   if (options.mixed) approval.actions.push({ name: "delete_orders", arguments_hash: "b".repeat(64), action_id: "action-two", preview: { order_id: "order-8" } });
+  let policy = { mode: "ask", version: 1, tools: [], allow_all_available: true, force_approval: false };
+  if (options.scopes) approval.allowed_scopes = options.scopes;
   const calls = [];
   let releaseDecision;
   const decisionGate = options.hold ? new Promise(resolve => { releaseDecision = resolve; }) : Promise.resolve();
@@ -37,6 +39,13 @@ async function fixture(page, options = {}) {
     else if (path === "/api/v1/agents/11") data = { id: 11, name: "MCP 助手", enabled: true, default_model_id: 1 };
     else if (path === "/api/v1/agents/11/sessions") data = { items: [session], total: 1, page: 1, page_size: 20 };
     else if (path === "/api/v1/agents/11/sessions/session-a") data = session;
+    else if (path.endsWith("/approval-policy")) {
+      if (method === "DELETE") {
+        assert.equal(new URL(route.request().url()).searchParams.get("expected_version"), String(policy.version));
+        policy = { ...policy, mode: "ask", version: policy.version + 1, tools: [] };
+      }
+      data = policy;
+    }
     else if (path.endsWith("/models")) data = [{ id: 1, display_name: "测试模型", provider_name: "模拟连接", verified_capabilities: ["text", "tools"], context_window: 65536, selectable: true, reason: null, notice: null }];
     else if (path.endsWith("/calls") || path.endsWith("/knowledge-retrievals")) data = [];
     else if (path.endsWith("/metrics")) data = { run_count: 1, active_run_count: 1, elapsed_ms: 0, total_tokens: 0, missing_duration_runs: 0, calculated_at: now };
@@ -56,6 +65,10 @@ async function fixture(page, options = {}) {
       } else {
         assert.equal(body.resume[0].interruptId, approval.id);
         const decision = body.resume[0].payload.decision;
+        if (body.resume[0].payload.scope && body.resume[0].payload.scope !== "once") {
+          policy = { ...policy, mode: body.resume[0].payload.scope === "all" ? "allow_all" : "allow_tools", version: policy.version + 1,
+            tools: [{ tool_id: 22, tool_version: 1, name: "浏览器点击" }] };
+        }
         approval = { ...approval, state: decision === "approve" ? "approved" : ["reject_continue", "resolve"].includes(decision) ? "resolved" : "rejected", decision, decided_at: now };
         if (["reject", "stop"].includes(decision)) run = { ...run, state: "cancelled", failure_code: "approval_rejected" };
         return agUiPost(route, run);
@@ -154,6 +167,32 @@ try {
     assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).length, 0);
     await page.close();
     console.log("live state: SSE reveals approval controls without reload or automatic approval");
+  }
+  for (const width of [1280, 375]) {
+    for (const scope of ["tool", "all"]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const state = await fixture(page, { scopes: ["once", "tool", "all"] });
+      await page.getByRole("button", { name: scope === "tool" ? "本对话允许此工具" : "本对话全部允许", exact: true }).click();
+      await page.getByText("已同意，等待执行器继续运行", { exact: true }).waitFor();
+      assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0].payload.scope, scope);
+      await page.locator(".session-approval-policy summary").click();
+      await page.getByRole("button", { name: "刷新放行策略", exact: true }).click();
+      await page.getByText("浏览器点击 · v1", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "撤销全部放行", exact: true }).click();
+      await page.getByRole("button", { name: "确认撤销全部放行", exact: true }).click();
+      await page.getByText("本对话 MCP 放行：未设置", { exact: true }).waitFor();
+      assert.equal(state.calls.filter(call => call.path.endsWith("/approval-policy") && call.method === "DELETE").length, 1);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({ path: screenshotPath(`web-approval-scope-${scope}-${width}.png`), animations: "disabled" });
+      await page.close();
+    }
+    const forced = await browser.newPage({ viewport: { width, height: 900 } });
+    await fixture(forced, { scopes: ["once"] });
+    await forced.getByRole("button", { name: "同意执行", exact: true }).waitFor();
+    assert.equal(await forced.getByRole("button", { name: "本对话允许此工具", exact: true }).count(), 0);
+    assert.equal(await forced.getByRole("button", { name: "本对话全部允许", exact: true }).count(), 0);
+    await forced.close();
+    console.log(`${width}: session tool/all scopes, policy refresh, versioned revoke and constrained controls passed`);
   }
   for (const options of [{ expired: true }, { conflict: true }, { loadFailure: true }]) {
     const page = await browser.newPage();

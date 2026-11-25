@@ -577,7 +577,11 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession], *, mcp
                             .values(state=ToolInvocationState.COMPLETED, failure_code=None)
                         )
                     return await deliver_mcp_result(
-                        response, context, tool_name=model_tool_name(selected), config=url, credentials=selected_version.encrypted_credentials
+                        response,
+                        context,
+                        tool_name=model_tool_name(selected),
+                        config=url,
+                        credentials=selected_version.encrypted_credentials,
                     )
 
                 return await invoke_mcp_tool(
@@ -618,7 +622,7 @@ def make_worker_tool_resolver(sessions: async_sessionmaker[AsyncSession], *, mcp
                 from app.services.mcp_policy import tool_callability
 
                 decision = await tool_callability(db, definition, version, run.owner_id, require_all=run.require_mcp_approval)
-                requires_approval = bool(version.requires_approval or decision["policy"]["requires_approval"])
+                requires_approval = bool(decision["policy"]["requires_approval"] or version.approval_mode is None and version.requires_approval)
             if requires_approval:
                 approvals[tool_name] = True
         return builtins, approvals

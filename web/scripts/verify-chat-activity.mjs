@@ -1,4 +1,4 @@
-import { agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
+import { emptySessionApprovalPolicy, agUiFrames, agUiSse, agUiSnapshot, agUiData, agUiPost } from "./ag-ui-fixtures.mjs";
 import { screenshotPath } from "./screenshot-paths.mjs";
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
@@ -47,6 +47,7 @@ try {
     await page.route('**/api/v1/**', async route => {
       const path = new URL(route.request().url()).pathname;
       let data;
+      if (/\/sessions\/[^/]+\/approval-policy$/.test(path)) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data: emptySessionApprovalPolicy }) });
       if (path === '/api/v1/agents/runtime-limits') data = { upload_max_bytes: 10485760, context_max_bytes: 20971520, max_files: 5 };
       else if (path === '/api/v1/auth/me') data = { id: 1, username: 'tester', role: 'user' };
       else if (path === '/api/v1/agents/11') data = { id: 11, name: '施工审查助手', enabled: true, default_model_id: 4 };
@@ -167,7 +168,7 @@ try {
         const [text, setText] = React.useState('开始 👨‍👩‍👧‍👦');
         const [mounted, setMounted] = React.useState(true);
         return React.createElement(React.Fragment, null,
-          React.createElement('button', { onClick: () => setText('流式文本'.repeat(400) + ' 👨‍👩‍👧‍👦') }, '批量文本'),
+          React.createElement('button', { onClick: () => setText('开始 👨‍👩‍👧‍👦' + '流式文本'.repeat(400) + ' 👨‍👩‍👧‍👦') }, '批量文本'),
           React.createElement('button', { onClick: () => setText('替换后的内容') }, '替换文本'),
           React.createElement('button', { onClick: () => setMounted(false) }, '卸载'),
           mounted && React.createElement(StreamingMessage, { text, runId: 'motion', active: false }));

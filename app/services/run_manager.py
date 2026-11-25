@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.enums import (
     ApprovalDecision,
     ApprovalState,
+    SessionApprovalScope,
     ArtifactOrigin,
     ArtifactState,
     MessageRole,
@@ -915,10 +916,14 @@ async def decide_approval(
     *,
     expected_approval_id: str | None = None,
     decisions: list[dict] | None = None,
+    scope: SessionApprovalScope = SessionApprovalScope.ONCE,
 ) -> RunApproval:
     """持久化逐项决定；旧版 reject 与显式 stop 都保留停止整轮的语义。"""
     if decision not in set(ApprovalDecision):
         raise ValueError("无效的审批决定")
+    scope = SessionApprovalScope(scope)
+    if scope != SessionApprovalScope.ONCE and decision != ApprovalDecision.APPROVE:
+        raise ValueError("会话放行只能附带在明确批准本次全部动作的决定中")
     run = await get_owned_run(db, run_id, owner_id)
     approval = await get_owned_approval(db, run_id, owner_id)
     if expected_approval_id is not None and approval.id != expected_approval_id:
@@ -946,10 +951,11 @@ async def decide_approval(
     next_state = ApprovalState.REJECTED if stop else ApprovalState.APPROVED if all(item == "approve" for item in resolved) else ApprovalState.RESOLVED
     # 断线重试只有精确相同决定幂等；相反决定不能覆盖原审计。
     if approval.state != ApprovalState.PENDING:
-        if approval.decision == decision and approval.decisions == resolved:
+        if approval.decision == decision and approval.decisions == resolved and approval.scope == scope:
             return approval
         if (
-            approval.decision is None
+            scope == SessionApprovalScope.ONCE
+            and approval.decision is None
             and approval.decisions is None
             and (
                 decision == ApprovalDecision.APPROVE
@@ -965,14 +971,19 @@ async def decide_approval(
         raise RunConflictError("运行或审批状态已变化")
     if approval.expires_at <= now:
         raise RunConflictError("审批请求已过期")
+    from app.services.session_approval import prepare_session_grant, save_session_grant
+
+    grant = await prepare_session_grant(db, run, approval, scope)
     statement = (
         update(RunApproval)
         .where(RunApproval.id == approval.id, RunApproval.state == ApprovalState.PENDING, RunApproval.expires_at > now)
-        .values(state=next_state, decision=decision, decisions=resolved, decided_by=owner_id, decided_at=now)
+        .values(state=next_state, decision=decision, decisions=resolved, scope=scope, decided_by=owner_id, decided_at=now)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))
     if result.rowcount != 1:
         raise RunConflictError("审批请求已被处理")
+    if grant:
+        await save_session_grant(db, run, grant)
     if stop:
         await _change_state(db, run, RunState.CANCELLED, now=now, failure_code="approval_rejected")
     await db.refresh(approval)

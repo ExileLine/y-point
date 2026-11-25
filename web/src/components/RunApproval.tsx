@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Radio, Space, Spin } from "antd";
-import { getRun, getRunApproval, type RunApproval as Approval, type SessionRun, type ApprovalDecision, type ApprovalActionDecision } from "../api";
+import { getRun, getRunApproval, type RunApproval as Approval, type SessionRun, type ApprovalDecision, type ApprovalActionDecision, type SessionApprovalScope } from "../api";
 import { serverTime } from "./chat-format";
 
 const stateLabels: Record<Approval["state"], string> = {
@@ -13,7 +13,7 @@ const stateLabels: Record<Approval["state"], string> = {
 };
 
 export default function RunApproval({ runId, onResume, onRunChanged }: {
-  runId: string; onResume: (approvalId: string, decision: ApprovalDecision, decisions?: ApprovalActionDecision[]) => Promise<void>;
+  runId: string; onResume: (approvalId: string, decision: ApprovalDecision, decisions?: ApprovalActionDecision[], scope?: SessionApprovalScope) => Promise<void>;
   onRunChanged: (run: SessionRun) => void;
 }) {
   const [approval, setApproval] = useState<Approval | null>(null);
@@ -53,7 +53,7 @@ export default function RunApproval({ runId, onResume, onRunChanged }: {
     return () => { controller.abort(); window.clearTimeout(timer); };
   }, [runId, revision, submitting]);
 
-  async function decide(decision: ApprovalDecision) {
+  async function decide(decision: ApprovalDecision, scope: SessionApprovalScope = "once") {
     if (!approval || approval.state !== "pending" || inFlight.current) return;
     if (decision === "resolve" && approval.actions.some(action => !action.action_id || !choices[`${approval.id}:${action.action_id}`])) {
       setDecisionError("请逐项选择批准或拒绝，再提交决定");
@@ -63,7 +63,7 @@ export default function RunApproval({ runId, onResume, onRunChanged }: {
     setSubmitting(true);
     setDecisionError("");
     try {
-      await onResume(approval.id, decision, decision === "resolve" ? approval.actions.map(action => ({ action_id: action.action_id!, decision: choices[`${approval.id}:${action.action_id}`] })) : undefined);
+      await onResume(approval.id, decision, decision === "resolve" ? approval.actions.map(action => ({ action_id: action.action_id!, decision: choices[`${approval.id}:${action.action_id}`] })) : undefined, scope);
     } catch (failure) {
       if (mounted.current) setDecisionError(failure instanceof Error ? failure.message : "审批提交失败，请核对最新状态后重试");
     }
@@ -102,10 +102,13 @@ export default function RunApproval({ runId, onResume, onRunChanged }: {
           disabled={submitting || approval.actions.some(action => !choices[`${approval.id}:${action.action_id}`])} onClick={() => void decide("resolve")}>提交逐项决定</Button>}
         <Button type={approval.actions.length === 1 ? "primary" : "default"} aria-label={approval.actions.length > 1 ? "同意全部执行" : "同意执行"}
           loading={submitting} disabled={submitting} onClick={() => void decide("approve")}>{approval.actions.length > 1 ? "同意全部执行" : "同意执行"}</Button>
+        {approval.allowed_scopes?.includes("tool") && <Button disabled={submitting} onClick={() => void decide("approve", "tool")}>本对话允许此工具</Button>}
+        {approval.allowed_scopes?.includes("all") && <Button disabled={submitting} onClick={() => void decide("approve", "all")}>本对话全部允许</Button>}
         <Button aria-label={approval.actions.length > 1 ? "全部拒绝并继续" : "拒绝本次并继续"} disabled={submitting}
           onClick={() => void decide("reject_continue")}>{approval.actions.length > 1 ? "全部拒绝并继续" : "拒绝本次并继续"}</Button>
         <Button danger aria-label="停止整个任务" disabled={submitting} onClick={() => void decide("stop")}>停止整个任务</Button>
       </Space>}
+      {approval.state === "pending" && (approval.allowed_scopes?.length || 0) > 1 && <p className="run-approval-expiry">会话放行仅覆盖已确认的 MCP 工具版本；新增工具或版本需重新确认，可在对话设置中撤销。部署、本轮及共享使用的强制审批仍优先。</p>}
     </>}
   </section>;
 }

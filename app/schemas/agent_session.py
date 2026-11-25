@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from app.core.enums import MessageRole, ModelCapability, RunState, SessionModelReason
+from app.core.enums import SessionApprovalMode, MessageRole, ModelCapability, RunState, SessionModelReason
 from app.schemas.artifact import ArtifactReferenceOut, GeneratedArtifactReferenceOut
 from app.schemas.run import RunMetricsOut, RunCallOut, RunOut
 
@@ -35,6 +35,20 @@ class SessionUpdateIn(BaseModel):
     model_id: int | None = Field(default=None, gt=0, description="切换会话后续轮次使用的模型；不修改 Agent 默认模型", examples=[2])
 
 
+class SessionApprovalToolOut(BaseModel):
+    tool_id: int = Field(gt=0, description="已允许的 MCP 工具 ID", examples=[1])
+    tool_version: int = Field(ge=1, description="授权时固定的工具版本；版本变化后须重新确认", examples=[1])
+    name: str = Field(description="已允许工具的展示名称", examples=["浏览器点击"])
+
+
+class SessionApprovalPolicyOut(BaseModel):
+    mode: SessionApprovalMode = Field(default=SessionApprovalMode.ASK, description="会话放行模式，全部允许仅覆盖授权时的工具集合", examples=["ask"])
+    version: int = Field(default=1, ge=1, description="会话放行策略的独立并发版本", examples=[1])
+    tools: list[SessionApprovalToolOut] = Field(default_factory=list, description="已确认的固定工具集合，不自动包含新增工具或版本", examples=[[]])
+    allow_all_available: bool = Field(default=True, description="部署是否允许授予本对话全部允许", examples=[True])
+    force_approval: bool = Field(default=False, description="部署是否强制全部 MCP 调用审批", examples=[False])
+
+
 class SessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -45,6 +59,7 @@ class SessionOut(BaseModel):
     title: str = Field(description="会话标题", examples=["产品需求讨论"])
     archived: bool = Field(description="是否已归档", examples=[False])
     version: int = Field(description="会话版本号", examples=[1])
+    approval_policy: SessionApprovalPolicyOut = Field(default_factory=SessionApprovalPolicyOut, description="当前会话 MCP 放行策略", examples=[{}])
     create_time: datetime = Field(description="创建时间", examples=["2026-10-26T22:00:00"])
     update_time: datetime = Field(description="更新时间", examples=["2026-10-26T22:00:00"])
 

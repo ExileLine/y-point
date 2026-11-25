@@ -74,3 +74,6 @@ export function agUiPost(route, run, frames = agUiFrames(run, []), after = 0) {
     body: agUiSse(run.id, frames, after),
   });
 }
+
+// 会话工作台新增的策略查询默认返回无放行，专项审批测试独立维护有状态策略。
+export const emptySessionApprovalPolicy = { mode: 'ask', version: 1, tools: [], allow_all_available: true, force_approval: false };
