@@ -312,7 +312,7 @@ tail -n 0 -F ~/.ollama/logs/server.log \
 | 1 | `GET /agents`，再 `GET /agents/{agentId}` | 选择已启用的 Agent，读取 `version`、`knowledge_base_ids`、`default_model_id`。默认聊天模型必须通过工具调用能力验证。 |
 | 2 | `PUT /agents/{agentId}` | 传 Agent 的 `expected_version` 和 `knowledge_base_ids`；已关联则跳过。数组替换全部关联，保留其他库时一并传入；这不是知识库的 `expected_revision`。 |
 | 3 | `POST /agents/{agentId}/sessions` | 传 `title`，将响应 `data.id` 保存为 `sessionId`；已有适用会话可复用。 |
-| 4 | `GET /agents/{agentId}/ag-ui/threads/{sessionId}`，再 `POST /agents/{agentId}/ag-ui` | 在完整公开历史后追加新用户消息，携带新消息 ID、threadId/runId 和会话版本；直接消费 SSE，并保存响应头中的业务运行 ID。 |
+| 4 | `GET /agents/{agentId}/ag-ui/threads/{sessionId}`，再 `POST /agents/{agentId}/ag-ui` | 读取会话版本后，在 `forwardedProps.expected_session_version` 中携带该值，仅提交具有新 ID 的用户消息及 threadId/runId；省略版本或传 `null` 时，须在完整公开历史后追加新消息；直接消费 SSE，并保存响应头中的业务运行 ID。 |
 | 5 | AG-UI 流及 `/agents/{agentId}/ag-ui/threads/{sessionId}` | 终态后读取公开回答与交付信息；连接中断则使用 AG-UI 快照恢复，失败核对运行状态，不把请求受理视为完成。 |
 | 6 | `GET /runs/{runId}/knowledge-retrievals` | 查看工具检索交付的 `references`、`hit_count`、`embedding_usage` 与耗时。 |
 | 7 | `GET /knowledge-bases/{id}/citations/{chunkId}` | 按回答引用核对原文及位置；引用 `kb:1:i:2:c:16` 中的片段 ID 为 16。 |

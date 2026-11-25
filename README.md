@@ -88,6 +88,8 @@ flowchart LR
 | 扩展助手能力 | [Skill 与报告模板](docs/skills.md) · [Tool、沙箱与 MCP](docs/tools.md) · [知识库与检索](docs/knowledge-base.md) |
 | 开发与验证 | [架构与模块](docs/architecture.md) · [数据库与测试](docs/testing.md) · [贡献指南](CONTRIBUTING.md) |
 
+对话提交、审批恢复与公开历史统一使用 AG-UI；已移除入口及仍支持的 Run 查询/控制接口见[接口兼容边界](docs/ag-ui.md#接口兼容边界)。
+
 开发环境启动后可在 API 的 `/docs` 查看交互式接口文档。具体接口、参数、授权和错误边界以专题文档及当前接口契约为准。
 
 ## 使用边界

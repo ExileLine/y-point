@@ -69,7 +69,17 @@ Accept: text/event-stream
 
 `runId` 长度为 1–96，用于用户范围内的幂等提交；重试须保持输入、用户消息 ID、附件及审批选项。版本模式优先识别原请求，原请求即使携带旧会话版本也可返回原 Run；使用相同 runId 改写输入会被拒绝。用户消息 ID 会被保存，最终助手消息的 ID 与实际发出的协议消息一致。响应头 `X-Y-Point-Run-ID` 返回业务 Run ID，供取消、审批、快照及资源接口使用；`X-Y-Point-After` 是本次标准流开始前的协议线游标，新提交为 0，审批恢复为对应中断游标。标准流的数据帧只包含协议事件，到当前协议 attempt 的成功、错误、取消或审批中断时结束。
 
-当前标准入口支持已有会话、纯文本输入，以及 `forwardedProps` 中的预期模型、会话版本、附件和 TXT 回答导出选项。预期模型用于校验页面选择，不切换会话模型。非空客户端 `state/tools/context`、子 Agent 运行、其他 forwardedProps 均明确拒绝。上传文件仍先走平台上传接口。可用能力通过授权的 `GET /api/v1/agents/{agent_id}/ag-ui/capabilities` 查询；不支持加密 reasoning、客户端执行工具、WebSocket 或客户端任意状态同步。
+当前标准入口支持已有会话、纯文本输入，以及 `forwardedProps` 中的预期模型、会话版本、附件、TXT 回答导出和 `require_mcp_approval` 审批收紧选项。预期模型用于校验页面选择，不切换会话模型。非空客户端 `state/tools/context`、子 Agent 运行、其他 forwardedProps 均明确拒绝。上传文件仍先走平台上传接口。可用能力通过授权的 `GET /api/v1/agents/{agent_id}/ag-ui/capabilities` 查询；不支持加密 reasoning、客户端执行工具、WebSocket 或客户端任意状态同步。
+
+### 接口兼容边界
+
+| 操作 | 当前入口与兼容规则 |
+| --- | --- |
+| 新对话提交、审批恢复 | 统一使用 `POST /api/v1/agents/{agent_id}/ag-ui`；旧 `POST /api/v1/runs`、`POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs` 和 `POST /api/v1/runs/{run_id}/approval` 已不注册。 |
+| 会话公开历史 | 使用 `GET /api/v1/agents/{agent_id}/ag-ui/threads/{session_id}`；旧 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` 已不注册。 |
+| 运行读取与控制 | `GET /api/v1/runs/{run_id}`、`GET /api/v1/runs/{run_id}/messages`、`GET /api/v1/runs/{run_id}/approval`、`POST /api/v1/runs/{run_id}/cancel` 继续支持；单轮消息查询不替代会话协议历史。 |
+| 会话运行与统计 | `GET /api/v1/agents/{agent_id}/sessions/{session_id}/runs` 和 `/metrics` 继续支持；会话创建、编辑及附件检查仍使用会话管理接口。 |
+| 观察与重连 | Run 的 `/ag-ui/snapshot`、`/stream-ticket`、`/stream` 继续支持，使用协议线游标；不承担新对话提交。 |
 
 ### 冲突与重试
 
@@ -90,11 +100,11 @@ Accept: text/event-stream
 
 ### 公开历史缓存
 
-`067` 迁移新增 `yp_agent_run_public_history`，每个 Run 最多保留一份公开消息派生缓存。首次读取时按固定源事件上界投影，仅对终态 Run 按需写入；后续读取批量关联缓存，要求事件序号和 `PUBLIC_HISTORY_PROJECTION_VERSION` 均匹配。历史数据不做全量预热，投影实现语义变化时须递增该版本。
+`yp_agent_run_public_history` 为每个 Run 最多保留一份公开消息派生缓存。首次读取时按固定源事件上界投影，仅对终态 Run 按需写入；后续读取批量关联缓存，要求事件序号和 `PUBLIC_HISTORY_PROJECTION_VERSION` 均匹配。历史数据不做全量预热，投影实现语义变化时须递增该版本。
 
-缓存只保存公开消息，不保存私有检查点；读取入口先检查当前用户权限。运行中及等待审批的 Run 继续按事件重建。审批恢复请求早期中断截面时，不能误用包含后续内容的最终缓存。缓存不替代源事件，也不改变 SSE 线游标；删除缓存可从源事件重建，降级 067 仅丢弃缓存。
+缓存只保存公开消息，不保存私有检查点；读取入口先检查当前用户权限。运行中及等待审批的 Run 继续按事件重建。审批恢复请求早期中断截面时，不能误用包含后续内容的最终缓存。缓存不替代源事件，也不改变 SSE 线游标；删除缓存可从源事件重建。
 
-缓存减少重复事件投影，但完整历史、文件和交付元数据的读取及响应传输仍随历史规模增加。本轮未增加分页或承诺固定响应耗时。
+缓存减少重复事件投影，但完整历史、文件和交付元数据的读取及响应传输仍随历史规模增加。当前历史接口未提供分页，不承诺固定响应耗时。
 
 ### 标准审批恢复
 
@@ -152,23 +162,11 @@ GET 观察流可以跨越多次审批 attempt。它还有两个命名 SSE 通知
 | 文件 | 运行内发布使用 `y-point.artifact.available`；下载、预览、查看详情始终重新授权。 |
 | 用量 | `y-point.run.metrics` 是明确标注业务 Run 范围的累计公开计数。当前不发送可能混入前次审批 attempt 用量的标准终态 usage。 |
 
-## 运行、验证与范围
+## 运行与验证入口
 
-```bash
-uv sync
-uv run alembic upgrade head
-npm --prefix web ci
-npm --prefix web run typecheck
-npm --prefix web run build
-.venv/bin/python -m pytest tests/test_ag_ui.py -q
-# 先启动 web 开发服务，再运行：
-npm --prefix web run verify:ag-ui
-npm --prefix web run verify:ag-ui-submit
-```
+部署与本地开发都应先按[数据库迁移与测试](testing.md)升级数据库，再运行同一版本的 API 与 Worker。当前实现从固定源事件上界重建协议投影，实时连接初始化后增量跟随。终态 Run 的公开消息使用[公开历史缓存](#公开历史缓存)；观察流的大规模投影检查点与压缩仍需按实际事件量评估，保持既有线游标语义。
 
-部署与本地开发都应先按[数据库迁移与测试](testing.md)升级数据库，再运行同一版本的 API 与 Worker。当前实现从固定源事件上界重建协议投影，实时连接初始化后增量跟随。大规模长历史的持久化投影检查点和压缩尚未加入，应基于实际事件量再优化，不能改变既有线游标语义。
-
-验证区分两类：后端使用隔离数据库、真实 FastAPI/JWT、真实 DeepAgents/LangGraph 与受控模型；浏览器使用模拟 API 和实际 SSE 连接。它们不代表真实供应商、MCP 服务、脚本沙箱或目标部署环境已完成验收。
+通用验证命令与专题测试文件见[测试指南](testing.md#专题回归入口)。现场浏览器复验与特定环境结论记录在工作区 `y-point-server-todo.md`。
 
 逐项审批的参数绑定、拒绝后的防绕过及 Worker 归属见 [逐项审批](tools.md#逐项审批与拒绝后继续) 和 [Run 内 MCP 会话](tools.md#run-内-mcp-会话与跨审批恢复)。
 

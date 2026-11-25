@@ -12,12 +12,12 @@
 | 重命名与归档 | `PUT /api/v1/agents/{id}/sessions/{session_id}` | 提交 `expected_version`；409 展示错误并刷新列表。归档后禁止发送。 |
 | 删除 | `DELETE /api/v1/agents/{id}/sessions/{session_id}` | 确认后删除；运行中服务端拒绝并保留会话。 |
 | 消息与 Run 恢复 | `GET /agents/{id}/ag-ui/threads/{session_id}`、`GET .../sessions/{session_id}/runs` | 协议历史提供正文，messageDetails 提供文件与交付信息；页面刷新后找回仍在运行的 Run。 |
-| 文本提交与状态 | `POST /agents/{id}/ag-ui`、`GET /runs/{run_id}`、`POST /runs/{run_id}/cancel` | 每轮生成新消息 ID 与协议 runId，提交完整公开历史；无法确认提交结果时保留完整输入供明确重试。标准 POST 返回流供当前页面直接消费；业务 Run 详情用于绑定运行资源及连接异常时核实状态。 |
+| 文本提交与状态 | `POST /agents/{id}/ag-ui`、`GET /runs/{run_id}`、`POST /runs/{run_id}/cancel` | 每轮生成新消息 ID 与协议 runId，携带 `forwardedProps.expected_session_version` 仅提交新用户消息；发送前不请求完整历史。无法确认提交结果时保留原请求及身份供明确重试；版本冲突保留草稿、刷新状态，由用户重新发送。标准 POST 返回流供当前页面直接消费；业务 Run 详情用于绑定运行资源及连接异常时核实状态。 |
 | 运行中回答 | AG-UI POST SSE；恢复使用 `/runs/{run_id}/ag-ui/snapshot` 与 `/stream?after=<wire_sequence>` | 首次发送不重复建立 GET 订阅；刷新或断线时冻结分页上界、追平快照、签发票据并续接观察，统一按协议线游标去重。详见 [AG-UI](ag-ui.md)。 |
 | 产物与附件下载 | `GET /api/v1/artifacts/{artifact_id}/download` | 从消息的 `attachments` / `artifacts` 获取 ID，逐次携带 Bearer；401 刷新后重试一次，失败回到登录。按服务端 `Content-Disposition` 文件名及原始 MIME/字节保存，HTML 仅下载；403/404 与网络失败显示提示，可重试。 |
 | 调用名称与状态 | AG-UI `ACTIVITY_SNAPSHOT` 和消息事件 | 实时与历史使用同一 reducer，区分 Skill 阶段及工具执行结果；不按每个工具事件重读 `/calls`，未知外部结果显示“结果未确认”。 |
 
-会话支持文本发送、历史查看、附件上传与产物下载及审批。最终正文从公开协议历史读取，文件等业务元数据按协议消息 ID 关联；文件操作时重新授权。系统不再公开独立模型提交、旧会话 Run 提交或旧消息历史接口。
+会话支持文本发送、历史查看、附件上传与产物下载及审批。最终正文从公开协议历史读取，文件等业务元数据按协议消息 ID 关联；文件操作时重新授权。对话提交与公开历史的入口边界见[AG-UI 接口兼容边界](ag-ui.md#接口兼容边界)。
 
 ![桌面会话列表](screenshots/web-sessions-list-desktop.png)
 
@@ -61,10 +61,12 @@
 
 ## 工具审批
 
-用户 Tool 在新增/编辑页通过「调用前需要审批」选择，新增默认关闭；开启后才会因该 Tool 的调用进入审批。编辑保存后直接返回原会话发送下一轮消息即可生效，无需重新保存 Agent 的工具关联；执行定义继续固定原版本，已开始的旧轮次保持原审批快照，等待中的审批不会被自动同意。内置工具与 Skill 包脚本仍遵循各自策略。
+脚本 Tool 使用「调用前需要审批」开关，默认关闭；MCP Tool 使用连接默认与工具覆盖的 `always/writes/never`，再叠加本轮主动要求、共享使用与部署限制。当前审批设置在新 Run 提交时固定，无需仅为审批调整重新保存 Agent；执行版本仍按原绑定固定。具体规则见[审批声明与可调用状态](tools.md#mcp-审批声明与可调用状态)。
 
-会话进入 `waiting_for_approval` 后，页面自动展示工具审批面板。刷新页面也会恢复待审批请求，展示工具名、参数摘要、可访问的目标文件名与审批截止时间；仅待处理请求提供「同意执行」「拒绝执行」。同意后由 worker 继续执行，拒绝会取消本轮运行；同一轮连续调用可能产生新的审批，需要逐次确认。
+进入 `waiting_for_approval` 后，页面自动读取 `GET /api/v1/runs/{run_id}/approval`，展示工具名、脱敏参数摘要、授权文件名和截止时间；刷新后也能恢复。用户可批准、拒绝本次并继续或停止整个任务；多项审批支持逐项决定，任一停止会终止整批未执行项。旧客户端 `reject` 保留取消整轮的语义。
 
-面板调用 `GET /api/v1/runs/{run_id}/approval` 获取最新展示信息，读取中断时的完整公开历史后，以新的协议 runId 向 `POST /api/v1/agents/{agent_id}/ag-ui` 提交 `resume`。`interruptId` 指向当前审批，payload 明确给出 approve/reject；同一恢复请求重试保持完整输入及身份。提交期间锁定两个按钮；审批冲突、取消或过期由服务端拒绝。参数只展示摘要，不回显原始参数或凭据。查询失败时显示重试入口并暂停决定操作。
+决定通过新的协议 runId 向 `POST /api/v1/agents/{agent_id}/ag-ui` 提交 `resume`，使用当前 `interruptId` 与明确的 `decision`；相同恢复请求重试复用原身份和完整输入。`approve` 可在服务端 `allowed_scopes` 允许时选择 `once/tool/all`；扩大范围只适用于明确批准全部当前动作。查询失败时暂停决定并提供重试，提交期间锁定操作，冲突、取消或过期由服务端拒绝。
 
-协议活动及项目观察扩展的状态通知共同更新运行状态，页面在审批中断、恢复及同轮下一次审批时同步面板，无需手动刷新。
+输入区提供会话放行策略查看、刷新和撤销；策略来自 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/approval-policy`，撤销使用同路径 DELETE 并携带独立的 `expected_version`，可指定 `tool_id`。放行只覆盖确认时的固定工具版本集合，切换会话不继承；部署、Run 与共享使用的强制约束不能由会话放行覆盖。详见[对话内放行与撤销](tools.md#对话内放行与撤销)。
+
+协议活动和项目观察扩展共同更新状态，在审批中断、恢复与下一次审批时同步面板。页面不回显原始参数或凭据，撤销不撤回已经执行的操作。

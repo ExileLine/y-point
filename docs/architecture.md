@@ -21,7 +21,7 @@
 | 对话过程与统计 | 模型公开思考独立流式发布；Tool、Skill、MCP 等调用分类、耗时与脱敏失败原因；每轮及整个会话的耗时、累计已报告 Token，附件与产物大小。 |
 | 实时与恢复 | 持久化事件、SSE、快照和游标补发；失败、超时或取消后保留已公开的未完成正文；审计可证明安全的只读调用（含完整结束的知识检索）及无产物失败报告支持继续对话；助手消息关联产物，上传附件保留在用户消息中。 |
 
-核心业务闭环：用户通过 `POST /api/v1/agents/{agent_id}/ag-ui` 提交完整公开历史及新用户消息；业务事务保存输入、排队状态和首个事件，Worker 领取后按模型配置执行并持续写入事件。完成时最终消息、运行内生成文件与交付屏障同事务提交，协议投影再输出成功终态；工作台通过标准 POST 流展示过程，并从 `/ag-ui/threads/{session_id}` 同步公开历史及交付信息。失败历史保留最后模型片段为未完成正文；下一轮在安全条件满足时从已确认检查点或干净起点继续。上传文件正文留在私有存储，访问时重新校验所有权和有效期；Skill 文本包另存于业务数据库。
+核心业务闭环：用户通过 `POST /api/v1/agents/{agent_id}/ag-ui` 携带 `forwardedProps.expected_session_version` 仅提交新用户消息；省略版本或传 `null` 时须提交完整公开历史及新用户消息。业务事务保存输入、排队状态和首个事件，Worker 领取后按模型配置执行并持续写入事件。完成时最终消息、运行内生成文件与交付屏障同事务提交，协议投影再输出成功终态；工作台通过标准 POST 流展示过程，并从 `/ag-ui/threads/{session_id}` 同步公开历史及交付信息。失败历史保留最后模型片段为未完成正文；下一轮在安全条件满足时从已确认检查点或干净起点继续。上传文件正文留在私有存储，访问时重新校验所有权和有效期；Skill 文本包另存于业务数据库。
 
 当前使用说明见[文档总览](README.md)，运行时适配边界见[DeepAgents 兼容说明](deepagents-compatibility.md)。
 
@@ -40,10 +40,11 @@
 | `app/services/artifact_renderers.py`、`worker_tools.py` | 生成常见格式文件，按会话授权列出或读取旧产物，并装配本轮已授权用户 Tool。 |
 | `app/services/user_tools.py`、`tool_environments.py` | Tool 定义、授权、版本快照、自然名称映射，以及依赖准备任务、锁和缓存校验。 |
 | `app/services/script_sandbox.py`、`mcp_tools.py`、`mcp_stdio.py` | 在 Docker 中执行脚本；通过标准 HTTP 或容器 stdio 发现和调用 MCP 工具，统一处理协议与结果限额。 |
-| `app/services/mcp_connections.py` | 共享 MCP 连接、固定执行配置、凭据策略及撤权范围；Tool 与 Run 继续固定版本。 |
+| `app/services/mcp_connections.py`、`mcp_policy.py`、`session_approval.py` | 管理 MCP 连接、固定执行配置、凭据与撤权；计算分层审批及会话放行，Tool 与 Run 继续固定版本。 |
 | `app/services/knowledge.py`、`knowledge_jobs.py` | 知识库授权、完整索引代、检索审计，以及可恢复的后台解析和原子发布。 |
 | `app/services/knowledge_parser.py`、`knowledge_backend.py`、`embedding_adapter.py` | 文档结构与偏移、原生全文/向量后端、独立嵌入协议和维度验证。 |
 | `ypoint_cli` | `yp` 命令实现；开发启动、部署初始化、Compose 转发与部署检查。入口与参数见[统一 CLI](cli.md)。 |
+| `app/services/mcp_tool_search.py`、`mcp_sessions.py`、`mcp_results.py` | 在固定授权集合内搜索并加载 Schema，管理 Run 内协议会话及大结果私有快照。 |
 | `app/core/enums.py` | 跨模块业务类型、状态、角色、可见性和策略的统一枚举。 |
 | `app/models`、`app/db`、`migrations/versions` | 业务表、数据库连接及 Alembic 迁移。 |
 

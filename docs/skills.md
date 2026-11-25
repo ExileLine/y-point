@@ -179,10 +179,10 @@ Skill 正文示例（`func1` 应是已关联且可用的业务工具名称；运
 | 兼容单模板接口 | `POST /api/v1/skills/{skill_id}/template` 继续接受 `expected_version`、单个 JSON Schema `fields_schema` 和 DOCX `file`，保留旧替换语义。版本已有多个模板时返回 409，须改用批量接口，避免误删其他模板。 |
 | 获取模板信息 | 所有者读取 `GET /api/v1/skills/{skill_id}` 的 `report_templates` 列表，每项包含 `template_key`、文件 ID、名称、SHA-256 和独立字段契约；仅有一个模板时仍提供兼容字段 `report_template`。原始模板通过现有文件下载接口授权下载。 |
 | 上传与发送前检查 | 先 `POST /api/v1/artifacts/uploads`，再 `POST /api/v1/agents/{agent_id}/sessions/{session_id}/attachments/check`。检查请求仅接受 `artifact_ids` / `context_artifact_ids` 两个列表，上下文 ID 必须属于消息附件且不重复；核对所有权、有效期、当前会话模型能力、完整文本可读性及总字节预算。成功返回 `valid`、`context_bytes`、`max_context_bytes`，不创建 Run 或调用模型。 |
-| 提交任务 | 读取完整公开历史，追加新用户消息，以 `threadId/runId/messages` 向 `POST /api/v1/agents/{agent_id}/ag-ui` 提交；预期模型、会话版本和附件放入受限 `forwardedProps`。服务端固定 Skill 版本，模型读取 Skill 后登记模板交付要求；重试保持完整输入和协议身份，不将运行中新增的交付要求作为提交参数。 |
+| 提交任务 | 携带 `forwardedProps.expected_session_version`，仅以本条新用户消息及 `threadId/runId` 向 `POST /api/v1/agents/{agent_id}/ag-ui` 提交；省略版本或传 `null` 时须先同步完整公开历史再追加新消息。预期模型和附件也放入受限 `forwardedProps`。服务端固定 Skill 版本，模型读取 Skill 后登记模板交付要求；重试保持完整输入和协议身份，不将运行中新增的交付要求作为提交参数。 |
 | 报告预览与下载 | 完成后从消息 `artifacts` 取 ID，使用现有 `/artifacts/{id}/preview` 和 `/download`；预览是正文展示，下载保留生成文件原件。 |
 
-附件预检查只说明当前状态允许提交；正式 AG-UI 入口仍验证完整公开历史、协议身份、会话版本、预期模型及附件，Worker 执行前继续检查内容与授权。不能将预检查响应作为绕过正式提交校验的凭据。图片上下文最多两张，要求当前模型已验证视觉能力。
+附件预检查只说明当前状态允许提交；正式 AG-UI 入口仍按所选模式校验会话版本或完整公开历史，并核对协议身份、预期模型及附件，Worker 执行前继续检查内容与授权。不能将预检查响应作为绕过正式提交校验的凭据。图片上下文最多两张，要求当前模型已验证视觉能力。
 
 数据链路为：`SkillVersion` → `yp_skill_template(skill_id, skill_version, template_key, artifact_id, fields_schema)` → 本轮 `yp_run_skill` 版本快照 → 模型读取正文并登记 `required_report` → 业务工具取数/可选用户材料 → 字段校验/沙箱渲染 → `yp_artifact` 暂存 → Run 完成发布 → 助手消息。模板正文沿用私有文件存储，`yp_artifact.source=skill_resource`，不随普通上传保留期过期，受所有者文件配额约束；历史版本资源不能通过通用文件删除接口单独移除。文字版本更新沿用全部模板关联，替换模板创建新资源。文件名按 Unicode NFC 和不区分大小写规范化，每个版本内唯一，禁止使用目录路径；多个模板未指定名称或名称不存在时明确报错，不自动猜测。模板报告在 `yp_artifact.template_source` 保存 Skill 名称/ID/版本、模板文件名/键、模板文件 ID/摘要和结构化数据摘要；消息中的 `context_artifact_ids` 继续记录本轮提供的材料。这些是生成来源记录，不代表模型已正确审查全部事实或实际引用每一段材料。
 
