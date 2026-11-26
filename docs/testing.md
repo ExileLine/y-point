@@ -54,6 +54,7 @@ npm --prefix web run build
 | MCP 审批与对话放行 | `test_mcp_policy.py`、`test_mcp_execution_policy.py`、`test_mcp_session_approval.py`、`test_mcp_approval_continue.py` |
 | MCP Run 会话与资源回收 | `test_mcp_run_sessions.py`、`test_m51_governance.py` |
 | MCP 上下文、结果与动态搜索 | `test_mcp_context_budget.py`、`test_mcp_results.py`、`test_mcp_tool_search.py` |
+| 取消后继续与检查点恢复 | `test_cancelled_context.py`、`test_run_executor.py`、`test_tool_failure_recovery.py`、`test_session_models.py`、`test_runtime_checkpoint.py` |
 | AG-UI 提交与公开历史 | `test_ag_ui.py`、`test_ag_ui_version_history.py`、`test_agent_sessions.py`、`test_session_models.py` |
 | 知识格式、PDF/OCR 与删除 | `test_knowledge_formats.py`、`test_knowledge_pdf_acceptance.py`、`test_knowledge_deletion.py` |
 

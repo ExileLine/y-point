@@ -2237,6 +2237,101 @@ async def exercise_checkpoint_mismatch(database_path: Path, checkpoint_path: Pat
         await engine.dispose()
 
 
+@pytest.mark.parametrize("previous_success", [False, True])
+@pytest.mark.parametrize("cancellations", [1, 2])
+@pytest.mark.parametrize("failure_after_cancel", [False, True])
+def test_cancelled_turn_keeps_original_question_for_followup(
+    tmp_path: Path,
+    previous_success: bool,
+    cancellations: int,
+    failure_after_cancel: bool,
+) -> None:
+    """主动取消后发送继续，原提问和中断标记须保留，连续取消或随后故障均不得清空上下文。"""
+
+    async def exercise() -> None:
+        """经过真实执行器、取消和持久化检查点核对恢复及后续去重。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancel-followup.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        checkpoint = tmp_path / "cancel-followup-checkpoint.db"
+        original_question = "请比较甲乙两种方案并给出优缺点"
+        captured: list[BaseMessage] = []
+
+        class FollowupModel(ScriptedModel):
+            """记录继续请求实际发给模型的上下文。"""
+
+            async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                """捕获模型输入后返回正常回答。"""
+                captured.extend(messages)
+                return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                db.add(Admin(id=1, username="cancel-followup", password="unused", role=UserRole.USER))
+                thread_start = await create_run(db, 1, input_text="之前的已完成问题" if previous_success else original_question)
+            if previous_success:
+                await execute_text_run(sessions, thread_start.id, ScriptedModel(responses=[AIMessage(content="之前的有效回答")]), checkpoint)
+            for index in range(cancellations):
+                if index == 0 and not previous_success:
+                    original = thread_start
+                else:
+                    async with sessions.begin() as db:
+                        original = await create_run(
+                            db,
+                            1,
+                            thread_id=thread_start.thread_id,
+                            input_text=original_question if index == 0 else "继续比较并细化风险",
+                        )
+                SlowModel.started = asyncio.Event()
+                SlowModel.stopped = asyncio.Event()
+                task = asyncio.create_task(
+                    execute_text_run(
+                        sessions,
+                        original.id,
+                        SlowModel(responses=[AIMessage(content="未公开的回答")]),
+                        checkpoint,
+                        lease_seconds=2,
+                        poll_seconds=0.05,
+                    ),
+                )
+                await asyncio.wait_for(SlowModel.started.wait(), timeout=5)
+                async with sessions.begin() as db:
+                    await request_cancel(db, original.id, 1)
+                cancelled = await asyncio.wait_for(task, timeout=5)
+                assert cancelled.state == RunState.CANCELLED
+            if failure_after_cancel:
+                async with sessions.begin() as db:
+                    broken = await create_run(db, 1, thread_id=thread_start.thread_id, input_text="不应保留的失败问题")
+                failed = await execute_text_run(sessions, broken.id, FailingModel(responses=[]), checkpoint)
+                assert failed.state == RunState.FAILED
+            for index in range(2):
+                async with sessions.begin() as db:
+                    followup = await create_run(db, 1, thread_id=thread_start.thread_id, input_text="继续" if index == 0 else "再补充说明")
+                captured.clear()
+                result = await execute_text_run(
+                    sessions,
+                    followup.id,
+                    FollowupModel(responses=[AIMessage(content="接着比较两种方案")]),
+                    checkpoint,
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                )
+                assert result.state == RunState.COMPLETED, result.failure_code
+                human_texts = [message.content for message in captured if message.type == "human"]
+                assert human_texts.count(original_question) == 1, f"取消后原提问丢失或重复，下一轮收到：{human_texts}"
+                assert human_texts[-1] == ("继续" if index == 0 else "再补充说明")
+                assert "不应保留的失败问题" not in human_texts
+                assert sum("本轮由用户主动取消" in str(message.content) for message in captured) == cancellations
+                if previous_success:
+                    assert "之前的已完成问题" in human_texts
+                    assert any(message.content == "之前的有效回答" for message in captured)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 def test_failed_model_turn_resumes_from_completed_checkpoint(tmp_path: Path) -> None:
     """已有成功回答后模型失败，下一轮应从上一个已确认检查点继续。"""
 

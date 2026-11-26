@@ -63,7 +63,7 @@ from app.services.model_connection_retry import invoke_model_with_connection_ret
 from app.services.tool_arguments import is_tool_argument_error
 from app.services.run_call_failures import ToolExecutionError, tool_exception_failure, tool_result_failure
 from app.services.knowledge_policy import load_knowledge_scope
-from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run
+from app.services.run_recovery import can_rewind_failed_run as _can_rewind_failed_run, cancelled_messages_since
 from app.services.tool_delivery import request_not_sent
 from app.services.tool_execution import CURRENT_TOOL_CALL_ID, ToolCapacityError, tool_execution_slot
 from app.core.config import get_config
@@ -1245,7 +1245,7 @@ async def execute_text_run(
                     runtime.config["configurable"]["checkpoint_id"] = expected_checkpoint_id
                     snapshot = await runtime.state()
                     actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
-                elif await runtime.rewind_to_empty_start(checkpoint_run.id):
+                elif await runtime.rewind_to_empty_start():
                     snapshot = await runtime.state()
                     actual_checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
                     expected_checkpoint_id = actual_checkpoint_id
@@ -1270,9 +1270,12 @@ async def execute_text_run(
             if not checkpoint_valid:
                 return await _finish_interrupted(sessions, run_id, lease_token, "checkpoint_mismatch")
             history_seed = []
-            if not resume and actual_checkpoint_id is None and expected_run is None:
+            if not resume:
                 async with sessions() as db:
-                    history_seed = await handoff_messages(db, run)
+                    if expected_run is None and run.session_id is not None:
+                        history_seed = await handoff_messages(db, run)
+                    else:
+                        history_seed = await cancelled_messages_since(db, run, expected_run)
             if resume and approval.decisions:
                 async with sessions.begin() as db:
                     for index, (action, decision) in enumerate(zip(approval.actions, approval.decisions, strict=True)):

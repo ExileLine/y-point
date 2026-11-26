@@ -19,6 +19,7 @@ from app.models.knowledge import AgentKnowledgeBase
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.services.model_availability import model_availability_notice
+from app.services.run_recovery import cancelled_run_messages
 from app.services.model_adapter import thinking_request_options, validate_output_token_setting
 from app.models.skill import AgentSkill
 from app.models.mcp_connection import AgentMcpTool
@@ -141,7 +142,7 @@ async def session_model_options(db: AsyncSession, agent: AgentConfig) -> list[Se
 
 
 async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]:
-    """新线程只继承已完成轮次文字，不迁移工具调用、附件或供应商私有状态。"""
+    """新线程继承成功轮次文字和带中断标记的取消轮，不迁移失败轮、工具调用、附件或供应商私有状态。"""
     if run.session_id is None:
         return []
     current_message_id = await db.scalar(select(AgentRunMessage.id).where(AgentRunMessage.run_id == run.id, AgentRunMessage.role == MessageRole.USER))
@@ -149,7 +150,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
         return []
     previous_runs = (
         await db.scalars(
-            select(AgentRun.id)
+            select(AgentRun)
             .join(AgentRunMessage, AgentRunMessage.run_id == AgentRun.id)
             .where(
                 AgentRunMessage.role == MessageRole.USER,
@@ -157,7 +158,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
                 AgentRun.session_id == run.session_id,
                 AgentRun.owner_id == run.owner_id,
                 AgentRun.agent_id == run.agent_id,
-                AgentRun.state == RunState.COMPLETED,
+                AgentRun.state.in_((RunState.COMPLETED, RunState.CANCELLED)),
                 AgentRun.id != run.id,
             )
             .order_by(AgentRunMessage.id.desc())
@@ -170,7 +171,7 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
         await db.scalars(
             select(AgentRunMessage)
             .where(
-                AgentRunMessage.run_id.in_(previous_runs[:MAX_HANDOFF_TURNS]),
+                AgentRunMessage.run_id.in_([item.id for item in previous_runs[:MAX_HANDOFF_TURNS]]),
                 AgentRunMessage.owner_id == run.owner_id,
                 AgentRunMessage.id < current_message_id,
                 AgentRunMessage.role.in_([MessageRole.USER, MessageRole.ASSISTANT]),
@@ -182,19 +183,28 @@ async def handoff_messages(db: AsyncSession, run: AgentRun) -> list[BaseMessage]
     turns: dict[str, list[AgentRunMessage]] = {}
     for message in rows:
         turns.setdefault(message.run_id, []).append(message)
+    runs_by_id = {item.id: item for item in previous_runs}
+    omitted_note = "上下文容量限制：较早的部分文字历史未携带；需要时请用户补充。"
+    available_characters = MAX_HANDOFF_CHARACTERS - len(omitted_note)
     selected = []
     size = 0
-    for turn in reversed(list(turns.values())):
-        turn_size = sum(len(message.content) for message in turn)
-        if size + turn_size > MAX_HANDOFF_CHARACTERS:
+    for run_id, turn in reversed(list(turns.items())):
+        previous_run = runs_by_id[run_id]
+        if previous_run.state == RunState.CANCELLED:
+            user_message = next((item for item in turn if item.role == MessageRole.USER), None)
+            if user_message is None:
+                break
+            messages = await cancelled_run_messages(db, previous_run, user_message, max_characters=available_characters - size)
+        else:
+            messages = [(HumanMessage if item.role == MessageRole.USER else AIMessage)(content=item.content) for item in turn]
+        turn_size = sum(len(message.content) for message in messages)
+        if not messages or size + turn_size > available_characters:
             break
-        selected.append(turn)
+        selected.append(messages)
         size += turn_size
     result: list[BaseMessage] = []
     if len(selected) < len(previous_runs):
-        result.append(HumanMessage(content="会话模型已切换：较早的部分文字历史因容量限制未携带；需要时请用户补充。"))
+        result.append(HumanMessage(content=omitted_note))
     for turn in reversed(selected):
-        for message in turn:
-            message_type = HumanMessage if message.role == MessageRole.USER else AIMessage
-            result.append(message_type(content=message.content))
+        result.extend(turn)
     return result

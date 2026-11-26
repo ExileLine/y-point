@@ -335,19 +335,17 @@ class DeepAgentsRuntimeAdapter:
         """读取当前线程的运行时检查点状态。"""
         return await self.agent.aget_state(self.config)
 
-    async def rewind_to_empty_start(self, run_id: str) -> bool:
-        """首轮安全失败后只回到该轮的空起点，不恢复失败消息、内部补救或待执行工具。"""
+    async def rewind_to_empty_start(self) -> bool:
+        """安全回退到本线程的空根检查点，允许连续取消或失败后重建文字，不恢复待执行工具。"""
         history = self.agent.aget_state_history(
             self.config,
             filter={
-                "run_id": run_id,
                 "source": "input",
             },
-            limit=1,
         )
         async for snapshot in history:
             if snapshot.parent_config is not None or snapshot.values.get("messages"):
-                return False
+                continue
             self.config["configurable"]["checkpoint_id"] = snapshot.config["configurable"]["checkpoint_id"]
             return True
         return False

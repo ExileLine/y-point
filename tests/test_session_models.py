@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.enums import ModelCapability, RunState, SessionModelReason
@@ -742,5 +742,86 @@ def test_stored_model_http_timeout_recovery_and_switch(tmp_path: Path) -> None:
             for task in list(handlers):
                 task.cancel()
             await asyncio.gather(*handlers, return_exceptions=True)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("switch_model", [False, True])
+def test_cancelled_session_context_survives_followup_and_model_switch(tmp_path: Path, switch_model: bool) -> None:
+    """真实 AG-UI 会话取消后继续或换模型，继承原提问和公开正文，不把中断片段伪装成最终回答。"""
+
+    async def exercise() -> None:
+        """通过正式提交、取消和模型切换接口验证公开历史与实际模型输入。"""
+        from tests.test_run_executor import SlowModel
+        from app.services.run_manager import append_reasoning_delta, append_text_delta, get_owned_messages
+        from app.services.run_recovery import CANCELLED_CONTEXT_NOTE
+
+        captured: list[BaseMessage] = []
+
+        class FollowupModel(SessionModel):
+            """捕获目标模型收到的完整历史。"""
+
+            async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+                """记录消息后返回正常结果。"""
+                captured.extend(messages)
+                return await super()._agenerate(messages, stop, run_manager, **kwargs)
+
+        async with model_environment(tmp_path) as (sessions, client, alice, _):
+            path, _ = await new_session(client, alice)
+            original_question = "请比较甲乙两种方案并说明风险"
+            original = (await submit(client, alice, path, "cancelled-question", original_question)).json()["data"]
+            SlowModel.started = asyncio.Event()
+            SlowModel.stopped = asyncio.Event()
+            checkpoint = tmp_path / "cancelled-session-checkpoint.db"
+            task = asyncio.create_task(
+                execute_text_run(
+                    sessions,
+                    original["id"],
+                    SlowModel(responses=[AIMessage(content="未公开的私有正文")]),
+                    checkpoint,
+                    lease_seconds=2,
+                    poll_seconds=0.05,
+                ),
+            )
+            await asyncio.wait_for(SlowModel.started.wait(), timeout=5)
+            async with sessions.begin() as db:
+                running = await db.get(AgentRun, original["id"])
+                await append_text_delta(db, running.id, running.lease_token, "甲方案的成本分析已展开，乙方案尚未完成。")
+                await append_reasoning_delta(db, running.id, running.lease_token, "独立思考不是历史回答")
+            cancelled_response = await client.post(f"/api/v1/runs/{original['id']}/cancel", headers=alice)
+            assert cancelled_response.status_code == 200, cancelled_response.text
+            assert (await asyncio.wait_for(task, timeout=5)).state == RunState.CANCELLED
+            async with sessions() as db:
+                assert len(await get_owned_messages(db, original["id"], 1)) == 1
+            history = await read_thread_messages(client, f"{path}/messages", headers=alice)
+            assert history.status_code == 200 and "甲方案的成本分析" in history.text
+            if switch_model:
+                session = (await client.get(path, headers=alice)).json()["data"]
+                changed = await client.put(
+                    path,
+                    headers=alice,
+                    json={
+                        "expected_version": session["version"],
+                        "model_id": 2,
+                    },
+                )
+                assert changed.status_code == 200, changed.text
+            for index in range(2):
+                followup = await submit(client, alice, path, f"continue-{index}", "继续" if index == 0 else "接着说")
+                assert followup.status_code == 201, followup.text
+                captured.clear()
+                result = await execute_text_run(
+                    sessions,
+                    followup.json()["data"]["id"],
+                    FollowupModel(responses=[AIMessage(content="继续分析乙方案的风险")]),
+                    checkpoint,
+                )
+                assert result.state == RunState.COMPLETED, result.failure_code
+                assert sum(message.content == original_question for message in captured) == 1
+                context = "\n".join(str(message.content) for message in captured)
+                assert context.count(CANCELLED_CONTEXT_NOTE) == 1
+                assert "甲方案的成本分析已展开，乙方案尚未完成。" in context
+                assert "未公开的私有正文" not in context and "独立思考不是历史回答" not in context
+                assert all(not isinstance(message, ToolMessage) and not getattr(message, "tool_calls", []) for message in captured)
 
     asyncio.run(exercise())
