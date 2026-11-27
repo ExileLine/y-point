@@ -13,6 +13,7 @@ function fixture(page, options = {}) {
   let discoveryAttempts = 0;
   const calls = [];
   let providers = [{ id: 1, name: "本地 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", has_api_key: false, has_custom_headers: false, api_version: null, region: null, timeout_seconds: 15, remark: null, status: 1 }];
+  if (options.officialProvider) providers.push({ ...providers[0], id: 2, name: "官方 OpenAI", kind: "openai", base_url: "https://api.openai.com/v1" });
   if (options.discovery) providers.push({ ...providers[0], id: 9, name: "远程连接" });
   let models = [{ id: 3, provider_id: 1, external_id: "llama3.2", display_name: "Llama 3.2", capabilities: ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"], verified_capabilities: [], capabilities_verified: false, context_window: 8192, input_price: null, output_price: null, price_currency: "USD", is_default: false, status: 1 }];
   if (options.capabilities) models = [{ ...models[0], capabilities: options.capabilities }];
@@ -54,6 +55,7 @@ function fixture(page, options = {}) {
         ? { available: false, failure: "timeout", latency_ms: 10, models: [] }
         : { available: true, failure: null, latency_ms: 10, models: [{ external_id: "remote-id", display_name: "远程模型", already_added: false }] };
     }
+    else if (pathname === "/api/v1/providers/2/available-models") data = { available: true, latency_ms: 1, failure: null, models: [{ external_id: "official-id", display_name: "官方候选", already_added: false }] };
     else if (pathname === "/api/v1/models" && method === "POST") {
       data = { ...models[0], ...body, id: 8 };
       models = [...models, data];
@@ -248,7 +250,7 @@ try {
     const drawer = page.locator(".ant-drawer-open");
     const id = drawer.getByRole("combobox", { name: "供应商模型 ID" });
     assert.equal(await id.isDisabled(), true);
-    assert.equal(await drawer.locator(".ant-select-selection-item").count(), 6);
+    assert.equal(await drawer.locator(".ant-select-selection-item").count(), 5);
     await drawer.locator(".ant-select").filter({ has: page.getByRole("combobox", { name: "供应商连接", exact: true }) }).click();
     await page.locator(".ant-select-dropdown:visible").getByText("本地 Ollama", { exact: true }).click();
     await drawer.getByText(/已发现 2 个模型/).waitFor();
@@ -281,7 +283,7 @@ try {
     assert.equal(saved.provider_id, 9);
     assert.equal(saved.external_id, "remote-id");
     assert.equal(saved.display_name, "自定义模型名称");
-    assert.deepEqual(saved.capabilities, ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"]);
+    assert.deepEqual(saved.capabilities, ["text", "streaming", "tools", "structured_output", "vision"]);
     assert.equal(calls.filter(call => call.pathname === "/api/v1/providers/9/available-models").length, 2);
     await page.close();
     console.log(`${width}: model discovery, retry, provider switching, selected ID payload and capability defaults passed`);
@@ -402,6 +404,74 @@ try {
     await page.close();
     console.log(`${width}: confirmed model access failure is visible and cannot become default`);
   }
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const calls = fixture(page, { officialProvider: true });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "录入模型", exact: true }).click();
+    const drawer = page.locator(".ant-drawer-open");
+    const capabilityField = drawer.locator(".ant-form-item").filter({ has: page.getByRole("combobox", { name: "声明能力", exact: true }) });
+    const chooseProvider = async name => {
+      await drawer.locator(".ant-select").filter({ has: page.getByRole("combobox", { name: "供应商连接", exact: true }) }).click();
+      await page.locator(".ant-select-dropdown:visible").getByText(name, { exact: true }).click();
+      await drawer.getByText(/已发现 [12] 个模型/).waitFor();
+    };
+    await chooseProvider("官方 OpenAI");
+    assert.equal(await capabilityField.locator(".ant-select-selection-item").count(), 6);
+    await drawer.getByRole("combobox", { name: "声明能力", exact: true }).click();
+    await page.locator(".ant-select-dropdown:visible").getByText("视觉", { exact: true }).click();
+    await drawer.getByRole("textbox", { name: "显示名称" }).click();
+    await chooseProvider("本地 Ollama");
+    assert.equal(await capabilityField.locator(".ant-select-selection-item").count(), 4);
+    await drawer.getByRole("combobox", { name: "声明能力", exact: true }).click();
+    const summary = page.locator(".ant-select-dropdown:visible .ant-select-item-option").filter({ hasText: "推理摘要" });
+    assert.match(await summary.getAttribute("class"), /ant-select-item-option-disabled/);
+    await drawer.getByRole("textbox", { name: "显示名称" }).click();
+    await chooseProvider("官方 OpenAI");
+    assert.equal(await capabilityField.locator(".ant-select-selection-item").count(), 4);
+    await drawer.getByRole("combobox", { name: "供应商模型 ID" }).fill("manual-id");
+    await drawer.getByRole("textbox", { name: "显示名称" }).fill("手动能力模型");
+    await drawer.getByRole("button", { name: /^保\s*存$/ }).click();
+    await drawer.waitFor({ state: "hidden" });
+    assert.deepEqual(calls.find(call => call.pathname === "/api/v1/models" && call.method === "POST").body.capabilities,
+      ["text", "streaming", "tools", "structured_output"]);
+    await page.close();
+    console.log(`${width}: provider-aware summary defaults, disabled unsupported declaration and manual capability preservation passed`);
+  }
+  for (const scenario of ["output-limit", "legacy-summary"]) {
+    const page = await browser.newPage({ viewport: { width: 375, height: 900 } });
+    const calls = fixture(page, scenario === "output-limit"
+      ? { capabilities: ["text", "tools"], probeFailures: { text: "output_limit" } }
+      : { capabilities: ["text", "reasoning_summary"], probeFailures: { reasoning_summary: "unsupported_capability" } });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true }).click();
+    assert.equal(await page.getByRole("menuitem", { name: "验证推理摘要（仅 OpenAI Responses）", exact: true }).getAttribute("aria-disabled"), "true");
+    await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    if (scenario === "legacy-summary") await dialog.getByText("此模型历史声明包含推理摘要", { exact: true }).waitFor();
+    await dialog.getByRole("button", { name: "开始验证（2 项）", exact: true }).click();
+    await dialog.getByText("验证完成：通过 1 项，未通过 1 项，未执行 0 项", { exact: true }).waitFor();
+    await dialog.getByText(scenario === "output-limit" ? /输出预算耗尽，暂无法判定能力/ : /能力不受支持/).waitFor();
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 2);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: screenshotPath(`web-model-${scenario}.png`), animations: "disabled" });
+    if (scenario === "legacy-summary") {
+      await dialog.getByRole("button", { name: /^完\s*成$/ }).click();
+      await page.getByRole("button", { name: "更多操作 Llama 3.2" }).click();
+      await page.getByText("编辑模型", { exact: true }).click();
+      await page.getByRole("combobox", { name: "声明能力", exact: true }).click();
+      await page.locator(".ant-select-dropdown:visible").getByText("推理摘要", { exact: true }).click();
+      await page.getByRole("textbox", { name: "显示名称" }).click();
+      await page.getByRole("button", { name: /^保\s*存$/ }).click();
+      await page.getByRole("dialog", { name: "编辑模型" }).waitFor({ state: "hidden" });
+      assert.deepEqual(calls.find(call => call.method === "PUT" && call.pathname === "/api/v1/models/3").body.capabilities, ["text"]);
+    }
+    await page.close();
+    console.log(`${scenario}: explicit capability limitation, safe explanation and continued batch verification passed`);
+  }
+
 } finally {
   await browser.close();
 }

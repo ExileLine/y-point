@@ -12,8 +12,8 @@ type VerificationItem = CapabilityOption & {
 const stateLabels = { pending: "待验证", running: "验证中", success: "通过", failure: "未通过", skipped: "未执行" };
 const stateColors = { pending: "default", running: "processing", success: "success", failure: "error", skipped: "default" };
 
-export function ModelCapabilityVerification({ model, capabilities, failureLabels, onUpdated, onClose }: {
-  model: Model; capabilities: CapabilityOption[]; failureLabels: Record<string, string>;
+export function ModelCapabilityVerification({ model, capabilities, failureLabels, supportsReasoningSummary, onUpdated, onClose }: {
+  model: Model; capabilities: CapabilityOption[]; failureLabels: Record<string, string>; supportsReasoningSummary: boolean;
   onUpdated: () => Promise<void>; onClose: () => void;
 }) {
   const [items, setItems] = useState<VerificationItem[]>(() => capabilities
@@ -86,6 +86,9 @@ export function ModelCapabilityVerification({ model, capabilities, failureLabels
     <div className="catalog-verification">
       {phase === "ready" && <Alert type="warning" showIcon message="验证可能产生上游费用"
         description="将依次验证此模型已声明的全部能力，包括已验证项。单项失败会继续下一项；可停止后续验证，已发起的调用仍会完成。" />}
+      {!supportsReasoningSummary && model.capabilities.includes("reasoning_summary") && <Alert type="info" showIcon
+        message="此模型历史声明包含推理摘要"
+        description="推理摘要仅验证 OpenAI Responses 的公开摘要，当前连接类型不支持此项验证；兼容模型的公开思考文本不属于该能力。可在编辑模型时移除声明，本次仍逐项展示验证结果。" />}
       {phase === "running" && <Typography.Paragraph role="status" aria-live="polite">
         {stopping ? "已请求停止，当前调用结束后不再发起新验证。" : "正在依次验证，请保留当前页面。"}
       </Typography.Paragraph>}

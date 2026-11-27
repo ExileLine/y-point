@@ -3,6 +3,7 @@
 # @Author  : yangyuexiong
 # @File    : catalog.py
 
+import httpx
 from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,11 +56,14 @@ def set_provider_credentials(provider: ProviderConnection, body: ProviderCreateI
     if "api_key" not in fields and "custom_headers" not in fields:
         return
     api_key, headers = decrypt_credentials(provider.encrypted_credentials)
+    previous_key, previous_headers = api_key, headers
     if "api_key" in fields:
         api_key = body.api_key.get_secret_value().strip() if isinstance(body.api_key, SecretStr) else None
     if "custom_headers" in fields:
         headers = {name: value.get_secret_value() for name, value in (body.custom_headers or {}).items()}
     validate_custom_headers(headers)
+    if api_key == previous_key and httpx.Headers(headers) == httpx.Headers(previous_headers):
+        return
     provider.encrypted_credentials = encrypt_credentials(api_key, headers)
     provider.has_api_key = bool(api_key)
     provider.has_custom_headers = bool(headers)

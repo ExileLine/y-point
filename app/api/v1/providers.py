@@ -134,18 +134,7 @@ async def update_provider(provider_id: int, body: ProviderUpdateIn, actor: Admin
     """更新连接配置，未传入的凭据保持原值。"""
     provider = await get_provider_or_404(db, provider_id)
     fields = body.model_fields_set
-    if "status" in fields and body.status == 0 or fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
-        await db.scalars(
-            select(ModelCatalog.id).where(ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0).order_by(ModelCatalog.id).with_for_update(),
-        )
-        linked = await db.scalar(
-            select(AgentConfig.id)
-            .join(ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id)
-            .where(ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0)
-            .limit(1),
-        )
-        if linked is not None:
-            raise CustomException(status_code=409, custom_code=10005, detail="连接仍被 Agent 引用，请先更换其默认模型")
+    previous_config = (provider.base_url, provider.encrypted_credentials, provider.api_version, provider.region)
     for name in ("name", "api_version", "region", "timeout_seconds", "remark", "status"):
         if name in fields:
             value = getattr(body, name)
@@ -170,9 +159,30 @@ async def update_provider(provider_id: int, body: ProviderUpdateIn, actor: Admin
     set_provider_credentials(provider, body)
     if provider.kind in {ProviderKind.AZURE_OPENAI, ProviderKind.GEMINI} and not provider.has_api_key:
         raise CustomException(status_code=400, custom_code=10005, detail="该供应商需要 API 密钥")
+    connection_changed = previous_config != (provider.base_url, provider.encrypted_credentials, provider.api_version, provider.region)
+    if ("status" in fields and body.status == 0) or connection_changed:
+        with db.no_autoflush:
+            await db.scalars(
+                select(ModelCatalog.id)
+                .where(ModelCatalog.provider_id == provider.id, ModelCatalog.is_deleted == 0)
+                .order_by(ModelCatalog.id)
+                .with_for_update(),
+            )
+            linked = await db.scalar(
+                select(AgentConfig.id)
+                .join(ModelCatalog, AgentConfig.default_model_id == ModelCatalog.id)
+                .where(ModelCatalog.provider_id == provider.id, AgentConfig.is_deleted == 0)
+                .limit(1),
+            )
+        if linked is not None:
+            raise CustomException(status_code=409, custom_code=10005, detail="连接仍被 Agent 引用，请先更换其默认模型")
     await flush_catalog(db)
-    if fields & {"base_url", "api_key", "custom_headers", "api_version", "region"}:
-        await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(verified_capabilities=[], capabilities_verified=False, availability_failure=None, availability_checked_at=None))
+    if connection_changed:
+        await db.execute(
+            update(ModelCatalog)
+            .where(ModelCatalog.provider_id == provider.id)
+            .values(verified_capabilities=[], capabilities_verified=False, availability_failure=None, availability_checked_at=None)
+        )
     if provider.status == 0:
         await db.execute(update(ModelCatalog).where(ModelCatalog.provider_id == provider.id).values(is_default=False, default_slot=None))
     audit(db, "provider.updated", actor_id=actor.id, target_id=provider.id)

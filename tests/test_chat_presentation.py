@@ -32,19 +32,20 @@ from app.services.run_presentation import load_run_presentation
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_sdk_reasoning_stream_replay_and_metrics(tmp_path: Path, enabled: bool) -> None:
+@pytest.mark.parametrize("reasoning_field", ["reasoning_content", "reasoning"])
+def test_sdk_reasoning_stream_replay_and_metrics(tmp_path: Path, enabled: bool, reasoning_field: str) -> None:
     """真实 SDK 解析兼容 SSE，正文和思考分流，停用时不保存思考，终态可恢复统计。"""
 
     async def exercise() -> None:
         """用隔离数据库和真实 SDK 的内存 HTTP 流完成授权写入及回放。"""
         packets = [
             {
-                "reasoning_content": "先核对资料。" * 500,
+                reasoning_field: "先核对资料。" * 500,
                 "signature": "不得泄露的签名",
                 "encrypted_content": "不得泄露的密文",
             },
             {
-                "reasoning_content": "再形成结论。",
+                reasoning_field: "再形成结论。",
             },
             {
                 "content": "最终回答",
@@ -137,7 +138,7 @@ def test_sdk_reasoning_stream_replay_and_metrics(tmp_path: Path, enabled: bool) 
                 assert [event.sequence for event in events] == list(range(1, len(events) + 1))
                 assert all(len(event.content or "") <= 2048 for event in events)
                 assert "".join(event.content or "" for event in events if event.event_type == RunEventType.TEXT_DELTA) == "最终回答"
-                expected = packets[0]["reasoning_content"] + packets[1]["reasoning_content"] if enabled else ""
+                expected = packets[0][reasoning_field] + packets[1][reasoning_field] if enabled else ""
                 assert "".join(event.content or "" for event in events if event.event_type == RunEventType.REASONING_DELTA) == expected
                 public = await load_run_presentation(db, 1, [run.id])
                 assert public[run.id]["reasoning_content"] == expected

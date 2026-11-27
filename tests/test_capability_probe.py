@@ -42,7 +42,7 @@ class FakeChatModel:
 
     async def ainvoke(self, messages: list, **kwargs) -> AIMessage:
         """返回测试所需的文本或工具调用。"""
-        assert kwargs["max_tokens"] == 128
+        assert kwargs["max_tokens"] == 1024
         tool_calls = (
             [
                 {
@@ -68,7 +68,7 @@ class FakeChatModel:
 
     async def astream(self, messages: list, **kwargs):
         """返回流式正文及最终 Token 用量。"""
-        assert kwargs["max_tokens"] == 128
+        assert kwargs["max_tokens"] == 1024
         yield AIMessageChunk(content="O" if self.stream_text else "")
         yield AIMessageChunk(
             content="K" if self.stream_text else "",
@@ -157,7 +157,6 @@ class StructuredChatModel(FakeChatModel):
 
     async def ainvoke(self, messages: list, **kwargs) -> dict:
         """返回原始消息、解析结果及可用 Token 用量。"""
-        assert kwargs["max_tokens"] == 128
         raw = AIMessage(
             content="secret-response",
             usage_metadata={
@@ -185,7 +184,7 @@ class VisionChatModel(FakeChatModel):
 
     async def ainvoke(self, messages: list, **kwargs) -> AIMessage:
         """核对消息中的图片尺寸并返回模拟回答。"""
-        assert kwargs["max_tokens"] == 512
+        assert kwargs["max_tokens"] == 1024
         content = messages[0].content
         assert content[0]["type"] == "text" and content[1]["type"] == "image_url"
         image_url = content[1]["image_url"]["url"]

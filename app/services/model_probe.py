@@ -15,6 +15,7 @@ from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import ModelTestOut
 from app.services.probe_retry import request_with_probe_retry
 from app.services.provider_probe import provider_request_headers
+from app.services.model_stream import completion_response_json
 
 
 async def probe_model(model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None) -> ModelTestOut:
@@ -109,7 +110,11 @@ async def probe_model(model: ModelCatalog, provider: ProviderConnection, client:
         estimated_cost = None
         if failure is None:
             try:
-                data = response.json()
+                data = (
+                    completion_response_json(response.text)
+                    if provider.kind in {ProviderKind.OPENAI, ProviderKind.OPENAI_COMPATIBLE, ProviderKind.OLLAMA}
+                    else response.json()
+                )
                 key = "content" if provider.kind == ProviderKind.ANTHROPIC else "candidates" if provider.kind == ProviderKind.GEMINI else "choices"
                 if not isinstance(data, dict) or not isinstance(data.get(key), list) or not data[key]:
                     failure = "invalid_response"

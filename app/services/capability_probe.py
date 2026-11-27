@@ -24,7 +24,7 @@ from langchain_google_genai.chat_models import (
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.core.enums import ModelCapability, ProviderKind
+from app.core.enums import ModelCapability, ModelProbeFailure, ProviderKind
 from app.models.model_catalog import ModelCatalog
 from app.models.provider_connection import ProviderConnection
 from app.schemas.provider import ModelTestOut, ProbeCapability
@@ -33,6 +33,9 @@ from app.services.bedrock_probe import _bedrock_failure
 from app.services.probe_retry import PROBE_RETRY_DELAY_SECONDS, RETRYABLE_UPSTREAM_STATUSES, request_with_probe_retry
 from app.services.provider_probe import provider_request_headers
 
+
+# 所有能力统一使用有界预算，给推理模型留出生成最终答案的空间，不因预算耗尽自动重试。
+CAPABILITY_PROBE_MAX_OUTPUT_TOKENS = 1024
 
 VERIFY_TOOL = {
     "type": "function",
@@ -76,17 +79,23 @@ VISION_IMAGE_URL = "data:image/png;base64," + (
 VISION_COLORS = ["red", "green", "blue", "yellow"]
 
 
-def _failure_for_status(status: int) -> str:
+def _output_limited(message: AIMessage) -> bool:
+    """识别不同 SDK 显式报告的输出截断，不从空正文推断能力不受支持。"""
+    metadata = message.response_metadata
+    return metadata.get("finish_reason") in {"length", "MAX_TOKENS", "max_tokens"} or metadata.get("stop_reason") == "max_tokens"
+
+
+def _failure_for_status(status: int) -> ModelProbeFailure:
     """将上游状态码转换为不含响应正文的故障类别。"""
     if status in {401, 403}:
-        return "authentication"
+        return ModelProbeFailure.AUTHENTICATION
     if status == 404:
-        return "model_not_found"
+        return ModelProbeFailure.MODEL_NOT_FOUND
     if status in {400, 422}:
-        return "invalid_request"
+        return ModelProbeFailure.INVALID_REQUEST
     if status == 429:
-        return "rate_limit"
-    return "upstream" if status >= 500 else "invalid_response"
+        return ModelProbeFailure.RATE_LIMIT
+    return ModelProbeFailure.UPSTREAM if status >= 500 else ModelProbeFailure.INVALID_RESPONSE
 
 
 async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnection, client: httpx.AsyncClient | None = None) -> ModelTestOut:
@@ -98,7 +107,7 @@ async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnec
             external_id=model.external_id,
             available=False,
             latency_ms=0,
-            failure="unsupported_capability",
+            failure=ModelProbeFailure.UNSUPPORTED_CAPABILITY,
         )
     headers = provider_request_headers(provider)
     base_url = httpx.URL(provider.base_url)
@@ -109,7 +118,7 @@ async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnec
         "reasoning": {
             "summary": "concise",
         },
-        "max_output_tokens": 128,
+        "max_output_tokens": CAPABILITY_PROBE_MAX_OUTPUT_TOKENS,
         "store": False,
     }
     own_client = client is None
@@ -126,8 +135,15 @@ async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnec
             failure = _failure_for_status(status)
         else:
             data = response.json()
-            if not isinstance(data, dict) or data.get("status") != "completed" or not isinstance(data.get("output"), list):
-                failure = "invalid_response"
+            if (
+                isinstance(data, dict)
+                and data.get("status") == "incomplete"
+                and isinstance(data.get("incomplete_details"), dict)
+                and data["incomplete_details"].get("reason") == "max_output_tokens"
+            ):
+                failure = ModelProbeFailure.OUTPUT_LIMIT
+            elif not isinstance(data, dict) or data.get("status") != "completed" or not isinstance(data.get("output"), list):
+                failure = ModelProbeFailure.INVALID_RESPONSE
             else:
                 has_summary = any(
                     isinstance(item, dict)
@@ -140,19 +156,19 @@ async def _probe_reasoning_summary(model: ModelCatalog, provider: ProviderConnec
                     for item in data["output"]
                 )
                 if not has_summary:
-                    failure = "invalid_response"
-                usage = data.get("usage")
-                if isinstance(usage, dict):
-                    reported_input = usage.get("input_tokens")
-                    reported_output = usage.get("output_tokens")
-                    input_tokens = reported_input if type(reported_input) is int and reported_input >= 0 else None
-                    output_tokens = reported_output if type(reported_output) is int and reported_output >= 0 else None
+                    failure = ModelProbeFailure.INVALID_RESPONSE
+            usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(usage, dict):
+                reported_input = usage.get("input_tokens")
+                reported_output = usage.get("output_tokens")
+                input_tokens = reported_input if type(reported_input) is int and reported_input >= 0 else None
+                output_tokens = reported_output if type(reported_output) is int and reported_output >= 0 else None
     except (ValueError, TypeError):
-        failure = "invalid_response"
+        failure = ModelProbeFailure.INVALID_RESPONSE
     except httpx.TimeoutException:
-        failure = "timeout"
+        failure = ModelProbeFailure.TIMEOUT
     except httpx.RequestError:
-        failure = "network"
+        failure = ModelProbeFailure.NETWORK
     finally:
         if own_client:
             await client.aclose()
@@ -185,36 +201,53 @@ async def probe_capability(
         raise ValueError("嵌入能力必须经独立嵌入适配器验证，不能使用聊天探测")
     if capability == ModelCapability.REASONING_SUMMARY:
         return await _probe_reasoning_summary(model, provider, response_client)
-    chat_model = chat_model or build_chat_model(model, provider)
+    if chat_model is None:
+        chat_model = build_chat_model(model, provider, max_output_tokens=CAPABILITY_PROBE_MAX_OUTPUT_TOKENS)
+    elif isinstance(chat_model, BaseChatModel):
+        # 结构化 Runnable 的 ainvoke 参数不一定会下传，预算必须在模型实例上生效。
+        token_field = "max_output_tokens" if "max_output_tokens" in type(chat_model).model_fields else "max_tokens"
+        chat_model = chat_model.model_copy(
+            update={
+                token_field: CAPABILITY_PROBE_MAX_OUTPUT_TOKENS,
+            }
+        )
     started = time.perf_counter()
     for attempt in range(2):
         usage = None
         status = None
         failure = None
         saw_chunk = False
+        output_limited = False
         try:
             async with asyncio.timeout(provider.timeout_seconds + 5):
                 if capability == ModelCapability.STREAMING:
                     saw_text = False
-                    async for chunk in chat_model.astream([HumanMessage(content="Reply with OK.")], max_tokens=128):
+                    async for chunk in chat_model.astream([HumanMessage(content="Reply with OK.")], max_tokens=CAPABILITY_PROBE_MAX_OUTPUT_TOKENS):
                         saw_chunk = True
+                        output_limited = output_limited or _output_limited(chunk)
                         saw_text = saw_text or bool(chunk.text.strip())
                         usage = chunk.usage_metadata or usage
                     if not saw_text:
-                        failure = "invalid_response"
+                        failure = ModelProbeFailure.INVALID_RESPONSE
                 elif capability == ModelCapability.TOOLS:
                     bound = chat_model.bind_tools([VERIFY_TOOL])
                     message = await bound.ainvoke(
                         [HumanMessage(content="Call verify_capability with value ping. Do not answer in plain text.")],
-                        max_tokens=128,
+                        max_tokens=CAPABILITY_PROBE_MAX_OUTPUT_TOKENS,
                     )
+                    output_limited = _output_limited(message)
                     usage = message.usage_metadata
                     if not any(call["name"] == "verify_capability" and call["args"].get("value") == "ping" for call in message.tool_calls):
-                        failure = "invalid_response"
+                        failure = ModelProbeFailure.INVALID_RESPONSE
                 elif capability == ModelCapability.STRUCTURED_OUTPUT:
-                    structured = chat_model.with_structured_output(STRUCTURED_SCHEMA, method="function_calling", include_raw=True)
-                    response = await structured.ainvoke([HumanMessage(content="Return value ping in the requested structure.")], max_tokens=128)
+                    structured = chat_model.with_structured_output(
+                        STRUCTURED_SCHEMA,
+                        method="function_calling",
+                        include_raw=True,
+                    )
+                    response = await structured.ainvoke([HumanMessage(content="Return value ping in the requested structure.")])
                     raw = response.get("raw") if isinstance(response, dict) else None
+                    output_limited = isinstance(raw, AIMessage) and _output_limited(raw)
                     usage = raw.usage_metadata if isinstance(raw, AIMessage) else None
                     parsed = response.get("parsed") if isinstance(response, dict) else None
                     if (
@@ -225,7 +258,7 @@ async def probe_capability(
                         }
                         or response.get("parsing_error") is not None
                     ):
-                        failure = "invalid_response"
+                        failure = ModelProbeFailure.INVALID_RESPONSE
                 elif capability == ModelCapability.VISION:
                     prompt = "Name the colors in the image from top-left to bottom-right. Reply with English color names only."
                     message = await chat_model.ainvoke(
@@ -245,45 +278,49 @@ async def probe_capability(
                                 ],
                             ),
                         ],
-                        max_tokens=512,
+                        max_tokens=CAPABILITY_PROBE_MAX_OUTPUT_TOKENS,
                     )
+                    output_limited = _output_limited(message)
                     usage = message.usage_metadata
                     colors = re.findall(r"\b(red|green|blue|yellow)\b", message.text.lower())
                     if colors != VISION_COLORS:
-                        failure = "invalid_response"
+                        failure = ModelProbeFailure.INVALID_RESPONSE
                 else:
-                    message = await chat_model.ainvoke([HumanMessage(content="Reply with OK.")], max_tokens=128)
+                    message = await chat_model.ainvoke([HumanMessage(content="Reply with OK.")], max_tokens=CAPABILITY_PROBE_MAX_OUTPUT_TOKENS)
+                    output_limited = _output_limited(message)
                     usage = message.usage_metadata
                     if not message.text.strip():
-                        failure = "invalid_response"
+                        failure = ModelProbeFailure.INVALID_RESPONSE
+                if output_limited:
+                    failure = ModelProbeFailure.OUTPUT_LIMIT
         except (TimeoutError, openai.APITimeoutError, anthropic.APITimeoutError, httpx.TimeoutException):
-            failure = "timeout"
+            failure = ModelProbeFailure.TIMEOUT
         except (openai.APIConnectionError, anthropic.APIConnectionError, httpx.RequestError):
-            failure = "network"
+            failure = ModelProbeFailure.NETWORK
         except (openai.APIStatusError, anthropic.APIStatusError) as exc:
             status = exc.status_code
             failure = _failure_for_status(status)
         except (GoogleAuthenticationError, GooglePermissionDeniedError):
-            status, failure = 403, "authentication"
+            status, failure = 403, ModelProbeFailure.AUTHENTICATION
         except GoogleModelNotFoundError:
-            status, failure = 404, "model_not_found"
+            status, failure = 404, ModelProbeFailure.MODEL_NOT_FOUND
         except GoogleInvalidRequestError:
-            status, failure = 400, "invalid_request"
+            status, failure = 400, ModelProbeFailure.INVALID_REQUEST
         except GoogleRateLimitError:
-            status, failure = 429, "rate_limit"
+            status, failure = 429, ModelProbeFailure.RATE_LIMIT
         except GoogleAPIError as exc:
             status = exc.code
             failure = _failure_for_status(status)
         except ChatGoogleGenerativeAIError:
-            failure = "invalid_response"
+            failure = ModelProbeFailure.INVALID_RESPONSE
         except ClientError as exc:
             status, failure = _bedrock_failure(exc)
         except (NoCredentialsError, PartialCredentialsError, CredentialRetrievalError):
-            failure = "authentication"
+            failure = ModelProbeFailure.AUTHENTICATION
         except BotoCoreError as exc:
-            failure = "timeout" if "Timeout" in type(exc).__name__ else "network"
+            failure = ModelProbeFailure.TIMEOUT if "Timeout" in type(exc).__name__ else ModelProbeFailure.NETWORK
         except (NotImplementedError, ValueError, TypeError, KeyError, AttributeError):
-            failure = "invalid_response"
+            failure = ModelProbeFailure.INVALID_RESPONSE
         if attempt == 0 and status in RETRYABLE_UPSTREAM_STATUSES and not saw_chunk:
             await asyncio.sleep(PROBE_RETRY_DELAY_SECONDS)
             continue

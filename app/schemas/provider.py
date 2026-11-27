@@ -10,7 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 from app.core.config import get_config
 from app.schemas.runtime_limits import ModelTimeout
-from app.core.enums import ModelCapability, ProviderKind
+from app.core.enums import ModelCapability, ModelProbeFailure, ProviderKind
 
 
 Capability = ModelCapability
@@ -235,20 +235,7 @@ class ModelTestOut(BaseModel):
     output_tokens: int | None = Field(default=None, description="上游报告的输出 Token 数", examples=[8])
     estimated_cost: Decimal | None = Field(default=None, description="依据模型单价估算的调用成本", examples=["0.000004"])
     price_currency: str | None = Field(default=None, description="估算成本的币种", examples=["USD"])
-    failure: (
-        Literal[
-            "authentication",
-            "model_not_found",
-            "invalid_request",
-            "rate_limit",
-            "timeout",
-            "network",
-            "upstream",
-            "invalid_response",
-            "unsupported_capability",
-        ]
-        | None
-    ) = Field(default=None, description="测试失败原因", examples=["rate_limit"])
+    failure: ModelProbeFailure | None = Field(default=None, description="测试失败原因；output_limit 表示输出预算耗尽、尚无法判定能力", examples=["rate_limit"])
 
 
 class CapabilityTestIn(BaseModel):

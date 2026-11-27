@@ -18,6 +18,9 @@ const chatCapabilities = [
   { value: "text", label: "文本" }, { value: "streaming", label: "流式" }, { value: "tools", label: "工具" },
   { value: "structured_output", label: "结构化输出" }, { value: "vision", label: "视觉" }, { value: "reasoning_summary", label: "推理摘要" },
 ];
+function defaultChatCapabilities(kind?: string): string[] {
+  return chatCapabilities.filter(item => item.value !== "reasoning_summary" || kind === "openai").map(item => item.value);
+}
 const capabilities = [...chatCapabilities, { value: "embedding", label: "嵌入" }];
 function modelAvailability(model: Model): string {
   if (model.availability_failure) return "暂不可用";
@@ -41,6 +44,7 @@ const failureLabels: Record<string, string> = {
   authentication: "凭据无效", rate_limit: "上游限流", model_list_unavailable: "模型列表不可用",
   ...modelAccessFailures,
   model_not_found: modelAccessFailures.model_not_found, invalid_request: "请求无效", timeout: "连接超时", network: "网络故障",
+  output_limit: "输出预算耗尽，暂无法判定能力；可检查模型推理设置后重试",
   upstream: "上游故障", invalid_response: "响应无效", unsupported_capability: "能力不受支持",
   invalid_embedding: "嵌入响应无效", model_unavailable: "嵌入模型或供应商不可用",
 };
@@ -153,6 +157,8 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const providerId = Form.useWatch("provider_id", form);
+  const supportsSummary = providers.find(item => item.id === providerId)?.kind === "openai";
+  const declaredCapabilities: string[] = Form.useWatch("capabilities", form) || [];
   const [discovered, setDiscovered] = useState<DiscoveryResult["models"]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [discoveryError, setDiscoveryError] = useState("");
@@ -167,8 +173,8 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
       provider_id: model.provider_id, external_id: model.external_id, display_name: model.display_name,
       capabilities: model.capabilities, context_window: model.context_window, input_price: model.input_price,
       output_price: model.output_price, price_currency: model.price_currency, enabled: model.status === 1,
-    } : { provider_id: initialProvider, capabilities: chatCapabilities.map(item => item.value), price_currency: "USD", enabled: true });
-  }, [form, initialProvider, model, open]);
+    } : { provider_id: initialProvider, capabilities: defaultChatCapabilities(providers.find(item => item.id === initialProvider)?.kind), price_currency: "USD", enabled: true });
+  }, [form, initialProvider, model, open, providers]);
 
   useEffect(() => {
     setDiscovered([]);
@@ -191,7 +197,13 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
     return () => { active = false; controller.abort(); };
   }, [open, model, providerId, discoveryRevision]);
 
-  function changeProvider() {
+  function changeProvider(nextProviderId: number) {
+    const nextKind = providers.find(item => item.id === nextProviderId)?.kind;
+    const currentCapabilities: string[] = form.getFieldValue("capabilities") || [];
+    const oldDefaults = defaultChatCapabilities(providers.find(item => item.id === providerId)?.kind);
+    const usingDefaults = currentCapabilities.length === oldDefaults.length && oldDefaults.every(item => currentCapabilities.includes(item));
+    form.setFieldValue("capabilities", usingDefaults ? defaultChatCapabilities(nextKind)
+      : currentCapabilities.filter(item => item !== "reasoning_summary" || nextKind === "openai"));
     form.setFieldValue("external_id", undefined);
     if (form.getFieldValue("display_name") === automaticName.current) form.setFieldValue("display_name", undefined);
     automaticName.current = null;
@@ -255,7 +267,7 @@ function ModelEditor({ open, model, providers, initialProvider, onClose, onSaved
         </AutoComplete>}
       </Form.Item>
       <Form.Item name="display_name" label="显示名称" rules={[{ required: true, whitespace: true }]}><Input maxLength={128} /></Form.Item>
-      <Form.Item name="capabilities" label="声明能力" extra="嵌入模型请选择「嵌入」，保存后通过「验证能力 → 验证嵌入」独立验证；Agent 对话使用文本能力，调用工具还需工具能力。"><Select mode="multiple" options={capabilities} /></Form.Item>
+      <Form.Item name="capabilities" label="声明能力" extra="嵌入模型请选择「嵌入」，保存后通过「验证能力 → 验证嵌入」独立验证；Agent 对话使用文本能力，调用工具还需工具能力。推理摘要仅验证 OpenAI Responses 的公开摘要，与兼容模型的公开思考文本不同；历史声明可手动移除。"><Select mode="multiple" options={capabilities.map(item => ({ ...item, disabled: item.value === "reasoning_summary" && !supportsSummary && !declaredCapabilities.includes(item.value) }))} /></Form.Item>
       <Form.Item name="context_window" label="上下文窗口（Token）" extra="填写当前部署实际允许的窗口，包含输入与输出。留空表示未知，平台无法据此可靠预检；调大此值不会扩容模型。"><InputNumber min={1} precision={0} className="catalog-full-input" /></Form.Item>
       <div className="catalog-form-row">
         <Form.Item name="input_price" label="输入价格 / 百万 Token" extra="留空表示价格未知；0 表示按零价格估算。与输出价格一起用于 Agent 成本预算。"><InputNumber min={0} precision={6} stringMode className="catalog-full-input" /></Form.Item>
@@ -360,12 +372,13 @@ export default function ModelCatalog() {
   }
 
   function modelActions(row: Model) {
+    const supportsSummary = providers.find(provider => provider.id === row.provider_id)?.kind === "openai";
     const verificationDisabled = Boolean(busy) || row.status !== 1 || !providerEnabled(row.provider_id);
     return <Space size="small">
       <Dropdown menu={{ items: [
         { key: "all", label: "一键验证已声明能力", disabled: !capabilities.some(item => row.capabilities.includes(item.value)), onClick: () => setVerificationModel(row) },
         { type: "divider" },
-        ...capabilities.map((item) => ({ key: item.value, label: `验证${item.label}`, onClick: () => void probe(`model-${row.id}`, async () => {
+        ...capabilities.map((item) => ({ key: item.value, label: item.value === "reasoning_summary" && !supportsSummary ? "验证推理摘要（仅 OpenAI Responses）" : `验证${item.label}`, disabled: item.value === "reasoning_summary" && !supportsSummary ? true : undefined, onClick: () => void probe(`model-${row.id}`, async () => {
           if (item.value !== "embedding") return (await testModelCapability(row.id, item.value)).result;
           const result = await testEmbeddingModel(row.id);
           return { available: result.success, latency_ms: result.latency_ms, failure: result.failure_code, detail: `${result.dimensions} 维` };
@@ -415,7 +428,7 @@ export default function ModelCatalog() {
         {loading ? <Skeleton active /> : filteredModels.length ? <><div className="catalog-desktop-table"><Table rowKey="id" columns={modelColumns} dataSource={filteredModels} pagination={{ pageSize: 20, showSizeChanger: false }} scroll={{ x: "max-content" }} /></div><div className="catalog-mobile-items">{filteredModels.map((row) => <div className="catalog-mobile-item" key={row.id}><div className="catalog-mobile-head"><strong>{row.display_name}</strong><Tag color={row.availability_failure ? "error" : row.status === 1 && providerEnabled(row.provider_id) && modelAvailability(row) !== "待验证" ? "success" : "default"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : modelAvailability(row)}</Tag></div><div className="catalog-mobile-meta">{row.external_id} · {providerName(row.provider_id)}</div>{row.availability_failure && <Alert type="error" showIcon message={modelAccessFailures[row.availability_failure]} />}<div className="catalog-mobile-meta">{row.context_window?.toLocaleString() || "未设置"} Token · <CapabilityTags model={row} /></div><div className="catalog-mobile-actions">{modelActions(row)}</div></div>)}</div></> : <Empty description={query || providerFilter ? "没有符合条件的模型" : "还没有模型"} />}
       </>}
     </div>
-    {verificationModel && <ModelCapabilityVerification key={verificationModel.id} model={verificationModel} capabilities={capabilities}
+    {verificationModel && <ModelCapabilityVerification key={verificationModel.id} model={verificationModel} capabilities={capabilities} supportsReasoningSummary={providers.find(item => item.id === verificationModel.provider_id)?.kind === "openai"}
       failureLabels={failureLabels} onUpdated={reload} onClose={() => setVerificationModel(null)} />}
     <ProviderEditor open={providerEditor !== null} provider={providerEditor === "new" ? null : providerEditor} kinds={kinds} onClose={() => setProviderEditor(null)} onSaved={() => { setProviderEditor(null); void reload(); }} />
     <ModelEditor open={modelEditor !== null} model={modelEditor === "new" ? null : modelEditor} providers={providers} initialProvider={providerFilter} onClose={() => setModelEditor(null)} onSaved={() => { setModelEditor(null); void reload(); }} />

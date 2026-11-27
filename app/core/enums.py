@@ -371,6 +371,21 @@ class ModelCapability(StrEnum):
     REASONING_SUMMARY = "reasoning_summary"
 
 
+class ModelProbeFailure(StrEnum):
+    """模型能力探测的脱敏故障类别。"""
+
+    AUTHENTICATION = "authentication"
+    MODEL_NOT_FOUND = "model_not_found"
+    INVALID_REQUEST = "invalid_request"
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    NETWORK = "network"
+    UPSTREAM = "upstream"
+    INVALID_RESPONSE = "invalid_response"
+    UNSUPPORTED_CAPABILITY = "unsupported_capability"
+    OUTPUT_LIMIT = "output_limit"
+
+
 class RunCallKind(StrEnum):
     """公开调用摘要的资源类型。"""
 
