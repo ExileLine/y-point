@@ -23,7 +23,7 @@ export default function ChatAttachments({ items, onChange, disabled }: {
   }
   return <div className="chat-attachments">
     {limitsError && <Alert type="error" showIcon message={`附件限制加载失败：${limitsError}`} action={<Button size="small" onClick={retry}>重试</Button>} />}
-    <Upload.Dragger accept=".txt,.md,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled || !limits}
+    <Upload.Dragger aria-label="添加附件" accept=".txt,.md,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg" multiple showUploadList={false} disabled={disabled || !limits}
       beforeUpload={(file, batch) => {
         if (!limits) return false;
         if (items.length + batch.indexOf(file) >= limits.max_files) { if (items.length + batch.indexOf(file) === limits.max_files) message.warning(`本轮最多附加 ${limits.max_files} 个文件`); return false; }
@@ -33,7 +33,9 @@ export default function ChatAttachments({ items, onChange, disabled }: {
         onChange(current => current.length < limits.max_files ? [...current, item] : current);
         return false;
       }}>
-      <span className="chat-upload-label"><Paperclip size={16} /> 添加文件，或拖拽到这里 <small>{limits ? `最多 ${limits.max_files} 个 · 每个 ${formatMiB(limits.upload_max_bytes)}` : "正在加载上传限制…"}</small></span>
+      <Tooltip title={limits ? `点击或拖拽添加附件 · 最多 ${limits.max_files} 个 · 每个 ${formatMiB(limits.upload_max_bytes)}` : "正在加载上传限制…"}>
+        <span className="chat-upload-label"><Paperclip size={16} /> 附件</span>
+      </Tooltip>
     </Upload.Dragger>
     <UploadQueue items={items} start={upload} />
     <div className="chat-file-list" aria-label="本轮附件">{items.map(item => <div className="chat-file" key={item.key}>

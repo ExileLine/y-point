@@ -1,7 +1,7 @@
 import { modelAccessFailures } from "./model-failures";
 import type { RunAgentInput } from "@ag-ui/core";
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Dropdown, Empty, Grid, Input, Modal, Pagination, Select, Skeleton, Spin, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import { Archive, ArrowDown, ArrowLeft, Bot, MessageSquareText, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, SendHorizontal, Square, Trash2 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -20,7 +20,7 @@ import StreamingMessage from "./components/StreamingMessage";
 import RunToolResults from "./components/RunToolResults";
 import RunMetrics from "./components/RunMetrics";
 import RunApproval from "./components/RunApproval";
-import SessionApprovalPolicy from "./components/SessionApprovalPolicy";
+import SessionApprovalOptions from "./components/SessionApprovalOptions";
 import SessionMetrics from "./components/SessionMetrics";
 import RunKnowledgeEvidence from "./knowledge/RunKnowledgeEvidence";
 import { createClientId } from "./browser-compat";
@@ -651,13 +651,16 @@ export default function Sessions() {
     ];
   }
 
+  const agentHeading = <div className="sessions-page-heading">
+    <Tooltip title="返回 Agent 列表"><Button type="text" icon={<ArrowLeft size={18} />} aria-label="返回 Agent 列表" onClick={() => navigate("/agents")} /></Tooltip>
+    <div><h1 title={agent?.name}>{agent?.name || "会话"}</h1></div>
+  </div>;
+
   return <div className="workspace sessions-page">
-    <div className="sessions-page-heading">
-      <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => navigate("/agents")}>Agent</Button>
-      <div><h1>{agent?.name || "会话"}</h1><Typography.Text type="secondary">{agentError || "会话"}</Typography.Text></div>
-    </div>
+    {(agentLoading || agentError) && agentHeading}
     {agentLoading ? <div className="page-loading"><Spin /></div> : agentError ? <Alert type="error" showIcon message={agentError} action={<Button size="small" onClick={() => navigate("/agents")}>返回 Agent</Button>} /> : <div className={`sessions-surface ${isMobile && sessionId ? "sessions-has-selection" : ""}`}>
       <aside className="sessions-rail" aria-label="会话列表">
+        {agentHeading}
         <div className="sessions-rail-top"><strong>会话</strong>{directoryLoading && directory.items.length > 0 && <Spin size="small" aria-label="正在更新会话列表" />}<Tooltip title="新建会话"><Button type="primary" icon={<Plus size={17} />} aria-label="新建会话" disabled={!agent?.enabled} onClick={() => setNewOpen(true)} /></Tooltip></div>
         <Input className="sessions-search" aria-label="搜索会话" prefix={<Search size={16} />} placeholder="搜索标题" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} maxLength={128} allowClear />
         <Tabs activeKey={archived ? "archived" : "active"} onChange={(key) => { setArchived(key === "archived"); setPage(1); }} items={[{ key: "active", label: "进行中" }, { key: "archived", label: "已归档" }]} />
@@ -674,7 +677,7 @@ export default function Sessions() {
         {!sessionId ? <div className="sessions-placeholder"><Empty description="选择或新建会话" /></div> : selectedLoading ? <div className="page-loading"><Spin /></div> : selectedError ? <Alert type="error" showIcon message={selectedError} action={<Button size="small" onClick={() => navigate(basePath)}>返回列表</Button>} /> : selected && <>
           <div className="sessions-current-header">
             {isMobile && <Tooltip title="返回会话列表"><Button type="text" icon={<ArrowLeft size={18} />} aria-label="返回会话列表" onClick={() => navigate(basePath)} /></Tooltip>}
-            <div className="sessions-current-title"><strong>{selected.title}</strong>{selected.archived && <Tag>已归档</Tag>}</div>
+            <div className="sessions-current-title"><div className="sessions-current-name">{isMobile && <small>{agent?.name}</small>}<strong>{selected.title}</strong></div>{selected.archived && <Tag>已归档</Tag>}</div>
             <div className="sessions-current-actions">
               <Tooltip title="刷新会话"><Button type="text" icon={<RefreshCw size={17} />} aria-label="刷新会话" onClick={() => {
                 const targetSessionId = selected.id;
@@ -695,42 +698,47 @@ export default function Sessions() {
             {messagesError && <Alert className="sessions-alert" type="error" showIcon message={messagesError} action={<Button size="small" onClick={() => setMessageRevision((value) => value + 1)}>重试</Button>} />}
             {messagesLoading && !messages.length && !preview ? <Skeleton active paragraph={{ rows: 4 }} /> : messages.length ? <MessageHistory items={messages} pendingRunId={pendingRunId} streamCache={streamCache} /> : !preview && !activeRun ? <div className="sessions-history-empty"><Empty description={agent?.welcome_message || "暂无消息"} /></div> : null}
             {pendingRunId && <div className="sessions-messages"><div className="session-message session-message-assistant" data-stream-run={pendingRunId}><div className="session-message-avatar"><Bot size={18} /></div><div className="session-message-main"><div className="session-message-meta"><strong>Agent</strong>{(currentRun?.model_id ?? selected.model_id) && <span className="session-message-model">{models.find(item => item.id === (currentRun?.model_id ?? selected.model_id))?.display_name || `模型 #${currentRun?.model_id ?? selected.model_id}`}</span>}</div><PartialRunNotice state={currentRun?.state} failureCode={currentRun?.failure_code} /><RunActivity key={pendingRunId} state={process?.runId === pendingRunId ? process.state : emptyProcess()} active={activeRun?.id === pendingRunId} onProgress={followContent} />{preview?.text && <><div className="session-message-content">{activeRun?.id === preview.runId ? <StreamingMessage key={preview.runId} runId={preview.runId} text={preview.text} onProgress={visible => { streamCache.current = { runId: preview.runId, text: visible }; followContent(); }} /> : <MessageContent text={preview.text} runId={preview.runId} />}</div><MessageActions text={preview.text} assistant copyLabel="复制当前回复" /></>}<RunMetrics run={currentRun} active={activeRun?.id === pendingRunId} /></div></div></div>}
-            {activeRun?.state === "waiting_for_approval" && <RunApproval key={activeRun.id} runId={activeRun.id} onResume={resumeRun} onRunChanged={updated => {
-              if (currentSessionId.current !== updated.session_id) return;
-              setLastRun(updated);
-              setActiveRun(terminalStates.has(updated.state) ? null : updated);
-              if (terminalStates.has(updated.state)) { setMessageRevision(value => value + 1); setRevision(value => value + 1); }
-            }} />}
-            {currentRun?.context_budget && !messages.some(item => item.role === "assistant" && item.run_id === currentRun.id) && <RunToolResults runId={currentRun.id} active={Boolean(activeRun)} />}
-            {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
-            {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
+            <div className="sessions-message-details">
+              {activeRun?.state === "waiting_for_approval" && <RunApproval key={activeRun.id} runId={activeRun.id} onResume={resumeRun} onRunChanged={updated => {
+                if (currentSessionId.current !== updated.session_id) return;
+                setLastRun(updated);
+                setActiveRun(terminalStates.has(updated.state) ? null : updated);
+                if (terminalStates.has(updated.state)) { setMessageRevision(value => value + 1); setRevision(value => value + 1); }
+              }} />}
+              {currentRun?.context_budget && !messages.some(item => item.role === "assistant" && item.run_id === currentRun.id) && <RunToolResults runId={currentRun.id} active={Boolean(activeRun)} />}
+              {currentRun && <div className="sessions-run-status"><Tag color={terminalStates.has(currentRun.state) ? currentRun.state === "completed" ? "success" : "error" : "processing"}><RunStateLabel state={currentRun.state} /></Tag>{currentRun.failure_code && <span>{failureLabels[currentRun.failure_code] || currentRun.failure_code}</span>}{activeRun && <Button size="small" icon={<Square size={13} />} loading={busy} onClick={() => void stopRun()}>取消</Button>}</div>}
+              {runError && <Alert className="sessions-alert" type="error" showIcon message={runError} />}
+            </div>
             </div>
           </div>
           {!following && <div className="sessions-jump"><Button icon={<ArrowDown size={16} />} onClick={followLatest}>回到最新消息</Button></div>}
           <div className="sessions-composer">
-            <div className="sessions-model-bar">
-              <label htmlFor="session-model">当前模型</label>
-              <Select id="session-model" aria-label="当前对话模型" className="sessions-model-select" showSearch optionFilterProp="searchText"
-                loading={modelsLoading} value={selected.model_id ?? undefined} placeholder="选择模型" popupMatchSelectWidth={false}
-                disabled={selected.archived || !agent?.enabled || Boolean(activeRun) || submitting || busy || switchingModel || Boolean(pendingDraft) || runsLoading}
-                onChange={(value: number) => { if (value !== selected.model_id) setModelTarget(value); }}
-                options={[
-                  ...(selected.model_id && !models.some(item => item.id === selected.model_id) ? [{ value: selected.model_id, label: `模型 #${selected.model_id}（目录不可用）`, disabled: true, searchText: "" }] : []),
-                  ...models.map(item => ({ value: item.id, disabled: !item.selectable, searchText: `${item.provider_name} ${item.display_name}`,
-                    label: <Tooltip title={item.notice || `${item.provider_name} · ${item.verified_capabilities.join(" / ")}`}><span className="sessions-model-option"><span>{item.display_name}</span><small>{item.provider_name}{item.notice ? ` · ${item.notice}` : ""}</small></span></Tooltip> })),
-                ]} />
-              <span className="sessions-model-hint">{activeRun ? "本轮结束后可切换" : "切换从下一条消息生效"}</span>
-              {modelsError && <Tooltip title={modelsError}><Button size="small" onClick={() => setModelsRevision(value => value + 1)}>重试模型目录</Button></Tooltip>}
+            <div className="sessions-composer-context">
+              <div className="sessions-composer-tools">
+                <div className="sessions-model-bar">
+                  <Tooltip title={activeRun ? "本轮结束后可切换模型" : "切换模型从下一条消息生效"}><label htmlFor="session-model">当前模型</label></Tooltip>
+                  <Select id="session-model" aria-label="当前对话模型" className="sessions-model-select" showSearch optionFilterProp="searchText"
+                    loading={modelsLoading} value={selected.model_id ?? undefined} placeholder="选择模型" popupMatchSelectWidth={false}
+                    disabled={selected.archived || !agent?.enabled || Boolean(activeRun) || submitting || busy || switchingModel || Boolean(pendingDraft) || runsLoading}
+                    onChange={(value: number) => { if (value !== selected.model_id) setModelTarget(value); }}
+                    options={[
+                      ...(selected.model_id && !models.some(item => item.id === selected.model_id) ? [{ value: selected.model_id, label: `模型 #${selected.model_id}（目录不可用）`, disabled: true, searchText: "" }] : []),
+                      ...models.map(item => ({ value: item.id, disabled: !item.selectable, searchText: `${item.provider_name} ${item.display_name}`,
+                        label: <Tooltip title={[item.display_name, item.provider_name, item.notice || item.verified_capabilities.join(" / ")].filter(Boolean).join(" · ")}><span className="sessions-model-option"><span>{item.display_name}</span><small>{item.provider_name}{item.notice ? ` · ${item.notice}` : ""}</small></span></Tooltip> })),
+                    ]} />
+                  {modelsError && <Tooltip title={modelsError}><Button size="small" onClick={() => setModelsRevision(value => value + 1)}>重试模型目录</Button></Tooltip>}
+                </div>
+                <SessionApprovalOptions key={`approval-options:${selected.id}`} agentId={agentId} sessionId={selected.id}
+                  revision={activeRun?.state || lastRun?.state || ""} required={requireMcpApproval}
+                  disabled={!canSend || Boolean(pendingDraft)} onChange={setRequireMcpApproval} />
+              </div>
+              {selectedModelIssue && <Alert className="sessions-alert" type="error" showIcon message={`${selectedModelIssue.display_name} 暂不可用`} description={selectedModelIssue.notice || "请管理员检查模型部署和授权，并测试文本调用。"} action={<Button size="small" loading={modelsLoading} onClick={() => setModelsRevision(value => value + 1)}>刷新模型状态</Button>} />}
+              <ChatAttachments key={selected.id} items={files} disabled={!canSend} onChange={update => {
+                const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
+              }} />
+              {pendingDraft && <div className="sessions-retry"><Button size="small" loading={submitting} onClick={() => void send(pendingDraft)}>重试提交</Button><Button size="small" onClick={() => { setPendingDraft(null); setRunError(""); }}>放弃重试</Button></div>}
             </div>
-            {selectedModelIssue && <Alert className="sessions-alert" type="error" showIcon message={`${selectedModelIssue.display_name} 暂不可用`} description={selectedModelIssue.notice || "请管理员检查模型部署和授权，并测试文本调用。"} action={<Button size="small" loading={modelsLoading} onClick={() => setModelsRevision(value => value + 1)}>刷新模型状态</Button>} />}
-            <label className="resource-switch-row">本轮全部 MCP 调用需审批<Switch aria-label="本轮全部 MCP 调用需审批" size="small" checked={requireMcpApproval}
-              disabled={!canSend || Boolean(pendingDraft)} onChange={setRequireMcpApproval} /></label>
-            <SessionApprovalPolicy key={`approval-policy:${selected.id}`} agentId={agentId} sessionId={selected.id} revision={activeRun?.state || lastRun?.state || ""} />
-            <ChatAttachments key={selected.id} items={files} disabled={!canSend} onChange={update => {
-              const target = selected.id; setChatFiles(current => ({ ...current, [target]: update(current[target] || []) }));
-            }} />
-            {pendingDraft && <div className="sessions-retry"><Button size="small" loading={submitting} onClick={() => void send(pendingDraft)}>重试提交</Button><Button size="small" onClick={() => { setPendingDraft(null); setRunError(""); }}>放弃重试</Button></div>}
-            <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息，Enter 发送，Shift + Enter 换行"} rows={3} maxLength={32768} disabled={!canSend} onKeyDown={event => {
+            <Input.TextArea aria-label="消息内容" value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={selected.archived ? "会话已归档" : "输入消息，Enter 发送，Shift + Enter 换行"} autoSize={{ minRows: 3, maxRows: 6 }} maxLength={32768} disabled={!canSend} onKeyDown={event => {
               if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
               event.preventDefault();
               if (!event.repeat && canSend && composer.trim() && !attachmentPending) void send();

@@ -81,6 +81,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const screens = useBreakpoint();
   const location = useLocation();
   const currentPage = location.pathname.startsWith("/models") ? "模型与供应商" : location.pathname.startsWith("/skills") ? "Skill" : location.pathname.startsWith("/tools") ? "Tool" : location.pathname.startsWith("/knowledge-bases") ? "知识库" : "Agent";
+  const isSessionPage = /^\/agents\/[^/]+\/sessions(?:\/[^/]+)?\/?$/.test(location.pathname);
   const isMobile = !screens.md;
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -113,7 +114,7 @@ function Shell({ user, onSignOut }: { user: User; onSignOut: () => void }) {
             </Button>
           </Dropdown>
         </Header>
-        <Content className="app-content" id="main-content" tabIndex={-1}>
+        <Content className={`app-content${isSessionPage ? " app-content-sessions" : ""}`} id="main-content" tabIndex={-1}>
           <Suspense fallback={<div className="page-loading"><Spin /></div>}>
             <Routes>
               <Route path="/agents" element={<Agents />} />

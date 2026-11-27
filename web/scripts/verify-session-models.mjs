@@ -10,6 +10,7 @@ let assertions = 0;
 const options = [
   { id: 1, display_name: 'Model A', provider_name: 'Provider A', verified_capabilities: ['text', 'tools'], context_window: 32768, selectable: true, reason: null, notice: null },
   { id: 2, display_name: 'Model B', provider_name: 'Provider B', verified_capabilities: ['text', 'tools'], context_window: 32768, selectable: true, reason: null, notice: null },
+  { id: 4, display_name: 'DeepSeek-V4.1-Flash-Long-Deployment-Name', provider_name: 'Provider D', verified_capabilities: ['text'], context_window: 32768, selectable: true, reason: null, notice: null },
   { id: 3, display_name: 'Model Disabled', provider_name: 'Provider C', verified_capabilities: ['text'], context_window: 2048, selectable: false, reason: 'model_context_insufficient', notice: '模型上下文窗口无法容纳输出上限和最低输入空间' },
 ];
 async function fixture(page) {
@@ -176,6 +177,28 @@ try {
     assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isEnabled(), true); assertions++;
     assert.equal(f.calls.some(call => call.method === 'POST' && call.path.endsWith('/ag-ui')), false); assertions++;
     assert.deepEqual(f.unexpected, []); assertions++;
+    await page.close();
+  }
+  for (const width of [1920,375]) {
+    const page=await browser.newPage({viewport:{width,height:900}});
+    await fixture(page);
+    await page.goto(`${base}/agents/11/sessions/models`);
+    await page.waitForFunction(()=>{ const select=document.querySelector('#session-model'); return select && !select.disabled; });
+    await page.locator('.sessions-model-select .ant-select-selector').click();
+    const longName='DeepSeek-V4.1-Flash-Long-Deployment-Name';
+    await page.locator('.ant-select-item-option').filter({hasText:longName}).click();
+    await page.getByRole('dialog',{name:'切换当前对话模型'}).getByRole('button',{name:'切换模型',exact:true}).click();
+    const selectedName=page.locator('.sessions-model-select .ant-select-selection-item .sessions-model-option > span');
+    await selectedName.filter({hasText:longName}).waitFor();
+    const pickerBox=await page.locator('.sessions-model-select').boundingBox();
+    assert.ok(pickerBox && pickerBox.width<=240,'模型选择应保持紧凑，不随宽屏无限拉长');
+    assert.equal(await selectedName.innerText(),longName);
+    assert.equal(await selectedName.evaluate(el=>getComputedStyle(el).textOverflow),'ellipsis');
+    assert.equal(await page.locator('.sessions-model-select .ant-select-selection-item small').isVisible(),false);
+    await selectedName.hover();
+    await page.getByRole('tooltip').filter({hasText:longName}).waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true); assertions+=6;
+    await page.screenshot({path:screenshotPath(`web-session-model-compact-${width}.png`),animations:'disabled'});
     await page.close();
   }
   console.log(`会话模型浏览器契约回归通过：${assertions} 项断言；使用拦截响应，不调用真实模型。`);

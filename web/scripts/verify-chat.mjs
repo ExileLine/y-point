@@ -61,7 +61,7 @@ async function fixture(page) {
 }
 let assertions = 0;
 try {
-  for (const [layout,width,height] of [['desktop',1280,900],['mobile',375,812]]) {
+  for (const [layout,width,height] of [['desktop',1280,900],['wide',1920,1080],['mobile',375,812]]) {
     const context=await browser.newContext({viewport:{width,height}, permissions:['clipboard-read','clipboard-write']});
     const page=await context.newPage();
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -89,8 +89,17 @@ try {
     }
     await actions.getByRole('button',{name:'喜欢',exact:true}).focus();
     await page.getByRole('tooltip',{name:'喜欢',exact:true}).waitFor(); assertions++;
-    const positions=await page.evaluate(()=>{const u=document.querySelector('.session-message-user'),a=document.querySelector('.session-message-assistant');return {uAvatar:u.querySelector('.session-message-avatar').getBoundingClientRect().x,uMain:u.querySelector('.session-message-main').getBoundingClientRect().x,aAvatar:a.querySelector('.session-message-avatar').getBoundingClientRect().x,aMain:a.querySelector('.session-message-main').getBoundingClientRect().x};});
-    assert.ok(positions.uAvatar>positions.uMain&&positions.aAvatar<positions.aMain); assertions++;
+    const positions=await page.evaluate(()=>{
+      const u=document.querySelector('.session-message-user'),a=document.querySelector('.session-message-assistant');
+      const content=document.querySelector('.sessions-history-content').getBoundingClientRect();
+      const userAvatar=u.querySelector('.session-message-avatar').getBoundingClientRect();
+      return {uAvatar:userAvatar.x,uRight:userAvatar.right,uMain:u.querySelector('.session-message-main').getBoundingClientRect().x,
+        aAvatar:a.querySelector('.session-message-avatar').getBoundingClientRect().x,aMain:a.querySelector('.session-message-main').getBoundingClientRect().x,
+        left:content.left,right:content.right};
+    });
+    assert.ok(positions.uAvatar>positions.uMain&&positions.aAvatar<positions.aMain);
+    assert.ok(Math.abs(positions.uRight-positions.right)<2,'提问应靠消息区域右边缘，宽屏下不收进居中窄栏');
+    assert.ok(Math.abs(positions.aAvatar-positions.left)<2,'回复应从消息区域左边缘展开'); assertions+=3;
     await history.evaluate(el=>el.scrollTop=el.scrollHeight);
     await page.locator('[data-message-id="1"]').evaluate(el=>el.dataset.retained='yes');
     await page.evaluate(()=>{window.streamLengths=[];window.streamWatch=new MutationObserver(()=>{const n=document.querySelector('.message-streaming .message-markdown')?.textContent?.length;if(n)window.streamLengths.push(n);});window.streamWatch.observe(document.querySelector('.sessions-history'),{childList:true,characterData:true,subtree:true});});
@@ -100,6 +109,9 @@ try {
     assert.ok(await page.locator('.session-message').count()>=31,'发送后的后台消息同步不应卸载已有消息或替换为骨架屏');
     assert.ok(await history.evaluate(el=>el.scrollTop>0),'发送后的后台同步不应让历史消息滚回顶部'); assertions+=2;
     await page.waitForFunction(length=>{const text=document.querySelector('.message-streaming .message-markdown')?.textContent;return text&&text.length>0&&text.length<length;},f.streamText.length); assertions++;
+    const streamLeft=await page.locator('[data-stream-run="run-chat"] .session-message-avatar').evaluate(el=>el.getBoundingClientRect().left);
+    const historyLeft=await page.locator('.sessions-history-content').evaluate(el=>el.getBoundingClientRect().left);
+    assert.ok(Math.abs(streamLeft-historyLeft)<2,'生成中的回复与历史回复保持靠左对齐'); assertions++;
     const previewActions=page.locator('[data-stream-run="run-chat"]').getByRole('group',{name:'消息操作',exact:true});
     assert.deepEqual(await previewActions.getByRole('button').evaluateAll(buttons=>buttons.map(button=>button.getAttribute('aria-label'))),['复制当前回复','重新生成','喜欢','不喜欢','分享']); assertions++;
     assert.equal((await previewActions.innerText()).trim(),''); assertions++;
@@ -114,6 +126,10 @@ try {
     f.complete();await page.locator('[data-message-id="33"]').waitFor({timeout:8000});
     assert.equal(await page.evaluate(()=>{window.replyWatch.disconnect();return window.replyDisappeared;}),false,'终态同步期间不应移除回复');
     assert.equal(await page.locator('[data-stream-run="run-chat"]').count(),0);assert.equal(await page.locator('[data-message-id="33"]').count(),1); assertions+=3;
+    const statusLeft=await page.locator('.sessions-run-status').evaluate(el=>el.getBoundingClientRect().left);
+    const replyLeft=await page.locator('[data-message-id="33"] .session-message-main').evaluate(el=>el.getBoundingClientRect().left);
+    assert.ok(Math.abs(statusLeft-replyLeft)<2,'运行状态标签应与回复正文起始位置对齐'); assertions++;
+
     await history.evaluate(el=>el.scrollTop=250);
     await page.getByRole('button',{name:'回到最新消息',exact:true}).waitFor();
     const read=page.waitForResponse(response=>response.url().includes('/ag-ui/threads/session-a'));
@@ -127,6 +143,70 @@ try {
     await page.screenshot({path:screenshotPath(`web-chat-rich-${layout}.png`),fullPage:true,animations:'disabled'});
     assert.deepEqual(errors,[]); assertions++;
     await context.close();console.log(`${layout}: 消息稳定同步、阅读位置、流式分帧、左右布局、Markdown/代码复制与安全渲染通过`);
+  }
+  // 较矮视口曾只剩几十像素正文；覆盖空草稿、展开审批和多行草稿。
+  for (const [width,height] of [[1280,720],[390,664]]) {
+    const page=await browser.newPage({viewport:{width,height}});
+    await fixture(page);
+    await page.goto(`${base}/agents/11/sessions/session-a`);
+    await page.locator('[data-message-id="31"]').waitFor();
+    await page.getByText('总用量', {exact:false}).first().waitFor();
+    const geometry=()=>page.evaluate(()=>{
+      const history=document.querySelector('.sessions-history');
+      const composer=document.querySelector('.sessions-composer');
+      const panel=document.querySelector('.sessions-surface');
+      const editor=document.querySelector('textarea[aria-label="消息内容"]');
+      return {history:history.clientHeight,composer:composer.clientHeight,panel:panel.clientHeight,
+        editor:editor.clientHeight,lineHeight:parseFloat(getComputedStyle(editor).lineHeight),
+        bottom:composer.getBoundingClientRect().bottom,overflow:document.documentElement.scrollWidth>innerWidth || document.documentElement.scrollHeight>innerHeight};
+    });
+    const initial=await geometry();
+    assert.ok(initial.history>=height*0.28,`正文应保留可连续阅读的高度：${JSON.stringify(initial)}`);
+    assert.equal(initial.overflow,false);
+    assert.ok(initial.bottom<=height);
+    assert.equal(await page.getByRole('textbox',{name:'消息内容'}).inputValue(),'');
+    assert.ok(initial.editor>=initial.lineHeight*3,'空草稿也应保留至少三行编辑空间');
+    assertions+=5;
+    const options=page.locator('.sessions-approval-trigger');
+    await options.click();
+    const popup=page.getByRole('dialog',{name:'审批选项',exact:true});
+    await popup.waitFor();
+    assert.equal((await geometry()).history,initial.history,'审批弹窗不应挤压正文'); assertions++;
+    // 等浮层定位完成，检查窄屏下两边均未被裁切。
+    await page.waitForFunction(()=>{
+      const panel=document.querySelector('.sessions-approval-panel');
+      if (!panel) return false;
+      const popover=panel.closest('.ant-popover');
+      const rect=popover.getBoundingClientRect();
+      return getComputedStyle(popover).opacity==='1' && !popover.getAnimations().some(animation=>animation.playState==='running')
+        && rect.left>=0 && rect.right<=innerWidth && rect.top>=0 && rect.bottom<=innerHeight;
+    }); assertions++;
+    await page.screenshot({path:screenshotPath(`web-chat-approval-popup-${width}.png`),animations:'disabled'});
+    await popup.getByRole('switch',{name:'本轮全部 MCP 调用需审批',exact:true}).click();
+    await page.keyboard.press('Escape');
+    await popup.waitFor({state:'hidden'});
+    assert.equal(await options.evaluate(el=>document.activeElement===el),true,'Esc 收起后焦点回到审批按钮'); assertions++;
+    assert.match(await options.getAttribute('title'),/本轮需审批/); assertions++;
+    await options.click();
+    await popup.waitFor();
+    await page.getByRole('textbox',{name:'消息内容'}).click();
+    await popup.waitFor({state:'hidden'}); assertions++;
+    await options.click();
+    await popup.getByRole('button',{name:'关闭审批选项',exact:true}).click();
+    await popup.waitFor({state:'hidden'}); assertions++;
+    const input=page.getByRole('textbox',{name:'消息内容'});
+    await input.fill(Array.from({length:12},(_,index)=>`第 ${index+1} 行草稿`).join('\n'));
+    const expanded=await geometry();
+    assert.ok(expanded.history>=initial.panel*0.3,'多行草稿也应保留正文阅读空间');
+    assert.equal(expanded.overflow,false);
+    assert.ok(expanded.editor>=initial.editor,'长草稿不应缩小输入框'); assertions++;
+    const sendBox=await page.getByRole('button',{name:'发送',exact:true}).boundingBox();
+    assert.ok(sendBox && sendBox.y+sendBox.height<=height,'多行草稿时发送按钮保持可见'); assertions+=3;
+    await input.fill('');
+    await page.getByRole('button',{name:'发送',exact:true}).scrollIntoViewIfNeeded();
+    await page.screenshot({path:screenshotPath(`web-chat-height-${width}-${height}.png`),animations:'disabled'});
+    console.log(`${width}×${height}: 正文 ${initial.history}px，输入框 ${initial.editor}px，输入区 ${initial.composer}px；审批收起与多行输入通过`);
+    await page.close();
   }
   const reduced=await browser.newContext({viewport:{width:1280,height:900},reducedMotion:'reduce'});
   const page=await reduced.newPage();const f=await fixture(page);await page.goto(`${base}/agents/11/sessions/session-a`);await page.locator('[data-message-id="31"]').waitFor();

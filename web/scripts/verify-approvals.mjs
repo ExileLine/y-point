@@ -175,6 +175,7 @@ try {
       await page.getByRole("button", { name: scope === "tool" ? "本对话允许此工具" : "本对话全部允许", exact: true }).click();
       await page.getByText("已同意，等待执行器继续运行", { exact: true }).waitFor();
       assert.equal(state.calls.filter(call => call.path.endsWith("/ag-ui")).at(-1).body.resume[0].payload.scope, scope);
+      await page.locator(".sessions-approval-trigger").click();
       await page.locator(".session-approval-policy summary").click();
       await page.getByRole("button", { name: "刷新放行策略", exact: true }).click();
       await page.getByText("浏览器点击 · v1", { exact: true }).waitFor();

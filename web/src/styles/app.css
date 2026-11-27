@@ -29,6 +29,8 @@ body { font-family: var(--yp-font-family); color: var(--yp-color-text); }
 .account-chevron { color: var(--yp-color-text-muted); flex: none; }
 .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-content { display: flex; min-width: 0; padding: var(--yp-content-pad-desktop); }
+/* 会话页的容器留白与视口高度计算共用变量，避免出现页面外层滚动。 */
+.app-content-sessions { --yp-content-pad-desktop: var(--yp-space-2); --yp-content-pad-mobile: var(--yp-space-1); }
 .workspace { display: flex; flex: 1; flex-direction: column; min-width: 0; max-width: var(--yp-content-max-width); margin: 0 auto; }
 .workspace-heading { display: flex; align-items: center; min-height: var(--yp-workspace-heading-height); padding-bottom: var(--yp-space-5); }
 .workspace-heading h1 { margin: 0; font-size: var(--yp-font-size-page-title); line-height: var(--yp-line-height-tight); font-weight: 600; }

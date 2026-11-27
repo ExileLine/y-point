@@ -107,7 +107,11 @@ try {
     await page.goto(`${base}/agents/11/sessions/submit`);
     await page.getByText('此前的回答', { exact: true }).waitFor();
     state.requireMcpApproval = width < 768;
-    if (state.requireMcpApproval) await page.getByRole('switch', { name: '本轮全部 MCP 调用需审批', exact: true }).click();
+    if (state.requireMcpApproval) {
+      await page.locator('.sessions-approval-trigger').click();
+      await page.getByRole('switch', { name: '本轮全部 MCP 调用需审批', exact: true }).click();
+      await page.locator('.sessions-approval-trigger').click();
+    }
     await page.getByRole('textbox', { name: '消息内容' }).fill('请使用规范接口发送');
     const sendStart = calls.length;
     await page.getByRole('button', { name: '发送', exact: true }).click();
