@@ -15,6 +15,9 @@ function fixture(page, options = {}) {
   let providers = [{ id: 1, name: "本地 Ollama", kind: "ollama", base_url: "http://127.0.0.1:11434/v1", has_api_key: false, has_custom_headers: false, api_version: null, region: null, timeout_seconds: 15, remark: null, status: 1 }];
   if (options.discovery) providers.push({ ...providers[0], id: 9, name: "远程连接" });
   let models = [{ id: 3, provider_id: 1, external_id: "llama3.2", display_name: "Llama 3.2", capabilities: ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"], verified_capabilities: [], capabilities_verified: false, context_window: 8192, input_price: null, output_price: null, price_currency: "USD", is_default: false, status: 1 }];
+  if (options.capabilities) models = [{ ...models[0], capabilities: options.capabilities }];
+  if (options.modelDisabled) models = [{ ...models[0], status: 0 }];
+  if (options.providerDisabled) providers = providers.map(item => ({ ...item, status: 0 }));
   if (options.unavailable) models = [{ ...models[0], verified_capabilities: ["text"], availability_failure: "model_not_found" }];
   if (options.embedding) models = [{ ...models[0], capabilities: ["text"], verified_capabilities: [] }];
   page.addInitScript(() => {
@@ -35,7 +38,7 @@ function fixture(page, options = {}) {
     else if (pathname === "/api/v1/knowledge-bases" && method === "GET") data = { items: [], total: 0, page: 1, page_size: 20 };
     else if (pathname === "/api/v1/models/3/embedding-test" && method === "POST") {
       const success = !options.embeddingFailure;
-      models = models.map(item => ({ ...item, verified_capabilities: success ? ["embedding"] : [], embedding_dimensions: success ? 768 : null }));
+      models = models.map(item => ({ ...item, verified_capabilities: success ? [...new Set([...item.verified_capabilities, "embedding"])] : item.verified_capabilities.filter(value => value !== "embedding"), embedding_dimensions: success ? 768 : null }));
       data = { success, failure_code: success ? null : "invalid_embedding", dimensions: success ? 768 : null, latency_ms: 35 };
     }
     else if (pathname === "/api/v1/providers" && method === "POST") {
@@ -61,8 +64,16 @@ function fixture(page, options = {}) {
       models = [...models, next];
       data = { created: [next], skipped_existing: [] };
     } else if (pathname === "/api/v1/models/3/capabilities/test") {
-      models = models.map((item) => item.id === 3 ? { ...item, verified_capabilities: ["text"], capabilities_verified: true } : item);
-      data = { capability: "text", result: { available: true, latency_ms: 42, upstream_status_code: 200, failure: null }, verified_capabilities: ["text"] };
+      if (options.probeGate) await options.probeGate(body.capability);
+      if (options.probeHttpError === body.capability) {
+        await route.fulfill({ status: options.probeHttpStatus || 503, contentType: "application/json", body: JSON.stringify({ code: options.probeHttpStatus || 503, message: "验证服务暂时不可用" }) });
+        return;
+      }
+      const failure = options.probeFailures?.[body.capability] || null;
+      models = models.map((item) => item.id === 3 ? { ...item,
+        verified_capabilities: failure ? item.verified_capabilities.filter(value => value !== body.capability) : [...new Set([...item.verified_capabilities, body.capability])],
+      } : item);
+      data = { capability: body.capability, result: { available: !failure, latency_ms: 42, upstream_status_code: failure ? 400 : 200, failure }, verified_capabilities: models[0].verified_capabilities };
     } else if (pathname === "/api/v1/models/3/default") {
       models = models.map((item) => ({ ...item, is_default: item.id === 3 }));
       data = models[0];
@@ -76,6 +87,117 @@ function fixture(page, options = {}) {
 }
 
 try {
+  // A batch runs only declared capabilities, in order, and requires an explicit cost confirmation.
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    let release;
+    const firstProbe = new Promise(resolve => { release = resolve; });
+    const calls = fixture(page, { probeGate: capability => capability === "text" ? firstProbe : undefined });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true }).click();
+    await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByText("验证可能产生上游费用", { exact: true }).waitFor();
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 0);
+    await dialog.getByRole("button", { name: /^取\s*消$/ }).click();
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 0);
+    await page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true }).click();
+    await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).click();
+    await dialog.getByRole("button", { name: "开始验证（6 项）", exact: true }).evaluate(button => { button.click(); button.click(); });
+    await dialog.getByText("验证中", { exact: true }).waitFor();
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 1);
+    await page.keyboard.press("Escape");
+    assert.equal(await dialog.isVisible(), true);
+    release();
+    await dialog.getByText("验证完成：通过 6 项，未通过 0 项，未执行 0 项", { exact: true }).waitFor();
+    assert.deepEqual(calls.filter(call => call.pathname.endsWith("/capabilities/test")).map(call => call.body.capability),
+      ["text", "streaming", "tools", "structured_output", "vision", "reasoning_summary"]);
+    assert.equal(await dialog.getByText("通过", { exact: true }).count(), 6);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: screenshotPath(`web-model-verification-${width}.png`), animations: "disabled" });
+    await dialog.getByRole("button", { name: /^完\s*成$/ }).click();
+    await page.locator(".catalog-desktop-table:visible, .catalog-mobile-items:visible").locator('.capability-tag[data-verified="true"]').last().waitFor();
+    assert.equal(await page.locator(".catalog-desktop-table:visible, .catalog-mobile-items:visible").locator('.capability-tag[data-verified="true"]').count(), 6);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    assert.equal(await page.locator(".catalog-desktop-table:visible, .catalog-mobile-items:visible").locator('.capability-tag[data-verified="true"]').count(), 6);
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 6);
+    await page.close();
+    console.log(`${width}: capability batch confirmation, ordered probes, duplicate-submit lock, results and persisted tags passed`);
+  }
+  for (const width of [1280, 375]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    const calls = fixture(page, { capabilities: ["text", "tools", "embedding"], probeFailures: { tools: "unsupported_capability" } });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true }).click();
+    await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "开始验证（3 项）", exact: true }).click();
+    await dialog.getByText("验证完成：通过 2 项，未通过 1 项，未执行 0 项", { exact: true }).waitFor();
+    await dialog.getByText(/能力不受支持/).waitFor();
+    await dialog.getByText(/768 维/).waitFor();
+    assert.deepEqual(calls.filter(call => call.pathname.endsWith("/capabilities/test")).map(call => call.body.capability), ["text", "tools"]);
+    assert.equal(calls.filter(call => call.pathname.endsWith("/embedding-test")).length, 1);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: screenshotPath(`web-model-verification-mixed-${width}.png`), animations: "disabled" });
+    await page.close();
+    console.log(`${width}: batch continues after a failed capability and uses the dedicated embedding endpoint passed`);
+  }
+  for (const scenario of ["stop", "navigate", "http-error", "conflict"]) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let release;
+    const firstProbe = new Promise(resolve => { release = resolve; });
+    const calls = fixture(page, ["http-error", "conflict"].includes(scenario) ? { capabilities: ["text", "tools"], probeHttpError: "text", probeHttpStatus: scenario === "conflict" ? 409 : 503 }
+      : { probeGate: capability => capability === "text" ? firstProbe : undefined });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    await page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true }).click();
+    await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: /^开始验证/ }).click();
+    if (["http-error", "conflict"].includes(scenario)) {
+      await dialog.getByText(scenario === "conflict" ? "验证已停止：通过 0 项，未通过 1 项，未执行 1 项"
+        : "验证完成：通过 1 项，未通过 1 项，未执行 0 项", { exact: true }).waitFor();
+      await dialog.getByText("验证服务暂时不可用", { exact: true }).waitFor();
+      assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, scenario === "conflict" ? 1 : 2);
+    } else {
+      await dialog.getByText("验证中", { exact: true }).waitFor();
+      if (scenario === "stop") {
+        await dialog.getByRole("button", { name: "停止后续验证", exact: true }).click();
+        assert.equal(await dialog.getByRole("button", { name: "正在等待当前项结束…", exact: true }).isDisabled(), true);
+        release();
+        await dialog.getByText("验证已停止：通过 1 项，未通过 0 项，未执行 5 项", { exact: true }).waitFor();
+        assert.equal(await dialog.getByText("未执行", { exact: true }).count(), 5);
+      } else {
+        // Client-side navigation unmounts the queue while allowing the in-flight request to finish.
+        await page.evaluate(() => { history.pushState({}, "", "/agents"); dispatchEvent(new PopStateEvent("popstate")); });
+        await dialog.waitFor({ state: "hidden" });
+        const response = page.waitForResponse(response => response.url().includes("/capabilities/test"));
+        release();
+        await response;
+      }
+      assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 1);
+    }
+    await page.close();
+    console.log(`capability batch ${scenario} passed`);
+  }
+  for (const scenario of ["no-capabilities", "model-disabled", "provider-disabled"]) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const calls = fixture(page, { capabilities: [], modelDisabled: scenario === "model-disabled", providerDisabled: scenario === "provider-disabled" });
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`, { waitUntil: "networkidle" });
+    await page.getByRole("tab", { name: /模型/ }).click();
+    const trigger = page.getByRole("button", { name: "验证能力 Llama 3.2", exact: true });
+    if (scenario === "no-capabilities") {
+      await trigger.click();
+      assert.equal(await page.getByRole("menuitem", { name: "一键验证已声明能力", exact: true }).getAttribute("aria-disabled"), "true");
+      assert.equal(await page.getByRole("menuitem", { name: "验证文本", exact: true }).getAttribute("aria-disabled"), null);
+    } else assert.equal(await trigger.isDisabled(), true);
+    assert.equal(calls.filter(call => call.pathname.endsWith("/capabilities/test")).length, 0);
+    await page.close();
+    console.log(`capability batch ${scenario} guard passed`);
+  }
   // An imported embedding model starts as text-only; declare it, probe the dedicated endpoint, then select it in a knowledge base.
   for (const [width, failed] of [[1280, false], [375, false], [1280, true]]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
@@ -271,7 +393,7 @@ try {
   for (const width of [1280, 375]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     fixture(page, { unavailable: true });
-    await page.goto('http://127.0.0.1:5173/models');
+    await page.goto(`${process.env.WEB_BASE_URL || "http://127.0.0.1:5173"}/models`);
     await page.getByRole('tab', { name: /^模型/ }).click();
     const catalog = page.locator(width >= 768 ? '.catalog-desktop-table' : '.catalog-mobile-items');
     await catalog.getByText('暂不可用', { exact: true }).first().waitFor();

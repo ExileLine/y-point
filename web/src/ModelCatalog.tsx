@@ -10,6 +10,7 @@ import {
   type DiscoveryResult, type Model, type ModelDraft, type Provider, type ProviderDraft, type ProviderKind,
 } from "./api";
 import { PageHeader } from "./components/ResourcePage";
+import { ModelCapabilityVerification } from "./components/ModelCapabilityVerification";
 import { testEmbeddingModel } from "./knowledge-api";
 import "./styles/model-catalog.css";
 
@@ -281,6 +282,7 @@ export default function ModelCatalog() {
   const [discovery, setDiscovery] = useState<{ provider: Provider; result: DiscoveryResult } | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [testResult, setTestResult] = useState("");
+  const [verificationModel, setVerificationModel] = useState<Model | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -358,13 +360,18 @@ export default function ModelCatalog() {
   }
 
   function modelActions(row: Model) {
+    const verificationDisabled = Boolean(busy) || row.status !== 1 || !providerEnabled(row.provider_id);
     return <Space size="small">
-      <Dropdown menu={{ items: capabilities.map((item) => ({ key: item.value, label: `验证${item.label}`, onClick: () => void probe(`model-${row.id}`, async () => {
-        if (item.value !== "embedding") return (await testModelCapability(row.id, item.value)).result;
-        const result = await testEmbeddingModel(row.id);
-        return { available: result.success, latency_ms: result.latency_ms, failure: result.failure_code, detail: `${result.dimensions} 维` };
-      }, row.display_name) })) }} trigger={["click"]} disabled={row.status !== 1 || !providerEnabled(row.provider_id)}>
-        <Tooltip title="验证能力（可能产生上游费用）"><Button aria-label={`验证能力 ${row.display_name}`} icon={<CheckCircle2 size={16} />} loading={busy === `model-${row.id}`} /></Tooltip>
+      <Dropdown menu={{ items: [
+        { key: "all", label: "一键验证已声明能力", disabled: !capabilities.some(item => row.capabilities.includes(item.value)), onClick: () => setVerificationModel(row) },
+        { type: "divider" },
+        ...capabilities.map((item) => ({ key: item.value, label: `验证${item.label}`, onClick: () => void probe(`model-${row.id}`, async () => {
+          if (item.value !== "embedding") return (await testModelCapability(row.id, item.value)).result;
+          const result = await testEmbeddingModel(row.id);
+          return { available: result.success, latency_ms: result.latency_ms, failure: result.failure_code, detail: `${result.dimensions} 维` };
+        }, row.display_name) })),
+      ] }} trigger={["click"]} disabled={verificationDisabled}>
+        <Tooltip title="验证能力（可能产生上游费用）"><Button aria-label={`验证能力 ${row.display_name}`} disabled={verificationDisabled} icon={<CheckCircle2 size={16} />} loading={busy === `model-${row.id}`} /></Tooltip>
       </Dropdown>
       <Tooltip title="设为全局默认"><Button aria-label={`设为默认 ${row.display_name}`} icon={<Star size={16} />} disabled={Boolean(row.availability_failure) || row.is_default || row.status !== 1 || !providerEnabled(row.provider_id) || !row.verified_capabilities.includes("text")} onClick={() => void perform(`default-${row.id}`, () => setDefaultModel(row.id), "默认模型已更新")} /></Tooltip>
       <Dropdown menu={{ items: [
@@ -408,6 +415,8 @@ export default function ModelCatalog() {
         {loading ? <Skeleton active /> : filteredModels.length ? <><div className="catalog-desktop-table"><Table rowKey="id" columns={modelColumns} dataSource={filteredModels} pagination={{ pageSize: 20, showSizeChanger: false }} scroll={{ x: "max-content" }} /></div><div className="catalog-mobile-items">{filteredModels.map((row) => <div className="catalog-mobile-item" key={row.id}><div className="catalog-mobile-head"><strong>{row.display_name}</strong><Tag color={row.availability_failure ? "error" : row.status === 1 && providerEnabled(row.provider_id) && modelAvailability(row) !== "待验证" ? "success" : "default"}>{row.status !== 1 || !providerEnabled(row.provider_id) ? "停用" : modelAvailability(row)}</Tag></div><div className="catalog-mobile-meta">{row.external_id} · {providerName(row.provider_id)}</div>{row.availability_failure && <Alert type="error" showIcon message={modelAccessFailures[row.availability_failure]} />}<div className="catalog-mobile-meta">{row.context_window?.toLocaleString() || "未设置"} Token · <CapabilityTags model={row} /></div><div className="catalog-mobile-actions">{modelActions(row)}</div></div>)}</div></> : <Empty description={query || providerFilter ? "没有符合条件的模型" : "还没有模型"} />}
       </>}
     </div>
+    {verificationModel && <ModelCapabilityVerification key={verificationModel.id} model={verificationModel} capabilities={capabilities}
+      failureLabels={failureLabels} onUpdated={reload} onClose={() => setVerificationModel(null)} />}
     <ProviderEditor open={providerEditor !== null} provider={providerEditor === "new" ? null : providerEditor} kinds={kinds} onClose={() => setProviderEditor(null)} onSaved={() => { setProviderEditor(null); void reload(); }} />
     <ModelEditor open={modelEditor !== null} model={modelEditor === "new" ? null : modelEditor} providers={providers} initialProvider={providerFilter} onClose={() => setModelEditor(null)} onSaved={() => { setModelEditor(null); void reload(); }} />
     <Modal title={`从 ${discovery?.provider.name || "供应商"} 导入模型`} open={Boolean(discovery)} onCancel={() => setDiscovery(null)} okText={`导入 (${selected.length})`} okButtonProps={{ disabled: selected.length === 0, loading: busy === "import" }} onOk={() => {

@@ -20,7 +20,7 @@ uv run python -m app.cli.create_admin admin --mail admin@example.com
 
 1. `POST /api/v1/providers` 创建连接；`POST /api/v1/providers/{provider_id}/test` 检查发现能力，`GET /api/v1/providers/{provider_id}/available-models` 读取候选模型。供应商不提供模型列表时可手动录入外部 ID。
 2. `POST /api/v1/models/import` 批量导入，或 `POST /api/v1/models` 单独创建；导入请求最多 100 个模型。
-3. `POST /api/v1/models/{model_id}/test` 测试最小文本调用；`POST /api/v1/models/{model_id}/capabilities/test` 逐项验证 `text`、`streaming`、`tools`、`structured_output`、`vision` 或 `reasoning_summary`。探测可能产生上游费用。
+3. `POST /api/v1/models/{model_id}/test` 测试最小文本调用；`POST /api/v1/models/{model_id}/capabilities/test` 逐项验证 `text`、`streaming`、`tools`、`structured_output`、`vision` 或 `reasoning_summary`。探测可能产生上游费用。页面也可通过「验证能力 → 一键验证已声明能力」确认后依次调用现有接口，展示逐项结果并支持停止后续验证；嵌入能力使用独立的 `embedding-test` 接口，详见[模型与供应商页面](web-model-catalog-page.md#一键验证已声明能力)。
 
 模型的 `availability_failure`、`availability_checked_at` 记录实际调用确认的访问故障及核验时间，与 `verified_capabilities` 独立。供应商返回 404、401、403 时，分别记录 `model_not_found`、`model_authentication`、`model_access_denied`，并阻断该模型的新选择与对话提交，页面显示受控原因及修复路径。网络故障、限流和服务端临时错误不会单独形成持续阻断。管理员核对模型部署、实际路由、接口地址和当前凭据授权，修复后重新测试文本调用；测试成功解除阻断，原 Agent 和会话可以继续使用。
 
