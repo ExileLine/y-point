@@ -258,7 +258,9 @@ Tool 列表的状态标签可点击或用键盘展开原因、修复动作、策
 
 普通连接配置更新不会改写旧 Tool 快照。需要采用新配置时，通过工具编辑或同步确认发布新版，再在 Agent 详情确认固定 Tool 版本升级。停用或删除连接、轮换/清除凭据、改变鉴权或租户 Headers、撤销凭据共享会立即限制旧快照，并取消受影响的活动运行；无法撤回已经执行的外部操作。`clear_credentials=true` 与提供新凭据互斥；HTTP 空 token、stdio 空环境变量对象表示保留原凭据。stdio 提供非空环境变量对象时，整体替换该连接的环境变量凭据。
 
-已有直接保存 URL 的 HTTP Tool 及对应 API 请求继续可用；`POST /api/v1/tools/mcp/discover` 已在 OpenAPI 标记为弃用，仅用于旧 HTTP 配置发现。新建页面使用 `/api/v1/mcp-connections`，可选择新连接并发布 Tool 新版。共享连接 Tool 不接受同时填写 `mcp_url` 或直接替换凭据，需在连接管理中操作；维护旧配置不代表新增一套对话提交入口。
+#### 旧版 HTTP Tool 兼容边界
+
+已有直接保存 URL 的 HTTP Tool 及对应 API 请求继续可用；`POST /api/v1/tools/mcp/discover` 已在 OpenAPI 标记为弃用，仅用于旧 HTTP 配置发现。新接入通过 `POST /api/v1/mcp-connections` 创建连接，再使用 `POST /api/v1/mcp-connections/{id}/discover` 发现工具，或使用 `sync-preview` / `sync` 确认发布；已有 Tool 可选择连接并发布新版。共享连接 Tool 不接受同时填写 `mcp_url` 或直接替换凭据，需在连接管理中操作。
 
 #### HTTP 鉴权与 Headers
 

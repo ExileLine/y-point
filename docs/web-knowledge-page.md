@@ -42,7 +42,7 @@
 
 ## 开发与展示边界
 
-类型检查、构建及定向回归见[测试指南](testing.md)。现场浏览器复验脚本及结果归档到工作区 `y-point-server-todo.md`，日常前端开发任务由 `y-point-web-todo.md` 跟踪。
+类型检查、构建、定向回归及验证结果的记录约定见[测试指南](testing.md)。
 
 日常联调使用仓库的 `make dev`，由现有启动脚本配置 API 代理与 worker。独立启动前端时可用 `API_PROXY_TARGET=http://127.0.0.1:7769 npm --prefix web run dev`。
 

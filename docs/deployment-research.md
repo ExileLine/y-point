@@ -1,6 +1,6 @@
 # Docker 部署设计与官方资料参考
 
-本文保留服务划分、启动依赖、环境覆盖、日志及 Docker 权限的设计依据；当前可执行配置和命令以[部署手册](deployment-guide.md)及[部署架构](deployment.md)为准。原始研究过程归档到工作区 `y-point-server-todo.md`。
+本文保留服务划分、启动依赖、环境覆盖、日志及 Docker 权限的设计依据；当前可执行配置和命令以[部署手册](deployment-guide.md)及[部署架构](deployment.md)为准。
 
 ## 1. 服务按职责与权限拆分
 
@@ -125,6 +125,6 @@ volumes:
 
 ## 采用清单与研究边界
 
-当前基线：由 CLI 按环境及协议组合基础、production、HTTPS 和沙箱覆盖文件，显式传入 `compose.env`；使用 `!override` 时 Compose ≥ 2.24.4；关键依赖等待健康；常驻服务退出重启、应用负责断线恢复；各服务 `local: 20m × 5`；socket 权限集中；宿主挂载白名单、只读优先、禁止自动建目录。设计约束与参考来源见各节；当时的核查日期、研究过程及原文保存在工作区 `y-point-server-todo.md`。
+当前基线：由 CLI 按环境及协议组合基础、production、HTTPS 和沙箱覆盖文件，显式传入 `compose.env`；使用 `!override` 时 Compose ≥ 2.24.4；关键依赖等待健康；常驻服务退出重启、应用负责断线恢复；各服务 `local: 20m × 5`；socket 权限集中；宿主挂载白名单、只读优先、禁止自动建目录。设计约束与参考来源见各节。
 
 升级 Compose 或调整权限时，重新核对本文引用及仓库配置；资料引用不代替目标环境的启动、恢复和隔离验证。

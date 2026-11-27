@@ -13,9 +13,9 @@
 | 新建与详情 | `POST /api/v1/agents/{id}/sessions`、`GET /api/v1/agents/{id}/sessions/{session_id}` | 新建后进入独立会话；刷新路由时重取会话。 |
 | 重命名与归档 | `PUT /api/v1/agents/{id}/sessions/{session_id}` | 提交 `expected_version`；409 展示错误并刷新列表。归档后禁止发送。 |
 | 删除 | `DELETE /api/v1/agents/{id}/sessions/{session_id}` | 确认后删除；运行中服务端拒绝并保留会话。 |
-| 消息与 Run 恢复 | `GET /agents/{id}/ag-ui/threads/{session_id}`、`GET .../sessions/{session_id}/runs` | 协议历史提供正文，messageDetails 提供文件与交付信息；页面刷新后找回仍在运行的 Run。 |
-| 文本提交与状态 | `POST /agents/{id}/ag-ui`、`GET /runs/{run_id}`、`POST /runs/{run_id}/cancel` | 每轮生成新消息 ID 与协议 runId，携带 `forwardedProps.expected_session_version` 仅提交新用户消息；发送前不请求完整历史。无法确认提交结果时保留原请求及身份供明确重试；版本冲突保留草稿、刷新状态，由用户重新发送。标准 POST 返回流供当前页面直接消费；业务 Run 详情用于绑定运行资源及连接异常时核实状态。 |
-| 运行中回答 | AG-UI POST SSE；恢复使用 `/runs/{run_id}/ag-ui/snapshot` 与 `/stream?after=<wire_sequence>` | 首次发送不重复建立 GET 订阅；刷新或断线时冻结分页上界、追平快照、签发票据并续接观察，统一按协议线游标去重。详见 [AG-UI](ag-ui.md)。 |
+| 消息与 Run 恢复 | `GET /api/v1/agents/{agent_id}/ag-ui/threads/{session_id}`、`GET /api/v1/agents/{agent_id}/sessions/{session_id}/runs` | 协议历史提供正文，messageDetails 提供文件与交付信息；页面刷新后找回仍在运行的 Run。 |
+| 文本提交与状态 | `POST /api/v1/agents/{agent_id}/ag-ui`、`GET /api/v1/runs/{run_id}`、`POST /api/v1/runs/{run_id}/cancel` | 每轮生成新消息 ID 与协议 runId，携带 `forwardedProps.expected_session_version` 仅提交新用户消息；发送前不请求完整历史。无法确认提交结果时保留原请求及身份供明确重试；版本冲突保留草稿、刷新状态，由用户重新发送。标准 POST 返回流供当前页面直接消费；业务 Run 详情用于绑定运行资源及连接异常时核实状态。 |
+| 运行中回答 | AG-UI POST SSE；恢复使用 `GET /api/v1/runs/{run_id}/ag-ui/snapshot` 与 `GET /api/v1/runs/{run_id}/stream?after=<wire_sequence>` | 首次发送不重复建立 GET 订阅；刷新或断线时冻结分页上界、追平快照、签发票据并续接观察，统一按协议线游标去重。详见 [AG-UI](ag-ui.md)。 |
 | 产物与附件下载 | `GET /api/v1/artifacts/{artifact_id}/download` | 从消息的 `attachments` / `artifacts` 获取 ID，逐次携带 Bearer；401 刷新后重试一次，失败回到登录。按服务端 `Content-Disposition` 文件名及原始 MIME/字节保存，HTML 仅下载；403/404 与网络失败显示提示，可重试。 |
 | 调用名称与状态 | AG-UI `ACTIVITY_SNAPSHOT` 和消息事件 | 实时与历史使用同一 reducer，区分 Skill 阶段及工具执行结果；不按每个工具事件重读 `/calls`，未知外部结果显示“结果未确认”。 |
 

@@ -51,22 +51,26 @@
 
 ## 设计与调研
 
-以下资料保留当前设计约束与参考来源，当前操作和接口以各专题为准。核查经过和阶段判断归档到本地服务端 TODO。
+以下资料保留当前设计约束与参考来源，当前操作和接口以各专题为准。
 
 - [Docker 部署调研](deployment-research.md)。
-- [AG-UI 方案归档入口](ag-ui-migration-plan-20261117.md)、[协议与 SDK 参考](ag-ui-protocol-research-20261117.md)；当前实现见 [AG-UI 接口与处理过程](ag-ui.md)。
+- [AG-UI 协议与 SDK 参考](ag-ui-protocol-research-20261117.md)；当前实现见 [AG-UI 接口与处理过程](ag-ui.md)。
 
 <a id="历史验证与研究"></a>
+<a id="历史报告入口"></a>
 
-## 历史报告入口
+## 旧文档路径导航
 
-以下旧路径仅保留归档说明和当前文档导航；原始验收、复验及实现记录统一保存在工作区的 `y-point-server-todo.md`，不作为当前部署结果。
+以下路径为旧链接提供当前使用文档的入口，不再维护阶段计划、实现对照或本机验收报告：
 
-- 部署：[本机部署验证](deployment-validation-20261113.md)、[HTTP/HTTPS 验证](deployment-http-20261114.md)、[Redis 补充验证](deployment-redis-20261115.md)。
-- 知识库：[PDF/OCR 补充验收](m64-phase2-acceptance-20261113.md)、[多格式实现与验证](m64-phase3-implementation-20261113.md)、[删除故障修复](m64-deletion-fix-20261113.md)。
+- 部署：[部署验证](deployment-validation-20261113.md)、[HTTP/HTTPS](deployment-http-20261114.md)、[Redis](deployment-redis-20261115.md)。
+- 知识库：[PDF/OCR](m64-phase2-acceptance-20261113.md)、[多格式处理](m64-phase3-implementation-20261113.md)、[文档删除](m64-deletion-fix-20261113.md)。
+- 协议与工具：[AG-UI 接入](ag-ui-migration-plan-20261117.md)、[MCP 验证](mcp-acceptance.md)、[MCP Issues](mcp-issues-analysis-20261120.md)。
 
 ## 维护约定
 
-README 保留项目定位、主要能力、最短启动路径与文档入口；接口、配置和排查细节在对应专题维护。行为发生变化时，同步更新受影响的主题和入口；本地真实模型结论、现场复验脚本与结果、迁移历史和重构经过归档到工作区的 `y-point-server-todo.md`；公开专题中的页面现场复验也归档到服务端 TODO，日常前端开发任务继续由 `y-point-web-todo.md` 跟踪。专题保留当前契约、通用操作与限制，设计和调研资料保留来源及范围。
+README 保留项目定位、主要能力、最短启动路径与文档入口；接口、配置、使用边界和排查步骤在对应专题维护。接口移除时同步修正调用示例和模块职责；仍注册但标记弃用的接口须说明兼容范围与推荐替代入口，不能写成已移除。
 
-MCP 的当前功能与使用边界见 [Tool、脚本沙箱与 MCP](tools.md)；逐项实现、迁移和本机验收记录归档到工作区 `y-point-server-todo.md`，[原验收矩阵路径](mcp-acceptance.md)仅保留导航。当前枚举职责与通用升级步骤保留在架构及测试专题，不重复发布重构和迁移经过。本地 TODO 按仓库规则不纳入 Git，公开文档不依赖其存在。
+过程性记录按职责保存：服务端真实模型验收、接口与 Worker 复验、迁移历史、枚举等重构经过记入工作区的 `y-point-server-todo.md`；前端设计迭代、页面交互及浏览器复验脚本和结果记入 `y-point-web-todo.md`。跨端任务分别记录对应结果，通过日期和主题关联。当前迁移操作、枚举职责、可复用测试入口和已知限制继续维护在公开专题中。
+
+两份本地 TODO 按仓库规则不纳入 Git；公开使用说明保持独立完整，不依赖私有记录，也不将历史验收结果视为当前环境保证。

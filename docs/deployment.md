@@ -244,7 +244,7 @@ python3 -m ypoint_cli compose -- exec -T db pg_dump -U y_point -d y_point -Fc > 
 
 自动化验证入口：`uv run pytest -q tests/test_cli.py tests/test_deploy_all.py tests/test_deployment.py tests/test_worker_logging.py tests/test_tool_environments.py tests/test_user_tools.py tests/test_m51_governance.py tests/test_runtime_checkpoint.py tests/test_runtime_limits.py tests/test_worker_monitor.py tests/test_db_schema.py`。已启动部署可运行 `python3 -m ypoint_cli verify-deployment --sandbox`；无活跃任务的隔离环境可加 `--restart` 验证重建。独立真实 HTTP/HTTPS 代理验证：`YPOINT_TEST_DEPLOYMENT_PROXY=1 uv run pytest -q tests/test_deployment_proxy.py`。
 
-本机实际构建、运行与现场复验结果统一归档到工作区 `y-point-server-todo.md`；[原部署报告路径](deployment-validation-20261113.md)仅保留归档导航。目标环境仍需核对 TLS/DNS、防火墙、CPU 架构、镜像来源、实际 OCR/模型/外部写服务、备份恢复、容量及监控告警。
+部署检查不覆盖所有业务效果。目标环境仍需分别验证 TLS/DNS、防火墙、CPU 架构、镜像来源、实际 OCR/模型/外部写服务、备份恢复、容量及监控告警；通用环境与结果记录约定见[测试指南](testing.md)。
 
 参考资料：uv 的 Docker 集成、Uvicorn 的部署、Nginx 代理及 Docker 官方文档；原始地址在 `deployment-research.md` 的来源与下方列出，仓库配置值属于本项目选择。
 

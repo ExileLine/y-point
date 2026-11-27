@@ -10,11 +10,14 @@ Tool 定义仍以不可变版本关联 Agent/Run，代码、Schema、依赖、�
 
 | 连接操作 | API 规则 | 旧快照与运行中的行为 |
 | --- | --- | --- |
-| 保留凭据 | 同传输下省略或留空 HTTP `bearer_token`、stdio `env` | 保留已保存凭据；更换 stdio 配置时仍校验环境变量白名单。 |
-| 替换/轮换 | 提供非空 `bearer_token` 或非空 `env`；stdio 凭据对象整体替换 | 递增连接版本，撤销历史凭据版本并取消相关活动运行；采用新凭据需重新发布 Tool 并更新 Agent 关联。 |
+| 保留凭据 | 同传输与鉴权方式下省略或留空 `bearer_token` / `api_key`；省略 `sensitive_headers`；stdio `env` 省略或为空对象 | 保留对应凭据；更换 stdio 配置时仍校验环境变量白名单。 |
+| 替换/轮换 | 按鉴权方式提供非空 `bearer_token` / `api_key`；`sensitive_headers` 按键合并、值为 `null` 删除；非空 stdio `env` 整体替换 | 凭据实际变化时撤销历史凭据版本并取消相关活动运行；采用新凭据需重新发布 Tool 并更新 Agent 关联。 |
+| 变更鉴权或租户范围 | 修改 `auth_type`、`api_key_header` 或普通 `headers`；`headers` 省略保留、空对象清空 | 配置实际变化时限制旧配置快照并取消相关活动运行；普通连接更新不授予旧 Tool 使用新鉴权范围的权限。 |
 | 清除凭据 | `clear_credentials=true`，与新凭据互斥 | 清除凭据并撤销历史版本；后续发布和调用按当前授权重新验证。 |
 | 停用或删除 | PUT `enabled=false` 或 DELETE 连接 | 阻断旧快照的新调用并请求取消相关活动运行，保留历史审计。 |
 | 关闭凭据共享 | PUT `share_credentials=false` | 其他用户使用该连接凭据的旧快照失效，相关活动运行请求取消。 |
+
+HTTP 支持 `none/bearer/api_key`，主密钥与敏感 Headers 仅写入，响应只返回配置状态及 Header 名称。完整字段与请求头限制见 [HTTP 鉴权与 Headers](tools.md#http-鉴权与-headers)。
 
 直接保存 URL 的旧 HTTP Tool 继续使用 `mcp_bearer_token`、`clear_mcp_credentials` 维护凭据；绑定共享连接后在连接管理中操作。`POST /api/v1/tools/{id}/credentials/revoke` 仍可撤销指定 MCP Tool 的历史凭据并禁用该 Tool，其作用范围不替代共享连接的整体撤权。
 
