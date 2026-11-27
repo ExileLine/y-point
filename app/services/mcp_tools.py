@@ -71,9 +71,10 @@ ClientSession = CancellableClientSession
 
 
 @asynccontextmanager
-async def open_mcp_session(url, bearer_token, timeout):
+async def open_mcp_session(url, bearer_token, timeout, *, mcp_run_id: str | None = None):
     """协议连接的进入和退出由同一拥有者任务完成。"""
-    async with _mcp_connection(url, bearer_token, timeout) as (read, write, cancel_remote):
+    connection = _mcp_connection(url, bearer_token, timeout, mcp_run_id=mcp_run_id) if mcp_run_id is not None else _mcp_connection(url, bearer_token, timeout)
+    async with connection as (read, write, cancel_remote):
         async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=timeout)) as session:
             session._cancel_remote = cancel_remote
             initialized = await session.initialize()
@@ -161,7 +162,7 @@ class _PinnedMcpTransport(httpx.AsyncBaseTransport):
 
 
 @asynccontextmanager
-async def _mcp_http_client(url: str | dict, bearer_token: str | None, read_timeout: int):
+async def _mcp_http_client(url: str | dict, bearer_token: str | None, read_timeout: int | None):
     """业务和回收控制消息使用同样的认证、固定 IP、来源检查和限时规则。"""
     if isinstance(url, dict):
         if url["transport"] != McpTransport.STREAMABLE_HTTP:
@@ -200,14 +201,15 @@ async def terminate_mcp_session(url, bearer_token, session_id, protocol_version)
 
 
 @asynccontextmanager
-async def _mcp_connection(url: str | dict, bearer_token: str | None, read_timeout: int):
+async def _mcp_connection(url: str | dict, bearer_token: str | None, read_timeout: int, *, mcp_run_id: str | None = None):
     """管理固定解析 IP 的 HTTP 客户端及 MCP 连接生命周期。"""
     if isinstance(url, dict) and url["transport"] == McpTransport.STDIO:
         _, env = decrypt_credentials(bearer_token)
-        async with stdio_connection(url, env, read_timeout) as streams:
+        async with stdio_connection(url, env, read_timeout, mcp_run_id=mcp_run_id) as streams:
             yield streams
         return
-    async with _mcp_http_client(url, bearer_token, read_timeout) as (client, endpoint):
+    # 受管连接的观察流可跨越任意长审批等待；业务操作继续受单次调用预算约束。
+    async with _mcp_http_client(url, bearer_token, None if mcp_run_id is not None else read_timeout) as (client, endpoint):
         async with streamable_http_client(endpoint, http_client=client, terminate_on_close=False) as streams:
 
             async def cancel_remote(request_id, protocol_version):
@@ -371,7 +373,12 @@ async def invoke_mcp_tool(
                     **session_identity,
                     config=url,
                     credentials=bearer_token,
-                    factory=lambda: open_mcp_session(url, bearer_token, get_config().MCP_SESSION_MAX_SECONDS),
+                    factory=lambda: open_mcp_session(
+                        url,
+                        bearer_token,
+                        get_config().MCP_SESSION_MAX_SECONDS,
+                        mcp_run_id=session_identity["run_id"],
+                    ),
                     operation=operation,
                 )
         payload = response.model_dump(mode="json")

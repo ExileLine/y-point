@@ -96,7 +96,9 @@ export default function RunApproval({ runId, onResume, onRunChanged }: {
         {action.resource_name && <span>目标文件：{action.resource_name}</span>}
         <details><summary>查看参数摘要</summary><code>{action.arguments_hash}</code></details>
       </li>)}</ul>
-      <p className="run-approval-expiry">审批截止：{new Date(serverTime(approval.expires_at)).toLocaleString("zh-CN", { hour12: false })}</p>
+      <p className="run-approval-expiry">{approval.expires_at
+        ? `审批截止：${new Date(serverTime(approval.expires_at)).toLocaleString("zh-CN", { hour12: false })}`
+        : "等待你的决定，不设审批时限"}</p>
       {approval.state === "pending" && !loadError && <Space wrap>
         {approval.actions.length > 1 && approval.actions.every(action => action.action_id) && <Button type="primary"
           disabled={submitting || approval.actions.some(action => !choices[`${approval.id}:${action.action_id}`])} onClick={() => void decide("resolve")}>提交逐项决定</Button>}

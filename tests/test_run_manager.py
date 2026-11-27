@@ -342,7 +342,7 @@ def test_concurrent_tool_events(tmp_path: Path) -> None:
 
 
 async def exercise_approval_expiry(database_path: Path) -> None:
-    """验证待处理审批到期与运行终态在同一事务中更新。"""
+    """验证显式限期的兼容审批到期与运行终态在同一事务中更新。"""
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -381,6 +381,50 @@ async def exercise_approval_expiry(database_path: Path) -> None:
 def test_approval_expiry(tmp_path: Path) -> None:
     """运行审批到期与运行终态一致性测试。"""
     asyncio.run(exercise_approval_expiry(tmp_path / "approval-expiry.db"))
+
+
+def test_approval_wait_has_no_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户长时间未决定时保持待审批，且之后仍可批准并恢复。"""
+    from app.core.enums import ApprovalState, RunState
+
+    async def exercise() -> None:
+        """模拟等待一年后回收巡检与用户批准，覆盖真实审批状态转换。"""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'approval-no-deadline.db'}")
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with sessions.begin() as db:
+                run = await create_run(db, 1, require_mcp_approval=True)
+                token = (await claim_run(db, run.id)).lease_token
+                approval = await create_approval_request(
+                    db,
+                    run.id,
+                    token,
+                    "checkpoint-no-deadline",
+                    [
+                        {
+                            "name": "mcp:search",
+                            "arguments_hash": "a" * 64,
+                        },
+                    ],
+                )
+                run_id, approval_id = run.id, approval.id
+            future = shanghai_now(naive=True) + timedelta(days=365)
+            monkeypatch.setattr(run_manager_module, "shanghai_now", lambda **kwargs: future)
+            async with sessions.begin() as db:
+                assert await expire_approvals(db) == 0
+                waiting = await db.get(AgentRun, run_id)
+                pending = await db.get(RunApproval, approval_id)
+                assert waiting.state == RunState.WAITING_FOR_APPROVAL
+                assert pending.state == ApprovalState.PENDING and pending.expires_at is None
+                await decide_approval(db, run_id, 1, "approve")
+                resumed = await resume_approved_run(db, run_id)
+                assert resumed.state == RunState.RUNNING
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_queue_wait_timeout(tmp_path: Path) -> None:

@@ -548,7 +548,29 @@ def test_real_worker_routing_preserves_http_state_across_approval(tmp_path, monk
                     from app.services.run_manager import get_owned_approval
 
                     saved_approval = await get_owned_approval(db, run.id, 1)
-                    assert 0 < (saved_approval.expires_at - shanghai_now(naive=True)).total_seconds() <= get_config().MCP_SESSION_IDLE_SECONDS
+                    assert saved_approval.expires_at is None
+                # 用已经过去一年的本地计时模拟长时间人工等待，连接本身保持真实。
+                from sqlalchemy import select
+                from app.models.run_mcp_resource import RunMcpResource
+                from app.services.mcp_sessions import cleanup_abandoned_sessions
+
+                entry = next(iter(pool.entries.values()))
+                assert entry.approval_paused_at is not None
+                deletions_before_wait = len(deleted)
+                waited = 365 * 86400
+                entry.created -= waited
+                entry.touched -= waited
+                entry.approval_paused_at -= waited
+                async with sessions.begin() as db:
+                    receipt = await db.scalar(select(RunMcpResource))
+                    receipt.expires_at = shanghai_now(naive=True) - timedelta(days=365)
+                await pool.sweep()
+                assert len(pool.entries) == 1 and len(deleted) == deletions_before_wait
+                assert await cleanup_abandoned_sessions(sessions) == 0
+                async with sessions.begin() as db:
+                    receipt = await db.scalar(select(RunMcpResource))
+                    assert receipt.expires_at > shanghai_now(naive=True)
+                    assert (await db.get(AgentRun, run.id)).state == "waiting_for_approval"
                     await decide_approval(db, run.id, 1, "approve")
                 assert (
                     await dispatch_next_run(
@@ -795,5 +817,83 @@ def test_queued_call_rechecks_cancellation_before_sending(tmp_path, monkeypatch)
                         task.cancel()
                 await asyncio.gather(*(task for task in (first, second) if task is not None), return_exceptions=True)
                 await pool.aclose()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("ending", ["cancel", "owner_lost"])
+def test_resource_reaper_preserves_waiting_mcp_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str) -> None:
+    """通用回收不误删待审批 MCP 容器和凭据目录，取消或失主后仍回收。"""
+    import time
+    from app.core.enums import RunState
+    from app.services import tool_resources
+
+    async def exercise() -> None:
+        """用隔离数据库和受控 Docker 元数据运行真实资源回收逻辑。"""
+        root, sandbox = tmp_path / "dependencies", tmp_path / "sandbox"
+        monkeypatch.setattr(get_config(), "SCRIPT_DEPENDENCY_STORAGE_DIR", str(root))
+        monkeypatch.setattr(get_config(), "SCRIPT_SANDBOX_STORAGE_DIR", str(sandbox))
+        directory = sandbox / "mcp-pending"
+        directory.mkdir(parents=True)
+        removed = []
+        async with database(tmp_path / "resources.db") as sessions:
+            run = await running(sessions)
+            async with sessions.begin() as db:
+                await create_approval_request(
+                    db,
+                    run.id,
+                    run.lease_token,
+                    "resource-checkpoint",
+                    [
+                        {
+                            "name": "inspect",
+                            "arguments_hash": "a" * 64,
+                        },
+                    ],
+                )
+                stored = await db.get(AgentRun, run.id)
+                stored.mcp_worker_id = "resource-owner"
+                stored.mcp_owner_expires_at = shanghai_now(naive=True) + timedelta(seconds=30)
+            tool_resources.mark_resource_directory(directory, -int(time.time()), mcp_run_id=run.id)
+            labels = {
+                "y-point.managed": "tool",
+                "y-point.scope": tool_resources.resource_scope(),
+                "y-point.deadline": "1",
+                "y-point.mcp-run-id": run.id,
+            }
+
+            async def docker_metadata(*arguments: str, **kwargs) -> bytes:
+                """只替换 Docker IO，审批归属判断和回收决策均用正式实现。"""
+                if arguments[:2] == ("ps", "-aq"):
+                    return b"aaaaaaaaaaaa" if not removed else b""
+                if arguments[0] == "inspect":
+                    return json.dumps(
+                        [
+                            {
+                                "Config": {
+                                    "Labels": labels,
+                                },
+                            },
+                        ],
+                    ).encode()
+                if arguments[:2] == ("rm", "-f"):
+                    removed.append(arguments[-1])
+                    return b"removed"
+                return b""
+
+            monkeypatch.setattr(tool_resources, "_docker_metadata", docker_metadata)
+            result = await tool_resources.prune_tool_resources(sessions)
+            assert result["containers"] == result["directories"] == 0
+            assert directory.exists() and not removed
+            async with sessions.begin() as db:
+                if ending == "cancel":
+                    await request_cancel(db, run.id, 1)
+                    assert (await db.get(AgentRun, run.id)).state == RunState.CANCELLED
+                else:
+                    stored = await db.get(AgentRun, run.id)
+                    stored.mcp_owner_expires_at = shanghai_now(naive=True) - timedelta(seconds=1)
+            result = await tool_resources.prune_tool_resources(sessions)
+            assert result["containers"] == result["directories"] == 1
+            assert not directory.exists() and removed == ["aaaaaaaaaaaa"]
 
     asyncio.run(exercise())

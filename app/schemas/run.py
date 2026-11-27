@@ -127,7 +127,7 @@ class ApprovalOut(BaseModel):
         description="当前审批可选择的会话范围，强制约束不可覆盖",
         examples=[["once"]],
     )
-    expires_at: datetime = Field(description="审批到期时间", examples=["2026-10-22T23:00:00"])
+    expires_at: datetime | None = Field(description="审批到期时间，空值表示等待用户决定，无审批倒计时", examples=[None])
     decided_at: datetime | None = Field(description="审批决定时间", examples=["2026-10-22T22:30:00"])
 
 

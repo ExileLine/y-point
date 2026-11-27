@@ -9,7 +9,7 @@ const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_P
 async function fixture(page, options = {}) {
   const now = new Date().toISOString();
   let run = { id: "run-approval", session_id: "session-a", agent_id: 11, state: options.live ? "running" : "waiting_for_approval", failure_code: null, create_time: now, update_time: now };
-  let approval = { id: "approval-1", run_id: run.id, state: options.expired ? "expired" : "pending", actions: [{ name: "user_tool_22_mcp_docs_query", arguments_hash: "a".repeat(64), action_id: "action-one", preview: { order_id: "order-7", quantity: 2 }, resource_name: null }], expires_at: new Date(Date.now() + 3600000).toISOString(), decided_at: null };
+  let approval = { id: "approval-1", run_id: run.id, state: options.expired ? "expired" : "pending", actions: [{ name: "user_tool_22_mcp_docs_query", arguments_hash: "a".repeat(64), action_id: "action-one", preview: { order_id: "order-7", quantity: 2 }, resource_name: null }], expires_at: options.expired || options.deadline ? new Date(Date.now() + 3600000).toISOString() : null, decided_at: null };
   if (options.mixed) approval.actions.push({ name: "delete_orders", arguments_hash: "b".repeat(64), action_id: "action-two", preview: { order_id: "order-8" } });
   let policy = { mode: "ask", version: 1, tools: [], allow_all_available: true, force_approval: false };
   if (options.scopes) approval.allowed_scopes = options.scopes;
@@ -110,6 +110,12 @@ try {
     const approve = page.getByRole("button", { name: "同意执行", exact: true });
     await page.getByText("等待审批", { exact: true }).first().waitFor();
     await approve.waitFor();
+    await page.getByText("等待你的决定，不设审批时限", { exact: true }).waitFor();
+    assert.equal(await page.getByText("审批截止：", { exact: false }).count(), 0);
+    assert.equal(await page.getByText("Invalid Date", { exact: false }).count(), 0);
+    await page.reload();
+    await approve.waitFor();
+    await page.getByText("等待你的决定，不设审批时限", { exact: true }).waitFor();
     await page.screenshot({ path: screenshotPath(`web-approval-pending-${width}.png`), animations: "disabled" });
     assert.equal(await approve.count(), 1, "等待审批时必须提供同意/拒绝入口");
     await approve.click();

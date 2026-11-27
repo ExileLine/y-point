@@ -535,7 +535,7 @@ export type RunApproval = {
   decision?: ApprovalDecision | null; decisions?: string[] | null;
   scope?: SessionApprovalScope; allowed_scopes?: SessionApprovalScope[];
   actions: { name: string; arguments_hash: string; action_id?: string | null; preview?: Record<string, string | number> | null; resource_id?: string | null; resource_name?: string | null }[];
-  expires_at: string; decided_at: string | null;
+  expires_at: string | null; decided_at: string | null;
 };
 export type SessionRunPage = { items: SessionRun[]; total: number; page: number; page_size: number };
 

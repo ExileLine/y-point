@@ -55,7 +55,7 @@ async def _spawn_stdio(command: list[str], limit: int):
 
 
 @asynccontextmanager
-async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
+async def stdio_connection(config: dict, env: dict[str, str], timeout: int, *, mcp_run_id: str | None = None):
     """用有界 JSON-RPC 管道连接容器，禁止自动拉镜像、网络及业务目录挂载。"""
     profile = stdio_profiles().get(config.get("stdio_profile"))
     if profile is None or any(config.get(key) != profile.get(key, []) for key in ("image", "command", "env_keys")):
@@ -67,7 +67,7 @@ async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
     name = "yp-mcp-" + uuid4().hex
     receive_writer, receive = anyio.create_memory_object_stream(0)
     send, send_reader = anyio.create_memory_object_stream(0)
-    with managed_workspace(SANDBOX_ROOT, "mcp-", timeout) as directory:
+    with managed_workspace(SANDBOX_ROOT, "mcp-", timeout, mcp_run_id=mcp_run_id) as directory:
         env_path = Path(directory) / "mcp.env"
         env_path.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
         os.chmod(env_path, 0o600)
@@ -81,7 +81,7 @@ async def stdio_connection(config: dict, env: dict[str, str], timeout: int):
             "--log-driver=none",
             "--name",
             name,
-            *resource_labels(timeout),
+            *resource_labels(timeout, mcp_run_id=mcp_run_id),
             "--network=none",
             "--read-only",
             "--cap-drop=ALL",

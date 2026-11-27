@@ -47,7 +47,7 @@ def resource_scope() -> str:
     return hashlib.sha256(str(dependency_root()).encode()).hexdigest()[:24]
 
 
-def resource_labels(timeout_seconds: int) -> list[str]:
+def resource_labels(timeout_seconds: int, *, mcp_run_id: str | None = None) -> list[str]:
     """容器和网络保存可核对的作用域及最晚清理时间。"""
     return [
         "--label",
@@ -56,6 +56,7 @@ def resource_labels(timeout_seconds: int) -> list[str]:
         f"y-point.scope={resource_scope()}",
         "--label",
         f"y-point.deadline={int(time.time()) + timeout_seconds + 30}",
+        *(["--label", f"y-point.mcp-run-id={mcp_run_id}"] if mcp_run_id is not None else []),
     ]
 
 
@@ -97,7 +98,7 @@ def storage_status() -> dict:
     }
 
 
-def mark_resource_directory(directory: Path, timeout_seconds: int, *, reserve_bytes: int = 0) -> None:
+def mark_resource_directory(directory: Path, timeout_seconds: int, *, reserve_bytes: int = 0, mcp_run_id: str | None = None) -> None:
     """为临时目录和待发布缓存记录清理边界，覆盖重命名后尚未提交数据库时的强杀窗口。"""
     (directory / RESOURCE_MARKER).write_text(
         json.dumps(
@@ -105,13 +106,14 @@ def mark_resource_directory(directory: Path, timeout_seconds: int, *, reserve_by
                 "deadline": int(time.time()) + timeout_seconds + 30,
                 "reserved_bytes": reserve_bytes,
                 "scope": resource_scope(),
+                "mcp_run_id": mcp_run_id,
             },
         ),
     )
 
 
 @contextmanager
-def managed_workspace(root: Path, prefix: str, timeout_seconds: int, *, reserve_bytes: int = 0):
+def managed_workspace(root: Path, prefix: str, timeout_seconds: int, *, reserve_bytes: int = 0, mcp_run_id: str | None = None):
     """在共享文件锁下预留最坏构建空间，所有退出路径清除本轮目录。"""
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = dependency_root() / ".capacity.lock"
@@ -125,7 +127,7 @@ def managed_workspace(root: Path, prefix: str, timeout_seconds: int, *, reserve_
                 logger.warning("工具依赖存储预算或剩余容量不足，拒绝新的准备任务")
                 raise ToolStorageCapacityError("依赖存储容量不足，请联系维护者清理未引用资源或扩容")
         directory = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
-        mark_resource_directory(directory, timeout_seconds, reserve_bytes=reserve_bytes)
+        mark_resource_directory(directory, timeout_seconds, reserve_bytes=reserve_bytes, mcp_run_id=mcp_run_id)
     try:
         yield str(directory)
     finally:
@@ -150,7 +152,7 @@ async def _docker_metadata(*arguments: str, missing_ok: bool = False) -> bytes:
             await process.wait()
 
 
-def _prune_directories(referenced: set[str], active_lease: bool, scope: str, cutoff: float) -> int:
+def _prune_directories(referenced: set[str], active_lease: bool, scope: str, cutoff: float, active_mcp_runs: set[str]) -> int:
     """在线程中持共享文件锁删除过期目录，避免磁盘扫描和锁等待阻塞 worker 心跳。"""
     removed = 0
     root = dependency_root()
@@ -171,7 +173,7 @@ def _prune_directories(referenced: set[str], active_lease: bool, scope: str, cut
                     continue
                 try:
                     metadata = json.loads(marker.read_text())
-                    expired = metadata["scope"] == scope and metadata["deadline"] < cutoff
+                    expired = metadata["scope"] == scope and metadata["deadline"] < cutoff and metadata.get("mcp_run_id") not in active_mcp_runs
                 except (ValueError, KeyError, OSError, TypeError):
                     continue
                 if expired and not active_lease:
@@ -201,6 +203,17 @@ async def prune_tool_resources(sessions: async_sessionmaker[AsyncSession]) -> di
         )
         removed["unknown_invocations"] = result.rowcount
         building = await db.scalar(select(ToolExecutionLease.id).where(ToolExecutionLease.expires_at > shanghai_now(naive=True)).limit(1))
+        active_mcp_runs = set(
+            (
+                await db.scalars(
+                    select(AgentRun.id).where(
+                        AgentRun.state.in_((RunState.RUNNING, RunState.WAITING_FOR_APPROVAL)),
+                        AgentRun.mcp_worker_id.is_not(None),
+                        AgentRun.mcp_owner_expires_at > shanghai_now(naive=True),
+                    ),
+                )
+            ).all(),
+        )
     filters = ["--filter", "label=y-point.managed=tool", "--filter", f"label=y-point.scope={scope}"]
     for category, listing in (("containers", ("ps", "-aq")), ("networks", ("network", "ls", "-q"))):
         identifiers = (await _docker_metadata(*listing, *filters)).decode().split()
@@ -219,12 +232,12 @@ async def prune_tool_resources(sessions: async_sessionmaker[AsyncSession]) -> di
                 deadline = int(labels["y-point.deadline"])
             except (KeyError, ValueError):
                 continue
-            if deadline >= cutoff:
+            if deadline >= cutoff or labels.get("y-point.mcp-run-id") in active_mcp_runs:
                 continue
             command = ("rm", "-f", identifier) if category == "containers" else ("network", "rm", identifier)
             if await _docker_metadata(*command, missing_ok=True):
                 removed[category] += 1
-    removed["directories"] = await asyncio.to_thread(_prune_directories, referenced, building is not None, scope, cutoff)
+    removed["directories"] = await asyncio.to_thread(_prune_directories, referenced, building is not None, scope, cutoff, active_mcp_runs)
     status = await asyncio.to_thread(storage_status)
     if status["warning"]:
         logger.warning(

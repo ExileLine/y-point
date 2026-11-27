@@ -65,7 +65,7 @@
 
 脚本 Tool 使用「调用前需要审批」开关，默认关闭；MCP Tool 使用连接默认与工具覆盖的 `always/writes/never`，再叠加本轮主动要求、共享使用与部署限制。当前审批设置在新 Run 提交时固定，无需仅为审批调整重新保存 Agent；执行版本仍按原绑定固定。具体规则见[审批声明与可调用状态](tools.md#mcp-审批声明与可调用状态)。
 
-进入 `waiting_for_approval` 后，页面自动读取 `GET /api/v1/runs/{run_id}/approval`，展示工具名、脱敏参数摘要、授权文件名和截止时间；刷新后也能恢复。用户可批准、拒绝本次并继续或停止整个任务；多项审批支持逐项决定，任一停止会终止整批未执行项。旧客户端 `reject` 保留取消整轮的语义。
+进入 `waiting_for_approval` 后，页面自动读取 `GET /api/v1/runs/{run_id}/approval`，展示工具名、脱敏参数摘要和授权文件名；`expires_at=null` 时提示「等待你的决定，不设审批时限」，不显示截止日期，刷新后也能恢复。用户可批准、拒绝本次并继续或停止整个任务；多项审批支持逐项决定，任一停止会终止整批未执行项。旧客户端 `reject` 保留取消整轮的语义。
 
 决定通过新的协议 runId 向 `POST /api/v1/agents/{agent_id}/ag-ui` 提交 `resume`，使用当前 `interruptId` 与明确的 `decision`；相同恢复请求重试复用原身份和完整输入。`approve` 可在服务端 `allowed_scopes` 允许时选择 `once/tool/all`；扩大范围只适用于明确批准全部当前动作。查询失败时暂停决定并提供重试，提交期间锁定操作，冲突、取消或过期由服务端拒绝。
 

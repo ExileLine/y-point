@@ -1370,8 +1370,9 @@ async def execute_text_run(
                             lease_token,
                             checkpoint_id,
                             actions,
-                            ttl_seconds=mcp_pool.approval_ttl(run_id) if mcp_pool else 3600,
                         )
+                        if mcp_pool is not None:
+                            mcp_pool.pause_for_approval(run_id)
                         _record_runtime_call(db, run, catalog_model, started, failure=None, messages=new_messages)
                         return await db.get(AgentRun, run_id)
                 async with sessions() as db:

@@ -34,7 +34,7 @@ class RunApproval(CustomBaseModel):
     state: Mapped[str] = mapped_column(String(16), nullable=False, comment="审批状态：pending、approved、resolved、rejected、expired 或 cancelled")
     decision: Mapped[str | None] = mapped_column(String(24), nullable=True, comment="显式审批动作；空值兼容旧请求")
     decisions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, comment="按动作顺序保存批准或拒绝，恢复时逐项绑定")
-    expires_at: Mapped[datetime] = mapped_column(ShanghaiDateTime(), nullable=False, comment="审批到期时间")
+    expires_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="审批到期时间，空值表示等待用户决定")
     decided_by: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="作出审批决定的用户 ID")
     decided_at: Mapped[datetime | None] = mapped_column(ShanghaiDateTime(), nullable=True, comment="审批决定时间")
     scope: Mapped[str] = mapped_column(

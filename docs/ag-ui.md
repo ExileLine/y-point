@@ -108,6 +108,8 @@ Accept: text/event-stream
 
 ### 标准审批恢复
 
+人工审批默认持续等待用户决定，不设置等待截止时间。审批查询的 `expires_at` 及中断 metadata 的 `expiresAt` 可为 `null`；取消、权限失效与 MCP 拥有者或连接丢失仍按运行状态处理。
+
 先读取当前公开历史，使用新的协议运行 ID 回答中断：
 
 ```json

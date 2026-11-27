@@ -15,7 +15,7 @@ import hmac
 import json
 import time
 
-from sqlalchemy import or_, select, update, delete
+from sqlalchemy import and_, or_, select, update, delete
 from cryptography.fernet import Fernet
 from uuid import uuid4
 
@@ -42,6 +42,7 @@ class _Entry:
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=1))
     created: float = field(default_factory=time.monotonic)
     touched: float = field(default_factory=time.monotonic)
+    approval_paused_at: float | None = None
     task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -120,6 +121,7 @@ class RunMcpSessions:
         async with entry.lock:
             await self._own(run_id, owner_id, lease_token, recheck_tools=True)
             now = time.monotonic()
+            self._resume_after_approval(run_id, now)
             if (
                 run_id in self.lost
                 or entry.task.done()
@@ -195,15 +197,21 @@ class RunMcpSessions:
                         else:
                             await db.execute(update(RunMcpResource).where(RunMcpResource.id == resource_id).values(retired=True))
 
-    def approval_ttl(self, run_id: str) -> int:
-        """审批展示的截止时间不晚于本轮任何既有会话的空闲或累计截止时间。"""
+    def pause_for_approval(self, run_id: str) -> None:
+        """人工审批等待不消耗既有协议会话的空闲或累计预算。"""
         now = time.monotonic()
-        remaining = [
-            min(entry.touched + get_config().MCP_SESSION_IDLE_SECONDS - now, entry.created + get_config().MCP_SESSION_MAX_SECONDS - now)
-            for entry in self.entries.values()
-            if entry.run_id == run_id
-        ]
-        return max(1, min(3600, int(min(remaining)))) if remaining else 3600
+        for entry in self.entries.values():
+            if entry.run_id == run_id and entry.approval_paused_at is None:
+                entry.approval_paused_at = now
+
+    def _resume_after_approval(self, run_id: str, now: float) -> None:
+        """恢复原连接的有效计时，不重建协议会话或清零此前已用预算。"""
+        for entry in self.entries.values():
+            if entry.run_id == run_id and entry.approval_paused_at is not None:
+                waited = max(0.0, now - entry.approval_paused_at)
+                entry.created += waited
+                entry.touched += waited
+                entry.approval_paused_at = None
 
     async def close_run(self, run_id: str, *, lost: bool = False) -> None:
         """取消会触发协议尽力通知及传输退出；不能撤回远端副作用。"""
@@ -225,7 +233,7 @@ class RunMcpSessions:
                     continue
 
     async def sweep(self) -> None:
-        """审批期间保活归属，撤权、终态、空闲和累计时限统一收口。"""
+        """审批期间暂停资源计时并保活归属，持续检查撤权、连接丢失和终态。"""
         for run_id in list(self.lost):
             async with self.sessions.begin() as db:
                 await fail_lost_session(db, run_id)
@@ -263,12 +271,20 @@ class RunMcpSessions:
                     await fail_lost_session(db, run_id)
                 continue
             now = time.monotonic()
+            waiting = run.state == RunState.WAITING_FOR_APPROVAL
+            if waiting:
+                self.pause_for_approval(run_id)
+            else:
+                self._resume_after_approval(run_id, now)
             entries = [entry for entry in self.entries.values() if entry.run_id == run_id]
             expired = any(
                 entry.task.done()
-                or now - entry.created >= get_config().MCP_SESSION_MAX_SECONDS
-                or not entry.lock.locked()
-                and now - entry.touched >= get_config().MCP_SESSION_IDLE_SECONDS
+                or not waiting
+                and (
+                    now - entry.created >= get_config().MCP_SESSION_MAX_SECONDS
+                    or not entry.lock.locked()
+                    and now - entry.touched >= get_config().MCP_SESSION_IDLE_SECONDS
+                )
                 for entry in entries
             )
             if expired:
@@ -277,15 +293,23 @@ class RunMcpSessions:
                     await fail_lost_session(db, run_id)
             else:
                 async with self.sessions.begin() as db:
-                    await db.execute(
+                    heartbeat_at = shanghai_now(naive=True)
+                    renewed = await db.execute(
                         update(AgentRun)
                         .where(
                             AgentRun.id == run_id,
                             AgentRun.mcp_worker_id == self.worker_id,
                             AgentRun.state.in_((RunState.RUNNING, RunState.WAITING_FOR_APPROVAL)),
                         )
-                        .values(mcp_owner_expires_at=shanghai_now(naive=True) + timedelta(seconds=30))
+                        .values(mcp_owner_expires_at=heartbeat_at + timedelta(seconds=30))
                     )
+                    if waiting and renewed.rowcount == 1:
+                        # 长期审批后仍保留失主清理的重试窗口；实际连接预算继续由本地计时控制。
+                        await db.execute(
+                            update(RunMcpResource)
+                            .where(RunMcpResource.run_id == run_id, RunMcpResource.retired.is_(False))
+                            .values(expires_at=heartbeat_at + timedelta(seconds=get_config().MCP_SESSION_MAX_SECONDS))
+                        )
 
     async def maintain(self) -> None:
         """独立于 Worker 执行循环轮询，长调用期间也核对资源状态。"""
@@ -328,7 +352,7 @@ async def cleanup_abandoned_sessions(sessions) -> int:
                     RunMcpResource.next_attempt_at <= now,
                     or_(
                         RunMcpResource.retired.is_(True),
-                        RunMcpResource.expires_at <= now,
+                        and_(RunMcpResource.expires_at <= now, AgentRun.mcp_owner_expires_at.is_(None)),
                         AgentRun.state.in_(TERMINAL_STATES),
                         AgentRun.mcp_owner_expires_at <= now,
                     ),

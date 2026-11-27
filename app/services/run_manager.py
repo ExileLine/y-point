@@ -843,10 +843,10 @@ async def create_approval_request(
     checkpoint_id: str,
     actions: list[dict],
     *,
-    ttl_seconds: int = 3600,
+    ttl_seconds: int | None = None,
 ) -> RunApproval:
-    """在保存暂停状态的同一事务中记录不含原始工具参数的审批请求。"""
-    if not actions or len(actions) > 20 or ttl_seconds <= 0:
+    """同事务保存人工审批，默认不设截止时间；显式 TTL 仅保留内部兼容。"""
+    if not actions or len(actions) > 20 or ttl_seconds is not None and ttl_seconds <= 0:
         raise ValueError("无效的审批动作或到期时长")
     allowed = {
         "name",
@@ -883,7 +883,7 @@ async def create_approval_request(
         checkpoint_id=checkpoint_id,
         actions=actions,
         state=ApprovalState.PENDING,
-        expires_at=shanghai_now(naive=True) + timedelta(seconds=ttl_seconds),
+        expires_at=shanghai_now(naive=True) + timedelta(seconds=ttl_seconds) if ttl_seconds is not None else None,
     )
     db.add(approval)
     await db.flush()
@@ -891,7 +891,7 @@ async def create_approval_request(
     state_event.details = {
         "version": 1,
         "interrupt_id": approval.id,
-        "expires_at": approval.expires_at.isoformat(),
+        "expires_at": approval.expires_at.isoformat() if approval.expires_at is not None else None,
         "actions": actions,
     }
     await db.flush()
@@ -969,14 +969,18 @@ async def decide_approval(
     now = shanghai_now(naive=True)
     if run.state != RunState.WAITING_FOR_APPROVAL or run.checkpoint_id != approval.checkpoint_id:
         raise RunConflictError("运行或审批状态已变化")
-    if approval.expires_at <= now:
+    if approval.expires_at is not None and approval.expires_at <= now:
         raise RunConflictError("审批请求已过期")
     from app.services.session_approval import prepare_session_grant, save_session_grant
 
     grant = await prepare_session_grant(db, run, approval, scope)
     statement = (
         update(RunApproval)
-        .where(RunApproval.id == approval.id, RunApproval.state == ApprovalState.PENDING, RunApproval.expires_at > now)
+        .where(
+            RunApproval.id == approval.id,
+            RunApproval.state == ApprovalState.PENDING,
+            or_(RunApproval.expires_at.is_(None), RunApproval.expires_at > now),
+        )
         .values(state=next_state, decision=decision, decisions=resolved, scope=scope, decided_by=owner_id, decided_at=now)
     )
     result = await db.execute(statement.execution_options(synchronize_session=False))

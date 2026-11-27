@@ -223,8 +223,8 @@ class BaseConfig(BaseSettings):
     MCP_RESULT_MAX_BYTES: int = Field(default=8 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024, description="MCP 解码后单次响应序列化预算", examples=[8388608])
     MCP_RESULT_PREVIEW_BYTES: int = Field(default=8192, ge=1024, le=32768, description="MCP 模型可见预览正文预算，不包含有界元数据", examples=[8192])
     MCP_RESULT_MAX_PER_RUN: int = Field(default=20, ge=1, le=100, description="单 Run 可保存的大结果响应数量", examples=[20])
-    MCP_SESSION_IDLE_SECONDS: int = Field(default=300, ge=5, le=3600, description="Run MCP 会话空闲时限，包含审批等待")
-    MCP_SESSION_MAX_SECONDS: int = Field(default=3600, ge=10, le=86400, description="Run MCP 会话累计存活时限，含审批等待")
+    MCP_SESSION_IDLE_SECONDS: int = Field(default=300, ge=5, le=3600, description="Run MCP 会话空闲时限，不包含人工审批等待")
+    MCP_SESSION_MAX_SECONDS: int = Field(default=3600, ge=10, le=86400, description="Run MCP 会话累计有效存活时限，不包含人工审批等待")
     MCP_SESSION_MAX_PER_RUN: int = Field(default=8, ge=1, le=64, description="单 Run 同时拥有的 MCP 会话上限")
     MCP_SESSION_MAX_PER_WORKER: int = Field(default=64, ge=1, le=1024, description="单 Worker MCP 会话资源上限")
     MCP_STDIO_PROFILES: dict[str, dict] = Field(
