@@ -40,6 +40,30 @@ def retain_sandbox_image(image: str, *, allow_missing: bool = False, root: Path 
     run(["docker", "image", "tag", identifier, f"y-point-script-sandbox-pinned:{identifier.removeprefix('sha256:')}"], root=root)
 
 
+def prune_sandbox_images(image: str, *, root: Path = ROOT) -> None:
+    """保留配置镜像的实际 ID，仅移除其他沙箱保留标签，不强删或检查数据库版本引用。"""
+    identifier = run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture=True, root=root).strip()
+    if re.fullmatch(r"sha256:[a-f0-9]{64}", identifier) is None:
+        raise SystemExit("Docker 未返回有效的当前沙箱镜像 ID，停止清理")
+    references = run(
+        ["docker", "image", "ls", "--filter", "reference=y-point-script-sandbox-pinned:*", "--format", "{{.Repository}}:{{.Tag}}"],
+        capture=True,
+        root=root,
+    )
+    obsolete = []
+    for reference in sorted(set(references.splitlines())):
+        if re.fullmatch(r"y-point-script-sandbox-pinned:[a-f0-9]{64}", reference) is None:
+            continue
+        actual = run(["docker", "image", "inspect", reference, "--format", "{{.Id}}"], capture=True, root=root).strip()
+        if re.fullmatch(r"sha256:[a-f0-9]{64}", actual) is None:
+            raise SystemExit("Docker 未返回有效的历史沙箱镜像 ID，停止清理")
+        if actual != identifier:
+            obsolete.append(reference)
+    print(f"保留当前沙箱镜像 {image}（{identifier}），清理 {len(obsolete)} 个历史保留标签", flush=True)
+    for reference in obsolete:
+        run(["docker", "image", "rm", reference], root=root)
+
+
 def positive_integer(value: str) -> int:
     """拒绝非正数等待时限，避免在初始化后才发现部署参数错误。"""
     number = int(value)
@@ -68,10 +92,17 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
     parser.add_argument("--tls-cert", type=Path, help="HTTPS 证书文件路径，需与 --tls-key 同时提供")
     parser.add_argument("--tls-key", type=Path, help="HTTPS 私钥文件路径，需与 --tls-cert 同时提供")
     parser.add_argument("--sandbox", action="store_true", help="显式启用受信任本机 Docker 脚本沙箱，并构建沙箱镜像")
+    parser.add_argument(
+        "--prune-sandbox-images",
+        action="store_true",
+        help="需配合 --sandbox；部署成功后仅保留当前镜像的 pinned 标签，清理当前 Docker 中其他历史标签，旧 Tool/Run 可能失效",
+    )
     parser.add_argument("--skip-build", action="store_true", help="复用已有镜像；跳过应用和沙箱镜像构建")
     parser.add_argument("--wait-timeout", type=positive_integer, default=180, help="健康等待秒数，默认 180")
     parser.add_argument("--create-admin", metavar="USERNAME", help="服务就绪后交互创建首位管理员；仅首次部署需要")
     args = parser.parse_args(argv)
+    if args.prune_sandbox_images and not args.sandbox:
+        parser.error("--prune-sandbox-images 必须与 --sandbox 一起使用")
     if args.create_admin and not sys.stdin.isatty():
         parser.error("--create-admin 需要交互终端输入密码；自动化部署请省略，启动后单独创建首位管理员")
     if sys.version_info < (3, 12):
@@ -99,6 +130,9 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
 
     compose: list[str] = []
 
+    if args.prune_sandbox_images:
+        print("注意：部署成功后将清理当前 Docker 的历史沙箱保留标签，不核对 Tool/Run 引用；请停止相关任务，旧工具可能需重新准备环境。", flush=True)
+
     try:
         print("[1/5] 检查 Docker 与 Compose", flush=True)
         execute(["docker", "compose", "version", "--short"], capture=True)
@@ -125,6 +159,13 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> None:
         print(f"部署中止：命令退出码 {error.returncode}；已保留配置、数据和容器，便于修复后重新执行。", file=sys.stderr)
         print(f"查看日志：{shlex.join([*compose, 'logs', '--tail', '100', 'api', 'worker', 'web', 'db', 'redis'])}", file=sys.stderr)
         raise SystemExit(error.returncode) from error
+
+    if args.prune_sandbox_images:
+        try:
+            prune_sandbox_images(image, root=root)
+        except subprocess.CalledProcessError as error:
+            print("服务已部署，但历史沙箱镜像清理失败；可能已有部分标签移除，请检查 Docker 错误后重试。", file=sys.stderr)
+            raise SystemExit(error.returncode) from error
 
     web = config["services"]["web"]
     https = web["environment"].get("YPOINT_HTTPS_ENABLED") == "true"

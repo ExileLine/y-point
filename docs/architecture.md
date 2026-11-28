@@ -30,6 +30,9 @@
 | 模块 | 职责 |
 | --- | --- |
 | `app/api/v1`、`app/schemas` | HTTP 路由、Bearer 授权、请求校验、公开响应和 SSE 协议。 |
+| `app/api/v1/ag_ui.py` | 对话提交、审批恢复、能力查询与会话公开历史的 HTTP 入口。 |
+| `app/api/v1/agent_sessions.py` | 会话创建/编辑/删除、模型切换、附件检查、Run 列表、统计与会话审批策略；Run 创建函数供 AG-UI 内部复用，不再注册旧会话 Run 提交或消息历史接口。 |
+| `app/api/v1/runs.py` | 按 Run 读取状态、单轮消息、审批和调用记录，提供取消、协议快照、流票据及观察流；保留为运行资源与控制模块，不承担新对话提交或审批决定。 |
 | `app/services/model_adapter.py` | 将已启用的供应商与模型配置转换为 LangChain 聊天模型。 |
 | `app/services/run_manager.py` | Run 状态、幂等键、租约、消息和单调事件序号的业务事务。 |
 | `app/services/agent_access.py` | Agent 所有者与指定用户授权检查，供会话、Run、SSE 和 worker 复用。 |

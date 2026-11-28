@@ -1,4 +1,4 @@
-"""验证部署重建镜像前保留旧沙箱镜像，以及首次部署和构建跳过边界。"""
+"""验证沙箱镜像保留、部署成功后显式清理，以及失败时不提前删除的边界。"""
 
 import importlib.util
 import json
@@ -25,11 +25,20 @@ def deploy_all(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize(("existing", "skip_build"), [(True, False), (False, False), (True, True)])
-def test_deployment_retains_image_before_replacing_tag(deploy_all, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool, skip_build: bool) -> None:
-    """正式部署流程必须在移动可变标签前保留旧镜像，并保留新构建镜像。"""
+@pytest.mark.parametrize("prune", [False, True])
+def test_deployment_retains_image_before_replacing_tag(
+    deploy_all,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+    skip_build: bool,
+    prune: bool,
+) -> None:
+    """构建前保留旧镜像，仅在显式请求且服务健康后清理旧标签，兼容首次部署和跳过构建。"""
     image = "example/sandbox:1"
     previous, current = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     references = {}
+    commands = []
     if existing:
         references[image] = previous
     config = {
@@ -56,12 +65,19 @@ def test_deployment_retains_image_before_replacing_tag(deploy_all, tmp_path: Pat
 
     def docker_command(command, *, capture=False, root=None):
         """模拟 Docker 标签移动，检查删除旧标签前已有独立引用。"""
+        commands.append(command)
         if command[:3] == ["docker", "image", "inspect"]:
             if command[3] not in references:
                 raise subprocess.CalledProcessError(1, command, stderr="Error response from daemon: No such image")
             return references[command[3]] + "\n"
         if command[:3] == ["docker", "image", "tag"]:
             references[command[4]] = command[3]
+        elif command[:3] == ["docker", "image", "ls"]:
+            return "\n".join(reference for reference in references if reference.startswith("y-point-script-sandbox-pinned:"))
+        elif command[:3] == ["docker", "image", "rm"]:
+            assert any("up" in previous_command and "--wait" in previous_command for previous_command in commands)
+            assert any(previous_command[-1] == "ps" for previous_command in commands)
+            del references[command[3]]
         elif command[:2] == ["docker", "build"]:
             assert not skip_build
             if existing:
@@ -72,11 +88,100 @@ def test_deployment_retains_image_before_replacing_tag(deploy_all, tmp_path: Pat
         return ""
 
     monkeypatch.setattr(deploy_all, "run", docker_command)
-    deploy_all.main(["--sandbox", "--directory", str(tmp_path), *(["--skip-build"] if skip_build else [])])
+    deploy_all.main(["--sandbox", "--directory", str(tmp_path), *(["--skip-build"] if skip_build else []), *(["--prune-sandbox-images"] if prune else [])])
     expected = previous if skip_build else current
     assert references["y-point-script-sandbox-pinned:" + expected.removeprefix("sha256:")] == expected
     if existing:
-        assert references["y-point-script-sandbox-pinned:" + "a" * 64] == previous
+        old_tag = "y-point-script-sandbox-pinned:" + "a" * 64
+        if prune and not skip_build:
+            assert old_tag not in references
+        else:
+            assert references[old_tag] == previous
+    if not prune:
+        assert not any(command[:3] == ["docker", "image", "ls"] or command[:3] == ["docker", "image", "rm"] for command in commands)
+
+
+def test_prune_preserves_actual_current_image_and_unmanaged_tags(deploy_all, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """按真实 ID 保留当前镜像，重复标签去重，忽略非受管标签且只按标签删除。"""
+    current, previous = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    current_tag = "y-point-script-sandbox-pinned:" + "a" * 64
+    old_tag = "y-point-script-sandbox-pinned:" + "b" * 64
+    alias = "y-point-script-sandbox-pinned:" + "c" * 64
+    calls = []
+    identities = {
+        "custom/sandbox:9": current,
+        current_tag: current,
+        old_tag: previous,
+        alias: current,
+    }
+
+    def docker_command(command, *, capture=False, root=None):
+        """模拟含当前镜像别名及非受管标签的列表，并记录删除边界。"""
+        calls.append(command)
+        assert root == tmp_path
+        if command[:3] == ["docker", "image", "inspect"]:
+            return identities[command[3]]
+        if command[:3] == ["docker", "image", "ls"]:
+            return "\n".join([old_tag, current_tag, old_tag, alias, "y-point-script-sandbox-pinned:manual", "unrelated:1"])
+        return ""
+
+    monkeypatch.setattr(deploy_all, "run", docker_command)
+    deploy_all.prune_sandbox_images("custom/sandbox:9", root=tmp_path)
+    assert [command for command in calls if command[:3] == ["docker", "image", "rm"]] == [["docker", "image", "rm", old_tag]]
+
+
+@pytest.mark.parametrize("failure", ["current_id", "current_inspect", "listing", "old_id", "old_inspect"])
+def test_prune_checks_all_candidates_before_removal(deploy_all, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    """镜像 ID 无效或任何预检失败时，不删除已发现的历史标签。"""
+    first = "y-point-script-sandbox-pinned:" + "b" * 64
+    second = "y-point-script-sandbox-pinned:" + "c" * 64
+    calls = []
+
+    def docker_command(command, *, capture=False, root=None):
+        """在当前镜像、枚举或第二个历史镜像的检查阶段注入故障。"""
+        calls.append(command)
+        if command[:3] == ["docker", "image", "ls"]:
+            if failure == "listing":
+                raise subprocess.CalledProcessError(7, command)
+            return first + "\n" + second
+        if command[:3] == ["docker", "image", "inspect"]:
+            if command[3] == "custom/sandbox:9":
+                if failure == "current_inspect":
+                    raise subprocess.CalledProcessError(7, command)
+                return "invalid" if failure == "current_id" else "sha256:" + "a" * 64
+            if command[3] == second:
+                if failure == "old_inspect":
+                    raise subprocess.CalledProcessError(7, command)
+                if failure == "old_id":
+                    return "invalid"
+            return "sha256:" + command[3].split(":")[1]
+        return ""
+
+    monkeypatch.setattr(deploy_all, "run", docker_command)
+    with pytest.raises((SystemExit, subprocess.CalledProcessError)):
+        deploy_all.prune_sandbox_images("custom/sandbox:9")
+    assert not any(command[:3] == ["docker", "image", "rm"] for command in calls)
+
+
+def test_prune_stops_on_docker_removal_failure(deploy_all, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Docker 拒绝删除时原样抛出错误，不强删或继续删除后续镜像。"""
+    tags = ["y-point-script-sandbox-pinned:" + character * 64 for character in "bc"]
+    calls = []
+
+    def docker_command(command, *, capture=False, root=None):
+        """模拟无当前保留标签的历史列表与首个删除冲突。"""
+        calls.append(command)
+        if command[:3] == ["docker", "image", "ls"]:
+            return "\n".join(tags)
+        if command[:3] == ["docker", "image", "rm"]:
+            raise subprocess.CalledProcessError(9, command)
+        return "sha256:" + ("a" * 64 if command[3] == "custom/sandbox:9" else command[3].split(":")[1])
+
+    monkeypatch.setattr(deploy_all, "run", docker_command)
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        deploy_all.prune_sandbox_images("custom/sandbox:9")
+    assert error.value.returncode == 9
+    assert [command for command in calls if command[:3] == ["docker", "image", "rm"]] == [["docker", "image", "rm", tags[0]]]
 
 
 def test_retention_does_not_ignore_docker_access_failure(deploy_all, monkeypatch: pytest.MonkeyPatch) -> None:

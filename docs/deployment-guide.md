@@ -124,11 +124,12 @@ python3 -m ypoint_cli deploy --help
 | `--http-port N` / `--https-port N` | 显式设置或更新端口；新配置分别默认 18080/18443；不传保留已有值。 |
 | `--tls-cert PATH` / `--tls-key PATH` | 必须成对提供；同时提供也会启用 HTTPS。 |
 | `--sandbox` | Python/Bash Tool、Skill 受管脚本与 MCP stdio 必需；构建沙箱镜像并开放受信任的本机 Docker 接入。每次部署均需携带，不会自动记住。 |
+| `--prune-sandbox-images` | 需配合 `--sandbox`；服务健康后仅保留当前配置镜像的受管标签，清理当前 Docker 的其他历史保留标签，不检查旧 Tool/Run 引用。适用条件与恢复步骤见 [沙箱镜像清理](cli.md#只保留当前沙箱镜像)。 |
 | `--skip-build` | 复用已有镜像，跳过应用和沙箱构建；启用沙箱时会检查对应镜像已存在。适合镜像已经准备好的机器。 |
 | `--wait-timeout N` | 健康等待时限，默认 180 秒；首次启动较慢可增加。镜像构建不计入这个时限。 |
 | `--create-admin USERNAME` | 就绪后交互创建首位管理员，仅首次使用；自动化环境省略此参数。 |
 
-失败时脚本返回非零并保留现场，打印日志命令；修复后可以重跑。脚本不自动安装主机软件、不删除数据、不自动备份或回滚数据库。运行中的已有部署会按传入参数更新；更新前先按第 7 节备份并安排维护窗口。
+检查、构建或启动失败时，脚本返回非零，保留配置、数据和容器并打印日志命令；修复后可以重跑。服务健康后的镜像清理或管理员创建失败也会返回非零，但服务已部署，已完成的标签清理不会自动撤销。脚本不自动安装主机软件、不删除业务库或文件、不自动备份或回滚数据库；沙箱历史标签仅在显式传入清理参数时移除。运行中的已有部署会按传入参数更新；更新前先按第 7 节备份并安排维护窗口。
 
 ## 3. 手动部署：理解一键脚本执行的步骤
 
@@ -292,6 +293,8 @@ python3 -m ypoint_cli compose --environment production --sandbox -- down
 python3 -m ypoint_cli deploy --environment production --sandbox
 ```
 
+如需在部署健康后清理历史沙箱保留标签，可追加 `--prune-sandbox-images`，例如 `python3 -m ypoint_cli deploy --environment production --sandbox --prune-sandbox-images`；uv 环境等价命令为 `uv run yp deploy --environment production --sandbox --prune-sandbox-images`，已激活环境可用 `yp`。该选项不检查旧 Tool/Run 引用，且清理当前 Docker 的全部受管历史标签，旧版本可能无法执行；多环境共用 Docker 或仍需历史版本时保留默认行为。完整限制与恢复步骤见 [沙箱镜像清理](cli.md#只保留当前沙箱镜像)。
+
 本机环境省略 `--environment production`；自定义私有目录时继续传原 `--directory`。脚本会复用配置，构建镜像并执行所需迁移。回退镜像不会自动回退数据库结构，版本回退前必须核对迁移兼容性。
 
 失败时先看终端输出和脚本给出的日志命令。常见问题：
@@ -308,4 +311,4 @@ python3 -m ypoint_cli deploy --environment production --sandbox
 | Redis 不健康或提示 NOAUTH / WRONGPASS | 先重新执行 init 补齐旧配置，再核对 application.env 与 redis.env 是否来自同一套备份；Redis 密码不通过命令行传入。 |
 | 自动化终端不能创建管理员 | 部署时省略 `--create-admin`，完成后通过 SSH 交互终端单独创建。 |
 
-部署就绪只说明服务启动和探针通过；实际供应商连接、完整模型会话、目标容量与备份恢复需按实际环境验证。本机的可选只读核对脚本为 `ypoint_cli/verify.py`，使用前核对其 localhost/本机证书假设，不把本机探针直接视为任意域名的生产验收。
+部署就绪只说明服务启动和探针通过；实际供应商连接、完整模型会话、目标容量与备份恢复需按实际环境验证。已有部署可运行 `python3 -m ypoint_cli verify-deployment --sandbox`（或 `uv run yp verify-deployment --sandbox`、激活环境后的 `yp verify-deployment --sandbox`），并保留对应的 `--environment` / `--directory`。该命令按 localhost 和部署目录中的证书访问服务，不替代目标域名、DNS 或外部网关验证；`--sandbox` 会在 API/worker 中执行测试脚本并创建、清理临时容器与网络，`--restart` 会重建 API，仅在无活跃任务的隔离部署使用。参数详见 [部署检查](cli.md#初始化compose-与验证参数)。

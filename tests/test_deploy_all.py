@@ -45,7 +45,11 @@ def docker_probe(monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[list[str],
     def invoke(command: list[str], **kwargs) -> subprocess.CompletedProcess:
         """保留实际 run 包装器，模拟其子进程返回以检查输出捕获参数。"""
         calls.append((list(command), kwargs))
-        output = json.dumps(config) if command[-3:] == ["config", "--format", "json"] else ("sha256:" + "a" * 64 if command[:3] == ["docker", "image", "inspect"] else "")
+        output = (
+            json.dumps(config)
+            if command[-3:] == ["config", "--format", "json"]
+            else ("sha256:" + "a" * 64 if command[:3] == ["docker", "image", "inspect"] else "")
+        )
         return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
 
     def initialize(arguments, *, root):
@@ -127,7 +131,8 @@ def test_sandbox_uses_configured_image_and_https_arguments(docker_probe, tmp_pat
 
 
 @pytest.mark.parametrize("failure", ["info", "build", "up"])
-def test_failed_step_stops_without_cleanup(docker_probe, monkeypatch: pytest.MonkeyPatch, failure: str, capsys) -> None:
+@pytest.mark.parametrize("prune", [False, True])
+def test_failed_step_stops_without_cleanup(docker_probe, monkeypatch: pytest.MonkeyPatch, failure: str, prune: bool, capsys) -> None:
     """检查、构建或启动失败均返回原失败码，不继续后续步骤或自动删除数据。"""
     calls, _ = docker_probe
     invoke = deploy_all.subprocess.run
@@ -141,7 +146,7 @@ def test_failed_step_stops_without_cleanup(docker_probe, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(deploy_all.subprocess, "run", fail)
     with pytest.raises(SystemExit) as error:
-        deploy_all.main([])
+        deploy_all.main(["--sandbox", "--prune-sandbox-images"] if prune else [])
     assert error.value.code == 7
     commands = [command for command, _ in calls]
     assert commands[-1][-1] != "ps"
@@ -149,6 +154,37 @@ def test_failed_step_stops_without_cleanup(docker_probe, monkeypatch: pytest.Mon
     output = capsys.readouterr()
     assert "已保留配置、数据和容器" in output.err
     assert "部署完成" not in output.out
+
+
+def test_prune_requires_sandbox_before_mutation(docker_probe, capsys) -> None:
+    """未启用沙箱时拒绝清理参数，不执行初始化或 Docker 命令。"""
+    calls, _ = docker_probe
+    with pytest.raises(SystemExit) as error:
+        deploy_all.main(["--prune-sandbox-images"])
+    assert error.value.code == 2
+    assert not calls
+    assert "必须与 --sandbox 一起使用" in capsys.readouterr().err
+
+
+def test_prune_failure_reports_deployed_services(docker_probe, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """健康部署后的清理故障单独报告，保留退出码且不进入管理员创建。"""
+    calls, _ = docker_probe
+    monkeypatch.setattr(deploy_all.sys.stdin, "isatty", lambda: True)
+
+    def fail(image, *, root):
+        """在清理阶段模拟 Docker 删除冲突。"""
+        assert image == "custom-script-sandbox:9"
+        assert calls[-1][0][-1] == "ps"
+        raise subprocess.CalledProcessError(9, ["docker", "image", "rm", "old-tag"])
+
+    monkeypatch.setattr(deploy_all, "prune_sandbox_images", fail)
+    with pytest.raises(SystemExit) as error:
+        deploy_all.main(["--sandbox", "--prune-sandbox-images", "--create-admin", "admin"])
+    assert error.value.code == 9
+    assert not any("app.cli.create_admin" in command for command, _ in calls)
+    output = capsys.readouterr()
+    assert "服务已部署，但历史沙箱镜像清理失败" in output.err
+    assert "部署中止" not in output.err
 
 
 def test_admin_creation_runs_only_after_health_wait(docker_probe, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -49,6 +49,23 @@ yp --project-dir /path/to/y-point deploy --sandbox
 
 表中部署命令默认选择 `local`；操作其他环境时，在相应子命令后继续传入 `--environment production` 或 `--environment staging`。`compose` 的 `--` 分隔符、`--sandbox` 以及已有的目录、协议、监听地址等参数在三种入口下都应保留。更换入口不会改变部署环境或配置，也不表示需要再执行一次部署。
 
+## 查看命令帮助
+
+总帮助只展示可用子命令和公共参数；查看某个子命令的具体选项时，把 `-h` 放在该子命令之后。`-h` 与 `--help` 等价，下面各行的三种入口选择一种即可：
+
+| 帮助内容 | 已激活项目虚拟环境 | 使用 uv | Python 标准库入口 |
+| --- | --- | --- | --- |
+| 命令总览与公共参数 | `yp -h` | `uv run yp -h` | `python3 -m ypoint_cli -h` |
+| 本地开发服务启动 | `yp dev -h` | `uv run yp dev -h` | `python3 -m ypoint_cli dev -h` |
+| 一键部署与沙箱镜像清理 | `yp deploy -h` | `uv run yp deploy -h` | `python3 -m ypoint_cli deploy -h` |
+| 私有部署配置初始化 | `yp init -h` | `uv run yp init -h` | `python3 -m ypoint_cli init -h` |
+| Compose 包装入口与参数转发 | `yp compose -h` | `uv run yp compose -h` | `python3 -m ypoint_cli compose -h` |
+| 已有部署检查 | `yp verify-deployment -h` | `uv run yp verify-deployment -h` | `python3 -m ypoint_cli verify-deployment -h` |
+
+例如，`yp deploy --help` 与 `yp deploy -h` 输出相同；`yp -h` 不会列出 `deploy` 的全部部署参数。`yp compose -h` 查看的是本项目包装入口的帮助，`--` 之后才是转发给 Docker Compose 的参数。
+
+查看帮助不会启动开发服务、初始化部署配置、构建镜像、执行清理或运行部署检查；CLI 帮助本身不需要 Docker、有效部署配置或应用依赖。`uv run` 仍可能先同步项目依赖，三种入口的安装条件见 [安装与入口](#安装与入口)。
+
 ## 子命令与公共参数
 
 | 命令或参数 | 含义 |
@@ -60,7 +77,7 @@ yp --project-dir /path/to/y-point deploy --sandbox
 | `yp verify-deployment` | 检查已有部署的页面、健康、Redis、迁移、日志与运行依赖，按选项检查沙箱或重建 API。不会发起模型对话。 |
 | `--project-dir PATH` | 源码根目录，放在子命令之前；不是数据目录。 |
 | `--version` | 显示安装包版本；源码未安装时使用当前源码版本。 |
-| `-h` / `--help` | 查看总帮助；`yp <子命令> --help` 查看该命令参数。 |
+| `-h` / `--help` | 查看总帮助；`yp <子命令> -h` 或 `yp <子命令> --help` 查看该命令参数，完整入口见 [查看命令帮助](#查看命令帮助)。 |
 | `--` | `compose` 的参数边界，其后的参数原样交给 Docker Compose，不再作为 yp 的部署选项解析。 |
 
 环境选择不依赖机器名：`local` 为本机、`staging` 为预发布、`production` 为生产；默认 `local`。local 容器中的应用仍使用关闭 DEBUG 的 production 配置，环境名不等于应用调试模式。
@@ -86,11 +103,30 @@ uv run yp compose --environment production --sandbox -- logs --follow --tail 100
 | `--https` | 显式采用 HTTPS；local 可以生成自签证书，其他环境需要正式证书。 |
 | `--tls-cert PATH` / `--tls-key PATH` | 配对提供证书和私钥，单独传一项会报错；不能与 `--http` 同时使用。提供证书会启用 HTTPS。 |
 | `--sandbox` | 接入受信任的本机 Docker 并准备脚本沙箱镜像，供 Python/Bash Tool、Skill 脚本和 MCP stdio 使用。不是应用聊天沙箱；不会自动记忆，后续部署和 Compose 操作继续传入。 |
+| `--prune-sandbox-images` | 需与 `--sandbox` 一起使用；服务通过健康检查后，保留当前配置镜像的 `pinned` 标签并清理当前 Docker 中其他受管历史标签。不检查旧 Tool/Run 引用，旧版本可能失效。 |
 | `--skip-build` | 跳过应用及沙箱镜像构建，使用已有镜像；不是跳过初始化、迁移或健康检查。 |
 | `--wait-timeout SECONDS` | 默认 `180`，正整数；Compose 启动时等待健康检查的时限，不控制模型或工具超时。 |
 | `--create-admin USERNAME` | 服务就绪后交互创建管理员。只传用户名，密码在终端输入；非交互环境拒绝此选项。已有管理员的更新不需要它。 |
 
 省略协议、监听地址和端口选项时，已有配置保持原值；新部署默认 HTTP。初始化保留原数据库、JWT 和供应商加密密钥；配置缺损时报告错误，不自动生成替代密钥。失败保留配置、数据及容器，命令返回失败退出码。
+
+### 只保留当前沙箱镜像
+
+默认部署会保留历史沙箱镜像，便于固定镜像 ID 的 Tool 版本继续执行。若接受旧版本可能失效，可显式追加 `--prune-sandbox-images`，下面三条选择一条执行：
+
+```bash
+python3 -m ypoint_cli deploy --sandbox --http --prune-sandbox-images
+uv run yp deploy --sandbox --http --prune-sandbox-images
+yp deploy --sandbox --http --prune-sandbox-images
+```
+
+此处 `--http` 用于明确 HTTP 部署；已有 HTTPS 部署省略它以保留原协议。使用其他环境或私有目录时，继续传入对应的 `--environment` / `--directory`。清理参数不会记住，后续需要清理时继续追加。
+
+“当前镜像”来自本次部署解析出的 `SCRIPT_SANDBOX_IMAGE`，支持自定义镜像名，以实际镜像 ID 判断保留对象，不按创建时间排序。构建期间仍保留旧镜像，只有 Compose 启动、健康等待及状态查询全部成功后才开始清理；部署失败不清理。`--skip-build` 可与清理参数同时使用，保留已有配置镜像并清理历史标签。
+
+清理范围是当前 Docker 中符合 `y-point-script-sandbox-pinned:<64 位摘要>` 的标签，**不按部署环境或项目目录隔离，也不核对数据库的 Tool/Run 引用**。请在相关任务停止后使用；多个环境或项目共用 Docker、需要继续执行历史工具版本或恢复旧 Run 时，应保留默认行为。只按标签执行 `docker image rm`，不使用强制删除或全局 prune；仍有其他标签或容器引用的镜像可能保留，因此不保证 Docker 中只剩一个沙箱镜像。检查阶段失败不开始删除；删除阶段失败立即停止并返回失败码，已移除标签不会自动恢复，服务仍已部署。
+
+旧镜像缺失后，可导入原镜像备份；或在 Tool 页面重新准备环境、重新试运行，并在智能体设置中重新保存工具绑定。已提交的 Run 仍固定旧版本，应重新发起运行，不直接改写历史版本的镜像 ID。完整说明见 [Tool 管理与沙箱](tools.md#tool-管理与沙箱)。
 
 ## 初始化、Compose 与验证参数
 
@@ -110,7 +146,7 @@ uv run yp compose --environment production --sandbox -- logs --follow --tail 100
 | 参数 | 含义 |
 | --- | --- |
 | `--environment` / `--directory` | 指定已有部署，默认检查 local 的私有目录。 |
-| `--sandbox` | 使用沙箱覆盖并验证 API/Worker 的真实 Docker 脚本及受信任代理能力。 |
+| `--sandbox` | 使用沙箱覆盖，在 API/Worker 中执行测试脚本并创建、清理临时容器及网络，检查 Docker 执行、挂载和受信任代理能力。 |
 | `--restart` | 显式重建 API，检查 Nginx 重新发现及文件持久化；只在无活跃任务的隔离环境使用。默认不重建。 |
 
 ## pyproject.toml 逐项说明

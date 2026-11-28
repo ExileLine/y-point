@@ -70,6 +70,8 @@ uv run yp deploy --sandbox
 | 修改代码并启动开发服务 | [本地开发](docs/local-development.md) |
 | 手动部署并理解 Dockerfile / Compose | [部署步骤](docs/deployment-guide.md#3-手动部署理解一键脚本执行的步骤) · [逐步讲解](docs/deployment-walkthrough.md) |
 
+如需部署成功后只保留当前沙箱镜像的 `pinned` 标签，可执行 `python3 -m ypoint_cli deploy --sandbox --http --prune-sandbox-images`；uv 环境可换用 `uv run yp deploy --sandbox --http --prune-sandbox-images`，已激活虚拟环境时可用 `yp deploy --sandbox --http --prune-sandbox-images`。该参数不检查旧 Tool/Run 引用，删除旧镜像可能导致旧版本不可执行；作用于当前 Docker 的全部受管历史标签，多环境共用 Docker 时需特别核对。适用条件和恢复步骤见 [沙箱镜像清理](docs/cli.md#只保留当前沙箱镜像)。已有 HTTPS 部署省略 `--http` 以保留原协议。
+
 ## 本地开发
 
 修改代码并启动开发服务时，先按 [本地开发指南](docs/local-development.md) 完成 Python/前端依赖安装、私有配置、数据库迁移及管理员初始化，再在项目根目录运行：
@@ -80,7 +82,22 @@ uv run yp dev
 
 已激活项目虚拟环境时也可运行 `yp dev`；模块入口为 `python3 -m ypoint_cli dev`。开发模式需要 uv、应用依赖、Node.js 和前端依赖。该命令统一启动 API、worker 和 Web，按 `Ctrl+C` 停止三项服务；默认 API 端口为 `7769`，Web 从 `5173` 起选择可用端口，以终端输出为准。
 
-使用 `uv run yp --help` 查看命令总览，使用 `uv run yp deploy --help` 或 `uv run yp dev --help` 查看对应子命令帮助；已激活环境时可省略 `uv run`。完整命令、参数及 `pyproject.toml` 配置解释见 [统一命令行与项目配置](docs/cli.md)。
+## 命令帮助
+
+`yp -h` 查看命令总览；各子命令的参数需分别查看。已安装项目并激活虚拟环境时，可直接执行：
+
+```bash
+yp -h                    # 命令总览与公共参数
+yp dev -h                # 本地开发服务启动帮助
+yp deploy -h             # 一键部署参数，包括沙箱镜像清理选项
+yp init -h               # 私有部署配置初始化参数
+yp compose -h            # Compose 包装入口的参数与转发方式
+yp verify-deployment -h  # 已有部署的检查参数
+```
+
+所有帮助命令中的 `-h` 均可写为 `--help`。uv 环境使用 `uv run yp <子命令> -h`；纯 Docker 宿主机在源码根目录使用 `python3 -m ypoint_cli <子命令> -h`，例如 `uv run yp deploy -h` 或 `python3 -m ypoint_cli deploy -h`。查看帮助不会启动服务、执行部署或清理镜像。
+
+三种入口的完整帮助对照见 [查看命令帮助](docs/cli.md#查看命令帮助)；参数含义及 `pyproject.toml` 配置解释见 [统一命令行与项目配置](docs/cli.md)。
 
 ## 系统架构
 

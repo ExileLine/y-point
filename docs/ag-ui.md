@@ -63,7 +63,7 @@ Accept: text/event-stream
 
 `forwardedProps.expected_session_version` 为非空正整数时启用版本模式；字符串、布尔值、小数和非正整数会被拒绝，不回退旧模式。此时不重建或比对客户端完整历史，附带的旧消息不参与执行；仅最后一条纯文本用户消息被保存为本轮输入。工作台发送前不再请求完整历史，发送成功后的历史刷新仍保留。
 
-未提供会话版本或显式传 `null` 时，继续使用旧的完整历史精确匹配：`messages` 必须是服务器公开历史加本次用户消息。旧客户端不必立即迁移。`GET /capabilities` 的 `custom.yPoint.history` 保留旧默认值，新增 `historyModes` 声明两种模式，`versionCheck` 声明触发字段、消息语义、null 行为及 `resume=false`。
+未提供会话版本或显式传 `null` 时，继续使用旧的完整历史精确匹配：`messages` 必须是服务器公开历史加本次用户消息。旧客户端不必立即迁移。`GET /api/v1/agents/{agent_id}/ag-ui/capabilities` 的 `custom.yPoint.history` 保留旧默认值，新增 `historyModes` 声明两种模式，`versionCheck` 声明触发字段、消息语义、null 行为及 `resume=false`。
 
 两种模式均继续使用服务器受控检查点，不使用客户端旧消息替换执行历史；客户端消息不会授予工具权限，也不会覆盖系统指令或私有状态。版本仅控制新运行提交，不代表事件历史逐条变化；会话忙、模型预期变化、权限和附件检查仍然有效。
 
@@ -78,7 +78,7 @@ Accept: text/event-stream
 | 新对话提交、审批恢复 | 统一使用 `POST /api/v1/agents/{agent_id}/ag-ui`；旧 `POST /api/v1/runs`、`POST /api/v1/agents/{agent_id}/sessions/{session_id}/runs` 和 `POST /api/v1/runs/{run_id}/approval` 已不注册。 |
 | 会话公开历史 | 使用 `GET /api/v1/agents/{agent_id}/ag-ui/threads/{session_id}`；旧 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/messages` 已不注册。 |
 | 运行读取与控制 | `GET /api/v1/runs/{run_id}`、`GET /api/v1/runs/{run_id}/messages`、`GET /api/v1/runs/{run_id}/approval`、`POST /api/v1/runs/{run_id}/cancel` 继续支持；单轮消息查询不替代会话协议历史。 |
-| 会话运行与统计 | `GET /api/v1/agents/{agent_id}/sessions/{session_id}/runs` 和 `/metrics` 继续支持；会话创建、编辑及附件检查仍使用会话管理接口。 |
+| 会话运行与统计 | `GET /api/v1/agents/{agent_id}/sessions/{session_id}/runs` 和 `GET /api/v1/agents/{agent_id}/sessions/{session_id}/metrics` 继续支持；会话创建、编辑及附件检查仍使用会话管理接口。 |
 | 观察与重连 | Run 的 `/ag-ui/snapshot`、`/stream-ticket`、`/stream` 继续支持，使用协议线游标；不承担新对话提交。 |
 
 ### 冲突与重试

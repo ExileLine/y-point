@@ -94,7 +94,9 @@ python3 -m ypoint_cli compose --sandbox -- config --quiet
 python3 -m ypoint_cli compose --sandbox -- up -d --wait --wait-timeout 180
 ```
 
-一键部署在重建沙箱镜像前，会将现存镜像保留为 `y-point-script-sandbox-pinned:<镜像ID的64位摘要>`，构建完成后同样保留新镜像；`--skip-build` 也会保留当前镜像。依赖准备任务会为所用镜像添加相同的内容标签。历史 Tool 版本固定实际镜像 ID，不能仅备份可变的 `y-point-script-sandbox:1` 标签，也不要删除仍被版本引用的内容标签。标签不能防止强制删除或清理所有未使用镜像；完整备份仍需交付所需镜像。固定镜像已缺失时的恢复与新版本重建步骤见[Tool 管理与沙箱](tools.md#tool-管理与沙箱)。
+一键部署默认在重建沙箱镜像前，会将现存镜像保留为 `y-point-script-sandbox-pinned:<镜像ID的64位摘要>`，构建完成后同样保留新镜像；`--skip-build` 也会保留当前镜像。依赖准备任务会为所用镜像添加相同的内容标签。历史 Tool 版本固定实际镜像 ID，不能仅备份可变的 `y-point-script-sandbox:1` 标签，也不要删除仍被版本引用的内容标签。标签不能防止强制删除或清理所有未使用镜像；完整备份仍需交付所需镜像。固定镜像已缺失时的恢复与新版本重建步骤见[Tool 管理与沙箱](tools.md#tool-管理与沙箱)。
+
+若接受旧 Tool/Run 因缺少镜像而不可执行，可使用 `python3 -m ypoint_cli deploy --sandbox --prune-sandbox-images`，部署健康后仅保留当前配置镜像的 `pinned` 标签并清理其他受管历史标签；`uv run yp` / `yp` 入口支持相同参数。清理作用于当前 Docker，不按环境隔离，不检查数据库引用，也不强制删除；其他标签或容器仍可能保留镜像。应停止相关任务后使用，多环境共用 Docker 时保留默认行为。参数边界及恢复步骤见 [沙箱镜像清理](cli.md#只保留当前沙箱镜像)。
 
 启用后持续使用同一个 `--sandbox` 参数，包括查看、更新、停止部署。沙箱源文件、依赖环境和受信任下载代理脚本使用 `.deployment/local/data` 下的绝对路径，API、worker 和宿主 Docker 以同一路径访问；初始化脚本将代理源码原子复制到 `data/runtime/package_proxy.py`。不要随意把 bind 目录改成容器内不同路径，也不要把这一方案直接用于远程 daemon。移动部署数据目录或更换主机需要停机迁移，并核对数据库中持久化的依赖路径。
 
@@ -258,7 +260,7 @@ python3 -m ypoint_cli compose -- exec -T db pg_dump -U y_point -d y_point -Fc > 
 
 自动化验证入口：`uv run pytest -q tests/test_cli.py tests/test_deploy_all.py tests/test_deployment.py tests/test_worker_logging.py tests/test_tool_environments.py tests/test_user_tools.py tests/test_m51_governance.py tests/test_runtime_checkpoint.py tests/test_runtime_limits.py tests/test_worker_monitor.py tests/test_db_schema.py`。已启动部署可运行 `python3 -m ypoint_cli verify-deployment --sandbox`；无活跃任务的隔离环境可加 `--restart` 验证重建。独立真实 HTTP/HTTPS 代理验证：`YPOINT_TEST_DEPLOYMENT_PROXY=1 uv run pytest -q tests/test_deployment_proxy.py`。
 
-部署检查不覆盖所有业务效果。目标环境仍需分别验证 TLS/DNS、防火墙、CPU 架构、镜像来源、实际 OCR/模型/外部写服务、备份恢复、容量及监控告警；通用环境与结果记录约定见[测试指南](testing.md)。
+部署检查按 localhost 和部署目录中的证书访问服务；`--sandbox` 会执行测试脚本并创建、清理临时容器与网络，`--restart` 会重建 API。它不替代目标域名和外部网关验证，也不覆盖所有业务效果。目标环境仍需分别验证 TLS/DNS、防火墙、CPU 架构、镜像来源、实际 OCR/模型/外部写服务、备份恢复、容量及监控告警；通用环境与结果记录约定见[测试指南](testing.md)。
 
 参考资料：uv 的 Docker 集成、Uvicorn 的部署、Nginx 代理及 Docker 官方文档；原始地址在 `deployment-research.md` 的来源与下方列出，仓库配置值属于本项目选择。
 

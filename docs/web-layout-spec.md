@@ -23,7 +23,7 @@
 
 ## 标识与主题
 
-品牌图标与字标使用 `web/public/brand-icon.png` 和 `web/public/brand-wordmark.png`；主操作蓝色、辅助强调橙色及中性色均由 `web/src/styles/design-tokens.css` 定义。品牌资源裁切和候选确认过程归档于本地服务端 TODO。
+品牌图标与字标使用 `web/public/brand-icon.png` 和 `web/public/brand-wordmark.png`；主操作蓝色、辅助强调橙色及中性色均由 `web/src/styles/design-tokens.css` 定义。
 
 ![桌面全局布局](screenshots/web-layout-desktop.png)
 
@@ -35,6 +35,6 @@ Agent 页面接口与交互见 [Agent 页面](web-agent-page.md)。
 
 ## 页面统一样式
 
-品牌以用户指定的第三排第一个候选为准：深蓝与亮蓝 Y、橙色圆点及 Y-POINT 字标。右上角账户按钮使用该图标并保留用户名、账户名称和退出登录菜单；手机仅显示图标。截图用于说明布局，当前页面以实现和语义化设计变量为准。
+品牌采用深蓝与亮蓝 Y、橙色圆点及 Y-POINT 字标，以前述品牌资源为准。右上角账户按钮使用该图标并保留用户名、账户名称和退出登录菜单；手机仅显示图标。截图用于说明布局，当前页面以实现和语义化设计变量为准。
 
 桌面顶部通过面包屑标明所在分区、页面和会话层级；导航品牌可返回 Agent 首页。提供键盘「跳转到主内容」入口。Agent、模型、Skill、Tool 统一页标题、用途说明、主操作与白色内容面板；Skill/Tool 在 768px 以下切换为卡片。会话保留左右分区和独立滚动，优化会话选中态、用户消息与输入区域。

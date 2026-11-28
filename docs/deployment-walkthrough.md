@@ -31,6 +31,8 @@ python3 -m ypoint_cli deploy --environment production --sandbox --http \
 
 服务器访问 `http://服务器内网IP:18080`。新部署无需域名和证书；HTTPS 按需用 `--https` 开启，staging/production 首次需成对提供证书/私钥。已有配置默认保留原协议和密钥，重复部署不重复创建管理员；示例已携带脚本执行必需的 `--sandbox`；后续更新继续携带，无需再次创建管理员。只运行基础功能才省略该参数，Python/Bash Tool 与 Skill 受管脚本将不可用；Docker 接入权限与隔离边界见[部署手册](deployment-guide.md#可选本机脚本沙箱)。所有参数见 `python3 -m ypoint_cli deploy --help`。
 
+默认保留历史沙箱镜像。若希望部署成功后清理其他受管历史标签，可追加 `--prune-sandbox-images`；该参数必须与 `--sandbox` 一起使用，不检查旧 Tool/Run 引用，且作用于当前 Docker 的全部受管历史标签，旧版本可能失效。适用条件、三种入口写法和恢复方式见 [沙箱镜像清理](cli.md#只保留当前沙箱镜像)。
+
 ### 部署文件与执行过程
 
 以下按构建到运行的顺序解释文件职责。操作时可对照 [手动部署步骤](deployment-guide.md#3-手动部署理解一键脚本执行的步骤)。

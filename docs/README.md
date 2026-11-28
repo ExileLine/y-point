@@ -34,7 +34,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [贡献指南](../CONTRIBUTING.md) | 开发步骤、代码与文档约定、验证和 PR 说明。 |
-| [统一命令行与项目配置](cli.md) | `yp` 子命令、部署参数、轻量模块入口和 `pyproject.toml` 配置解释。 |
+| [统一命令行与项目配置](cli.md) | `yp` 全部子命令的 `-h` / `--help` 入口、部署参数、轻量模块入口和 `pyproject.toml` 配置解释。 |
 | [数据库迁移与测试](testing.md) | Alembic、结构检查、定向回归与静态检查。 |
 | [Docker 部署逐步讲解](deployment-walkthrough.md) | 从 Dockerfile、Shell 入口到 Compose、数据卷、资源与日志。 |
 | [部署架构与配置参考](deployment.md) | 进程、环境、沙箱权限、日志、迁移、升级、备份与剩余边界。 |

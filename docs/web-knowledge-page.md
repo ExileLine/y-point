@@ -46,7 +46,7 @@
 
 日常联调使用仓库的 `make dev`，由现有启动脚本配置 API 代理与 worker。独立启动前端时可用 `API_PROXY_TARGET=http://127.0.0.1:7769 npm --prefix web run dev`。
 
-截图均来自契约回归中的虚构账号与资料，不能替代真实模型或多用户后端验收。
+以下截图仅说明页面布局，当前交互与权限以本页契约及实际实现为准。
 
 ![知识库列表（桌面）](screenshots/web-knowledge-desktop.png)
 
