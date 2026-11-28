@@ -34,7 +34,20 @@ yp --project-dir /path/to/y-point deploy --sandbox
 
 `--project-dir` 放在子命令之前。省略时依次从当前目录及 CLI 安装位置向上查找源码。`--directory` 和证书等显式相对路径相对于调用时的工作目录；默认部署目录相对于找到的源码根目录。帮助和版本查询不需要 Docker 或有效部署配置。
 
-开发、部署和检查命令统一由 `ypoint_cli/` 实现，通过安装后的 `yp` 或 `python3 -m ypoint_cli` 调用。
+开发、部署和检查命令统一由 `ypoint_cli/` 实现。下面各列是同一操作的等价入口，每行选择一种执行即可；子命令和参数保持一致。`uv run yp` 在项目根目录执行，`yp` 列需要已安装项目并激活虚拟环境，模块入口在源码根目录执行。开发服务的依赖与配置准备见[本地开发](local-development.md)。
+
+| 操作 | 使用 uv | 已激活项目虚拟环境 | Python 标准库入口 |
+| --- | --- | --- | --- |
+| 首次部署并创建管理员 | `uv run yp deploy --sandbox --create-admin admin` | `yp deploy --sandbox --create-admin admin` | `python3 -m ypoint_cli deploy --sandbox --create-admin admin` |
+| 后续更新并保留原协议 | `uv run yp deploy --sandbox` | `yp deploy --sandbox` | `python3 -m ypoint_cli deploy --sandbox` |
+| 显式使用 HTTP 部署 | `uv run yp deploy --sandbox --http` | `yp deploy --sandbox --http` | `python3 -m ypoint_cli deploy --sandbox --http` |
+| 启动开发服务 | `uv run yp dev` | `yp dev` | `python3 -m ypoint_cli dev` |
+| 仅初始化配置 | `uv run yp init --http` | `yp init --http` | `python3 -m ypoint_cli init --http` |
+| 查看 worker 日志 | `uv run yp compose --sandbox -- logs --follow --tail 100 worker` | `yp compose --sandbox -- logs --follow --tail 100 worker` | `python3 -m ypoint_cli compose --sandbox -- logs --follow --tail 100 worker` |
+| 检查已有部署 | `uv run yp verify-deployment --sandbox` | `yp verify-deployment --sandbox` | `python3 -m ypoint_cli verify-deployment --sandbox` |
+| 查看部署帮助 | `uv run yp deploy --help` | `yp deploy --help` | `python3 -m ypoint_cli deploy --help` |
+
+表中部署命令默认选择 `local`；操作其他环境时，在相应子命令后继续传入 `--environment production` 或 `--environment staging`。`compose` 的 `--` 分隔符、`--sandbox` 以及已有的目录、协议、监听地址等参数在三种入口下都应保留。更换入口不会改变部署环境或配置，也不表示需要再执行一次部署。
 
 ## 子命令与公共参数
 

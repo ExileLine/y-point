@@ -35,6 +35,16 @@ cd y-point
 python3 -m ypoint_cli deploy --sandbox --create-admin admin
 ```
 
+项目提供三种等价的命令入口，按宿主机环境选择其中一种即可：
+
+| 环境 | 首次部署命令 | 使用条件 |
+| --- | --- | --- |
+| 仅使用 Docker 部署 | `python3 -m ypoint_cli deploy --sandbox --create-admin admin` | 在源码根目录运行，只需 Python 标准库，无需安装应用依赖。 |
+| 使用 uv 的开发环境 | `uv run yp deploy --sandbox --create-admin admin` | 在源码根目录运行，`uv run` 使用项目虚拟环境，可能先同步应用依赖；开发环境可先执行 `uv sync --locked`。 |
+| 已激活项目虚拟环境 | `yp deploy --sandbox --create-admin admin` | 已执行 `uv sync --locked` 安装项目，并激活虚拟环境，例如 `source .venv/bin/activate`。 |
+
+三种入口调用同一套 CLI 实现，后续的子命令与参数一致。例如，显式使用 HTTP 部署可执行 `uv run yp deploy --sandbox --http`，也可换用 `yp deploy --sandbox --http` 或 `python3 -m ypoint_cli deploy --sandbox --http`。
+
 **`--sandbox` 是脚本工具和 MCP stdio 容器执行的必要参数**：它为 API/worker 接入宿主 Docker，用于脚本依赖准备、试运行及正式执行；只部署聊天、知识库和内置文件生成时可省略，Python/Bash Tool、Skill 受管脚本与 MCP stdio 将不可用。此方式适用于受信任的本机或单机环境，正式多租户隔离要求见[沙箱部署说明](docs/deployment-guide.md#可选本机脚本沙箱)。
 
 启动后打开 **http://127.0.0.1:18080**，使用刚创建的管理员账号登录。密码在终端中输入，不作为命令参数传递。新部署默认 HTTP，不需要证书；已有部署保留原协议和配置。
@@ -45,9 +55,13 @@ python3 -m ypoint_cli deploy --sandbox --create-admin admin
 2. 创建 Agent，选择可用模型；按需关联知识库、Skill 或 Tool。
 3. 进入会话，发送消息或上传资料，查看回答、引用和生成文件。
 
-开发环境已执行 `uv sync --locked` 时，也可使用 `uv run yp deploy --sandbox`；激活项目虚拟环境后可直接使用 `yp deploy --sandbox`。以上命令调用同一实现。Docker 宿主机使用上面的模块入口即可，不需要安装应用依赖。全部命令、参数及 `pyproject.toml` 配置解释见 [统一命令行与项目配置](docs/cli.md)。
+后续更新使用相同入口运行 `deploy --sandbox`，已有管理员无需重复创建。例如，uv 环境执行：
 
-后续更新运行 `python3 -m ypoint_cli deploy --sandbox`，已有管理员无需重复创建。**沙箱开关不会自动记住，后续部署继续带 `--sandbox`；遗漏会按基础配置重建服务并移除脚本执行所需的 Docker 接入。** 如果之前已省略它部署，现在重新运行带 `--sandbox` 的命令即可补开，无需再次创建管理员；请在无运行中任务时更新。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
+```bash
+uv run yp deploy --sandbox
+```
+
+纯 Docker 宿主机使用 `python3 -m ypoint_cli deploy --sandbox`；已激活项目虚拟环境时可使用 `yp deploy --sandbox`。**沙箱开关不会自动记住，后续部署继续带 `--sandbox`；遗漏会按基础配置重建服务并移除脚本执行所需的 Docker 接入。** 如果之前已省略它部署，现在重新运行带 `--sandbox` 的命令即可补开，无需再次创建管理员；请在无运行中任务时更新。首次构建需要访问基础镜像和依赖源；实际模型使用需要可访问的供应商或本地模型服务。
 
 | 使用场景 | 入口 |
 | --- | --- |
@@ -55,6 +69,18 @@ python3 -m ypoint_cli deploy --sandbox --create-admin admin
 | 启用本机脚本沙箱 | [沙箱部署说明](docs/deployment-guide.md#可选本机脚本沙箱) |
 | 修改代码并启动开发服务 | [本地开发](docs/local-development.md) |
 | 手动部署并理解 Dockerfile / Compose | [部署步骤](docs/deployment-guide.md#3-手动部署理解一键脚本执行的步骤) · [逐步讲解](docs/deployment-walkthrough.md) |
+
+## 本地开发
+
+修改代码并启动开发服务时，先按 [本地开发指南](docs/local-development.md) 完成 Python/前端依赖安装、私有配置、数据库迁移及管理员初始化，再在项目根目录运行：
+
+```bash
+uv run yp dev
+```
+
+已激活项目虚拟环境时也可运行 `yp dev`；模块入口为 `python3 -m ypoint_cli dev`。开发模式需要 uv、应用依赖、Node.js 和前端依赖。该命令统一启动 API、worker 和 Web，按 `Ctrl+C` 停止三项服务；默认 API 端口为 `7769`，Web 从 `5173` 起选择可用端口，以终端输出为准。
+
+使用 `uv run yp --help` 查看命令总览，使用 `uv run yp deploy --help` 或 `uv run yp dev --help` 查看对应子命令帮助；已激活环境时可省略 `uv run`。完整命令、参数及 `pyproject.toml` 配置解释见 [统一命令行与项目配置](docs/cli.md)。
 
 ## 系统架构
 

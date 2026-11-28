@@ -8,7 +8,17 @@
 
 完整操作步骤见 **[部署手册](deployment-guide.md)**，覆盖本机模拟、内网服务器、可选 HTTPS、管理员创建、日志、数据、更新和排查。设计与配置细节见 [部署架构与配置参考](deployment.md)。
 
-在项目根目录执行，一键完成 Docker 检查、初始化、配置校验、镜像构建、启动和健康等待：
+本文命令在项目根目录执行。`python3 -m ypoint_cli` 只需 Python 标准库；已使用 uv 安装开发依赖时可替换为 `uv run yp`，已安装项目并激活虚拟环境时可替换为 `yp`，子命令及参数一致。例如，下面三条是同一次首次部署的等价写法，只选择一条执行：
+
+```bash
+python3 -m ypoint_cli deploy --sandbox --create-admin admin
+uv run yp deploy --sandbox --create-admin admin
+yp deploy --sandbox --create-admin admin
+```
+
+`uv run` 可能先同步应用依赖；安装条件、`init`、`compose` 与部署检查的完整对照见 [统一命令行与项目配置](cli.md#安装与入口)。
+
+一键命令完成 Docker 检查、初始化、配置校验、镜像构建、启动和健康等待：
 
 ```bash
 # 首次本机部署，包含脚本沙箱并创建管理员；默认 HTTP：http://127.0.0.1:18080。

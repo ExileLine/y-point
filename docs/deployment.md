@@ -6,6 +6,20 @@
 
 本文说明 Docker 部署拓扑、配置、升级与运维边界。使用入口见[部署手册](deployment-guide.md)，设计资料见 [Docker 部署调研](deployment-research.md)。
 
+## 命令入口
+
+本文的部署、升级、日志和备份示例使用 `python3 -m ypoint_cli`，该入口只需 Python 标准库。使用 uv 的开发环境可将此前缀替换为 `uv run yp`；已执行 `uv sync --locked` 安装项目并激活虚拟环境时，可替换为 `yp`。`uv run` 可能先同步应用依赖。三种入口调用同一实现，操作时保留原有环境、目录、沙箱参数、`compose` 的 `--` 分隔符，以及备份命令末尾的重定向路径。
+
+例如，以下命令等价，只选择一条查看 worker 日志；其他环境继续在 `compose` 后传入 `--environment production` 或 `--environment staging`：
+
+```bash
+python3 -m ypoint_cli compose --sandbox -- logs --follow --tail 100 worker
+uv run yp compose --sandbox -- logs --follow --tail 100 worker
+yp compose --sandbox -- logs --follow --tail 100 worker
+```
+
+首次部署、开发启动、初始化与部署检查的入口对照见 [统一命令行与项目配置](cli.md#安装与入口)。
+
 ## 文件与进程
 
 | 文件 / 服务 | 职责 |
@@ -190,7 +204,7 @@ python3 -m ypoint_cli compose -- up -d api worker
 | --- | --- | --- |
 | Nginx 访问日志 | JSON stdout，包含时间、请求 ID、路径、状态、耗时；不记录 query、Cookie、Authorization 或请求体。 | Docker `local` 驱动轮转。 |
 | API 日志 | 既有脱敏请求日志，包含同一 `rid`；关闭 Uvicorn 重复访问日志。Nginx 在 API 响应返回 `X-Request-ID`。 | Docker `local` 驱动轮转，不另写应用日志副本。 |
-| worker 日志与子进程标准流 | `WORKER_LOG_STDOUT=True`，含现有 Run ID/故障码；本地 `make dev` 默认仍写原容量受控日志文件。 | Docker `local` 驱动轮转；不产生容器内 `.logs/worker.log`。 |
+| worker 日志与子进程标准流 | `WORKER_LOG_STDOUT=True`，含现有 Run ID/故障码；本地 `uv run yp dev`（或激活环境后的 `yp dev`、`make dev`）默认仍写原容量受控日志文件。 | Docker `local` 驱动轮转；不产生容器内 `.logs/worker.log`。 |
 | PostgreSQL 日志 | stderr，不启用数据库内部 logging collector，不开启 SQL 全语句日志。 | Docker `local` 驱动轮转。 |
 | Redis 日志 | stdout，仅服务启动、持久化与故障等运行信息；不启用 MONITOR 或命令明细日志。 | Docker `local` 驱动轮转。 |
 | 业务审计 | 认证/资源操作、Run 事件、模型调用、ToolInvocation 与知识检索记录保存在 PostgreSQL；请求 ID用于 HTTP 排查，Run ID用于执行链追踪。 | 随数据库备份和业务保留策略管理；不能用容器日志代替业务审计，也未宣称实现统一 request_id 到每张审计表的关联。 |

@@ -10,7 +10,8 @@
 | --- | --- |
 | 运行服务及脚本工具沙箱 | [项目快速开始](../README.md#快速开始)，首次部署与后续更新均携带 `--sandbox`。 |
 | 部署到内网服务器，设置端口或 HTTPS | [部署手册](deployment-guide.md) |
-| 修改代码并运行开发服务 | [本地开发](local-development.md) |
+| 修改代码并运行开发服务 | [本地开发](local-development.md)，完成环境准备后运行 `uv run yp dev`，已激活项目环境时可用 `yp dev`。 |
+| 选择命令入口与查阅参数 | [统一 CLI](cli.md#安装与入口)，对照 `uv run yp`、激活环境后的 `yp` 与 `python3 -m ypoint_cli`。 |
 | 配置管理员、供应商与模型 | [认证、授权与模型配置](authentication-and-models.md) |
 | 调整附件容量、超时、Token 与预算 | [配置与运行限额](configuration.md) |
 | 了解代码组织与核心对象 | [架构与业务](architecture.md) |

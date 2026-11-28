@@ -17,7 +17,15 @@ uvx ruff check app ypoint_cli migrations tests scripts sandbox local_run.py
 uvx ruff format --check app ypoint_cli migrations tests scripts sandbox local_run.py
 ```
 
-`ypoint_cli/` 是统一命令实现。部署测试通过 `python -m ypoint_cli` 验证真实命令入口，CLI 专项另覆盖安装后的 `yp` 和外部工作目录调用。参数、打包配置及标准库模块入口见[命令行说明](cli.md)。
+`ypoint_cli/` 是统一命令实现。部署测试通过 `python -m ypoint_cli` 验证真实命令入口，CLI 专项另覆盖安装后的 `yp` 和外部工作目录调用。开发环境可使用 `uv run yp`，已安装项目并激活虚拟环境后可直接使用 `yp`；参数与模块入口一致。以下只显示部署帮助，不启动服务、不构建镜像，适合核对本地入口：
+
+```bash
+uv run yp deploy --help
+# 已安装项目并激活虚拟环境后的等价命令：yp deploy --help
+# 源码根目录的标准库入口：python3 -m ypoint_cli deploy --help
+```
+
+开发服务启动使用 `uv run yp dev` 或激活环境后的 `yp dev`；配置和前端依赖按[本地开发](local-development.md)准备。已有部署检查使用 `uv run yp verify-deployment --sandbox`（或激活环境后的 `yp verify-deployment --sandbox`），需先有可访问的部署；该检查会请求部署服务，与上面的只读帮助命令不同。完整参数、入口条件及打包配置见[命令行说明](cli.md#安装与入口)。
 
 代码与提交约定见[贡献指南](../CONTRIBUTING.md)。
 

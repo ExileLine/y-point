@@ -14,7 +14,15 @@
 
 ## 准备开发环境
 
-按 [本地开发](docs/local-development.md) 安装依赖、准备私有配置、升级数据库并运行 API、worker 和前端。推荐 Linux/macOS 环境；现有开发启动器使用 POSIX 进程与文件锁接口。
+按 [本地开发](docs/local-development.md) 安装依赖、准备私有配置、升级数据库并创建首位管理员，再在项目根目录统一启动 API、worker 和前端：
+
+```bash
+uv run yp dev
+```
+
+已通过 `uv sync --locked` 安装项目并激活虚拟环境时，可直接使用 `yp dev`；`make dev` 是同一命令的快捷入口。部署使用 `uv run yp deploy --sandbox` 或激活环境后的 `yp deploy --sandbox`，纯 Docker 宿主机使用 `python3 -m ypoint_cli deploy --sandbox`，无需安装应用依赖。三种入口的条件与参数对照见 [统一 CLI](docs/cli.md#安装与入口)。
+
+推荐 Linux/macOS 环境；现有开发启动器使用 POSIX 进程与文件锁接口。
 
 主要目录：
 

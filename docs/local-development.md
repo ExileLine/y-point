@@ -39,9 +39,11 @@ uv run python -m app.cli.create_admin admin
 uv run yp dev
 ```
 
-`yp` 由 `pyproject.toml` 的 `[project.scripts]` 注册，`uv sync` 会安装项目并生成命令。`make dev` 只是 `uv run yp dev` 的快捷入口；配置项和部署参数的逐项说明见 [统一命令行与项目配置](cli.md)。
+`yp` 由 `pyproject.toml` 的 `[project.scripts]` 注册，`uv sync --locked` 会安装依赖与项目，并在 `.venv/bin` 生成命令。`uv run yp dev` 使用项目虚拟环境，无需手动激活；若已执行 `source .venv/bin/activate`，可直接运行 `yp dev`，也可用模块入口 `python3 -m ypoint_cli dev`。`make dev` 是 `uv run yp dev` 的快捷入口，以上方式选择一种即可，都会管理同一组开发服务。模块入口启动开发服务同样需要上述 uv、应用依赖和前端环境。
 
-前端默认地址为 `http://127.0.0.1:5173`；若端口被占用，`make dev` 会选择下一个空闲端口并打印实际地址。API 地址为 `http://127.0.0.1:7769`，前端 `/api/v1` 请求会代理到该 API。重复运行 `make dev` 会先通过管理锁停止由本启动器启动的旧 API、worker 和前端进程，待其退出后再启动新进程；按 Ctrl-C 也会清理本轮进程。手动启动或未被管理锁记录的服务不会被自动终止，即使它也来自本项目。若 7769 被这类服务或其他程序占用，脚本会报错；可用 `lsof -nP -iTCP:7769 -sTCP:LISTEN` 确认归属，先在原终端停止服务，再运行 `make dev`。独立运行前端时仍默认代理到 8000，可通过 `API_PROXY_TARGET` 指定其他 API 地址。
+部署入口也遵循相同规则，例如 `uv run yp deploy --sandbox --http` 与激活环境后的 `yp deploy --sandbox --http` 等价。开发启动、Docker 部署和检查命令的完整对照见 [统一命令行与项目配置](cli.md#安装与入口)。
+
+前端默认地址为 `http://127.0.0.1:5173`；若端口被占用，`uv run yp dev` 会选择下一个空闲端口并打印实际地址。API 地址为 `http://127.0.0.1:7769`，前端 `/api/v1` 请求会代理到该 API。重复运行 `uv run yp dev` 会先通过管理锁停止由本启动器启动的旧 API、worker 和前端进程，待其退出后再启动新进程；按 Ctrl-C 也会清理本轮进程。手动启动或未被管理锁记录的服务不会被自动终止，即使它也来自本项目。若 7769 被这类服务或其他程序占用，脚本会报错；可用 `lsof -nP -iTCP:7769 -sTCP:LISTEN` 确认归属，先在原终端停止服务，再运行 `uv run yp dev`。独立运行前端时仍默认代理到 8000，可通过 `API_PROXY_TARGET` 指定其他 API 地址。
 
 只需后端时，可单独启动 API 和 worker：
 
@@ -53,7 +55,7 @@ uv run uvicorn app.main:app --reload
 
 对话运行还需要单独启动 worker；API 进程只接收请求并读取结果。SQLite 检查点默认保存在 `.run-private/checkpoints.sqlite`，重启 worker 时应继续使用原文件，以保留已有会话上下文。
 
-Worker 的标准输出、错误输出及继承标准流的子进程输出统一写入项目根目录的 `.logs/worker.log`，因此 `make dev` 的终端只显示 API 和前端日志。日志默认限制为 50 MiB（52,428,800 字节），超限时在原文件中清理最早内容，通常保留约 45 MiB 的最新日志后继续写入，不生成备份日志；启动时也会收缩已有超限文件。可用 `tail -f .logs/worker.log` 查看执行日志。生产环境可在 `.env.production` 或进程环境中设置 `WORKER_LOG_FILE=/path/to/worker.log`、`WORKER_LOG_MAX_BYTES=52428800`；容量必须为正整数字节数，相对路径按项目根目录解析，目录会自动创建。修改后重启 worker 生效，`make dev` 的正常停止流程会刷新并收尾日志。
+Worker 的标准输出、错误输出及继承标准流的子进程输出统一写入项目根目录的 `.logs/worker.log`，因此通过 `uv run yp dev`（或 `yp dev`、`make dev`）启动的终端只显示 API 和前端日志。日志默认限制为 50 MiB（52,428,800 字节），超限时在原文件中清理最早内容，通常保留约 45 MiB 的最新日志后继续写入，不生成备份日志；启动时也会收缩已有超限文件。可用 `tail -f .logs/worker.log` 查看执行日志。生产环境可在 `.env.production` 或进程环境中设置 `WORKER_LOG_FILE=/path/to/worker.log`、`WORKER_LOG_MAX_BYTES=52428800`；容量必须为正整数字节数，相对路径按项目根目录解析，目录会自动创建。修改后重启 worker 生效，开发启动器的正常停止流程会刷新并收尾日志。
 
 ```bash
 uv run python -m app.cli.run_worker

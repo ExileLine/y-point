@@ -2,7 +2,15 @@
 
 本文用于从项目源码部署到本机 Docker 或单台 Linux 服务器。先完成基础部署与管理员创建，再在页面配置模型。Dockerfile、Compose、进程、日志与安全边界的设计说明见 [部署架构与配置参考](deployment.md)，逐步学习说明见 [Docker 部署逐步讲解](deployment-walkthrough.md#部署文件与执行过程)。
 
-本文使用 `python3 -m ypoint_cli`，Docker 宿主机只需 Python 标准库。已安装项目依赖的开发环境可将此前缀替换为 `uv run yp`，激活虚拟环境后可用 `yp`；三种方式调用同一实现。全量参数和打包配置解释见 [统一命令行与项目配置](cli.md)。
+本文示例使用 `python3 -m ypoint_cli`，该 CLI 入口只依赖 Python 标准库，Docker 宿主机无需安装应用依赖。使用 uv 的开发环境也可选择以下等价命令，每行仅需执行其中一种：
+
+| 操作 | 使用 uv | 已安装项目并激活虚拟环境 | Python 标准库入口 |
+| --- | --- | --- | --- |
+| 首次部署并创建管理员 | `uv run yp deploy --sandbox --create-admin admin` | `yp deploy --sandbox --create-admin admin` | `python3 -m ypoint_cli deploy --sandbox --create-admin admin` |
+| 后续更新并保留原协议 | `uv run yp deploy --sandbox` | `yp deploy --sandbox` | `python3 -m ypoint_cli deploy --sandbox` |
+| 显式使用 HTTP 部署 | `uv run yp deploy --sandbox --http` | `yp deploy --sandbox --http` | `python3 -m ypoint_cli deploy --sandbox --http` |
+
+`uv run` 使用项目环境，可能先同步应用依赖；开发环境可先执行 `uv sync --locked`，直接使用 `yp` 还需激活环境，例如 `source .venv/bin/activate`。下文的 `init`、`compose` 等命令也可按相同规则替换入口，保留原有参数及 `compose` 的 `--` 分隔符。省略 `--http` 时保留已保存的协议；不要为更换命令入口而改变协议或 `--environment`。完整对照、参数和打包配置解释见 [统一命令行与项目配置](cli.md#安装与入口)。
 
 ## 1. 准备部署主机
 
